@@ -18,7 +18,7 @@ PORT = int(os.getenv("PORT", "8083"))
 # El front (SvelteKit) llama a esta API desde su capa server, no desde el
 # navegador, así que en producción CORS casi no importa. Se deja configurable
 # por si algún día se consume directo desde el browser.
-_origins_env = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+_origins_env = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:7000,http://127.0.0.1:7000")
 CORS_ALLOWED_ORIGINS = [o.strip() for o in _origins_env.split(",") if o.strip()]
 
 # ── SQL Server ────────────────────────────────────────────────────────────────
