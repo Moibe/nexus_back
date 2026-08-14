@@ -25,13 +25,26 @@ expuesta a internet.
 
 ## Estructura
 
-| Ruta | Qué es |
-|---|---|
-| `app.py` | Objeto FastAPI, CORS, `/health`, registro de routers |
-| `config.py` | Constantes leídas del `.env` |
-| `db/sqlserver.py` | Conexión a SQL Server + helpers para invocar stored procedures |
-| `ia/cliente.py` | Cliente HTTP para los endpoints de IA externos |
-| `routers/` | Un archivo por dominio |
+Separación por **capas**, no por fuente de datos. La API HTTP se agrupa por
+dominio (un router por dominio, y eso es lo que se ve en Swagger); lo que
+distingue "esto va a la base" de "esto llama a un servicio externo" es en qué
+carpeta vive el código:
+
+| Ruta | Capa | Qué es |
+|---|---|---|
+| `app.py` | — | Objeto FastAPI, CORS, `/health`, registro de routers |
+| `config.py` | — | Constantes leídas del `.env` |
+| `routers/` | HTTP | Un archivo por dominio. Traduce request/response y elige códigos de error |
+| `repositorios/` | Datos | **Todo lo que toca SQL Server.** Un archivo por dominio, funciones que invocan SPs |
+| `servicios/` | Externo | **Todo lo que llama a servicios de terceros** (IA, y más adelante SFTP/SharePoint) |
+| `db/sqlserver.py` | Plomería | Conexión + helpers genéricos para invocar stored procedures |
+
+**Regla:** un `router` nunca importa `pyodbc` ni `httpx` directo — solo llama
+funciones de `repositorios/` o `servicios/`. Así un endpoint puede combinar
+ambas fuentes sin que el front se entere de dónde viene cada dato.
+
+Nombres de función: español, verbo primero (`listar_bandeja`,
+`registrar_documento`, `extraer_campos`) — igual que en el resto de tus proyectos.
 
 ## Setup local
 

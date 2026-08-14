@@ -1,15 +1,14 @@
 """Dominio: documentos (ingesta, bandeja de preparación, pipeline).
 
-⚠️ PLANTILLA — los nombres de stored procedures aquí son PLACEHOLDER. Se
-reemplazan cuando el DBA entregue las firmas reales. La estructura sí es la
-definitiva: un router por dominio, modelos Pydantic arriba de su endpoint,
-y toda lectura/escritura vía `ejecutar_sp`.
+Capa HTTP. Este archivo NO sabe de SQL Server ni de httpx: solo traduce
+requests/responses y decide códigos de error. La lógica de datos vive en
+`repositorios.documentos` y las llamadas a IA en `servicios.ia`.
 """
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from db.sqlserver import ejecutar_sp
+from repositorios import documentos as repo
 
 router = APIRouter()
 
@@ -22,7 +21,7 @@ router = APIRouter()
 )
 def listar_bandeja(tenant_id: int):
     try:
-        return ejecutar_sp("dbo.sp_ListarBandejaPreparacion", {"TenantId": tenant_id})
+        return repo.listar_bandeja(tenant_id)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=503, detail=f"No se pudo consultar la bandeja: {exc}") from exc
 
@@ -42,16 +41,11 @@ class DocumentoIn(BaseModel):
 )
 def registrar_documento(documento: DocumentoIn):
     try:
-        filas = ejecutar_sp(
-            "dbo.sp_RegistrarDocumento",
-            {
-                "TenantId": documento.tenant_id,
-                "NombreArchivo": documento.nombre_archivo,
-                "HashSha256": documento.hash_sha256,
-                "Origen": documento.origen,
-            },
-            commit=True,
-        )
-        return filas[0] if filas else {"ok": True}
+        return repo.registrar_documento(
+            tenant_id=documento.tenant_id,
+            nombre_archivo=documento.nombre_archivo,
+            hash_sha256=documento.hash_sha256,
+            origen=documento.origen,
+        ) or {"ok": True}
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=503, detail=f"No se pudo registrar el documento: {exc}") from exc
