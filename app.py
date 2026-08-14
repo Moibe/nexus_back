@@ -11,10 +11,25 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import CORS_ALLOWED_ORIGINS, ENVIRONMENT, PORT
 
+# El orden de esta lista define el orden de los grupos en Swagger, y cada
+# entrada le pone descripción al encabezado del grupo.
+TAGS = [
+    {"name": "Utilidad", "description": "Health checks y diagnóstico."},
+    {
+        "name": "Documentos",
+        "description": "Ingesta, bandeja de preparación y pipeline documental.",
+    },
+    {
+        "name": "IA",
+        "description": "Endpoints que delegan en Document AI (OCR, extracción, clasificación).",
+    },
+]
+
 app = FastAPI(
     title="NexusDoc AI · API",
     description="Ingesta, procesamiento y configuración documental para NexusDoc AI.",
     version="0.0.1",
+    openapi_tags=TAGS,
 )
 
 app.add_middleware(
@@ -55,8 +70,10 @@ def health_db():
 
 # Registrar routers
 from routers.documentos import router as documentos_router  # noqa: E402
+from routers.ia import router as ia_router  # noqa: E402
 
 app.include_router(documentos_router, prefix="/documentos")
+app.include_router(ia_router, prefix="/ia")
 
 
 if __name__ == "__main__":
