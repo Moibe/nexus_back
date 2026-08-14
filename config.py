@@ -36,8 +36,14 @@ SQLSERVER_DRIVER = os.getenv("SQLSERVER_DRIVER", "ODBC Driver 18 for SQL Server"
 # el default es Encrypt=yes y truena si no se confía en el cert.
 SQLSERVER_TRUST_CERT = os.getenv("SQLSERVER_TRUST_CERT", "yes")
 
-# ── Endpoints de IA ───────────────────────────────────────────────────────────
-# Servicios de IA externos a esta API (OCR, extracción, clasificación).
-IA_BASE_URL = os.getenv("IA_BASE_URL", "")
-IA_API_KEY = os.getenv("IA_API_KEY", "")
+# ── Google Document AI ────────────────────────────────────────────────────────
+# Se llaman directo los procesadores de Document AI (no vía el proyecto
+# hermano `document_ai`). Los IDs van aquí y no hardcodeados en el código, para
+# poder apuntar a procesadores distintos por ambiente sin tocar fuentes.
+#
+# La credencial la resuelve google-auth sola leyendo GOOGLE_APPLICATION_CREDENTIALS
+# del entorno (ruta al JSON de la cuenta de servicio), por eso no se lee aquí.
+DOCAI_PROJECT_ID = os.getenv("DOCAI_PROJECT_ID", "")
+DOCAI_LOCATION = os.getenv("DOCAI_LOCATION", "us")
+DOCAI_PROCESADOR_INE = os.getenv("DOCAI_PROCESADOR_INE", "")
 IA_TIMEOUT = float(os.getenv("IA_TIMEOUT", "120"))

@@ -1,54 +1,53 @@
-"""Dominio: IA (Document AI).
+"""Dominio: IA (Google Document AI).
 
-Capa HTTP de los endpoints que delegan en los servicios de Document AI. Se
+Capa HTTP de los endpoints que llaman a los procesadores de Document AI. Se
 agrupan bajo el tag "IA" en Swagger para distinguirlos de un vistazo de los que
 pegan a SQL Server.
 
-Este archivo no llama httpx directo: la lógica vive en `servicios.ia`.
-Los handlers son `async def` porque las llamadas a IA son I/O de red que puede
-tardar decenas de segundos.
+Este archivo no sabe de Document AI: la autenticación, las URLs de procesador y
+el parseo de la respuesta viven en `servicios.ia`.
 """
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+import logging
+
+from fastapi import APIRouter, File, HTTPException, UploadFile, status
 
 from servicios import ia
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-class CalidadOcrIn(BaseModel):
-    documento_id: int = Field(..., description="Documento ya ingresado a evaluar")
-
-
 @router.post(
-    "/ocr/calidad",
+    "/ine",
     tags=["IA"],
-    summary="Evaluar calidad del OCR",
-    description="Evalúa qué tan confiable quedó el OCR de un documento (HU032).",
+    summary="Extraer datos de INE",
+    description=(
+        "Recibe la imagen de una credencial INE y devuelve los campos extraídos "
+        "por Document AI, con el domicilio anidado y las fechas en formato ISO."
+    ),
 )
-async def evaluar_calidad_ocr(payload: CalidadOcrIn):
+async def extraer_ine(imagen: UploadFile = File(...)):
+    if not imagen.content_type or not imagen.content_type.startswith("image/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El archivo no es una imagen. Sube un archivo con Content-Type: image/*.",
+        )
+
+    contenido = await imagen.read()
+    if not contenido:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="El archivo llegó vacío."
+        )
+
     try:
-        return await ia.evaluar_calidad_ocr(payload.documento_id)
+        return await ia.extraer_ine(contenido, imagen.content_type)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Falló el servicio de IA: {exc}") from exc
-
-
-class ExtraccionIn(BaseModel):
-    documento_id: int = Field(..., description="Documento del que se extraen los campos")
-    tipo_documental_id: int = Field(
-        ..., description="Tipo documental que define qué campos extraer (Configuration Table)"
-    )
-
-
-@router.post(
-    "/extraccion",
-    tags=["IA"],
-    summary="Extraer campos del documento",
-    description="Extrae los campos configurados para ese tipo documental.",
-)
-async def extraer_campos(payload: ExtraccionIn):
-    try:
-        return await ia.extraer_campos(payload.documento_id, payload.tipo_documental_id)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Falló el servicio de IA: {exc}") from exc
+        # El detalle de Google ya quedó en el log dentro de servicios.ia; aquí
+        # solo se devuelve un mensaje genérico para no filtrarlo al cliente.
+        logger.exception("Falló la extracción de INE")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="No se pudo procesar la credencial con Document AI.",
+        ) from exc

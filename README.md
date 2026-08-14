@@ -7,8 +7,9 @@ Backend de NexusDoc AI. Es el par de [`nexus_poc_svelte`](../nexus_poc_svelte) (
 1. **SQL Server** — dueño **exclusivo** de la base. El front nunca se conecta directo.
    La base la diseña y mantiene el DBA; aquí solo se consumen sus stored procedures
    (sin ORM, sin migraciones de este lado).
-2. **Endpoints de IA** — orquesta las llamadas a los servicios de IA externos
-   (OCR, extracción de campos, clasificación documental).
+2. **Google Document AI** — llama **directo** a los procesadores de Document AI
+   (no pasa por el proyecto hermano `document_ai`, que es una API aparte con el
+   mismo propósito para otro sistema). Empezando por INE.
 3. **Conectores documentales** — SFTP / SharePoint / API REST por tenant (HU014-016).
    _Pendiente._
 
@@ -36,7 +37,7 @@ carpeta vive el código:
 | `config.py` | — | Constantes leídas del `.env` |
 | `routers/` | HTTP | Un archivo por dominio. Traduce request/response y elige códigos de error |
 | `repositorios/` | Datos | **Todo lo que toca SQL Server.** Un archivo por dominio, funciones que invocan SPs |
-| `servicios/` | Externo | **Todo lo que llama a servicios de terceros** (IA, y más adelante SFTP/SharePoint) |
+| `servicios/` | Externo | **Todo lo que llama a servicios de terceros** (Document AI, y más adelante SFTP/SharePoint) |
 | `db/sqlserver.py` | Plomería | Conexión + helpers genéricos para invocar stored procedures |
 
 **Regla:** un `router` nunca importa `pyodbc` ni `httpx` directo — solo llama
@@ -77,6 +78,19 @@ Verificar qué quedó instalado: `odbcinst -q -d`. El nombre que salga ahí tien
 ir textual en `SQLSERVER_DRIVER` del `.env`.
 
 Prueba rápida de conectividad: `GET /health/db`.
+
+### Credenciales de Document AI
+
+Hace falta el JSON de una cuenta de servicio con permiso sobre Document AI.
+Ponlo en la raíz del proyecto como `documentai_sa.json` (está en `.gitignore`) y
+apunta `GOOGLE_APPLICATION_CREDENTIALS` a él en el `.env`. `google-auth` lee esa
+variable por su cuenta — el código nunca la toca.
+
+Los IDs de proyecto y de procesador van en el `.env` (`DOCAI_PROJECT_ID`,
+`DOCAI_PROCESADOR_INE`), **no hardcodeados**, para poder apuntar a procesadores
+distintos por ambiente.
+
+Prueba: `POST /ia/ine` con un `multipart/form-data` con campo `imagen`.
 
 ## Despliegue
 

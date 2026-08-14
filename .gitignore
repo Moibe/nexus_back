@@ -1,4 +1,5 @@
 .env
+documentai_sa.json
 .venv/
 venv/
 __pycache__/
