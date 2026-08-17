@@ -151,28 +151,42 @@ publicada para él):
 ssh -p 11725 mbriseno@172.10.30.15
 ```
 
-### 1. Verificar el server (antes de tocar nada)
+### 1. Estado del server (verificado 2026-08-17)
 
-Todo esto es de solo lectura y responde lo que no se puede saber desde local:
+- `hostname` = **`srviaproducto`**, IP `172.10.30.15/25` en `enp5s0`. Los dos
+  nombres son el mismo host (el DNS de CSI no resuelve `srviaproducto` y no hay
+  PTR, así que esto solo se confirma desde dentro).
+- **Ubuntu 24.04.3 LTS**, **Python 3.12.3**, usuario `mbriseno`.
+- **Puerto 8083 libre** (verificado con `ss`, no contra `apps.json`).
+  Ocupados: 8077, 8080, 8082, 8090, 8099, 3300, 4173-4177, 1111, 11725, 3306 y
+  11434/43993 (ollama, solo en loopback).
+- **12 procesos pm2** online (4-17 días de uptime) + módulo `pm2-logrotate` 3.0.0.
+  `pm2 save` hecho (existe `~/.pm2/dump.pm2`).
+- **ODBC a medias**: el CLI `odbcinst` NO está instalado, pero el runtime SÍ
+  (`libodbc.so.2` y `libodbcinst.so.2` en `/lib/x86_64-linux-gnu/`, probablemente
+  arrastrado por mariadb). Ver la nota de ODBC abajo: esto cambia el
+  comportamiento esperado.
+- **Reinicio del sistema pendiente**, con 111 actualizaciones (13 de seguridad).
+
+### Preflight (solo lectura, cierra lo que falta)
 
 ```bash
-hostname && ip -4 addr show | grep inet      # ¿es srviaproducto? ¿es .30.15?
-sudo ss -ltnp | grep -w 8083 || echo "8083 LIBRE"
-sudo ss -ltnp                                # inventario completo
-python3 --version                            # tiene que ser >= 3.10
-odbcinst -q -d 2>/dev/null || echo "unixODBC no instalado"
-ldconfig -p | grep -i libodbc || echo "runtime de unixODBC ausente"
-pm2 list && pm2 describe document-ai-api | head -25
-ls ~/.pm2/dump.pm2 && echo "pm2 save hecho"  # ¿sobrevive un reboot?
-ls /home/mbriseno/code/                      # ¿ya existe nexus_back?
+systemctl is-enabled pm2-mbriseno; systemctl is-active pm2-mbriseno
+pm2 --version
+pm2 describe webhook-listener | grep -A2 "script args"   # ruta real del -hooks
+python3 -c "import ensurepip; print('ensurepip OK')"
+command -v gcloud || echo "gcloud AUSENTE (la llave viaja por scp)"
+dpkg -l needrestart 2>/dev/null | tail -1
+git -C /home/mbriseno/webhook-central status --short
+git -C /home/mbriseno/webhook-central log --oneline -3
 ```
 
-El `sudo` en `ss -ltnp` no es opcional: sin privilegios no muestra qué proceso
-tiene tomado cada puerto.
-
-El puerto **8083** es una *propuesta*: los puertos que este README listaba como
-ocupados salieron de `apps.json`, que es el catálogo de la UI y no un inventario
-del SO. `ss -ltnp` es el único dato que decide.
+La primera línea es la más importante y **no depende de este proyecto**: que
+exista `dump.pm2` prueba que se corrió `pm2 save`, **no** que la unit de systemd
+esté habilitada. Si no está `enabled`, el reinicio pendiente se lleva las 12 apps
+de producción y hay dos (`mide-chatbot-api` y `constructor-agente-rag`) cuyo
+comando de arranque solo vive en `dump.pm2` — no hay `.conf` de dónde
+reconstruirlas.
 
 ### 2. Primer arranque (manual, una sola vez)
 
@@ -180,31 +194,61 @@ del SO. `ss -ltnp` es el único dato que decide.
 él, y si el proceso pm2 no existe todavía, **aborta**.
 
 ```bash
+# --- código y dependencias ---
 cd /home/mbriseno/code && git clone https://github.com/Moibe/nexus_back.git
-cd nexus_back && python3 -m venv venv          # 'venv' SIN punto: es la
-source venv/bin/activate                       # convención de los .conf del server
-pip install -r requirements.txt
+cd nexus_back && python3 -m venv venv        # 'venv' SIN punto: convención del server
+venv/bin/python -m pip install -r requirements.txt
+venv/bin/python -c "import pyodbc; print('pyodbc', pyodbc.version)"
 
-# El directorio de la llave nace con dueño = usuario de pm2. Si queda root:root
-# con 700, mbriseno no puede ni atravesarlo: aunque el archivo sea suyo y 600,
-# google-auth reporta "File ... was not found", que se lee como error de ruta.
-sudo mkdir -p /etc/nexus-back
-sudo chown mbriseno:mbriseno /etc/nexus-back && sudo chmod 700 /etc/nexus-back
-# una llave de servicio DISTINTA a la local:
+# --- llave de servicio ---
+# El directorio nace con dueño = usuario de pm2. Si queda root:root con 700,
+# mbriseno no puede ni atravesarlo: aunque el archivo sea suyo y 600, google-auth
+# reporta "File ... was not found", que se lee como error de ruta y no de permisos.
+sudo install -d -o mbriseno -g mbriseno -m 700 /etc/nexus-back
+# Con gcloud en el server (una llave DISTINTA a la local):
 gcloud iam service-accounts keys create /etc/nexus-back/sa.json --iam-account=<SA>
+# Sin gcloud: crearla en la laptop y traerla —
+#   scp -P 11725 <llave>.json mbriseno@172.10.30.15:/etc/nexus-back/sa.json
 chmod 600 /etc/nexus-back/sa.json
 
-# .env de producción — NO viaja por git, hay que escribirlo a mano
-# (ver .env.example; GOOGLE_APPLICATION_CREDENTIALS=/etc/nexus-back/sa.json)
+# --- .env de producción (a mano; no viaja por git) ---
+#   ENVIRONMENT=produccion        <- el health check lo usa como testigo
+#   GOOGLE_APPLICATION_CREDENTIALS=/etc/nexus-back/sa.json
+#   DOCAI_PROJECT_ID / DOCAI_PROCESADOR_INE
 
-pm2 start venv/bin/python --name nexus-back-api --cwd /home/mbriseno/code/nexus_back \
+# --- validar ANTES de crear el proceso pm2 ---
+# Comprueba la llave, los permisos de ruta y la salida HTTPS a Google. Es gratis:
+# pide un token, no toca Document AI. `import app` NO sirve para esto — las
+# credenciales se resuelven de forma perezosa dentro de servicios.ia._token().
+venv/bin/python -c "
+from google.auth import default
+from google.auth.transport.requests import Request
+c,_ = default(scopes=['https://www.googleapis.com/auth/cloud-platform'])
+c.refresh(Request()); print('credencial OK:', c.service_account_email)"
+venv/bin/python -c "import app; print('DOCUMENTOS_DISPONIBLE =', app.DOCUMENTOS_DISPONIBLE)"
+
+# --- pm2, desde una shell LIMPIA (sin haber hecho `activate`) ---
+pm2 start /home/mbriseno/code/nexus_back/venv/bin/python \
+  --name nexus-back-api --interpreter none \
+  --cwd /home/mbriseno/code/nexus_back \
   -- -m uvicorn app:app --host 0.0.0.0 --port 8083
+cp ~/.pm2/dump.pm2 ~/.pm2/dump.pm2.$(date +%F)   # respaldo fechado antes de pisar
 pm2 save
-curl -s localhost:8083/health   # documentos_disponible:false es lo esperado sin ODBC
+curl -s localhost:8083/health                     # exige "environment":"produccion"
 ```
 
 Se clona por **HTTPS**: el repo es público, así que no hace falta llave SSH en el
 server, y `deploy.sh` solo hace `checkout`/`fetch`/`pull` — nunca push.
+
+**Nada de `source venv/bin/activate` antes del `pm2 start`.** pm2 congela el
+`process.env` de la shell en el proceso y en `dump.pm2`, y como `load_dotenv()`
+no sobrescribe lo que ya viene del entorno, cualquier variable exportada en esa
+shell le gana al `.env` **de forma permanente y silenciosa**. Por eso el
+`pip install` se hace con `venv/bin/python -m pip`, que no necesita activate.
+
+**Verifica el dump por nombre, no por conteo:** `pm2-logrotate` es un módulo pmx y
+no entra a `dump.pm2`, así que `pm2 list` mostrará una fila más que el dump.
+Confirma que aparece `nexus-back-api` y que siguen las 12 previas.
 
 **Un solo proceso, uvicorn puro** — a propósito. El `gunicorn --workers 4` de
 `document_ai` no es el molde: esa app es stateless, y esta abrirá conexiones a
@@ -213,9 +257,21 @@ el DBA confirma cuántas conexiones tolera.
 
 ### 3. Registrar en webhook-central
 
-Las tres piezas van **en el server** (`/home/mbriseno/webhook-central`):
-webhook-central no se auto-despliega, así que editar el clon local no tiene
-efecto — y ese clon ya divergió del server antes, conviene comparar primero.
+Las tres piezas van **en el server** (`/home/mbriseno/webhook-central`), editadas
+**ahí mismo**, y luego commit + push desde el server el mismo día.
+
+**No subas el clon local por `scp -r`**: eso pisa `hooks.json`, `apps.json` y
+`scripts/deploy.sh` de los 12 proyectos de golpe y sin respaldo. Y hay divergencia
+comprobada — el clon local registra `conmutador` en las tres piezas, pero en el
+server no existe ni el proceso pm2, ni el puerto, ni la carpeta; mientras
+`webhook-listener` corre y no está en `apps.json`.
+
+Respaldar antes de tocar nada:
+
+```bash
+cd /home/mbriseno/webhook-central
+cp hooks.json hooks.json.bak.$(date +%F) && cp apps.json apps.json.bak.$(date +%F)
+```
 
 1. `projects/nexus_back.conf`:
    ```bash
@@ -228,9 +284,12 @@ efecto — y ese clon ya divergió del server antes, conviene comparar primero.
    # real de arranque que sobrevive si hay que reconstruir el server.
    PM2_START_CMD='pm2 start venv/bin/python --name nexus-back-api --cwd /home/mbriseno/code/nexus_back -- -m uvicorn app:app --host 0.0.0.0 --port 8083'
    ```
-2. `hooks.json` — lo más seguro es **copiar una entrada existente** y cambiarle
-   `id`, `name` y `response-message`. Los 5 campos son indispensables: sin
-   `execute-command` el hook no ejecuta nada, y el `id` es lo que forma la URL.
+2. `hooks.json` — copiar una entrada existente y cambiarle `id`,
+   `response-message` y el `name` de `pass-arguments-to-command` (ojo: las
+   entradas **no** tienen un campo `name` de primer nivel; ese `name` de adentro
+   es lo que llega como `$1` a `deploy.sh`). Los indispensables son `id`,
+   `execute-command` y `pass-arguments-to-command`: sin `execute-command` el hook
+   no ejecuta nada, y el `id` es lo que forma la URL.
    ```json
    {
      "id": "despliegue-nexus_back",
@@ -256,37 +315,77 @@ efecto — y ese clon ya divergió del server antes, conviene comparar primero.
    ```
 
 Ojo: son **cuatro** cadenas distintas y cada una tiene su regla. `nexus_back` va
-idéntico en el nombre del `.conf`, en el `name` del hook y en el `id` de
-`apps.json`; el `id` del hook es una cuarta cadena (`despliegue-nexus_back`) que
-solo debe coincidir con el `deploy_url`.
+idéntico en el nombre del `.conf`, en el `name` de `pass-arguments-to-command` y en
+el `id` de `apps.json`; el `id` del hook es una cuarta cadena
+(`despliegue-nexus_back`) que solo debe coincidir con el `deploy_url`.
 
-Luego `pm2 restart webhook-listener`. **Validar el JSON antes**
-(`python3 -m json.tool hooks.json > /dev/null`): un `hooks.json` inválido tumba
-los deploys de los 12 proyectos, no solo este.
+**El `.conf` no debe definir `APP_ENV`.** Si lo define, `deploy.sh` cambia el
+restart a `pm2 restart --update-env`, y entonces cada deploy rutinario reemplaza
+el entorno del proceso por el del `webhook-listener`. El `.conf` de arriba no lo
+define: dejarlo así.
 
-Para probar el circuito completo:
+Validar y recargar:
 
 ```bash
-curl -X POST http://172.10.30.15:8090/hooks/despliegue-nexus_back
+python3 -m json.tool hooks.json > /dev/null && echo "JSON válido"
+# json.tool NO detecta ids duplicados, que es justo el error del método
+# "copiar una entrada": verificarlo aparte.
+python3 -c "
+import json,collections
+ids=[h['id'] for h in json.load(open('hooks.json'))]
+d=[k for k,v in collections.Counter(ids).items() if v>1]
+print('ids duplicados:', d or 'ninguno')"
+pm2 restart webhook-listener
+```
+
+Un `hooks.json` inválido tumba los deploys de los 13 proyectos, no solo este — y
+con un reinicio pendiente, un `pm2 resurrect` sobre un JSON roto los deja muertos
+en frío sin que nadie se entere.
+
+Para probar el circuito completo, en dos pasos (el primero cae en `no_changes`, así
+que **no** ejercita el camino del restart):
+
+```bash
+curl -X POST http://172.10.30.15:8090/hooks/despliegue-nexus_back   # -> no_changes
+# luego un commit trivial al repo y otra vez, para probar el restart de verdad
+tail -2 /home/mbriseno/webhook-central/logs/deploys.jsonl
 ```
 
 ### Notas de operación
 
-- **Sin ODBC instalado la app arranca igual**, pero sin `/documentos/*`
-  (ver el `try/except` de `app.py`). `/health` y `/ia/ine` siguen vivos y el
-  arranque loguea un `WARNING`. Como SQL Server aún no existe, se puede desplegar
-  sin instalar `msodbcsql18` — y cuando toque instalarlo, revisar si basta el
-  runtime de unixODBC: `unixodbc-dev` solo hace falta si `pip` compila `pyodbc`
-  desde fuente, y `pyodbc` 5.x publica wheels manylinux.
+- **ODBC: hay que distinguir tres cosas que se confunden.**
+  1. Que `import pyodbc` funcione → solo necesita el runtime `libodbc.so.2`
+     (paquete `libodbc2`), que **ya está** en el server. `pyodbc` 5.x publica
+     wheel manylinux para cp312 que enlaza esa librería dinámicamente, así que
+     `pip install` **no compila** nada y `unixodbc-dev` no hace falta.
+  2. Que se pueda **conectar** a SQL Server → necesita el driver `msodbcsql18`
+     del repo de Microsoft, que no existe en los repos de Ubuntu. Eso está
+     pendiente y no urge hasta que el DBA entregue la base.
+  3. Que exista el CLI `odbcinst` → no hace falta para nada en runtime, solo para
+     diagnóstico. Dato no obvio: en Ubuntu 24.04 `apt install unixodbc` **no** lo
+     instala; es su propio paquete. `msodbcsql18` lo arrastra por dependencia.
+
+  Consecuencia práctica: en este server **`documentos_disponible` va a salir
+  `true`**, y `/documentos/*` va a aparecer en Swagger apuntando a una base que no
+  existe (cada llamada da 503). El `try/except` de `app.py` es la red por si el
+  runtime desapareciera, no el comportamiento esperado hoy.
+
+  Y cuando toque instalar `msodbcsql18`: no es un `apt install` aislado. Agrega el
+  repo y el keyring de `packages.microsoft.com` al host de forma permanente, pide
+  `ACCEPT_EULA=Y`, y crea o modifica `/etc/odbcinst.ini` en un server donde ya
+  corre mariadb. Ventana propia.
 - **`deploy.sh` no hace healthcheck** y un `pip install` fallido es solo una
   advertencia: puede reportar "✓ Desplegado" con la API en ciclo de restart.
-  Después de cada deploy, `curl http://172.10.30.15:8083/health` a mano y revisar
-  que `documentos_disponible` sea el valor esperado.
+  Después de cada deploy, `curl http://172.10.30.15:8083/health` a mano — y exigir
+  que diga `"environment":"produccion"`. Si dice `local`, el `.env` no se leyó: es
+  el único testigo que existe de eso, porque la app arranca igual sin `.env`.
 - **El hook solo reinicia si hay commits nuevos.** `deploy.sh` compara `HEAD`
   contra `origin/main` y, si coinciden, imprime "Nada que desplegar" y hace
   `exit 0` **antes** del `pip install` y del `pm2 restart`. O sea: no sirve para
-  reiniciar la app tras editar el `.env` a mano en el server — eso pide un
-  `pm2 restart nexus-back-api --update-env` directo.
+  recargar el `.env` tras editarlo a mano en el server — eso pide un
+  `pm2 restart nexus-back-api` directo (**sin** `--update-env`: `config.py` lee el
+  `.env` del disco en cada arranque, y `--update-env` traería el entorno de quien
+  lanzó el comando, que es justo lo que no se quiere).
 - **El puerto no vive en el `.env`.** El arranque real lleva `--port 8083` en la
   línea de comandos que pm2 guardó al crear el proceso; `PORT` del `.env` solo lo
   usa el bloque `__main__` de `app.py`, que en producción no corre. Para cambiar

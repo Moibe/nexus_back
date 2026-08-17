@@ -98,10 +98,11 @@ app.add_middleware(
     description="Verifica que el servidor esté en línea. No toca la base.",
 )
 def health():
-    # `documentos_disponible` en False significa que el router de documentos no
-    # cargó por falta del runtime de ODBC. Se expone aquí porque el deploy.sh de
-    # webhook-central no hace healthcheck: es la forma de verlo sin entrar a leer
-    # los logs de pm2.
+    # `documentos_disponible` dice si el router de documentos alcanzó a cargar.
+    # OJO con cómo se lee: en True solo significa que `import pyodbc` funcionó
+    # (basta el runtime libodbc.so.2), NO que haya un driver de SQL Server
+    # registrado ni que la base responda. Para eso está /health/db.
+    # Se expone aquí porque el deploy.sh de webhook-central no hace healthcheck.
     return {
         "status": "ok",
         "environment": ENVIRONMENT,
