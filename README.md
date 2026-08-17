@@ -142,6 +142,15 @@ piezas de webhook-central. `deploy.sh` resuelve `projects/$1.conf`, y la UI cruz
 las tres no coinciden textualmente, el deploy corre pero la UI se queda en
 `idle`, o el hook aborta con "config no encontrada".
 
+### 0. Acceso al server
+
+SSH escucha en el puerto **11725**, no en el 22, y pide contraseña (no hay llave
+publicada para él):
+
+```bash
+ssh -p 11725 mbriseno@172.10.30.15
+```
+
 ### 1. Verificar el server (antes de tocar nada)
 
 Todo esto es de solo lectura y responde lo que no se puede saber desde local:
