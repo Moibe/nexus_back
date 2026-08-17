@@ -220,7 +220,12 @@ chmod 600 /etc/nexus-back/sa.json
 # Comprueba la llave, los permisos de ruta y la salida HTTPS a Google. Es gratis:
 # pide un token, no toca Document AI. `import app` NO sirve para esto — las
 # credenciales se resuelven de forma perezosa dentro de servicios.ia._token().
+# El `import config` del inicio NO es decorativo: es quien corre load_dotenv() y
+# mete GOOGLE_APPLICATION_CREDENTIALS al entorno; sin él, google-auth no ve la
+# variable y falla aunque la llave esté perfecta. Correrlo parado en la raíz del
+# proyecto.
 venv/bin/python -c "
+import config
 from google.auth import default
 from google.auth.transport.requests import Request
 c,_ = default(scopes=['https://www.googleapis.com/auth/cloud-platform'])
