@@ -18,6 +18,7 @@ from config import (
     MAX_SUBIDA_BYTES,
     MAX_SUBIDA_MB,
     PORT,
+    SQLSERVER_HOST,
 )
 from logging_config import configurar_logging
 
@@ -98,11 +99,10 @@ app.add_middleware(
     description="Verifica que el servidor esté en línea. No toca la base.",
 )
 def health():
-    # `documentos_disponible` dice si el router de documentos alcanzó a cargar.
-    # OJO con cómo se lee: en True solo significa que `import pyodbc` funcionó
-    # (basta el runtime libodbc.so.2), NO que haya un driver de SQL Server
-    # registrado ni que la base responda. Para eso está /health/db.
-    # Se expone aquí porque el deploy.sh de webhook-central no hace healthcheck.
+    # `documentos_disponible` en True significa que hay SQLSERVER_HOST configurado
+    # y que el router cargó. NO significa que la base responda — para eso está
+    # /health/db. Se expone aquí porque el deploy.sh de webhook-central no hace
+    # healthcheck, así que es la forma de ver el estado con un solo curl.
     return {
         "status": "ok",
         "environment": ENVIRONMENT,
@@ -138,39 +138,54 @@ from routers.ia import router as ia_router  # noqa: E402
 
 app.include_router(ia_router, prefix="/ia")
 
-# El router de documentos arrastra pyodbc de forma TRANSITIVA:
-#   routers.documentos → repositorios.documentos → db.sqlserver → import pyodbc
+# El grupo Documentos se registra solo si hay una base configurada.
 #
-# Si el runtime de unixODBC no está instalado en el SO, ese import truena y sin
-# este try/except se cae la app COMPLETA: ni /health ni /ia/ine responderían y
-# pm2 entraría en ciclo de restart — mientras el deploy.sh de webhook-central
-# reporta el despliegue como exitoso, porque no hace healthcheck.
+# Mientras el DBA no entregue SQL Server, publicar esos endpoints sería publicar
+# un 503: aparecerían en Swagger apuntando a una base que no existe, y en un
+# server que alcanza cualquier miembro de la empresa por IP. Con esto, Swagger
+# muestra únicamente lo que de verdad funciona, y `documentos_disponible` de
+# /health significa algo útil en lugar de ser un falso positivo.
 #
-# Con esto la API arranca sin el grupo Documentos y todo lo demás sigue vivo.
-#
-# El except NO atrapa cualquier ImportError: un typo en un import de la cadena
-# (`from repositorios import documentoss`) también lanza ImportError, y ese sí es
-# un bug de verdad que debe tumbar el arranque en lugar de quedar enterrado en un
-# WARNING. Solo se perdona el fallo que viene de pyodbc.
+# Efecto secundario deseable: sin SQLSERVER_HOST ni se importa pyodbc, porque el
+# import vive en la cadena del router.
 DOCUMENTOS_DISPONIBLE = False
-try:
-    from routers.documentos import router as documentos_router  # noqa: E402
-except ImportError as exc:
-    # `exc.name` es 'pyodbc' cuando falta el paquete; cuando el paquete está pero
-    # no carga su librería nativa el mensaje trae "libodbc.so...". Se revisan los
-    # dos, y cualquier otra cosa se re-lanza.
-    _raiz = (exc.name or "").split(".")[0]
-    if _raiz != "pyodbc" and "odbc" not in str(exc).lower():
-        raise
+
+if not SQLSERVER_HOST:
     logger.warning(
-        "No se pudo importar el router de documentos: falta el runtime de ODBC "
-        "en este SO (%s). La API arranca SIN /documentos/*; /health y /ia/* "
-        "siguen disponibles.",
-        exc,
+        "SQLSERVER_HOST está vacío: la API arranca SIN el grupo /documentos/*. "
+        "Es lo esperado mientras el DBA no entregue la base; /health y /ia/* "
+        "funcionan normal."
     )
 else:
-    app.include_router(documentos_router, prefix="/documentos")
-    DOCUMENTOS_DISPONIBLE = True
+    # El router arrastra pyodbc de forma TRANSITIVA:
+    #   routers.documentos → repositorios.documentos → db.sqlserver → import pyodbc
+    #
+    # Si el runtime de unixODBC no está en el SO, ese import truena y sin este
+    # try/except se caería la app COMPLETA: ni /health ni /ia/ine responderían y
+    # pm2 entraría en ciclo de restart, mientras el deploy.sh de webhook-central
+    # reporta el despliegue como exitoso porque no hace healthcheck.
+    #
+    # El except NO atrapa cualquier ImportError: un typo en un import de la cadena
+    # (`from repositorios import documentoss`) también lanza ImportError, y ese sí
+    # es un bug de verdad que debe tumbar el arranque en lugar de quedar enterrado
+    # en un WARNING. Solo se perdona el fallo que viene de pyodbc.
+    try:
+        from routers.documentos import router as documentos_router  # noqa: E402
+    except ImportError as exc:
+        # `exc.name` es 'pyodbc' cuando falta el paquete; cuando el paquete está
+        # pero no carga su librería nativa, el mensaje trae "libodbc.so...". Se
+        # revisan los dos, y cualquier otra cosa se re-lanza.
+        _raiz = (exc.name or "").split(".")[0]
+        if _raiz != "pyodbc" and "odbc" not in str(exc).lower():
+            raise
+        logger.warning(
+            "No se pudo importar el router de documentos: falta el runtime de "
+            "ODBC en este SO (%s). La API arranca SIN /documentos/*.",
+            exc,
+        )
+    else:
+        app.include_router(documentos_router, prefix="/documentos")
+        DOCUMENTOS_DISPONIBLE = True
 
 
 if __name__ == "__main__":

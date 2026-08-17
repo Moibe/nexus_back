@@ -365,15 +365,18 @@ tail -2 /home/mbriseno/webhook-central/logs/deploys.jsonl
      diagnóstico. Dato no obvio: en Ubuntu 24.04 `apt install unixodbc` **no** lo
      instala; es su propio paquete. `msodbcsql18` lo arrastra por dependencia.
 
-  Consecuencia práctica: en este server **`documentos_disponible` va a salir
-  `true`**, y `/documentos/*` va a aparecer en Swagger apuntando a una base que no
-  existe (cada llamada da 503). El `try/except` de `app.py` es la red por si el
-  runtime desapareciera, no el comportamiento esperado hoy.
-
   Y cuando toque instalar `msodbcsql18`: no es un `apt install` aislado. Agrega el
   repo y el keyring de `packages.microsoft.com` al host de forma permanente, pide
   `ACCEPT_EULA=Y`, y crea o modifica `/etc/odbcinst.ini` en un server donde ya
   corre mariadb. Ventana propia.
+- **El grupo `/documentos/*` se publica solo si hay base configurada.** Con
+  `SQLSERVER_HOST` vacío, `app.py` no registra ese router y Swagger muestra
+  únicamente lo que de verdad funciona (`/health`, `/health/db`, `/ia/ine`); el
+  arranque loguea un `WARNING` y `/health` reporta
+  `documentos_disponible: false`. Cuando el DBA entregue la base, basta llenar el
+  `.env` y `pm2 restart nexus-back-api` — sin tocar código. Efecto secundario:
+  sin `SQLSERVER_HOST` ni se importa `pyodbc`, porque ese import vive en la cadena
+  del router.
 - **`deploy.sh` no hace healthcheck** y un `pip install` fallido es solo una
   advertencia: puede reportar "✓ Desplegado" con la API en ciclo de restart.
   Después de cada deploy, `curl http://172.10.30.15:8083/health` a mano — y exigir
