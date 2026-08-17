@@ -82,9 +82,42 @@ Prueba rápida de conectividad: `GET /health/db`.
 ### Credenciales de Document AI
 
 Hace falta el JSON de una cuenta de servicio con permiso sobre Document AI.
-Ponlo en la raíz del proyecto como `documentai_sa.json` (está en `.gitignore`) y
-apunta `GOOGLE_APPLICATION_CREDENTIALS` a él en el `.env`. `google-auth` lee esa
-variable por su cuenta — el código nunca la toca.
+`google-auth` lo encuentra leyendo `GOOGLE_APPLICATION_CREDENTIALS` del entorno
+— el código nunca toca esa variable.
+
+**El JSON no vive en el repo.** Va fuera, con ruta absoluta en el `.env`:
+
+| Ambiente | Ubicación |
+|---|---|
+| Local (Windows) | `C:/Users/<usuario>/.secretos/nexus-back-sa.json` |
+| Server de CSI | `/etc/nexus-back/sa.json` — `chmod 600`, dueño = usuario de pm2 |
+
+Las dos decisiones tienen razón de ser:
+
+- **Absoluta, no relativa.** `google-auth` resuelve rutas relativas contra el
+  *cwd del proceso*, no contra la raíz del proyecto. En local funciona de
+  casualidad porque arrancas uvicorn parado en la raíz; bajo pm2 el cwd puede ser
+  otro y falla con `DefaultCredentialsError: File ... was not found`, que se lee
+  como problema de credenciales cuando en realidad es de ruta.
+- **Fuera del repo.** El `.gitignore` sigue teniendo la entrada como red de
+  seguridad, pero deja de ser lo único que impide subir la llave.
+
+**Una llave distinta por ambiente.** La cuenta de servicio admite hasta 10
+llaves, así que local y el server de CSI deben usar llaves diferentes: si se
+compromete la del server, se revoca solo esa y lo demás sigue funcionando.
+
+```bash
+gcloud iam service-accounts keys list --iam-account=<SA>       # inventario
+gcloud iam service-accounts keys create /etc/nexus-back/sa.json --iam-account=<SA>
+gcloud iam service-accounts keys delete <KEY_ID> --iam-account=<SA>
+```
+
+La cuenta de servicio es **compartida y de otro proyecto** (vive en un proyecto
+distinto al dueño de los procesadores, y otras apps la usan). Dos consecuencias:
+no le recortes roles IAM — romperías a los otros consumidores; y para distinguir
+en los audit logs quién llamó, la pista es
+`authenticationInfo.serviceAccountKeyName` (requiere habilitar los Data Access
+audit logs del proyecto de los procesadores, que vienen apagados por default).
 
 Los IDs de proyecto y de procesador van en el `.env` (`DOCAI_PROJECT_ID`,
 `DOCAI_PROCESADOR_INE`), **no hardcodeados**, para poder apuntar a procesadores
