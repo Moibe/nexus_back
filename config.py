@@ -10,9 +10,32 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _numero(nombre: str, default: float) -> float:
+    """Lee una variable numérica del entorno tolerando que esté presente pero vacía.
+
+    `os.getenv(x, default)` solo aplica el default cuando la variable NO existe.
+    Un renglón `PORT=` en el .env devuelve `''`, y `int('')` truena con un
+    ValueError durante el import de este módulo — o sea, antes de que exista la
+    app, con un traceback que ni menciona el .env. Ese caso es fácil de provocar
+    escribiendo el .env de producción a mano.
+    """
+    crudo = os.getenv(nombre)
+    if crudo is None or not crudo.strip():
+        return default
+    try:
+        return float(crudo)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"{nombre}={crudo!r} en el .env no es un número válido."
+        ) from exc
+
+
 # ── Ambiente ──────────────────────────────────────────────────────────────────
 ENVIRONMENT = os.getenv("ENVIRONMENT", "local")
-PORT = int(os.getenv("PORT", "8083"))
+# Ojo: en el server el puerto real lo fija el `--port` de la línea de comandos de
+# uvicorn que pm2 guardó; esta variable solo la usa el bloque __main__ de app.py.
+PORT = int(_numero("PORT", 8083))
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
 # El front (SvelteKit) llama a esta API desde su capa server, no desde el
@@ -46,4 +69,16 @@ SQLSERVER_TRUST_CERT = os.getenv("SQLSERVER_TRUST_CERT", "yes")
 DOCAI_PROJECT_ID = os.getenv("DOCAI_PROJECT_ID", "")
 DOCAI_LOCATION = os.getenv("DOCAI_LOCATION", "us")
 DOCAI_PROCESADOR_INE = os.getenv("DOCAI_PROCESADOR_INE", "")
-IA_TIMEOUT = float(os.getenv("IA_TIMEOUT", "120"))
+IA_TIMEOUT = _numero("IA_TIMEOUT", 120)
+
+# ── Límite de subida ──────────────────────────────────────────────────────────
+# En el server de CSI la API se expone IP:puerto directo, sin nginx delante (los
+# dominios y el proxy solo se usan en el droplet de DigitalOcean). O sea: no hay
+# `client_max_body_size` que nos proteja, el límite tiene que vivir aquí.
+#
+# Importa porque `/ia/ine` codifica el archivo a base64 para mandarlo a Document
+# AI, y eso infla el contenido ~1.33x en memoria.
+MAX_SUBIDA_MB = _numero("MAX_SUBIDA_MB", 10)
+if MAX_SUBIDA_MB <= 0:
+    raise RuntimeError(f"MAX_SUBIDA_MB tiene que ser mayor que 0 (llegó {MAX_SUBIDA_MB}).")
+MAX_SUBIDA_BYTES = int(MAX_SUBIDA_MB * 1024 * 1024)

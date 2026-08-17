@@ -5,10 +5,14 @@ requests/responses y decide códigos de error. La lógica de datos vive en
 `repositorios.documentos` y las llamadas a IA en `servicios.ia`.
 """
 
+import logging
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from repositorios import documentos as repo
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -23,7 +27,13 @@ def listar_bandeja(tenant_id: int):
     try:
         return repo.listar_bandeja(tenant_id)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=503, detail=f"No se pudo consultar la bandeja: {exc}") from exc
+        # El detalle NO se propaga: el texto de una excepción de pyodbc trae el
+        # host, el driver y el usuario de SQL Server. Mismo patrón que
+        # routers/ia.py — log completo adentro, mensaje genérico afuera.
+        logger.exception("Falló la consulta de la bandeja (tenant_id=%s)", tenant_id)
+        raise HTTPException(
+            status_code=503, detail="No se pudo consultar la bandeja."
+        ) from exc
 
 
 class DocumentoIn(BaseModel):
@@ -48,4 +58,11 @@ def registrar_documento(documento: DocumentoIn):
             origen=documento.origen,
         ) or {"ok": True}
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=503, detail=f"No se pudo registrar el documento: {exc}") from exc
+        logger.exception(
+            "Falló el registro de documento (tenant_id=%s, archivo=%s)",
+            documento.tenant_id,
+            documento.nombre_archivo,
+        )
+        raise HTTPException(
+            status_code=503, detail="No se pudo registrar el documento."
+        ) from exc

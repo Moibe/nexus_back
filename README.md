@@ -130,14 +130,159 @@ Prueba: `POST /ia/ine` con un `multipart/form-data` con campo `imagen`.
 Va al **server interno de CSI** (`172.10.30.15`), no al droplet — SQL Server vive
 en la red interna y el droplet no tiene ruta hacia allá.
 
-Se despliega con el patrón de [`webhook-central`](../webhook-central): este repo no
-lleva GitHub Action. Hay que registrar en `webhook-central`:
+Ahí **no hay nginx**: las apps se exponen `IP:puerto` directo y las alcanza quien
+esté en la red de la empresa. (El nginx y los dominios son solo del droplet de
+DigitalOcean.) Dos consecuencias de diseño: el límite de tamaño de subida vive en
+el código (`MAX_SUBIDA_MB`, no hay `client_max_body_size`), y no hacen falta
+`--proxy-headers` ni `--forwarded-allow-ips` en el arranque.
 
-1. `projects/nexus-back.conf` — `PROJECT_ROOT`, `PROJECT_BRANCH`, `VENV_PATH`, `PM2_NAME`, `APP_STACK="python"`
-2. una entrada en `hooks.json`
-3. una entrada en `apps.json`
+**Nombre del proyecto: `nexus_back`** — con guion bajo, idéntico en las tres
+piezas de webhook-central. `deploy.sh` resuelve `projects/$1.conf`, y la UI cruza
+`apps.json.id` contra el `PROJECT_NAME` que `deploy.sh` escribe en el jsonl: si
+las tres no coinciden textualmente, el deploy corre pero la UI se queda en
+`idle`, o el hook aborta con "config no encontrada".
 
-El primer `git clone` y el primer `pm2 start` son manuales (el `deploy.sh` de
-webhook-central solo hace pull + `pm2 restart`).
+### 1. Verificar el server (antes de tocar nada)
 
-Puerto propuesto: **8083** (en ese server ya están ocupados 7860, 8077, 8080, 8082, 8099).
+Todo esto es de solo lectura y responde lo que no se puede saber desde local:
+
+```bash
+hostname && ip -4 addr show | grep inet      # ¿es srviaproducto? ¿es .30.15?
+sudo ss -ltnp | grep -w 8083 || echo "8083 LIBRE"
+sudo ss -ltnp                                # inventario completo
+python3 --version                            # tiene que ser >= 3.10
+odbcinst -q -d 2>/dev/null || echo "unixODBC no instalado"
+ldconfig -p | grep -i libodbc || echo "runtime de unixODBC ausente"
+pm2 list && pm2 describe document-ai-api | head -25
+ls ~/.pm2/dump.pm2 && echo "pm2 save hecho"  # ¿sobrevive un reboot?
+ls /home/mbriseno/code/                      # ¿ya existe nexus_back?
+```
+
+El `sudo` en `ss -ltnp` no es opcional: sin privilegios no muestra qué proceso
+tiene tomado cada puerto.
+
+El puerto **8083** es una *propuesta*: los puertos que este README listaba como
+ocupados salieron de `apps.json`, que es el catálogo de la UI y no un inventario
+del SO. `ss -ltnp` es el único dato que decide.
+
+### 2. Primer arranque (manual, una sola vez)
+
+`deploy.sh` solo hace pull + `pip install` + `pm2 restart`; nada de esto lo hace
+él, y si el proceso pm2 no existe todavía, **aborta**.
+
+```bash
+cd /home/mbriseno/code && git clone https://github.com/Moibe/nexus_back.git
+cd nexus_back && python3 -m venv venv          # 'venv' SIN punto: es la
+source venv/bin/activate                       # convención de los .conf del server
+pip install -r requirements.txt
+
+# El directorio de la llave nace con dueño = usuario de pm2. Si queda root:root
+# con 700, mbriseno no puede ni atravesarlo: aunque el archivo sea suyo y 600,
+# google-auth reporta "File ... was not found", que se lee como error de ruta.
+sudo mkdir -p /etc/nexus-back
+sudo chown mbriseno:mbriseno /etc/nexus-back && sudo chmod 700 /etc/nexus-back
+# una llave de servicio DISTINTA a la local:
+gcloud iam service-accounts keys create /etc/nexus-back/sa.json --iam-account=<SA>
+chmod 600 /etc/nexus-back/sa.json
+
+# .env de producción — NO viaja por git, hay que escribirlo a mano
+# (ver .env.example; GOOGLE_APPLICATION_CREDENTIALS=/etc/nexus-back/sa.json)
+
+pm2 start venv/bin/python --name nexus-back-api --cwd /home/mbriseno/code/nexus_back \
+  -- -m uvicorn app:app --host 0.0.0.0 --port 8083
+pm2 save
+curl -s localhost:8083/health   # documentos_disponible:false es lo esperado sin ODBC
+```
+
+Se clona por **HTTPS**: el repo es público, así que no hace falta llave SSH en el
+server, y `deploy.sh` solo hace `checkout`/`fetch`/`pull` — nunca push.
+
+**Un solo proceso, uvicorn puro** — a propósito. El `gunicorn --workers 4` de
+`document_ai` no es el molde: esa app es stateless, y esta abrirá conexiones a
+SQL Server, donde 4 workers son 4 pools ODBC independientes. Se sube después, si
+el DBA confirma cuántas conexiones tolera.
+
+### 3. Registrar en webhook-central
+
+Las tres piezas van **en el server** (`/home/mbriseno/webhook-central`):
+webhook-central no se auto-despliega, así que editar el clon local no tiene
+efecto — y ese clon ya divergió del server antes, conviene comparar primero.
+
+1. `projects/nexus_back.conf`:
+   ```bash
+   APP_STACK="python"
+   PROJECT_ROOT="/home/mbriseno/code/nexus_back"
+   PROJECT_BRANCH="main"
+   VENV_PATH="$PROJECT_ROOT/venv"
+   PM2_NAME="nexus-back-api"
+   # Documental: deploy.sh nunca lo ejecuta, pero es la ÚNICA copia del comando
+   # real de arranque que sobrevive si hay que reconstruir el server.
+   PM2_START_CMD='pm2 start venv/bin/python --name nexus-back-api --cwd /home/mbriseno/code/nexus_back -- -m uvicorn app:app --host 0.0.0.0 --port 8083'
+   ```
+2. `hooks.json` — lo más seguro es **copiar una entrada existente** y cambiarle
+   `id`, `name` y `response-message`. Los 5 campos son indispensables: sin
+   `execute-command` el hook no ejecuta nada, y el `id` es lo que forma la URL.
+   ```json
+   {
+     "id": "despliegue-nexus_back",
+     "execute-command": "/home/mbriseno/webhook-central/scripts/deploy.sh",
+     "command-working-directory": "/home/mbriseno/webhook-central",
+     "response-message": "✅ Despliegue de nexus_back iniciado",
+     "pass-arguments-to-command": [{ "source": "string", "name": "nexus_back" }]
+   }
+   ```
+3. `apps.json` — `deploy_url` **tiene** que apuntar al `id` del hook; sin él la
+   app aparece listada pero el botón Desplegar de la UI no funciona:
+   ```json
+   {
+     "id": "nexus_back",
+     "name": "NexusDoc AI · API",
+     "stack": "python",
+     "branch": "main",
+     "pm2_name": "nexus-back-api",
+     "deploy_url": "/hooks/despliegue-nexus_back",
+     "app_url": "http://172.10.30.15:8083",
+     "repo_url": "https://github.com/Moibe/nexus_back"
+   }
+   ```
+
+Ojo: son **cuatro** cadenas distintas y cada una tiene su regla. `nexus_back` va
+idéntico en el nombre del `.conf`, en el `name` del hook y en el `id` de
+`apps.json`; el `id` del hook es una cuarta cadena (`despliegue-nexus_back`) que
+solo debe coincidir con el `deploy_url`.
+
+Luego `pm2 restart webhook-listener`. **Validar el JSON antes**
+(`python3 -m json.tool hooks.json > /dev/null`): un `hooks.json` inválido tumba
+los deploys de los 12 proyectos, no solo este.
+
+Para probar el circuito completo:
+
+```bash
+curl -X POST http://172.10.30.15:8090/hooks/despliegue-nexus_back
+```
+
+### Notas de operación
+
+- **Sin ODBC instalado la app arranca igual**, pero sin `/documentos/*`
+  (ver el `try/except` de `app.py`). `/health` y `/ia/ine` siguen vivos y el
+  arranque loguea un `WARNING`. Como SQL Server aún no existe, se puede desplegar
+  sin instalar `msodbcsql18` — y cuando toque instalarlo, revisar si basta el
+  runtime de unixODBC: `unixodbc-dev` solo hace falta si `pip` compila `pyodbc`
+  desde fuente, y `pyodbc` 5.x publica wheels manylinux.
+- **`deploy.sh` no hace healthcheck** y un `pip install` fallido es solo una
+  advertencia: puede reportar "✓ Desplegado" con la API en ciclo de restart.
+  Después de cada deploy, `curl http://172.10.30.15:8083/health` a mano y revisar
+  que `documentos_disponible` sea el valor esperado.
+- **El hook solo reinicia si hay commits nuevos.** `deploy.sh` compara `HEAD`
+  contra `origin/main` y, si coinciden, imprime "Nada que desplegar" y hace
+  `exit 0` **antes** del `pip install` y del `pm2 restart`. O sea: no sirve para
+  reiniciar la app tras editar el `.env` a mano en el server — eso pide un
+  `pm2 restart nexus-back-api --update-env` directo.
+- **El puerto no vive en el `.env`.** El arranque real lleva `--port 8083` en la
+  línea de comandos que pm2 guardó al crear el proceso; `PORT` del `.env` solo lo
+  usa el bloque `__main__` de `app.py`, que en producción no corre. Para cambiar
+  de puerto hay que borrar y recrear el proceso pm2, no basta un deploy.
+- **No hay autenticación en ningún endpoint**, y `/ia/ine` cuesta dinero por
+  página en Document AI. En la red interna es una decisión defendible, pero es
+  una decisión: cualquier miembro de la empresa que alcance el puerto puede
+  generar costo.
