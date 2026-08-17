@@ -205,10 +205,12 @@ venv/bin/python -c "import pyodbc; print('pyodbc', pyodbc.version)"
 # mbriseno no puede ni atravesarlo: aunque el archivo sea suyo y 600, google-auth
 # reporta "File ... was not found", que se lee como error de ruta y no de permisos.
 sudo install -d -o mbriseno -g mbriseno -m 700 /etc/nexus-back
-# Con gcloud en el server (una llave DISTINTA a la local):
-gcloud iam service-accounts keys create /etc/nexus-back/sa.json --iam-account=<SA>
-# Sin gcloud: crearla en la laptop y traerla —
-#   scp -P 11725 <llave>.json mbriseno@172.10.30.15:/etc/nexus-back/sa.json
+# Lo ideal seria una llave DISTINTA por ambiente, pero crear llaves esta
+# BLOQUEADO (verificado 2026-08-17: `gcloud iam service-accounts keys create`
+# da PERMISSION_DENIED — la SA vive en un proyecto ajeno, mapstuff-272921).
+# Mientras el dueno de ese proyecto no entregue una llave nueva, se reutiliza
+# la llave local:
+#   scp -P 11725 C:/Users/usuario/.secretos/nexus-back-sa.json mbriseno@172.10.30.15:/etc/nexus-back/sa.json
 chmod 600 /etc/nexus-back/sa.json
 
 # --- .env de producción (a mano; no viaja por git) ---
