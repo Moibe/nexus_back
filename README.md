@@ -204,14 +204,22 @@ venv/bin/python -c "import pyodbc; print('pyodbc', pyodbc.version)"
 # El directorio nace con dueño = usuario de pm2. Si queda root:root con 700,
 # mbriseno no puede ni atravesarlo: aunque el archivo sea suyo y 600, google-auth
 # reporta "File ... was not found", que se lee como error de ruta y no de permisos.
-sudo install -d -o mbriseno -g mbriseno -m 700 /etc/nexus-back
 # Lo ideal seria una llave DISTINTA por ambiente, pero crear llaves esta
 # BLOQUEADO (verificado 2026-08-17: `gcloud iam service-accounts keys create`
 # da PERMISSION_DENIED — la SA vive en un proyecto ajeno, mapstuff-272921).
-# Mientras el dueno de ese proyecto no entregue una llave nueva, se reutiliza
-# la llave local:
-#   scp -P 11725 C:/Users/usuario/.secretos/nexus-back-sa.json mbriseno@172.10.30.15:/etc/nexus-back/sa.json
-chmod 600 /etc/nexus-back/sa.json
+# Mientras el dueno de ese proyecto no entregue una llave nueva, se reutiliza la
+# llave local, mandandola en DOS pasos: primero al home, luego a su lugar. Asi un
+# transporte fallido no deja un secreto a medio escribir en /etc.
+#
+#   # en PowerShell (el OpenSSH de Windows no viene en el PATH):
+#   $env:Path += ";C:\Windows\System32\OpenSSH"
+#   cd C:\Users\usuario\.secretos      # entrar a la carpeta evita que scp lea
+#   scp -P 11725 nexus-back-sa.json mbriseno@172.10.30.15:sa.json   # "C:" como host
+#
+sudo install -d -o mbriseno -g mbriseno -m 700 /etc/nexus-back
+install -m 600 ~/sa.json /etc/nexus-back/sa.json
+shred -u ~/sa.json                 # no dejar la llave suelta en el home
+ls -l /etc/nexus-back/             # esperado: -rw------- mbriseno mbriseno 2353
 
 # --- .env de producción (a mano; no viaja por git) ---
 #   ENVIRONMENT=produccion        <- el health check lo usa como testigo
