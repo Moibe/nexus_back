@@ -175,6 +175,29 @@ def _limpiar_ine(datos: dict[str, Any]) -> dict[str, Any]:
     return datos
 
 
+def _confianza_minima(datos: dict[str, Any]) -> float | None:
+    """La menor `confianza` entre TODOS los campos extraídos, recorriendo
+    también los de 'domicilio'. Sirve de semáforo de un vistazo: un solo campo
+    mal leído (ej. la CURP) puede pasar desapercibido en un promedio si el
+    resto de la credencial salió perfecto; el mínimo no lo deja esconderse.
+
+    None si no se extrajo ningún campo (Document AI puede responder 200 con
+    una lista de entidades vacía si la imagen no es una INE reconocible)."""
+    confianzas: list[float] = []
+
+    def recorrer(nodo: dict[str, Any]) -> None:
+        for valor in nodo.values():
+            if not isinstance(valor, dict):
+                continue
+            if "confianza" in valor:
+                confianzas.append(valor["confianza"])
+            else:
+                recorrer(valor)
+
+    recorrer(datos)
+    return min(confianzas) if confianzas else None
+
+
 # ── Operaciones de dominio ────────────────────────────────────────────────────
 
 
@@ -183,10 +206,14 @@ async def extraer_ine(contenido: bytes, mime_type: str = "image/jpeg") -> dict[s
 
     Cada campo hoja llega como `{"valor", "confianza", "posicion"}` (ver
     `_campo`), para que quien consuma la API pueda decidir si un campo de baja
-    confianza necesita revisión humana, o resaltarlo sobre la imagen original."""
+    confianza necesita revisión humana, o resaltarlo sobre la imagen original.
+    `confianza_minima`, a nivel raíz, resume eso en un solo número — ver
+    `_confianza_minima`."""
     crudo = await _procesar(DOCAI_PROCESADOR_INE, contenido, mime_type)
     entidades = crudo.get("document", {}).get("entities")
     if entidades is None:
         logger.error("La respuesta de Document AI no trae document.entities")
         raise RuntimeError("Respuesta inesperada de Document AI")
-    return _limpiar_ine(_extraer_entidades(entidades))
+    datos = _limpiar_ine(_extraer_entidades(entidades))
+    datos["confianza_minima"] = _confianza_minima(datos)
+    return datos

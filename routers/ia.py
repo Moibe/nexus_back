@@ -29,7 +29,9 @@ router = APIRouter()
         "por Document AI, con el domicilio anidado y las fechas en formato ISO. "
         "Cada campo trae `valor`, `confianza` (0-1) y `posicion` (caja "
         "normalizada 0-1: x, y, ancho, alto) para poder marcar en la UI los "
-        "campos de baja confianza o resaltarlos sobre la imagen original."
+        "campos de baja confianza o resaltarlos sobre la imagen original. "
+        "`confianza_minima`, a nivel raíz, es la menor confianza entre todos "
+        "los campos — útil como semáforo de un vistazo."
     ),
 )
 async def extraer_ine(imagen: UploadFile = File(...)):

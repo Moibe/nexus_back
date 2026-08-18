@@ -144,7 +144,16 @@ amarillo un campo de confianza baja o resaltarlo sobre la credencial original.
       "confianza": 0.9999596,
       "posicion": { "x": 0.498, "y": 0.608025, "ancho": 0.054, "alto": 0.033951 }
     }
-  }
+  },
+  "confianza_minima": 0.9467
+}
+```
+
+`confianza_minima` (a nivel raíz) es la menor `confianza` entre **todos** los
+campos, incluyendo los de `domicilio` — sirve de semáforo de un vistazo: un
+promedio puede esconder un solo campo mal leído si el resto salió perfecto, el
+mínimo no. `None` si Document AI no reconoció ningún campo (puede responder
+`200` con la lista de entidades vacía si la imagen no es una INE).
 }
 ```
 
