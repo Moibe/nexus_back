@@ -297,7 +297,7 @@ cp hooks.json hooks.json.bak.$(date +%F) && cp apps.json apps.json.bak.$(date +%
    PM2_NAME="nexus-back-api"
    # Documental: deploy.sh nunca lo ejecuta, pero es la ÚNICA copia del comando
    # real de arranque que sobrevive si hay que reconstruir el server.
-   PM2_START_CMD='pm2 start venv/bin/python --name nexus-back-api --cwd /home/mbriseno/code/nexus_back -- -m uvicorn app:app --host 0.0.0.0 --port 8083'
+   PM2_START_CMD='pm2 start /home/mbriseno/code/nexus_back/venv/bin/python --name nexus-back-api --interpreter none --cwd /home/mbriseno/code/nexus_back -- -m uvicorn app:app --host 0.0.0.0 --port 8083'
    ```
 2. `hooks.json` — copiar una entrada existente y cambiarle `id`,
    `response-message` y el `name` de `pass-arguments-to-command` (ojo: las
