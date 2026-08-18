@@ -125,6 +125,29 @@ distintos por ambiente.
 
 Prueba: `POST /ia/ine` con un `multipart/form-data` con campo `imagen`.
 
+**Forma de la respuesta.** Cada campo hoja trae su valor, la confianza que
+reportó Document AI (0-1) y la caja normalizada (0-1, lista para CSS en %)
+donde se encontró el texto en la imagen — para que el front pueda marcar en
+amarillo un campo de confianza baja o resaltarlo sobre la credencial original.
+`domicilio` sigue anidado, con la misma estructura en cada uno de sus hijos:
+
+```json
+{
+  "curp": {
+    "valor": "ROVX970508MSRMLC08",
+    "confianza": 0.9999771,
+    "posicion": { "x": 0.383, "y": 0.714506, "ancho": 0.263, "alto": 0.03858 }
+  },
+  "domicilio": {
+    "estado": {
+      "valor": "SON",
+      "confianza": 0.9999596,
+      "posicion": { "x": 0.498, "y": 0.608025, "ancho": 0.054, "alto": 0.033951 }
+    }
+  }
+}
+```
+
 ## Despliegue
 
 Va al **server interno de CSI** (`172.10.30.15`), no al droplet — SQL Server vive

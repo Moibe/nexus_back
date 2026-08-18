@@ -26,7 +26,10 @@ router = APIRouter()
     summary="Extraer datos de INE",
     description=(
         "Recibe la imagen de una credencial INE y devuelve los campos extraídos "
-        "por Document AI, con el domicilio anidado y las fechas en formato ISO."
+        "por Document AI, con el domicilio anidado y las fechas en formato ISO. "
+        "Cada campo trae `valor`, `confianza` (0-1) y `posicion` (caja "
+        "normalizada 0-1: x, y, ancho, alto) para poder marcar en la UI los "
+        "campos de baja confianza o resaltarlos sobre la imagen original."
     ),
 )
 async def extraer_ine(imagen: UploadFile = File(...)):

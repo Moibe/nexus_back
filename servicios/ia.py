@@ -85,7 +85,7 @@ async def _procesar(procesador_id: str, contenido: bytes, mime_type: str) -> dic
 # ── Parseo de la respuesta ────────────────────────────────────────────────────
 
 
-def _valor_normalizado(entidad: dict[str, Any]) -> Any:
+def _valor(entidad: dict[str, Any]) -> Any:
     """Valor de una entidad.
 
     Las fechas completas se normalizan a ISO (YYYY-MM-DD); todo lo demás se deja
@@ -101,11 +101,51 @@ def _valor_normalizado(entidad: dict[str, Any]) -> Any:
     return entidad.get("mentionText")
 
 
+def _rectangulo(entidad: dict[str, Any]) -> dict[str, float] | None:
+    """Caja delimitadora normalizada (fracciones 0-1 del ancho/alto de la
+    página, listas para posicionar con CSS en %) de dónde Document AI encontró
+    el texto de esta entidad. None si la entidad no tiene posición propia — es
+    el caso de una entidad compuesta como 'domicilio', que solo agrupa a otras.
+
+    Los 4 vértices del polígono se colapsan a un rectángulo (min/max) porque en
+    la práctica este procesador siempre los entrega alineados a los ejes, y un
+    rectángulo es lo que un front consume directo (left/top/width/height)."""
+    refs = entidad.get("pageAnchor", {}).get("pageRefs")
+    if not refs:
+        return None
+    vertices = refs[0].get("boundingPoly", {}).get("normalizedVertices")
+    if not vertices:
+        return None
+    xs = [v.get("x", 0.0) for v in vertices]
+    ys = [v.get("y", 0.0) for v in vertices]
+    x, y = min(xs), min(ys)
+    # redondeo a 6 decimales: de sobra para posicionar en UI, y evita el ruido
+    # de punto flotante que deja la resta (ej. 0.12000000000000002)
+    return {
+        "x": round(x, 6),
+        "y": round(y, 6),
+        "ancho": round(max(xs) - x, 6),
+        "alto": round(max(ys) - y, 6),
+    }
+
+
+def _campo(entidad: dict[str, Any]) -> dict[str, Any]:
+    """Empaqueta una entidad hoja con su confianza y posición, para que quien
+    consuma la API pueda decidir si un campo necesita revisión humana
+    (confianza baja) o resaltarlo sobre la imagen original (posición)."""
+    return {
+        "valor": _valor(entidad),
+        "confianza": entidad.get("confidence"),
+        "posicion": _rectangulo(entidad),
+    }
+
+
 def _extraer_entidades(entidades: list[dict[str, Any]]) -> dict[str, Any]:
     """Convierte las entidades de Document AI en un diccionario, CONSERVANDO la
     jerarquía: una entidad con sub-propiedades (ej. 'domicilio') queda como
-    sub-diccionario, para que no choquen llaves repetidas con el nivel raíz
-    (ej. 'estado' dentro de domicilio vs. 'estado' suelto)."""
+    sub-diccionario de campos, para que no choquen llaves repetidas con el nivel
+    raíz (ej. 'estado' dentro de domicilio vs. 'estado' suelto). Cada campo hoja
+    trae su valor, confianza y posición — ver `_campo`."""
     resultado: dict[str, Any] = {}
     for entidad in entidades:
         nombre = entidad.get("type")
@@ -114,9 +154,9 @@ def _extraer_entidades(entidades: list[dict[str, Any]]) -> dict[str, Any]:
         if entidad.get("properties"):
             resultado[nombre] = _extraer_entidades(entidad["properties"])
         else:
-            valor = _valor_normalizado(entidad)
-            if valor is not None:
-                resultado[nombre] = valor
+            campo = _campo(entidad)
+            if campo["valor"] is not None:
+                resultado[nombre] = campo
     return resultado
 
 
@@ -126,10 +166,12 @@ def _limpiar_ine(datos: dict[str, Any]) -> dict[str, Any]:
     localidad trae coma final ('HUATABAMPO,')."""
     domicilio = datos.get("domicilio")
     if isinstance(domicilio, dict):
-        if isinstance(domicilio.get("estado"), str):
-            domicilio["estado"] = domicilio["estado"].rstrip(".").strip()
-        if isinstance(domicilio.get("localidad"), str):
-            domicilio["localidad"] = domicilio["localidad"].rstrip(",").strip()
+        estado = domicilio.get("estado")
+        if isinstance(estado, dict) and isinstance(estado.get("valor"), str):
+            estado["valor"] = estado["valor"].rstrip(".").strip()
+        localidad = domicilio.get("localidad")
+        if isinstance(localidad, dict) and isinstance(localidad.get("valor"), str):
+            localidad["valor"] = localidad["valor"].rstrip(",").strip()
     return datos
 
 
@@ -137,7 +179,11 @@ def _limpiar_ine(datos: dict[str, Any]) -> dict[str, Any]:
 
 
 async def extraer_ine(contenido: bytes, mime_type: str = "image/jpeg") -> dict[str, Any]:
-    """Extrae los datos de una credencial INE."""
+    """Extrae los datos de una credencial INE.
+
+    Cada campo hoja llega como `{"valor", "confianza", "posicion"}` (ver
+    `_campo`), para que quien consuma la API pueda decidir si un campo de baja
+    confianza necesita revisión humana, o resaltarlo sobre la imagen original."""
     crudo = await _procesar(DOCAI_PROCESADOR_INE, contenido, mime_type)
     entidades = crudo.get("document", {}).get("entities")
     if entidades is None:
