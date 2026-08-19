@@ -202,6 +202,13 @@ def _confianza_minima(datos: dict[str, Any]) -> float | None:
 # ── Operaciones de dominio ────────────────────────────────────────────────────
 
 
+# Mismo texto que el detail genérico que routers/ia.py devuelve cuando la
+# llamada a Document AI misma falla (ver _procesar) — son casos DISTINTOS que
+# hoy comparten redacción por decisión explícita, no por estar acoplados: uno
+# es un dato de negocio (quality_alert), el otro un error HTTP real.
+_MOTIVO_NO_LEGIBLE = "No se pudo procesar la credencial con Document AI."
+
+
 async def extraer_ine(contenido: bytes, mime_type: str = "image/jpeg") -> dict[str, Any]:
     """Extrae los datos de una credencial INE.
 
@@ -211,7 +218,21 @@ async def extraer_ine(contenido: bytes, mime_type: str = "image/jpeg") -> dict[s
     `confianza_minima`, a nivel raíz, resume eso en un solo número — ver
     `_confianza_minima`. `_metadata.procesado_en` es la fecha/hora (UTC) en que
     ESTE llamado a Document AI terminó — no confundir con `fecha_registro`, que
-    es un campo de la credencial (la fecha impresa en la INE)."""
+    es un campo de la credencial (la fecha impresa en la INE).
+
+    `_metadata.quality_alert` es True SOLO cuando Document AI respondió 200
+    pero sin ninguna estructura de documento reconocible (la imagen no es una
+    INE, o es ilegible al punto de no reconocerse como una) — ahí viene junto
+    con `_metadata.motivo`, `confianza_minima` en None y ningún campo del
+    documento. En cualquier otro caso, `quality_alert` es False y `motivo` NI
+    SIQUIERA aparece en el diccionario.
+
+    OJO: esto es DISTINTO de que la llamada a Document AI misma falle (ver
+    `_procesar` — credenciales, cuota, red, Google caído). Ese caso sigue
+    siendo un error HTTP real (502, ver routers/ia.py) y NO se convierte en
+    quality_alert: ahí el problema es del servicio, no del documento, y
+    esconderlo detrás de una bandera de "calidad" ocultaría una falla operativa
+    real a cualquier monitoreo que vigile el status code."""
     crudo = await _procesar(DOCAI_PROCESADOR_INE, contenido, mime_type)
     # Se captura aquí, justo al terminar la llamada real a Document AI, porque
     # es el ÚNICO lugar donde este dato existe: Google no manda un timestamp de
@@ -221,14 +242,26 @@ async def extraer_ine(contenido: bytes, mime_type: str = "image/jpeg") -> dict[s
     # a significar "cuándo se guardó", que puede ser minutos u horas después si
     # alguien revisa campos de baja confianza antes de confirmar.
     procesado_en = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    metadata: dict[str, Any] = {"procesado_en": procesado_en, "quality_alert": False}
+
     entidades = crudo.get("document", {}).get("entities")
     if entidades is None:
-        logger.error("La respuesta de Document AI no trae document.entities")
-        raise RuntimeError("Respuesta inesperada de Document AI")
+        # Ya NO se levanta excepción: esto es un resultado de negocio válido
+        # (foto ilegible / no es una INE), no un bug de la app ni una falla del
+        # servicio — se loguea como warning, no como error, para no ensuciar los
+        # logs de errores reales con cada foto mala que suba alguien.
+        logger.warning(
+            "La respuesta de Document AI no trae document.entities: se marca "
+            "quality_alert (imagen no reconocida como INE)."
+        )
+        metadata["quality_alert"] = True
+        metadata["motivo"] = _MOTIVO_NO_LEGIBLE
+        return {"confianza_minima": None, "_metadata": metadata}
+
     datos = _limpiar_ine(_extraer_entidades(entidades))
     datos["confianza_minima"] = _confianza_minima(datos)
     # Bajo su propia llave y no como hermano de los campos del documento: esto
     # no es un dato DE la credencial, es del request. El front debe cargarlo tal
     # cual hasta que se guarde en SQL Server, sin regenerarlo en ese momento.
-    datos["_metadata"] = {"procesado_en": procesado_en}
+    datos["_metadata"] = metadata
     return datos
