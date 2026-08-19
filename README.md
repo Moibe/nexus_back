@@ -146,15 +146,15 @@ amarillo un campo de confianza baja o resaltarlo sobre la credencial original.
     }
   },
   "confianza_minima": 0.9467,
-  "_metadata": { "procesado_en": "2026-08-18T18:44:25Z" }
+  "_metadata": { "procesado_en": "2026-08-18T18:44:25Z", "quality_alert": false }
 }
 ```
 
 `confianza_minima` (a nivel raíz) es la menor `confianza` entre **todos** los
 campos, incluyendo los de `domicilio` — sirve de semáforo de un vistazo: un
 promedio puede esconder un solo campo mal leído si el resto salió perfecto, el
-mínimo no. `None` si Document AI no reconoció ningún campo (puede responder
-`200` con la lista de entidades vacía si la imagen no es una INE).
+mínimo no. Viene en `None` cuando `_metadata.quality_alert` es `true` (ver
+abajo) — ahí no hay ningún campo del que sacar un mínimo.
 
 `_metadata.procesado_en` es la fecha/hora (UTC, formato ISO) en que **ese
 llamado** a Document AI terminó. Se captura una sola vez, del lado del servidor,
@@ -168,6 +168,22 @@ campos de baja confianza antes de confirmar. La fila en la base querrá además
 su propia columna de `created_at`/`fecha_registro` con `DEFAULT GETUTCDATE()`
 (o equivalente), para "cuándo se insertó el registro" — un dato distinto, que
 debe generar la base y nunca el cliente.
+
+`_metadata.quality_alert` es `true` **solo** cuando Document AI respondió `200`
+pero sin ninguna estructura de documento reconocible — la imagen no es una INE,
+o es tan ilegible que no se reconoce como una. En ese caso viene junto con
+`_metadata.motivo` (un texto genérico, el mismo del error 502 de abajo), y la
+respuesta no trae ningún campo del documento ni `confianza_minima` (queda en
+`None`). En cualquier otro caso `quality_alert` es `false` y la llave `motivo`
+**ni siquiera aparece** en el diccionario.
+
+Esto es DISTINTO de un `502 Bad Gateway` (`{"detail": "No se pudo procesar la
+credencial con Document AI."}`), que sigue existiendo para cuando la llamada a
+Document AI **misma** falla — credenciales vencidas, cuota agotada, red, Google
+caído, o una imagen tan corrupta que ni siquiera es un archivo de imagen
+válido. Ese caso a propósito **no** se convierte en `quality_alert`: es una
+falla del servicio, no de la calidad del documento, y disfrazarla de "hay que
+pedir otra foto" escondería un problema operativo real.
 
 ## Despliegue
 
