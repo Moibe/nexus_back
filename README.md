@@ -172,8 +172,8 @@ debe generar la base y nunca el cliente.
 `_metadata.quality_alert` es `true` **solo** cuando Document AI respondió `200`
 pero sin ninguna estructura de documento reconocible — la imagen no es una INE,
 o es tan ilegible que no se reconoce como una. En ese caso viene junto con
-`_metadata.motivo` (un texto genérico, el mismo del error 502 de abajo), y la
-respuesta no trae ningún campo del documento ni `confianza_minima` (queda en
+`_metadata.motivo` (`"Calidad del OCR inferior al umbral requerido o nulo"`), y
+la respuesta no trae ningún campo del documento ni `confianza_minima` (queda en
 `None`). En cualquier otro caso `quality_alert` es `false` y la llave `motivo`
 **ni siquiera aparece** en el diccionario.
 
@@ -181,9 +181,10 @@ Esto es DISTINTO de un `502 Bad Gateway` (`{"detail": "No se pudo procesar la
 credencial con Document AI."}`), que sigue existiendo para cuando la llamada a
 Document AI **misma** falla — credenciales vencidas, cuota agotada, red, Google
 caído, o una imagen tan corrupta que ni siquiera es un archivo de imagen
-válido. Ese caso a propósito **no** se convierte en `quality_alert`: es una
-falla del servicio, no de la calidad del documento, y disfrazarla de "hay que
-pedir otra foto" escondería un problema operativo real.
+válido. Ese caso a propósito **no** se convierte en `quality_alert` y a
+propósito NO comparte redacción con `motivo`: es una falla del servicio, no de
+la calidad del documento, y disfrazarla de "hay que pedir otra foto" escondería
+un problema operativo real.
 
 ## Despliegue
 

@@ -202,11 +202,11 @@ def _confianza_minima(datos: dict[str, Any]) -> float | None:
 # ── Operaciones de dominio ────────────────────────────────────────────────────
 
 
-# Mismo texto que el detail genérico que routers/ia.py devuelve cuando la
-# llamada a Document AI misma falla (ver _procesar) — son casos DISTINTOS que
-# hoy comparten redacción por decisión explícita, no por estar acoplados: uno
-# es un dato de negocio (quality_alert), el otro un error HTTP real.
-_MOTIVO_NO_LEGIBLE = "No se pudo procesar la credencial con Document AI."
+# Texto de negocio para quien revise el documento (front). Deliberadamente
+# distinto del detail del 502 en routers/ia.py: ese es para cuando la llamada a
+# Document AI MISMA falla (credenciales, cuota, red) — un error de servicio, no
+# de calidad del documento. No compartir la misma redacción entre los dos.
+_MOTIVO_NO_LEGIBLE = "Calidad del OCR inferior al umbral requerido o nulo"
 
 
 async def extraer_ine(contenido: bytes, mime_type: str = "image/jpeg") -> dict[str, Any]:
