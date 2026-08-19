@@ -11,6 +11,7 @@ cómo ya se llamaba Document AI en el proyecto `document_ai`.
 
 import base64
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -208,12 +209,26 @@ async def extraer_ine(contenido: bytes, mime_type: str = "image/jpeg") -> dict[s
     `_campo`), para que quien consuma la API pueda decidir si un campo de baja
     confianza necesita revisión humana, o resaltarlo sobre la imagen original.
     `confianza_minima`, a nivel raíz, resume eso en un solo número — ver
-    `_confianza_minima`."""
+    `_confianza_minima`. `_metadata.procesado_en` es la fecha/hora (UTC) en que
+    ESTE llamado a Document AI terminó — no confundir con `fecha_registro`, que
+    es un campo de la credencial (la fecha impresa en la INE)."""
     crudo = await _procesar(DOCAI_PROCESADOR_INE, contenido, mime_type)
+    # Se captura aquí, justo al terminar la llamada real a Document AI, porque
+    # es el ÚNICO lugar donde este dato existe: Google no manda un timestamp de
+    # procesamiento en su respuesta (document.keys() no trae ninguno). Si en vez
+    # de esto se generara más tarde -p.ej. cuando el front guarde los datos en
+    # SQL Server-, dejaría de significar "cuándo procesó Document AI" y pasaría
+    # a significar "cuándo se guardó", que puede ser minutos u horas después si
+    # alguien revisa campos de baja confianza antes de confirmar.
+    procesado_en = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     entidades = crudo.get("document", {}).get("entities")
     if entidades is None:
         logger.error("La respuesta de Document AI no trae document.entities")
         raise RuntimeError("Respuesta inesperada de Document AI")
     datos = _limpiar_ine(_extraer_entidades(entidades))
     datos["confianza_minima"] = _confianza_minima(datos)
+    # Bajo su propia llave y no como hermano de los campos del documento: esto
+    # no es un dato DE la credencial, es del request. El front debe cargarlo tal
+    # cual hasta que se guarde en SQL Server, sin regenerarlo en ese momento.
+    datos["_metadata"] = {"procesado_en": procesado_en}
     return datos

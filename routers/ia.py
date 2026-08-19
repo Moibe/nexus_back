@@ -31,7 +31,8 @@ router = APIRouter()
         "normalizada 0-1: x, y, ancho, alto) para poder marcar en la UI los "
         "campos de baja confianza o resaltarlos sobre la imagen original. "
         "`confianza_minima`, a nivel raíz, es la menor confianza entre todos "
-        "los campos — útil como semáforo de un vistazo."
+        "los campos — útil como semáforo de un vistazo. `_metadata.procesado_en` "
+        "es la fecha/hora (UTC) en que este llamado a Document AI terminó."
     ),
 )
 async def extraer_ine(imagen: UploadFile = File(...)):

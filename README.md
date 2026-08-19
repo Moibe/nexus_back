@@ -145,7 +145,8 @@ amarillo un campo de confianza baja o resaltarlo sobre la credencial original.
       "posicion": { "x": 0.498, "y": 0.608025, "ancho": 0.054, "alto": 0.033951 }
     }
   },
-  "confianza_minima": 0.9467
+  "confianza_minima": 0.9467,
+  "_metadata": { "procesado_en": "2026-08-18T18:44:25Z" }
 }
 ```
 
@@ -154,8 +155,19 @@ campos, incluyendo los de `domicilio` — sirve de semáforo de un vistazo: un
 promedio puede esconder un solo campo mal leído si el resto salió perfecto, el
 mínimo no. `None` si Document AI no reconoció ningún campo (puede responder
 `200` con la lista de entidades vacía si la imagen no es una INE).
-}
-```
+
+`_metadata.procesado_en` es la fecha/hora (UTC, formato ISO) en que **ese
+llamado** a Document AI terminó. Se captura una sola vez, del lado del servidor,
+justo al recibir la respuesta — Google no manda un timestamp propio en su JSON.
+No confundir con `fecha_registro` (esa sí es un campo de la credencial, la
+fecha impresa en la INE). Cuando el front guarde estos datos en SQL Server, debe
+**cargar este mismo valor tal cual**, no regenerarlo en ese momento: si lo
+regenera, deja de significar "cuándo procesó Document AI" y pasa a significar
+"cuándo se guardó" — que puede ser minutos u horas después si alguien revisó
+campos de baja confianza antes de confirmar. La fila en la base querrá además
+su propia columna de `created_at`/`fecha_registro` con `DEFAULT GETUTCDATE()`
+(o equivalente), para "cuándo se insertó el registro" — un dato distinto, que
+debe generar la base y nunca el cliente.
 
 ## Despliegue
 
