@@ -22,6 +22,7 @@ from config import (
     DOCAI_LOCATION,
     DOCAI_PROCESADOR_INE,
     DOCAI_PROJECT_ID,
+    DOCAI_VERSION_INE,
     IA_TIMEOUT,
 )
 from servicios.ocr import bloque_de, extraer_capa_ocr
@@ -45,20 +46,34 @@ def _token() -> str:
     return _credenciales.token
 
 
-def _url_procesador(procesador_id: str) -> str:
+def _url_procesador(procesador_id: str, version: str = "") -> str:
+    """URL del `:process`. Con `version`, se llama a esa versión exacta del
+    modelo; sin ella, a la que Google tenga como default en ese momento."""
     if not DOCAI_PROJECT_ID or not procesador_id:
         raise RuntimeError(
             "Faltan DOCAI_PROJECT_ID o el ID del procesador en el .env — revisa .env.example"
         )
-    return (
+    ruta = (
         f"https://{DOCAI_LOCATION}-documentai.googleapis.com/v1"
         f"/projects/{DOCAI_PROJECT_ID}/locations/{DOCAI_LOCATION}"
-        f"/processors/{procesador_id}:process"
+        f"/processors/{procesador_id}"
     )
+    if version:
+        ruta += f"/processorVersions/{version}"
+    return ruta + ":process"
 
 
-async def _procesar(procesador_id: str, contenido: bytes, mime_type: str) -> dict:
+async def _procesar(
+    procesador_id: str, contenido: bytes, mime_type: str, version: str = ""
+) -> dict:
     """Manda el archivo a un procesador de Document AI y devuelve su JSON crudo."""
+    if not version:
+        logger.warning(
+            "Se está llamando al procesador %s SIN fijar versión: Google usará la "
+            "default, que puede cambiar sin aviso. La extracción deja de ser "
+            "reproducible y engine_version no se puede registrar con certeza.",
+            procesador_id,
+        )
     cuerpo = {
         "rawDocument": {
             "mimeType": mime_type,
@@ -72,7 +87,7 @@ async def _procesar(procesador_id: str, contenido: bytes, mime_type: str) -> dic
 
     async with httpx.AsyncClient(timeout=IA_TIMEOUT) as cliente:
         respuesta = await cliente.post(
-            _url_procesador(procesador_id), headers=cabeceras, json=cuerpo
+            _url_procesador(procesador_id, version), headers=cabeceras, json=cuerpo
         )
         if respuesta.status_code >= 400:
             # El detalle crudo de Google puede traer IDs de proyecto/procesador,
@@ -301,7 +316,7 @@ async def extraer_ine(contenido: bytes, mime_type: str = "image/jpeg") -> dict[s
     quality_alert: ahí el problema es del servicio, no del documento, y
     esconderlo detrás de una bandera de "calidad" ocultaría una falla operativa
     real a cualquier monitoreo que vigile el status code."""
-    crudo = await _procesar(DOCAI_PROCESADOR_INE, contenido, mime_type)
+    crudo = await _procesar(DOCAI_PROCESADOR_INE, contenido, mime_type, DOCAI_VERSION_INE)
     # Se captura aquí, justo al terminar la llamada real a Document AI, porque
     # es el ÚNICO lugar donde este dato existe: Google no manda un timestamp de
     # procesamiento en su respuesta (document.keys() no trae ninguno). Si en vez
@@ -310,7 +325,16 @@ async def extraer_ine(contenido: bytes, mime_type: str = "image/jpeg") -> dict[s
     # a significar "cuándo se guardó", que puede ser minutos u horas después si
     # alguien revisa campos de baja confianza antes de confirmar.
     procesado_en = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    metadata: dict[str, Any] = {"procesado_en": procesado_en, "quality_alert": False}
+    metadata: dict[str, Any] = {
+        "procesado_en": procesado_en,
+        "quality_alert": False,
+        # Precursores de extraction_run.engine / engine_version. La versión es
+        # None cuando no se fijó en el .env: ahí Google usó su default y NO
+        # sabemos cuál fue — se prefiere decir "no sé" antes que registrar una
+        # suposición en una columna que existe para dar reproducibilidad.
+        "engine": "document_ai_extractor",
+        "engine_version": DOCAI_VERSION_INE or None,
+    }
 
     entidades = crudo.get("document", {}).get("entities")
     if entidades is None:
@@ -329,7 +353,9 @@ async def extraer_ine(contenido: bytes, mime_type: str = "image/jpeg") -> dict[s
     # La capa de OCR se arma ANTES que los campos, porque cada campo necesita
     # saber a qué bloque apuntar. Los offsets no se publican: son solo el
     # cruce interno entidad↔bloque.
-    capa_ocr, offsets_ocr = extraer_capa_ocr(crudo.get("document", {}))
+    capa_ocr, offsets_ocr = extraer_capa_ocr(
+        crudo.get("document", {}), DOCAI_VERSION_INE or None
+    )
 
     datos = _limpiar_ine(_extraer_entidades(entidades, offsets_ocr))
     datos["confianza_minima"] = _confianza_minima(datos)

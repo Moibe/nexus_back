@@ -82,7 +82,9 @@ def _idioma(pagina: dict[str, Any]) -> str | None:
     return max(idiomas, key=lambda i: i.get("confidence", 0)).get("languageCode")
 
 
-def extraer_capa_ocr(documento: dict[str, Any]) -> tuple[dict[str, Any], list[list[tuple[int, int]]]]:
+def extraer_capa_ocr(
+    documento: dict[str, Any], engine_version: str | None = None
+) -> tuple[dict[str, Any], list[list[tuple[int, int]]]]:
     """Convierte la respuesta de Document AI en la capa de OCR.
 
     Devuelve dos cosas:
@@ -136,6 +138,11 @@ def extraer_capa_ocr(documento: dict[str, Any]) -> tuple[dict[str, Any], list[li
 
     capa = {
         "engine": "document_ai",
+        # La lectura y la extracción salen de la MISMA llamada, así que
+        # comparten versión de modelo. Se repite aquí porque en el diccionario
+        # son tablas distintas (`ocr_result` y `extraction_run`), cada una con
+        # su propia columna `engine_version`.
+        "engine_version": engine_version,
         "page_count": len(paginas_crudas),
         # Idioma del documento = el de la primera página con idioma detectado.
         "language": next((p["idioma"] for p in paginas if p["idioma"]), None),

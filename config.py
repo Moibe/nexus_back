@@ -69,6 +69,14 @@ SQLSERVER_TRUST_CERT = os.getenv("SQLSERVER_TRUST_CERT", "yes")
 DOCAI_PROJECT_ID = os.getenv("DOCAI_PROJECT_ID", "")
 DOCAI_LOCATION = os.getenv("DOCAI_LOCATION", "us")
 DOCAI_PROCESADOR_INE = os.getenv("DOCAI_PROCESADOR_INE", "")
+
+# Versión del modelo con la que se llama al procesador. Si se deja vacía, Google
+# usa la "default" del procesador — y esa la puede cambiar él, sin avisar, el
+# día que promueva otra a estable. Eso rompería la reproducibilidad que exige el
+# diccionario de datos ("Modelo y versión exactos") y haría que
+# `extraction_run.engine_version` guardara una suposición en vez de un hecho.
+# Fijarla es la diferencia entre saber y creer con qué modelo se extrajo.
+DOCAI_VERSION_INE = os.getenv("DOCAI_VERSION_INE", "")
 IA_TIMEOUT = _numero("IA_TIMEOUT", 120)
 
 # ── Límite de subida ──────────────────────────────────────────────────────────

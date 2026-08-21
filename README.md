@@ -123,6 +123,36 @@ Los IDs de proyecto y de procesador van en el `.env` (`DOCAI_PROJECT_ID`,
 `DOCAI_PROCESADOR_INE`), **no hardcodeados**, para poder apuntar a procesadores
 distintos por ambiente.
 
+### Versión del modelo: fija a propósito
+
+`DOCAI_VERSION_INE` ancla la versión del modelo con la que se llama al
+procesador. **Sin ella Google usa su "default"**, que él puede mover el día que
+promueva otra versión a estable — y ahí la extracción deja de ser reproducible y
+`extraction_run.engine_version` guardaría una suposición en vez de un hecho. Si
+se deja vacía, la API arranca igual pero **loguea un warning** en cada llamada, y
+`engine_version` viene en `null` (se prefiere decir "no sé" antes que inventar).
+
+El procesador `ine` tiene 10 versiones, **todas administradas por Google** — o
+sea lo "custom" del `CUSTOM_EXTRACTION_PROCESSOR` es el *esquema de campos*, no
+un modelo entrenado a la medida. Hoy está anclado a
+`pretrained-foundation-model-v1.5-pro-2025-06-20` ("Google Stable"), que era la
+default al momento de fijarla y es la misma que el proyecto `document_ai` usa
+para cédula. Para ver el inventario:
+
+```
+GET .../processors/<id>                    → defaultProcessorVersion
+GET .../processors/<id>/processorVersions  → todas, con displayName y state
+```
+
+⚠️ **La confianza NO es reproducible aunque la versión esté anclada.** Medido:
+dos llamadas seguidas al mismo documento con la misma versión devuelven valores
+y posiciones idénticos, pero la `confianza` de algunos campos varía un poco
+(ej. 98.74 → 97.18). Son modelos generativos (`MODEL_TYPE_GENERATIVE`) y esa
+variación es inherente. Importa porque el diccionario dice que la confianza es
+"lo que consumen motor de reglas y ruteo a revisión": un campo que quede pegado
+a un umbral puede rutear a revisión en una corrida y no en la siguiente. Los
+umbrales necesitan margen, o histéresis.
+
 Prueba: `POST /ia/ine` con un `multipart/form-data` con campo `imagen`.
 
 **Forma de la respuesta.** Sigue el diccionario de datos v0.4, para que
