@@ -136,6 +136,14 @@ falta `@ExpedienteId`, que en el modelo es NOT NULL. Corregir al pedirlo.
 - Guardado de una corrida completa: `ocr_result` + sus `ocr_block` +
   `extraction_run` + sus `entity_fact`, idealmente en **un solo SP
   transaccional** para que no queden corridas a medias.
+
+  Volumen medido en una INE real de **una sola página**: 23 `ocr_block` (líneas)
+  + 20 `entity_fact` + 1 `ocr_result` + 1 `extraction_run` = **45 renglones por
+  documento**. Un PDF de 10 páginas escala a cientos. Por eso importa que sea un
+  solo SP y no 45 llamadas: además de la atomicidad, es la diferencia entre una
+  vuelta de red y cuarenta y cinco. Vale preguntarle a Charlie si prefiere
+  recibir los bloques como **table-valued parameter** — es su decisión de forma,
+  pero el dato de volumen es lo que la hace relevante.
 - Lectura de la configuración activa de un tipo documental: `config_version`
   activa + sus `field_definition` + el mapeo de 2.6, que es lo que
   `servicios/ia.py` necesita para traducir la salida del motor.
