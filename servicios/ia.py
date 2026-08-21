@@ -24,6 +24,7 @@ from config import (
     DOCAI_PROJECT_ID,
     IA_TIMEOUT,
 )
+from servicios.ocr import bloque_de, extraer_capa_ocr
 
 logger = logging.getLogger(__name__)
 
@@ -86,12 +87,21 @@ async def _procesar(procesador_id: str, contenido: bytes, mime_type: str) -> dic
 # ── Parseo de la respuesta ────────────────────────────────────────────────────
 
 
-def _valor(entidad: dict[str, Any]) -> Any:
-    """Valor de una entidad.
+def _a_cien(valor: Any) -> float | None:
+    """Document AI reporta la confianza 0-1; el diccionario la quiere 0-100
+    (`entity_fact.confidence numeric(5,2)`). Se convierte aquí, en la frontera."""
+    if not isinstance(valor, (int, float)):
+        return None
+    return round(float(valor) * 100, 2)
 
-    Las fechas completas se normalizan a ISO (YYYY-MM-DD); todo lo demás se deja
-    como el `mentionText` crudo que detectó Document AI, para no perder los ceros
-    a la izquierda de códigos como localidad '0181' o municipio '064'.
+
+def _valor_normalizado(entidad: dict[str, Any]) -> Any:
+    """Valor tras normalizar, para `entity_fact.value_normalized`.
+
+    Las fechas COMPLETAS se pasan a ISO (YYYY-MM-DD); todo lo demás se deja como
+    el `mentionText` crudo, para no perder los ceros a la izquierda de códigos
+    como localidad '0181' o municipio '064'. El texto original nunca se pierde:
+    va aparte en `value_raw`.
     """
     nv = entidad.get("normalizedValue")
     if nv and "dateValue" in nv:
@@ -108,9 +118,11 @@ def _rectangulo(entidad: dict[str, Any]) -> dict[str, float] | None:
     el texto de esta entidad. None si la entidad no tiene posición propia — es
     el caso de una entidad compuesta como 'domicilio', que solo agrupa a otras.
 
-    Los 4 vértices del polígono se colapsan a un rectángulo (min/max) porque en
-    la práctica este procesador siempre los entrega alineados a los ejes, y un
-    rectángulo es lo que un front consume directo (left/top/width/height)."""
+    Los 4 vértices del polígono se colapsan a un rectángulo (min/max), que es lo
+    que un front consume directo (left/top/width/height). Medido en una INE real:
+    las ENTIDADES sí llegan alineadas a los ejes, así que aquí el colapso no
+    pierde nada. No vale asumir lo mismo de los bloques de OCR — esos sí vienen
+    rotados; ver la nota en `servicios.ocr._bbox`."""
     refs = entidad.get("pageAnchor", {}).get("pageRefs")
     if not refs:
         return None
@@ -130,33 +142,70 @@ def _rectangulo(entidad: dict[str, Any]) -> dict[str, float] | None:
     }
 
 
-def _campo(entidad: dict[str, Any]) -> dict[str, Any]:
-    """Empaqueta una entidad hoja con su confianza y posición, para que quien
-    consuma la API pueda decidir si un campo necesita revisión humana
-    (confianza baja) o resaltarlo sobre la imagen original (posición)."""
+def _tramos(entidad: dict[str, Any]) -> list[tuple[int, int]]:
+    """Tramos [inicio, fin) que ocupa la entidad dentro de `document.text`."""
+    segmentos = entidad.get("textAnchor", {}).get("textSegments", [])
+    return [(int(s.get("startIndex", 0)), int(s.get("endIndex", 0))) for s in segmentos]
+
+
+def _campo(entidad: dict[str, Any], offsets_ocr: list[list[tuple[int, int]]]) -> dict[str, Any]:
+    """Empaqueta una entidad hoja con la forma que pide `entity_fact`.
+
+    Puntos donde esto se apega al diccionario y no a lo que da Document AI:
+      - `value_raw` y `value_normalized` son DOS columnas distintas. El crudo es
+        el texto tal como se leyó; el normalizado, el resultado de aplicar la
+        regla del campo (hoy: fechas completas a ISO). Nunca se pisan.
+      - `confianza` va 0-100 (`numeric(5,2)`), no 0-1 como la reporta Google.
+        El valor original se conserva en `confianza_cruda` porque el diccionario
+        lo pide explícitamente: "permite recalibrar sin re-extraer".
+      - `metodo_confianza` es `extractor_confidence` — de los tres del enum, es
+        el que aplica: el número lo da el extractor, no se derivó de logprobs
+        ni se compuso de varias señales.
+      - `bloque_indice` apunta al bloque de OCR del que salió el valor; es el
+        precursor de `entity_fact.ocr_block_id`.
+    """
+    crudo = entidad.get("mentionText")
     return {
-        "valor": _valor(entidad),
-        "confianza": entidad.get("confidence"),
+        "value_raw": crudo,
+        "value_normalized": _valor_normalizado(entidad),
+        "confianza": _a_cien(entidad.get("confidence")),
+        "confianza_cruda": entidad.get("confidence"),
+        "metodo_confianza": "extractor_confidence",
+        "page_number": _pagina_de(entidad),
+        "bloque_indice": bloque_de(offsets_ocr, _tramos(entidad)),
         "posicion": _rectangulo(entidad),
     }
 
 
-def _extraer_entidades(entidades: list[dict[str, Any]]) -> dict[str, Any]:
+def _pagina_de(entidad: dict[str, Any]) -> int | None:
+    """Página donde cae la entidad (1-based). El diccionario la guarda en
+    `entity_fact.page_number` aunque sea redundante con el bloque, porque hace
+    falta cuando `ocr_block_id` viene en NULL."""
+    refs = entidad.get("pageAnchor", {}).get("pageRefs")
+    if not refs:
+        return None
+    # Document AI omite `page` cuando es la primera página.
+    return int(refs[0].get("page", 0)) + 1
+
+
+def _extraer_entidades(
+    entidades: list[dict[str, Any]], offsets_ocr: list[list[tuple[int, int]]]
+) -> dict[str, Any]:
     """Convierte las entidades de Document AI en un diccionario, CONSERVANDO la
     jerarquía: una entidad con sub-propiedades (ej. 'domicilio') queda como
     sub-diccionario de campos, para que no choquen llaves repetidas con el nivel
     raíz (ej. 'estado' dentro de domicilio vs. 'estado' suelto). Cada campo hoja
-    trae su valor, confianza y posición — ver `_campo`."""
+    trae la forma de `entity_fact` — ver `_campo`."""
     resultado: dict[str, Any] = {}
     for entidad in entidades:
         nombre = entidad.get("type")
         if not nombre:
             continue
         if entidad.get("properties"):
-            resultado[nombre] = _extraer_entidades(entidad["properties"])
+            resultado[nombre] = _extraer_entidades(entidad["properties"], offsets_ocr)
         else:
-            campo = _campo(entidad)
-            if campo["valor"] is not None:
+            campo = _campo(entidad, offsets_ocr)
+            if campo["value_normalized"] is not None:
                 resultado[nombre] = campo
     return resultado
 
@@ -164,23 +213,31 @@ def _extraer_entidades(entidades: list[dict[str, Any]]) -> dict[str, Any]:
 def _limpiar_ine(datos: dict[str, Any]) -> dict[str, Any]:
     """Quita artefactos de puntuación que el OCR arrastra del renglón de
     domicilio impreso en la credencial: el estado trae punto final ('SON.') y la
-    localidad trae coma final ('HUATABAMPO,')."""
+    localidad trae coma final ('HUATABAMPO,').
+
+    Se toca SOLO `value_normalized`. El `value_raw` conserva el punto y la coma
+    tal como venían — eso es lo que significa "crudo" en el diccionario, y sin
+    él no se podría auditar qué leyó realmente el OCR contra qué se guardó."""
     domicilio = datos.get("domicilio")
-    if isinstance(domicilio, dict):
-        estado = domicilio.get("estado")
-        if isinstance(estado, dict) and isinstance(estado.get("valor"), str):
-            estado["valor"] = estado["valor"].rstrip(".").strip()
-        localidad = domicilio.get("localidad")
-        if isinstance(localidad, dict) and isinstance(localidad.get("valor"), str):
-            localidad["valor"] = localidad["valor"].rstrip(",").strip()
+    if not isinstance(domicilio, dict):
+        return datos
+
+    for llave, sobrante in (("estado", "."), ("localidad", ",")):
+        campo = domicilio.get(llave)
+        if isinstance(campo, dict) and isinstance(campo.get("value_normalized"), str):
+            campo["value_normalized"] = campo["value_normalized"].rstrip(sobrante).strip()
     return datos
 
 
 def _confianza_minima(datos: dict[str, Any]) -> float | None:
-    """La menor `confianza` entre TODOS los campos extraídos, recorriendo
-    también los de 'domicilio'. Sirve de semáforo de un vistazo: un solo campo
-    mal leído (ej. la CURP) puede pasar desapercibido en un promedio si el
-    resto de la credencial salió perfecto; el mínimo no lo deja esconderse.
+    """La menor `confianza` (escala 0-100) entre TODOS los campos extraídos,
+    recorriendo también los de 'domicilio'. Sirve de semáforo de un vistazo: un
+    solo campo mal leído (ej. la CURP) puede pasar desapercibido en un promedio
+    si el resto de la credencial salió perfecto; el mínimo no lo deja esconderse.
+
+    Se calcula ANTES de agregar la capa de OCR al resultado, a propósito: los
+    bloques de OCR también traen `confianza`, y son la confianza de LECTURA, no
+    de extracción. Mezclarlas daría un mínimo que no significa nada.
 
     None si no se extrajo ningún campo (Document AI puede responder 200 con
     una lista de entidades vacía si la imagen no es una INE reconocible)."""
@@ -212,11 +269,22 @@ _MOTIVO_NO_LEGIBLE = "Calidad del OCR inferior al umbral requerido o nulo"
 async def extraer_ine(contenido: bytes, mime_type: str = "image/jpeg") -> dict[str, Any]:
     """Extrae los datos de una credencial INE.
 
-    Cada campo hoja llega como `{"valor", "confianza", "posicion"}` (ver
-    `_campo`), para que quien consuma la API pueda decidir si un campo de baja
-    confianza necesita revisión humana, o resaltarlo sobre la imagen original.
-    `confianza_minima`, a nivel raíz, resume eso en un solo número — ver
-    `_confianza_minima`. `_metadata.procesado_en` es la fecha/hora (UTC) en que
+    La respuesta tiene la forma del diccionario de datos v0.4, para que
+    guardarla sea mecánico cuando exista SQL Server:
+
+      - cada campo hoja es un `entity_fact` en potencia: `value_raw`,
+        `value_normalized`, `confianza` (0-100), `confianza_cruda`,
+        `metodo_confianza`, `page_number`, `bloque_indice` y `posicion`.
+      - `ocr` es la cabecera tipo `ocr_result` con sus `bloques` (`ocr_block`),
+        que es lo que permite resaltar en la imagen la región de cada dato.
+        `bloque_indice` de cada campo apunta ahí por posición en la lista.
+      - `confianza_minima` (0-100) resume la calidad de la extracción — ver
+        `_confianza_minima`.
+
+    Lo que TODAVÍA no cumple del diccionario, porque necesita la base: los
+    campos ausentes deberían generar renglón con `null_reason`, y para saber
+    cuáles se esperaban hace falta el catálogo `field_definition`. Hoy un campo
+    que Document AI no encontró simplemente no aparece. `_metadata.procesado_en` es la fecha/hora (UTC) en que
     ESTE llamado a Document AI terminó — no confundir con `fecha_registro`, que
     es un campo de la credencial (la fecha impresa en la INE).
 
@@ -258,8 +326,14 @@ async def extraer_ine(contenido: bytes, mime_type: str = "image/jpeg") -> dict[s
         metadata["motivo"] = _MOTIVO_NO_LEGIBLE
         return {"confianza_minima": None, "_metadata": metadata}
 
-    datos = _limpiar_ine(_extraer_entidades(entidades))
+    # La capa de OCR se arma ANTES que los campos, porque cada campo necesita
+    # saber a qué bloque apuntar. Los offsets no se publican: son solo el
+    # cruce interno entidad↔bloque.
+    capa_ocr, offsets_ocr = extraer_capa_ocr(crudo.get("document", {}))
+
+    datos = _limpiar_ine(_extraer_entidades(entidades, offsets_ocr))
     datos["confianza_minima"] = _confianza_minima(datos)
+    datos["ocr"] = capa_ocr
     # Bajo su propia llave y no como hermano de los campos del documento: esto
     # no es un dato DE la credencial, es del request. El front debe cargarlo tal
     # cual hasta que se guarde en SQL Server, sin regenerarlo en ese momento.

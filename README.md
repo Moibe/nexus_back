@@ -125,36 +125,88 @@ distintos por ambiente.
 
 Prueba: `POST /ia/ine` con un `multipart/form-data` con campo `imagen`.
 
-**Forma de la respuesta.** Cada campo hoja trae su valor, la confianza que
-reportó Document AI (0-1) y la caja normalizada (0-1, lista para CSS en %)
-donde se encontró el texto en la imagen — para que el front pueda marcar en
-amarillo un campo de confianza baja o resaltarlo sobre la credencial original.
-`domicilio` sigue anidado, con la misma estructura en cada uno de sus hijos:
+**Forma de la respuesta.** Sigue el diccionario de datos v0.4, para que
+guardarla sea mecánico cuando exista SQL Server. Cada campo hoja es un
+`entity_fact` en potencia, y `ocr` es la cabecera `ocr_result` con sus
+`ocr_block`. `domicilio` sigue anidado, con la misma estructura en cada hijo:
 
 ```json
 {
   "curp": {
-    "valor": "ROVX970508MSRMLC08",
-    "confianza": 0.9999771,
+    "value_raw": "ROVX970508MSRMLC08",
+    "value_normalized": "ROVX970508MSRMLC08",
+    "confianza": 100.0,
+    "confianza_cruda": 0.9999771,
+    "metodo_confianza": "extractor_confidence",
+    "page_number": 1,
+    "bloque_indice": 15,
     "posicion": { "x": 0.383, "y": 0.714506, "ancho": 0.263, "alto": 0.03858 }
   },
   "domicilio": {
-    "estado": {
-      "valor": "SON",
-      "confianza": 0.9999596,
-      "posicion": { "x": 0.498, "y": 0.608025, "ancho": 0.054, "alto": 0.033951 }
-    }
+    "estado": { "value_raw": "SON.", "value_normalized": "SON", "...": "..." }
   },
-  "confianza_minima": 0.9467,
+  "confianza_minima": 98.74,
+  "ocr": {
+    "engine": "document_ai",
+    "language": "es",
+    "page_count": 1,
+    "paginas": [{ "page_number": 1, "ancho": 1000, "alto": 648, "unidad": "pixels", "idioma": "es" }],
+    "bloques": [
+      {
+        "indice": 0,
+        "page_number": 1,
+        "block_type": "line",
+        "texto": "MÉXICO",
+        "bbox": { "x": 0.163, "y": 0.075617, "ancho": 0.044, "alto": 0.08179 },
+        "confianza": 88.76,
+        "orientacion": "PAGE_RIGHT",
+        "orientacion_grados": 90
+      }
+    ]
+  },
   "_metadata": { "procesado_en": "2026-08-18T18:44:25Z", "quality_alert": false }
 }
 ```
 
-`confianza_minima` (a nivel raíz) es la menor `confianza` entre **todos** los
-campos, incluyendo los de `domicilio` — sirve de semáforo de un vistazo: un
+Puntos donde esto se apega al diccionario y no a lo que da Google:
+
+- **`value_raw` y `value_normalized` son dos cosas distintas.** El crudo es el
+  texto tal como se leyó; el normalizado aplica la regla del campo (fechas
+  completas a ISO, y la limpieza de puntuación del domicilio). Antes se pisaban
+  y el original se perdía.
+- **`confianza` va 0-100**, como `entity_fact.confidence numeric(5,2)`. Google
+  la reporta 0-1; se convierte en la frontera y el original se conserva en
+  `confianza_cruda` porque el diccionario lo pide: "permite recalibrar sin
+  re-extraer".
+- **`bloque_indice`** apunta por posición a `ocr.bloques`; es el precursor de
+  `entity_fact.ocr_block_id`. Al persistir se cambia por el id real de la fila.
+
+**La capa `ocr`** es lo que hace posible la trazabilidad visual (clic en un dato
+→ resaltar su región). Se publican las **líneas** como `ocr_block`: medido en
+una INE real hay 13 blocks / 22 paragraphs / 23 lines / 57 tokens por página, y
+las líneas son el punto donde cada campo extraído solapa exactamente una sin
+inflar el volumen (el diccionario advierte que `ocr_block` será "la tabla más
+grande del sistema por órdenes de magnitud"). La granularidad se cambia en
+`servicios/ocr.py::GRANULARIDAD`.
+
+⚠️ Los bloques de OCR **sí vienen rotados** (`orientacion: PAGE_RIGHT` en la
+INE), a diferencia de las entidades. Su `bbox` es la caja envolvente alineada a
+los ejes, que es la forma que pide `ocr_block.bbox_*` pero es más grande que la
+extensión real del texto. Para resaltar alcanza; para el contorno exacto habría
+que guardar los cuatro vértices.
+
+**Lo que todavía NO cumple del diccionario**, porque necesita la base: los
+campos ausentes deberían generar renglón con `null_reason`, y para saber cuáles
+se esperaban hace falta el catálogo `field_definition`. Hoy un campo que
+Document AI no encontró simplemente no aparece.
+
+`confianza_minima` (a nivel raíz, 0-100) es la menor `confianza` entre **todos**
+los campos, incluyendo los de `domicilio` — sirve de semáforo de un vistazo: un
 promedio puede esconder un solo campo mal leído si el resto salió perfecto, el
-mínimo no. Viene en `None` cuando `_metadata.quality_alert` es `true` (ver
-abajo) — ahí no hay ningún campo del que sacar un mínimo.
+mínimo no. Se calcula **antes** de agregar la capa de OCR, a propósito: los
+bloques también traen `confianza`, pero esa es de LECTURA, no de extracción, y
+mezclarlas daría un número sin significado. Viene en `None` cuando
+`_metadata.quality_alert` es `true` (ver abajo) — ahí no hay campos.
 
 `_metadata.procesado_en` es la fecha/hora (UTC, formato ISO) en que **ese
 llamado** a Document AI terminó. Se captura una sola vez, del lado del servidor,
