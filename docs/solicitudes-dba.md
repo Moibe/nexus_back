@@ -11,6 +11,29 @@ nombres de columna internos, a la aplicación no debería enterarse.
 
 ---
 
+## 0. Orden en que se va pidiendo
+
+Se pide **de poco a poco**, en pláticas cortas de escritorio. El orden no es
+arbitrario: cada paso desbloquea al siguiente, y pedir de más de golpe invita a
+rehacer trabajo. Marcar aquí lo que ya quedó.
+
+| # | Qué pedir | Por qué va en este lugar | Así se verifica | Estado |
+|---|---|---|---|---|
+| 1 | Cadena de conexión + **un SP trivial** que devuelva cualquier cosa (un `SELECT 1`, la fecha del servidor) | Antes de cualquier esquema hay que probar que la app **alcanza** la base: driver ODBC, credenciales, firewall. Si algo de esa cadena falla, se descubre ahora y no enterrado dentro de un SP real | `GET /health/db` en verde | ⬜ |
+| 2 | `sp_ListarBandejaPreparacion` (solo lectura) | Primer SP de verdad, y de **lectura**: no puede corromper nada. Además es lo que el front ya necesita para HU027 | La Bandeja del front deja de ser memoria del navegador | ⬜ |
+| 3 | Alta de **expediente** + alta de **file** (juntas) | Van juntas porque `file.expediente_id` es NOT NULL: no se puede registrar un archivo sin que exista antes su expediente | Subir un archivo en el front y que sobreviva a un refresh | ⬜ |
+| 4 | Las secciones **2.6** y **2.7** del diccionario | Esto no es un SP, es una **plática de diseño** — conviene cuando ya haya confianza en el trato y él tenga contexto de lo anterior | Que quede acordado dónde vive el mapeo | ⬜ |
+| 5 | Lectura de la **configuración activa** de un tipo documental | Depende de que exista lo de 2.6, porque incluye el mapeo | `servicios/ia.py` puede traducir nombres de Document AI a `field_definition_id` | ⬜ |
+| 6 | **SP transaccional** de guardado de corrida completa | El más grande y el que más decisiones de forma tiene. Con todo lo anterior andando, ya se le puede plantear con datos reales en la mano | Una extracción de INE queda guardada entera o no queda | ⬜ |
+
+**Pista en paralelo, no es de Charlie**: el server de CSI tiene el runtime de
+ODBC (`libodbc.so.2`) pero **no el driver de SQL Server** (`msodbcsql18`) ni el
+CLI `odbcinst`. Eso lo instala quien administre el server, no el DBA. Conviene
+destrabarlo antes o durante el paso 1, porque si no, ese paso va a fallar por un
+motivo que no tiene nada que ver con la base.
+
+---
+
 ## 1. Sección faltante del diccionario: mapeo motor ↔ campo
 
 El diccionario v0.4 define `field_definition` como el catálogo de campos, y
@@ -120,10 +143,10 @@ parámetros de entrada y las columnas de salida.
 
 ### Ya invocados por el código (hoy con nombres placeholder)
 
-| SP | Entrada | Salida esperada | Usado por |
-|---|---|---|---|
-| `sp_ListarBandejaPreparacion` | `@TenantId` | un renglón por archivo pendiente de pipeline | `repositorios/documentos.py::listar_bandeja` (HU027) |
-| `sp_RegistrarDocumento` | `@TenantId`, `@NombreArchivo`, `@HashSha256`, `@Origen` | el renglón creado | `repositorios/documentos.py::registrar_documento` |
+| SP | Entrada | Salida esperada | Usado por | Estado |
+|---|---|---|---|---|
+| `sp_ListarBandejaPreparacion` | `@TenantId` | un renglón por archivo pendiente de pipeline | `repositorios/documentos.py::listar_bandeja` (HU027) | ⬜ pendiente |
+| `sp_RegistrarDocumento` | `@TenantId`, `@NombreArchivo`, `@HashSha256`, `@Origen` | el renglón creado | `repositorios/documentos.py::registrar_documento` | ⬜ pendiente |
 
 ⚠️ El segundo está **mal nombrado**: por el modelo registra un **`file`**, no un
 `document` (un archivo puede contener varios documentos lógicos, 1.5). Además le
