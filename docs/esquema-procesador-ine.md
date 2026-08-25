@@ -8,6 +8,18 @@ es el único otro lugar donde vive, y este esquema es el insumo directo de
 
 Contrastado contra una extracción real de producción, no solo transcrito.
 
+**Actualización 2026-08-25 (mismo día, más tarde):** `Pais` y `edad` fueron
+**inhabilitados** en la consola. `Pais` porque su valor era constante (toda INE
+es de México — información cero) y su confianza errática (66% en algunas
+corridas, probablemente por nunca haber sido etiquetado) arrastraba
+`confianza_minima` hacia abajo y habría ruteado documentos perfectos a revisión
+humana. `edad` porque no está impresa en la credencial — era una inferencia del
+modelo — y además caduca: se deriva de `fecha_nacimiento` al momento de leer.
+Verificado en producción tras el cambio: 19 campos, `confianza_minima` subió de
+99.62 a 99.96, y el peor campo ahora es `apellido_materno` (99.96) — el semáforo
+mide calidad de lectura real, ya no ruido. Las filas de ambos siguen en la tabla
+de abajo como registro de por qué se quitaron.
+
 ## El esquema tal como está declarado
 
 | Campo | Tipo declarado | Caso | Valor real medido |
