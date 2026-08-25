@@ -19,13 +19,32 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Los tipos que Document AI acepta en `rawDocument.mimeType`. NO es una lista
+# arbitraria nuestra: es la del proveedor, y mandar algo fuera de ella se
+# traduce en un 400 de Google que llegaría aquí disfrazado de 502.
+#
+# DOCX y XLSX quedan FUERA a propósito aunque la bandeja del front los admita:
+# Document AI no los procesa. Se rechazan aquí con un mensaje que lo dice, en
+# vez de dejar que fallen más adentro con un error del proveedor.
+MIME_SOPORTADOS = frozenset(
+    {
+        "application/pdf",
+        "image/jpeg",
+        "image/png",
+        "image/tiff",
+        "image/gif",
+        "image/bmp",
+        "image/webp",
+    }
+)
+
 
 @router.post(
     "/ine",
     tags=["IA"],
     summary="Extraer datos de INE",
     description=(
-        "Recibe la imagen de una credencial INE y devuelve los campos extraídos "
+        "Recibe una credencial INE (imagen o PDF) y devuelve los campos extraídos "
         "por Document AI, con el domicilio anidado y las fechas en formato ISO. "
         "Cada campo trae `valor`, `confianza` (0-1) y `posicion` (caja "
         "normalizada 0-1: x, y, ancho, alto) para poder marcar en la UI los "
@@ -39,10 +58,16 @@ router = APIRouter()
     ),
 )
 async def extraer_ine(imagen: UploadFile = File(...)):
-    if not imagen.content_type or not imagen.content_type.startswith("image/"):
+    # `content_type` puede traer parámetros ("image/jpeg; charset=binary"), así
+    # que se compara solo el tipo/subtipo en minúsculas.
+    tipo = (imagen.content_type or "").split(";")[0].strip().lower()
+    if tipo not in MIME_SOPORTADOS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="El archivo no es una imagen. Sube un archivo con Content-Type: image/*.",
+            detail=(
+                f"Document AI no procesa '{tipo or 'desconocido'}'. "
+                f"Formatos aceptados: {', '.join(sorted(MIME_SOPORTADOS))}."
+            ),
         )
 
     # Respaldo del tope global de app.py, que mide `Content-Length`: una subida
