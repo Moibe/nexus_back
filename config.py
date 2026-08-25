@@ -86,7 +86,13 @@ IA_TIMEOUT = _numero("IA_TIMEOUT", 120)
 #
 # Importa porque `/ia/ine` codifica el archivo a base64 para mandarlo a Document
 # AI, y eso infla el contenido ~1.33x en memoria.
-MAX_SUBIDA_MB = _numero("MAX_SUBIDA_MB", 10)
+# 20 MB y no 10: es el mismo número que promete el dropzone del front
+# ("PDF, DOCX, XLSX, JPG, JPEG, TIFF | Max 20 MB", que viene de Figma) y que
+# valida su capa BFF. Con 10 quedaba una franja de 10-20 MB que la UI
+# aceptaba y esta API rechazaba, o sea un error que el usuario no podía
+# prever. 20 MB es además el tope de Document AI para procesamiento en
+# línea, así que subir más no serviría de nada.
+MAX_SUBIDA_MB = _numero("MAX_SUBIDA_MB", 20)
 if MAX_SUBIDA_MB <= 0:
     raise RuntimeError(f"MAX_SUBIDA_MB tiene que ser mayor que 0 (llegó {MAX_SUBIDA_MB}).")
 MAX_SUBIDA_BYTES = int(MAX_SUBIDA_MB * 1024 * 1024)

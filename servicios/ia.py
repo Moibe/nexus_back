@@ -263,7 +263,14 @@ def _confianza_minima(datos: dict[str, Any]) -> float | None:
             if not isinstance(valor, dict):
                 continue
             if "confianza" in valor:
-                confianzas.append(valor["confianza"])
+                # Se filtran los None: `_a_cien` devuelve None cuando Document AI
+                # omite `confidence` en una entidad, y en Python 3 comparar None
+                # con un float dentro de min() lanza TypeError. Eso convertiría
+                # una extracción PERFECTA en un 502 "No se pudo procesar la
+                # credencial" — el peor tipo de falla, porque el mensaje culpa al
+                # documento cuando el problema es nuestro.
+                if isinstance(valor["confianza"], (int, float)):
+                    confianzas.append(float(valor["confianza"]))
             else:
                 recorrer(valor)
 
