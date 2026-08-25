@@ -58,6 +58,16 @@ SQLSERVER_DRIVER = os.getenv("SQLSERVER_DRIVER", "ODBC Driver 18 for SQL Server"
 # Un SQL Server interno normalmente trae certificado autofirmado; con Driver 18
 # el default es Encrypt=yes y truena si no se confía en el cert.
 SQLSERVER_TRUST_CERT = os.getenv("SQLSERVER_TRUST_CERT", "yes")
+# El Driver 18 cambió el default a Encrypt=yes (el 17 era "no"), y contra un SQL
+# Server viejo eso puede tumbar la conexión ANTES del login: OpenSSL 3 (Ubuntu
+# 22.04+) rechaza TLS 1.0/1.1 y protocolos que ese SQL Server quizá sea el único
+# que ofrece. El síntoma engaña: TCP abre bien y el error se ve como problema de
+# conexión o de credenciales, no de cifrado.
+#
+# Se deja en "yes" a propósito — cifrar es lo correcto. Ponerlo en "no" es un
+# escape documentado para una red interna donde el servidor no puede negociar
+# TLS moderno, no la configuración recomendada.
+SQLSERVER_ENCRYPT = os.getenv("SQLSERVER_ENCRYPT", "yes")
 
 # ── Google Document AI ────────────────────────────────────────────────────────
 # Se llaman directo los procesadores de Document AI (no vía el proyecto

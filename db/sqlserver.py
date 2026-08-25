@@ -19,6 +19,7 @@ from errores import ConfiguracionIncompleta
 from config import (
     SQLSERVER_DB,
     SQLSERVER_DRIVER,
+    SQLSERVER_ENCRYPT,
     SQLSERVER_HOST,
     SQLSERVER_PASSWORD,
     SQLSERVER_PORT,
@@ -56,6 +57,7 @@ def _cadena_conexion() -> str:
         f"UID={SQLSERVER_USER};"
         f"PWD={SQLSERVER_PASSWORD};"
         f"TrustServerCertificate={SQLSERVER_TRUST_CERT};"
+        f"Encrypt={SQLSERVER_ENCRYPT};"
     )
 
 
