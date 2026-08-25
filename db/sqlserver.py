@@ -14,6 +14,8 @@ import re
 
 import pyodbc
 
+from errores import ConfiguracionIncompleta
+
 from config import (
     SQLSERVER_DB,
     SQLSERVER_DRIVER,
@@ -32,9 +34,20 @@ _NOMBRE_SP_VALIDO = re.compile(r"^[A-Za-z0-9_.\[\]]+$")
 
 
 def _cadena_conexion() -> str:
-    if not SQLSERVER_HOST or not SQLSERVER_DB:
-        raise RuntimeError(
-            "Faltan SQLSERVER_HOST / SQLSERVER_DB en el .env — revisa .env.example"
+    faltantes = [
+        nombre
+        for nombre, valor in (
+            ("SQLSERVER_HOST", SQLSERVER_HOST),
+            ("SQLSERVER_DB", SQLSERVER_DB),
+            ("SQLSERVER_USER", SQLSERVER_USER),
+            ("SQLSERVER_PASSWORD", SQLSERVER_PASSWORD),
+        )
+        if not valor
+    ]
+    if faltantes:
+        raise ConfiguracionIncompleta(
+            f"Faltan estas variables en el .env: {', '.join(faltantes)}. "
+            "Revisa .env.example."
         )
     return (
         f"DRIVER={{{SQLSERVER_DRIVER}}};"

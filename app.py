@@ -12,6 +12,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from errores import ConfiguracionIncompleta
 from config import (
     CORS_ALLOWED_ORIGINS,
     ENVIRONMENT,
@@ -110,6 +111,26 @@ def health():
     }
 
 
+# Qué significa cada SQLSTATE que devuelve pyodbc cuando falla la conexión. El
+# CÓDIGO es seguro de publicar (no trae host, usuario ni contraseña) y es la
+# diferencia entre "no sé qué pasó" y saber exactamente cuál de los tres
+# eslabones se rompió: driver, red o credenciales.
+_PISTAS_SQLSTATE = {
+    "IM002": (
+        "El driver ODBC no está instalado o su nombre no coincide con "
+        "SQLSERVER_DRIVER. En el server: `odbcinst -q -d` lista los instalados."
+    ),
+    "IM003": "El driver está registrado pero no se pudo cargar (biblioteca faltante).",
+    "08001": (
+        "No se alcanzó el servidor: host/puerto equivocados, o el firewall no "
+        "deja pasar. El driver SÍ está bien si llegaste a este error."
+    ),
+    "08S01": "La conexión se cayó a medio camino (red inestable o TLS rechazado).",
+    "28000": "Login rechazado: usuario o contraseña incorrectos.",
+    "42000": "El login funcionó pero no hay permiso sobre la base indicada.",
+}
+
+
 @app.get(
     "/health/db",
     tags=["Utilidad"],
@@ -124,12 +145,23 @@ def health_db():
         from db.sqlserver import probar_conexion
 
         return {"status": "ok", **probar_conexion()}
+    except ConfiguracionIncompleta as exc:
+        # Este mensaje lo escribimos nosotros y solo nombra variables que faltan
+        # — sin valores. Se puede mostrar tal cual, y es lo que hace la
+        # diferencia entre "RuntimeError" y saber qué línea agregarle al .env.
+        return {"status": "sin_configurar", "detalle": str(exc)}
     except Exception as exc:  # noqa: BLE001
         # El texto de una excepción de pyodbc trae host, driver y usuario. En el
         # server de CSI cualquier miembro de la empresa alcanza este puerto por
-        # IP, así que el detalle se va al log y al cliente solo el tipo de error.
+        # IP, así que el detalle se va al log y al cliente solo el tipo de error
+        # más el SQLSTATE, que es diagnóstico pero no confidencial.
         logger.exception("Falló el health check de SQL Server")
-        return {"status": "error", "error": type(exc).__name__}
+        respuesta = {"status": "error", "error": type(exc).__name__}
+        codigo = exc.args[0] if exc.args and isinstance(exc.args[0], str) else None
+        if codigo in _PISTAS_SQLSTATE:
+            respuesta["sqlstate"] = codigo
+            respuesta["pista"] = _PISTAS_SQLSTATE[codigo]
+        return respuesta
 
 
 # ── Registro de routers ───────────────────────────────────────────────────────
