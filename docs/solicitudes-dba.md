@@ -127,11 +127,38 @@ Son dos hechos con semántica, tipo y uso distintos, así que corresponden a dos
 original lo prohibía. De ahí la columna `transform` y la llave nueva: el par
 (`source_path`, `transform`) es lo único que tiene que ser único.
 
-`transform` NO es código ni una expresión: es un **nombre de catálogo** que la
-aplicación sabe aplicar (para este caso, algo como `anio` y `numero_emision`).
-La base guarda el nombre; la lógica vive en la aplicación. Meter expresiones
-regulares en una columna sería darle a la base un trabajo que no le toca, y
-volvería el mapeo imposible de validar.
+`transform` NO es código ni una expresión: es un **nombre de catálogo cerrado**
+que la aplicación sabe aplicar. La base guarda el nombre; la lógica vive en la
+aplicación. Meter expresiones regulares en una columna sería darle a la base un
+trabajo que no le toca, y volvería el mapeo imposible de validar por inspección.
+
+**Nota (vocabulario de `transform`): posicional, no semántico.** El catálogo
+arranca con dos valores genéricos, no con nombres específicos del tipo documental:
+
+| `transform` | Qué hace |
+|---|---|
+| NULL | El valor completo, sin partir. Es el caso de 18 de los 19 campos de INE. |
+| `token_1` | Primer grupo al partir el valor por espacios o puntuación. |
+| `token_2` | Segundo grupo. |
+
+Se eligió posicional después de descartar el semántico (`anio`, `numero_emision`),
+por dos razones:
+
+1. **El catálogo no crece con cada tipo documental.** Un nombre como `anio` solo
+   sirve para este campo de la INE; `token_1` sirve para cualquier valor compuesto
+   de cualquier documento. Como el catálogo es cerrado —y eso es a propósito— cada
+   entrada nueva exige un despliegue, no una configuración. Mantenerlo genérico es
+   lo que evita que ese costo se pague una vez por tipo documental.
+2. **Ya cubre un segundo caso real sin tocar código.** `vigencia` a veces llega
+   como año suelto (`2029`) y a veces como rango (`2024-2034`); con `token_1` /
+   `token_2` se resuelve igual que `fecha_registro`. Sin el vocabulario genérico
+   habría hecho falta agregar otro par de nombres.
+
+La semántica no se pierde: vive en el `field_definition` al que el renglón apunta.
+El mapeo se lee *"token_1 de `fecha_registro` → campo `anio_registro`"*, que es
+inequívoco. Y como el vocabulario es cerrado, la UI que lo marque solo puede
+ofrecer un desplegable con lo que el código implementa — nunca un campo de texto
+libre.
 
 **Nota (cómo llenan `transform` los campos que no se parten):** Con `NULL`. De
 los 19 campos que emite el procesador de INE, **18 llevan `transform` en NULL** —
@@ -175,6 +202,48 @@ convivan ambas rutas sin migrar nada.
 3. `field_definition.required = true` **sin mapeo** → debería impedir la
    transición `draft → active` de la versión. Es un error de configuración, no
    un hallazgo de extracción.
+
+### 2.6b · Cuándo y dónde se marca el mapeo
+
+No es una tabla, es la secuencia de uso — pero define qué tiene que permitir el
+modelo, así que va aquí.
+
+**El mapeo no se puede declarar en abstracto.** El paso 2 del wizard del Módulo de
+configuración ("Nuevo campo de extracción": nombre, descripción funcional,
+obligatorio) declara el `field_definition` sin ningún documento enfrente. Ahí es
+imposible saber que `fecha_registro` trae dos datos pegados: pedir que se marque
+una partición sin ver el valor es pedir que se adivine.
+
+**La pantalla correcta ya está diseñada.** El frame de HU039-041, "Calibración de
+campos extraídos", dice literalmente *"Carga y etiqueta un documento de ejemplo
+para asociar sus valores a los campos configurados"*. Esa asociación **es**
+`extractor_field_map`. Es el lugar correcto porque hay un documento real enfrente
+y el valor `2024 00` se ve.
+
+**Pero hay una tensión con la inmutabilidad, y hay que resolverla en el diseño.**
+Esa sección de Figma se titula "sobre una versión **activa** de la Configuration
+Table", y por 2.1 una versión activa está congelada. Los ejemplos few-shot pueden
+colgarse de una versión activa —son datos de entrenamiento, no configuración—
+pero **el mapeo sí es configuración**: marcarlo sobre una versión activa haría que
+una re-corrida del mismo `config_version_id` diera otro resultado, que es
+exactamente lo que la inmutabilidad protege.
+
+Fases, entonces:
+
+| Fase de `config_version` | Qué se permite |
+|---|---|
+| `draft` | Declarar campos, **marcar mapeos y `transform`** |
+| Transición a `active` (HU038) | Validar que todo `field_definition.required` tenga mapeo — regla de integridad #3 de 2.6 |
+| `active` | Cargar y etiquetar ejemplos few-shot. **Mapeos congelados** |
+| Corregir un mapeo ya activo | Obliga a versión nueva. No hay atajo, y eso es la garantía funcionando |
+
+**Falta un paso en el diseño actual del wizard:** no hay un momento de *"corre
+este documento de muestra y muéstrame qué emite el motor"* durante `draft`. Es
+viable, porque lo que emite Document AI **no depende de nuestra configuración** —
+se puede correr una extracción de sonda antes de activar nada. Ese paso
+convertiría el paso 2 de *escribir nombres a ciegas* a *descubrirlos del motor*,
+que es como funciona el botón "Generar a partir de un documento" de la consola de
+Google.
 
 ### 2.7 · extractor_binding
 
