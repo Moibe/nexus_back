@@ -11,6 +11,7 @@ cómo ya se llamaba Document AI en el proyecto `document_ai`.
 
 import base64
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -108,6 +109,20 @@ def _a_cien(valor: Any) -> float | None:
     if not isinstance(valor, (int, float)):
         return None
     return round(float(valor) * 100, 2)
+
+
+# "AÑO DE REGISTRO" es UN campo impreso en la credencial cuyo valor trae dos
+# datos pegados: el año en que la persona se registró en el padrón y el número
+# de emisión de la credencial. Medido sobre 44 INEs reales: 42 vienen como
+# "2024 00" y 2 con basura de OCR en el separador ("2018.01", "2010, 01"), de ahí
+# el `\D{0,3}` en vez de un espacio literal.
+#
+# Que el segundo número es el número de emisión quedó comprobado, no supuesto:
+# con `00` el hueco entre año de emisión y año de registro es 0 en 19 de 19
+# casos (o sea es la credencial original), y crece de forma monótona con el
+# contador — 01 → 5.6 años, 02 → 12.0, 03 → 21.3. Y no puede ser el mes porque
+# `00` no existe como mes.
+_RE_ANIO_REGISTRO = re.compile(r"^\s*(\d{4})\D{0,3}(\d{2})\s*$")
 
 
 def _valor_normalizado(entidad: dict[str, Any]) -> Any:
@@ -244,6 +259,46 @@ def _limpiar_ine(datos: dict[str, Any]) -> dict[str, Any]:
     return datos
 
 
+def _descomponer_anio_registro(datos: dict[str, Any]) -> dict[str, Any]:
+    """Parte `fecha_registro` ("2024 00") en sus dos datos reales.
+
+    Se hace AQUÍ y no en el procesador de Document AI a propósito: en la
+    credencial es un solo campo impreso, con una sola etiqueta. Pedirle al
+    modelo que lo divida sería inventar una región que no existe, además de
+    encargarle a un modelo generativo una partición de cadena que en código es
+    determinista — el mismo razonamiento por el que `edad` se calcula y no se
+    extrae.
+
+    Cómo queda:
+      - `value_raw` conserva "2024 00" ÍNTEGRO. Es lo que dice el documento y es
+        lo que permite auditar la partición después.
+      - `value_normalized` pasa a ser solo el año. El campo se llama
+        `fecha_registro`; que su valor normalizado sea una fecha y no una cadena
+        con dos cosas pegadas es lo que su nombre promete.
+      - `numero_emision` aparece como llave nueva del mismo campo, en vez de
+        como campo hermano, para no mostrar el mismo dato dos veces en la UI.
+
+    Cuando exista `extractor_field_map` (sección 2.6), esta partición se declara
+    ahí como configuración versionada y esta función desaparece. Mientras no
+    exista, vive aquí junto a las otras limpiezas específicas de INE.
+    """
+    campo = datos.get("fecha_registro")
+    if not isinstance(campo, dict):
+        return datos
+    crudo = campo.get("value_raw")
+    if not isinstance(crudo, str):
+        return datos
+    coincidencia = _RE_ANIO_REGISTRO.match(crudo)
+    if not coincidencia:
+        # No se fuerza: si el OCR devolvió algo que no cuadra con el patrón, se
+        # deja tal cual. Un `value_normalized` a medias sería peor que el crudo.
+        return datos
+    anio, emision = coincidencia.groups()
+    campo["value_normalized"] = anio
+    campo["numero_emision"] = emision
+    return datos
+
+
 def _confianza_minima(datos: dict[str, Any]) -> float | None:
     """La menor `confianza` (escala 0-100) entre TODOS los campos extraídos,
     recorriendo también los de 'domicilio'. Sirve de semáforo de un vistazo: un
@@ -364,7 +419,9 @@ async def extraer_ine(contenido: bytes, mime_type: str = "image/jpeg") -> dict[s
         crudo.get("document", {}), DOCAI_VERSION_INE or None
     )
 
-    datos = _limpiar_ine(_extraer_entidades(entidades, offsets_ocr))
+    datos = _descomponer_anio_registro(
+        _limpiar_ine(_extraer_entidades(entidades, offsets_ocr))
+    )
     datos["confianza_minima"] = _confianza_minima(datos)
     datos["ocr"] = capa_ocr
     # Bajo su propia llave y no como hermano de los campos del documento: esto

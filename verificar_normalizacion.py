@@ -18,7 +18,7 @@ esos errores; ver docs/esquema-procesador-ine.md.
 
 import sys
 
-from servicios.ia import _valor_normalizado
+from servicios.ia import _descomponer_anio_registro, _valor_normalizado
 
 # (descripción, entidad tal como la manda Document AI, valor esperado)
 CASOS = [
@@ -94,8 +94,60 @@ CASOS = [
 ]
 
 
+# "AÑO DE REGISTRO" trae dos datos pegados. Los separadores raros salieron de
+# medir 44 INEs reales; los casos límite de abajo son los que romperían el
+# parseo si alguien "simplifica" la expresión regular.
+CASOS_ANIO_REGISTRO = [
+    ("separador normal", "2024 00", "2024", "00"),
+    ("credencial vieja con reposiciones", "1991 03", "1991", "03"),
+    ("OCR metió un punto en vez del espacio", "2018.01", "2018", "01"),
+    ("OCR metió coma y espacio", "2010, 01", "2010", "01"),
+    ("OCR se comió el separador", "201102", "2011", "02"),
+    ("espacios de sobra alrededor", "  2005 01  ", "2005", "01"),
+]
+
+# Estos NO deben partirse: dejar el crudo es mejor que inventar una partición.
+CASOS_NO_PARTIR = [
+    ("solo el año, sin contador", "2024"),
+    ("texto que no es el patrón", "AÑO DE REGISTRO"),
+    ("año de 2 dígitos", "24 00"),
+    ("tres grupos", "2024 00 07"),
+]
+
+
+def probar_anio_registro() -> int:
+    fallos = 0
+    print()
+    print("--- descomposición de AÑO DE REGISTRO ---")
+    for desc, crudo, anio, emision in CASOS_ANIO_REGISTRO:
+        campo = {"value_raw": crudo, "value_normalized": crudo}
+        r = _descomponer_anio_registro({"fecha_registro": campo})["fecha_registro"]
+        bien = (
+            r.get("value_normalized") == anio
+            and r.get("numero_emision") == emision
+            and r.get("value_raw") == crudo  # el crudo NUNCA se toca
+        )
+        if not bien:
+            fallos += 1
+            print(f"  FALLA {desc}: {crudo!r} -> {r}")
+        else:
+            print(f"  OK  {desc}: {crudo!r} -> año={anio} emision={emision}")
+
+    for desc, crudo in CASOS_NO_PARTIR:
+        campo = {"value_raw": crudo, "value_normalized": crudo}
+        r = _descomponer_anio_registro({"fecha_registro": campo})["fecha_registro"]
+        bien = "numero_emision" not in r and r["value_normalized"] == crudo
+        if not bien:
+            fallos += 1
+            print(f"  FALLA {desc}: {crudo!r} NO debía partirse -> {r}")
+        else:
+            print(f"  OK  {desc}: {crudo!r} se deja intacto")
+    return fallos
+
+
 def main() -> int:
     fallos = 0
+    print("--- normalización de valores ---")
     for descripcion, entidad, esperado in CASOS:
         obtenido = _valor_normalizado(entidad)
         bien = obtenido == esperado
@@ -108,11 +160,13 @@ def main() -> int:
             else f"  OK  {descripcion}  -> {obtenido!r}"
         )
 
+    fallos += probar_anio_registro()
+
     print()
     if fallos:
-        print(f"{fallos} de {len(CASOS)} casos FALLARON")
+        print(f"{fallos} casos FALLARON")
         return 1
-    print(f"los {len(CASOS)} casos pasaron")
+    print(f"los {len(CASOS) + len(CASOS_ANIO_REGISTRO) + len(CASOS_NO_PARTIR)} casos pasaron")
     return 0
 
 

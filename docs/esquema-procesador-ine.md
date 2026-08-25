@@ -104,9 +104,8 @@ no está impresa en el documento. Si esa condición se relajara, la app estaría
 guardando datos que nadie leyó.
 
 **c) `fecha_registro` declarado como Número pero su valor es `"2015 00"`.**
-No es un número ni una fecha; es el año seguido de otro campo pegado. Aquí el
-problema no es nuestro código sino el esquema: vale revisar en la consola si
-debería ser texto, o si son dos campos que el procesador está juntando.
+**RESUELTO el 2026-08-25 midiendo 46 INEs reales.** Ver la sección dedicada
+más abajo.
 
 ## 4. `edad` no debería ser un campo almacenado
 
@@ -154,3 +153,76 @@ venv/bin/python verificar_normalizacion.py
 No usa pytest a propósito — el proyecto no tiene framework de pruebas y esto no
 justifica agregar una dependencia. Si algún día se monta pytest, estos casos se
 mudan tal cual.
+
+---
+
+## `fecha_registro`: qué es realmente
+
+Resuelto empíricamente sobre una muestra de **46 INEs reales** del corpus del
+usuario (`C:/Moibe/documentos_ocr/INE_solo_frente`, 548 archivos; muestra
+repartida cada 12 para no sesgar por lote de digitalización). Cero
+`quality_alert`, 44 con el campo presente.
+
+### No es un campo mal armado: es un campo compuesto que sí existe así
+
+La etiqueta impresa en la credencial es **"AÑO DE REGISTRO"** y su valor son dos
+números juntos. Confirmado leyendo los bloques de OCR: el renglón dice
+literalmente `AÑO DE REGISTRO` y el valor al lado es `2024 00`. **Es un solo
+campo impreso**, con una sola etiqueta — no son dos campos que el modelo pegó.
+
+Por eso **no se debe partir en el procesador**: etiquetar dos sub-regiones
+implicaría inventar una separación que no está en el documento.
+
+### El segundo número es el número de emisión
+
+Se probó con una predicción falsable: *si es un contador de reposiciones,
+entonces el hueco entre el año de emisión y el año de registro debe crecer con
+él*. Resultado:
+
+| Segundo número | Hueco emisión − registro | Casos |
+|---|---|---|
+| `00` | **0.0 años** — sin una sola excepción | 19 |
+| `01` | 5.6 años | 14 |
+| `02` | 12.0 años | 7 |
+| `03` | 21.3 años | 3 |
+
+Monótono, y con un punto cero perfecto: `00` significa **credencial original**,
+emitida el mismo año del registro, en 19 de 19 casos. Cada incremento es una
+reposición.
+
+Queda descartado que sea el **mes**: aparece `00`, que no existe como mes, y los
+valores observados (`00,01,02,03,06`) se concentran abajo en vez de repartirse
+del 1 al 12.
+
+### Cómo quedó implementado, y por qué ahí
+
+La partición vive en `_descomponer_anio_registro()` en `servicios/ia.py`, no en
+el procesador ni en la base:
+
+- `value_raw` conserva `"2024 00"` **íntegro** — es lo que dice el documento, y
+  es lo que permite auditar la partición después.
+- `value_normalized` pasa a ser **solo el año**. El campo se llama
+  `fecha_registro`; que su valor normalizado sea un año y no una cadena con dos
+  cosas pegadas es lo que su nombre promete.
+- `numero_emision` aparece como **llave nueva del mismo campo**, no como campo
+  hermano. Así la UI no muestra el mismo dato dos veces.
+
+Es el mismo razonamiento que con `edad`: una partición de cadena es determinista
+en código y no hay por qué encargársela a un modelo generativo.
+
+### Formatos que aparecen en el mundo real
+
+De 44 casos: 42 llegan como `NNNN NN`, uno como `2018.01` y uno como
+`2010, 01` — el OCR sustituye el espacio por puntuación. Hubo también un bloque
+donde el OCR pegó la etiqueta al valor (`AÑO DE REGISTRO 2018.01`), aunque la
+entidad extraída sí venía limpia.
+
+Por eso la expresión regular usa `\D{0,3}` entre los dos grupos y no un espacio
+literal. Los seis formatos, más cuatro casos que **no** deben partirse, están
+cubiertos en [`verificar_normalizacion.py`](../verificar_normalizacion.py).
+
+### Consecuencia para el modelo de datos
+
+Un campo emitido que se descompone en dos hechos **rompe una restricción que
+está propuesta en la sección 2.6** de [`solicitudes-dba.md`](solicitudes-dba.md).
+Ver ahí la corrección.

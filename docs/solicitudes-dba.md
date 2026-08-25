@@ -90,9 +90,10 @@ motores cuyo esquema vive fuera de la base (hoy: `document_ai_extractor`).
 | `field_definition_id` | uuid | N | FK → field_definition. Campo del catálogo al que corresponde lo que emitió el motor. |
 | `engine` | enum extraction_engine | N | El mismo enum de `extraction_run.engine`. Un mapeo solo aplica al motor que declara. |
 | `source_path` | varchar(120) | N | Ruta del campo tal como la emite el motor, con notación punteada para el anidamiento (`domicilio.estado`). Ver nota. |
+| `transform` | varchar(60) | S | Qué parte del valor emitido corresponde a este campo. NULL = el valor completo. Ver nota. |
 
 **Llaves y restricciones:** FK(config_version_id) · FK(field_definition_id) ·
-UNIQUE(config_version_id, engine, source_path) ·
+UNIQUE(config_version_id, engine, source_path, **transform**) ·
 UNIQUE(config_version_id, engine, field_definition_id)
 
 **Nota:** Cuelga de `config_version` y no de `document_type` por la misma razón
@@ -109,6 +110,28 @@ significados distintos. Verificado contra el procesador de INE en producción:
 con valores distintos (los de raíz son claves del padrón electoral, los de
 domicilio son texto del renglón de dirección). Un mapeo por nombre simple los
 colapsaría y perdería un dato sin avisar.
+
+**Nota (CORRECCIÓN del 2026-08-25, hallada midiendo datos reales):** La primera
+versión de esta sección declaraba `UNIQUE(config_version_id, engine, source_path)`
+—o sea, un campo emitido mapea a **un solo** `field_definition`— y eso resultó
+demasiado estrecho. Existe al menos un caso real que no cabe:
+
+El procesador de INE emite `fecha_registro` con el valor `"2024 00"`. En la
+credencial es **un solo campo impreso** (la etiqueta dice "AÑO DE REGISTRO"),
+pero contiene **dos hechos distintos**: el año en que la persona se registró en
+el padrón, y el número de emisión de la credencial. Medido sobre 46 INEs reales,
+ver [`esquema-procesador-ine.md`](esquema-procesador-ine.md) para la evidencia.
+
+Son dos hechos con semántica, tipo y uso distintos, así que corresponden a dos
+`field_definition`. Pero los dos vienen del MISMO `source_path`, y la restricción
+original lo prohibía. De ahí la columna `transform` y la llave nueva: el par
+(`source_path`, `transform`) es lo único que tiene que ser único.
+
+`transform` NO es código ni una expresión: es un **nombre de catálogo** que la
+aplicación sabe aplicar (para este caso, algo como `anio` y `numero_emision`).
+La base guarda el nombre; la lógica vive en la aplicación. Meter expresiones
+regulares en una columna sería darle a la base un trabajo que no le toca, y
+volvería el mapeo imposible de validar.
 
 **Nota:** No todos los motores necesitan renglones aquí. Si la extracción se
 arma como prompt desde `field_definition` (la ruta `azure_openai`), el motor
