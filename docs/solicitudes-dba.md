@@ -19,18 +19,50 @@ rehacer trabajo. Marcar aquí lo que ya quedó.
 
 | # | Qué pedir | Por qué va en este lugar | Así se verifica | Estado |
 |---|---|---|---|---|
-| 1 | Cadena de conexión + **un SP trivial** que devuelva cualquier cosa (un `SELECT 1`, la fecha del servidor) | Antes de cualquier esquema hay que probar que la app **alcanza** la base: driver ODBC, credenciales, firewall. Si algo de esa cadena falla, se descubre ahora y no enterrado dentro de un SP real | `GET /health/db` en verde | ⬜ |
+| 1 | Cadena de conexión + **un SP trivial** que devuelva cualquier cosa (un `SELECT 1`, la fecha del servidor) | Antes de cualquier esquema hay que probar que la app **alcanza** la base: driver ODBC, credenciales, firewall. Si algo de esa cadena falla, se descubre ahora y no enterrado dentro de un SP real | `GET /health/db` en verde | 🟡 conexión ✅ 2026-08-25, SP pendiente |
 | 2 | `sp_ListarBandejaPreparacion` (solo lectura) | Primer SP de verdad, y de **lectura**: no puede corromper nada. Además es lo que el front ya necesita para HU027 | La Bandeja del front deja de ser memoria del navegador | ⬜ |
 | 3 | Alta de **expediente** + alta de **file** (juntas) | Van juntas porque `file.expediente_id` es NOT NULL: no se puede registrar un archivo sin que exista antes su expediente | Subir un archivo en el front y que sobreviva a un refresh | ⬜ |
 | 4 | Las secciones **2.6** y **2.7** del diccionario | Esto no es un SP, es una **plática de diseño** — conviene cuando ya haya confianza en el trato y él tenga contexto de lo anterior | Que quede acordado dónde vive el mapeo | ⬜ |
 | 5 | Lectura de la **configuración activa** de un tipo documental | Depende de que exista lo de 2.6, porque incluye el mapeo | `servicios/ia.py` puede traducir nombres de Document AI a `field_definition_id` | ⬜ |
 | 6 | **SP transaccional** de guardado de corrida completa | El más grande y el que más decisiones de forma tiene. Con todo lo anterior andando, ya se le puede plantear con datos reales en la mano | Una extracción de INE queda guardada entera o no queda | ⬜ |
 
-**Pista en paralelo, no es de Charlie**: el server de CSI tiene el runtime de
-ODBC (`libodbc.so.2`) pero **no el driver de SQL Server** (`msodbcsql18`) ni el
-CLI `odbcinst`. Eso lo instala quien administre el server, no el DBA. Conviene
-destrabarlo antes o durante el paso 1, porque si no, ese paso va a fallar por un
-motivo que no tiene nada que ver con la base.
+### Estado del paso 1 al 2026-08-25
+
+**La conexión ya funciona.** `GET /health/db` contra `172.10.30.15:8083` devuelve
+`status: ok` — SQL Server 2022 Standard sobre Windows Server 2022, base `master`.
+Quedó probado de punta a punta: driver ODBC 18 instalado y registrado, ruta de
+red abierta, y las credenciales de `usrNexus` aceptadas.
+
+Se cerró en este orden, y el orden importa porque cada falla se disfrazaba de la
+siguiente:
+
+1. Driver `msodbcsql18` instalado en el server (tarea de sysadmin, no del DBA).
+   Confirmado con `odbcinst -q -d` → `[ODBC Driver 18 for SQL Server]`, que
+   coincide textual con el default de `config.py`.
+2. Datos de conexión al `.env`: host `192.168.104.47`, **puerto 2025** (no 1433),
+   `usrNexus`, y `SQLSERVER_DB=master` como **sonda** — `master` existe en todo
+   SQL Server, así que valida la cadena completa sin depender del nombre real de
+   la base, que todavía no teníamos.
+3. La red. Fue lo último y lo que de verdad bloqueaba: el puerto se liberó el
+   2026-08-25. Antes de eso, `pyodbc` daba `OperationalError` con TCP cerrado, y
+   ese error se ve igual que un problema de credenciales.
+
+**Lo que sigue faltando del paso 1: el SP trivial.** Y no es un trámite: la
+prueba de arriba corre `SELECT @@VERSION`, que demuestra que el login **conecta**
+pero NO que pueda ejecutar stored procedures. Como el modelo de permisos
+acordado es `EXECUTE` y nada más (sin `SELECT` a tablas), hasta que no haya un SP
+real invocado no sabemos si ese permiso está bien puesto. Es exactamente el tipo
+de cosa que aparecería después, disfrazada de bug de la aplicación.
+
+**Sigue faltando el nombre real de la base.** Mientras siga en `master`, la app
+está apuntando a la base de sistema. Alternativa a preguntarle: desde el server,
+`SELECT name FROM sys.databases` muestra las que el login alcanza a ver.
+
+**Lo que este paso dejó como aprendizaje de diagnóstico**: `/health/db` ahora
+publica el `SQLSTATE` siempre (no solo cuando está en la tabla de pistas), y
+distingue "falta configuración" de "falló la conexión". La primera versión
+devolvía únicamente `{"status":"error","error":"OperationalError"}`, que no
+alcanza para saber cuál de los tres eslabones se rompió.
 
 ---
 
