@@ -116,6 +116,12 @@ def health():
 # diferencia entre "no sé qué pasó" y saber exactamente cuál de los tres
 # eslabones se rompió: driver, red o credenciales.
 _PISTAS_SQLSTATE = {
+    "HYT00": (
+        "Se agotó el tiempo de espera al conectar. El driver está bien y el "
+        "intento salió: no hubo respuesta del otro lado. Casi siempre es "
+        "firewall o ruteo hacia el host/puerto de SQL Server, no credenciales."
+    ),
+    "HYT01": "Se agotó el tiempo de espera de la conexión ya establecida.",
     "IM002": (
         "El driver ODBC no está instalado o su nombre no coincide con "
         "SQLSERVER_DRIVER. En el server: `odbcinst -q -d` lista los instalados."
@@ -157,10 +163,22 @@ def health_db():
         # más el SQLSTATE, que es diagnóstico pero no confidencial.
         logger.exception("Falló el health check de SQL Server")
         respuesta = {"status": "error", "error": type(exc).__name__}
+
+        # El SQLSTATE se publica SIEMPRE que exista, esté o no en la tabla de
+        # pistas. La primera versión de esto solo lo mostraba si lo tenía
+        # mapeado, y el resultado fue una respuesta sin ninguna información
+        # útil justo en el caso más probable (HYT00, que no estaba en la
+        # tabla) — o sea el diagnóstico fallaba precisamente cuando más se
+        # necesitaba. El código en sí no es confidencial: son cinco caracteres
+        # del estándar ODBC, sin host, usuario ni contraseña.
         codigo = exc.args[0] if exc.args and isinstance(exc.args[0], str) else None
-        if codigo in _PISTAS_SQLSTATE:
+        if codigo:
             respuesta["sqlstate"] = codigo
-            respuesta["pista"] = _PISTAS_SQLSTATE[codigo]
+            pista = _PISTAS_SQLSTATE.get(codigo)
+            respuesta["pista"] = pista or (
+                f"SQLSTATE {codigo} sin pista registrada. El detalle completo "
+                "está en el log: `pm2 logs nexus-back-api --lines 40`."
+            )
         return respuesta
 
 
