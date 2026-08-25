@@ -133,6 +133,32 @@ La base guarda el nombre; la lógica vive en la aplicación. Meter expresiones
 regulares en una columna sería darle a la base un trabajo que no le toca, y
 volvería el mapeo imposible de validar.
 
+**Nota (cómo llenan `transform` los campos que no se parten):** Con `NULL`. De
+los 19 campos que emite el procesador de INE, **18 llevan `transform` en NULL** —
+`curp`, `nombre`, `seccion` y el resto se toman completos. Solo `fecha_registro`
+produce dos renglones con la columna llena. O sea la columna está vacía en la
+enorme mayoría, y así debe ser: NULL significa "usa el valor tal como lo emitió
+el motor".
+
+Eso tiene una consecuencia que conviene decidir a propósito, porque la columna
+vive **dentro de la llave única**:
+
+- **SQL Server trata los NULL como IGUALES para efectos de UNIQUE**, a diferencia
+  del estándar SQL (donde `NULL ≠ NULL` y los duplicados se colarían). Aquí eso
+  nos favorece: dos renglones `(v1, document_ai_extractor, 'curp', NULL)` siguen
+  chocando, así que sigue siendo imposible mapear el mismo `source_path` dos
+  veces sin transformación. La restricción NO se debilita con los NULL.
+- Es una **dependencia del motor**. Confirmado que el servidor es SQL Server 2022
+  Standard, así que aplica. Si esto se moviera algún día a PostgreSQL, la
+  restricción se volvería laxa en silencio.
+
+**Alternativa a considerar, decisión del DBA:** un valor centinela en vez de NULL
+(`transform = 'completo'` en esas 18 filas). Cuesta 18 valores de relleno, pero
+deja la columna NOT NULL, no depende de la semántica del NULL de ningún motor, y
+vuelve las consultas más simples. Muchos DBAs prefieren no tener columnas
+nullables dentro de una llave única justamente por eso. Las dos opciones son
+válidas; lo que no conviene es que quede sin decidir.
+
 **Nota:** No todos los motores necesitan renglones aquí. Si la extracción se
 arma como prompt desde `field_definition` (la ruta `azure_openai`), el motor
 devuelve los campos por su propio `code` y no hay nada que traducir. La tabla
