@@ -17,14 +17,37 @@ Se pide **de poco a poco**, en pláticas cortas de escritorio. El orden no es
 arbitrario: cada paso desbloquea al siguiente, y pedir de más de golpe invita a
 rehacer trabajo. Marcar aquí lo que ya quedó.
 
+**Cómo se marca el estado** — la columna lleva un solo símbolo y, si aplica, la
+fecha en que se cerró:
+
+| Símbolo | Significa |
+|---|---|
+| ⬜ | Sin empezar. No se le ha pedido todavía. |
+| 🟡 | En curso: pedido y parcialmente resuelto. Se anota **qué falta**, no solo que falta. |
+| ✅ | Cerrado **y verificado desde la aplicación**, con fecha. Que él diga "ya quedó" no basta: se marca cuando `nexus_back` lo pudo consumir de verdad. |
+| 🔵 | Entregado por él sin habérselo pedido, fuera del orden planeado. |
+
+La distinción de ✅ importa: casi todo lo que salió mal en el paso 1 (driver,
+puerto, red, permiso de base) se veía como "ya está" de un lado y seguía roto
+del otro. La verificación es siempre desde la app, no desde SSMS.
+
 | # | Qué pedir | Por qué va en este lugar | Así se verifica | Estado |
 |---|---|---|---|---|
-| 1 | Cadena de conexión + **un SP trivial** que devuelva cualquier cosa (un `SELECT 1`, la fecha del servidor) | Antes de cualquier esquema hay que probar que la app **alcanza** la base: driver ODBC, credenciales, firewall. Si algo de esa cadena falla, se descubre ahora y no enterrado dentro de un SP real | `GET /health/db` en verde | 🟡 conexión ✅ 2026-08-25, `IA_Nexus` verificada en producción ✅ 2026-08-26, **falta solo el SP trivial** |
-| 2 | `sp_ListarBandejaPreparacion` (solo lectura) | Primer SP de verdad, y de **lectura**: no puede corromper nada. Además es lo que el front ya necesita para HU027 | La Bandeja del front deja de ser memoria del navegador | ⬜ |
+| 1 | Cadena de conexión + **un SP trivial** que devuelva cualquier cosa (un `SELECT 1`, la fecha del servidor) | Antes de cualquier esquema hay que probar que la app **alcanza** la base: driver ODBC, credenciales, firewall. Si algo de esa cadena falla, se descubre ahora y no enterrado dentro de un SP real | `GET /health/db` en verde | ✅ **2026-08-26**. El SP trivial resultó innecesario: un SP real (`uspCreateTenant`) probó el `EXECUTE` al fallar con `RAISERROR` 50006 |
+| — | **Tenants: `uspGetTenant` / `uspCreateTenant` / `uspUpdateTenant`** | No estaba en el plan: los entregó él por su cuenta. Encaja bien porque el tenant es la raíz de todo lo demás — el `@TenantId` que asumían los placeholders sale de aquí | Crear, leer y actualizar un tenant desde `repositorios/tenants.py` | 🔵🟡 firmas y vocabulario ✅; **bloqueado** por `tenantSequence` vacía (ver 0b) |
+| 2 | Listar bandeja de preparación (solo lectura) | Primer SP de **lectura** de datos documentales: no puede corromper nada. Además es lo que el front ya necesita para HU027 | La Bandeja del front deja de ser memoria del navegador | ⬜ |
 | 3 | Alta de **expediente** + alta de **file** (juntas) | Van juntas porque `file.expediente_id` es NOT NULL: no se puede registrar un archivo sin que exista antes su expediente | Subir un archivo en el front y que sobreviva a un refresh | ⬜ |
 | 4 | Las secciones **2.6** y **2.7** del diccionario | Esto no es un SP, es una **plática de diseño** — conviene cuando ya haya confianza en el trato y él tenga contexto de lo anterior | Que quede acordado dónde vive el mapeo | ⬜ |
 | 5 | Lectura de la **configuración activa** de un tipo documental | Depende de que exista lo de 2.6, porque incluye el mapeo | `servicios/ia.py` puede traducir nombres de Document AI a `field_definition_id` | ⬜ |
 | 6 | **SP transaccional** de guardado de corrida completa | El más grande y el que más decisiones de forma tiene. Con todo lo anterior andando, ya se le puede plantear con datos reales en la mano | Una extracción de INE queda guardada entera o no queda | ⬜ |
+
+**Consecuencia de los SPs de tenant para lo que sigue:** `[security].[tenants]`
+tiene **dos** identificadores — `tenantId int IDENTITY` (interno) y
+`tenantGuid uniqueidentifier` (público), y `uspGetTenant` recibe el **GUID**.
+Los placeholders de `repositorios/documentos.py` asumían un `@TenantId`
+entero. Al pedir los SPs de los pasos 2 y 3 conviene alinearse a su convención
+y recibir el **GUID**, no el int: expone menos del modelo interno y es lo que
+ya viaja por la API.
 
 ### Estado del paso 1 al 2026-08-25
 
@@ -96,7 +119,51 @@ alcanza para saber cuál de los tres eslabones se rompió.
 
 ---
 
-## 0b. Solicitud abierta: sembrar `[security].[tenantSequence]`
+## 0a. LO QUE SE LE LLEVA AHORA (2026-08-26)
+
+Tres cosas, una plática corta. Ordenadas: la primera desbloquea, las otras dos
+son de un minuto cada una.
+
+> **1. Sembrar `[security].[tenantSequence]` — es lo único que bloquea.**
+>
+> `uspCreateTenant` falla con `The tenant sequence is not configured (50006)`
+> porque esa tabla está en 0 filas. Ya verificamos que el SP corre bien y que
+> los permisos están correctos; solo le falta su fila de configuración.
+>
+> La decisión que necesitamos de él: **el `prefix`**. Es `varchar(5)` y
+> `tenants.tenantCode` es `varchar(8)`, así que prefijo y consecutivo comparten
+> esos 8 caracteres — con un prefijo de 3 quedan 5 dígitos (`NEX00001`,
+> ~99,999 tenants); con uno de 5, solo 3 (`NEXUS001`, 999). Eso fija el techo
+> de tenants numerables, y es nomenclatura de negocio: mejor que la elija él.
+>
+> Las otras columnas no tienen `DEFAULT`, así que también hay que darles valor
+> al insertar: `lastSequence` (0 para arrancar), `isActive`, `createdAt`,
+> `createdBy`.
+>
+> **2. ¿`uspCreateTenant` devuelve el registro que creó?**
+>
+> Pregunta rápida, la puede contestar de memoria. No recibe `@tenantGuid` —lo
+> genera la base— ni declara parámetros `OUTPUT`, así que la única vía es que lo
+> regrese como result set. Si no lo hace, **un tenant recién creado queda
+> irrecuperable** desde la aplicación: `uspGetTenant` exige el GUID y no hay SP
+> de listar. Si resulta que no, vale pedirle que agregue el `SELECT` del
+> registro creado al final — y de paso un `SET NOCOUNT ON` al inicio, que evita
+> que el contador de filas del `INSERT` se cuele como primer result set.
+>
+> **3. `GRANT VIEW DEFINITION ON SCHEMA::security TO usrNexus`**
+>
+> Hoy `OBJECT_DEFINITION` devuelve NULL, así que no podemos leer el cuerpo de
+> sus SPs ni la definición de sus `CHECK`. Cada falla hay que deducirla desde
+> afuera en vez de leer qué valida. **No da acceso a ningún dato** — solo a la
+> definición de los objetos. Es opcional, pero ahorra ida y vuelta.
+
+Lo que **no** conviene pedirle todavía (para no romper el "de poco a poco"): el
+SP de listar tenants, el de baja, ni nada de los pasos 2-6. Primero que esto
+funcione de punta a punta.
+
+---
+
+## 0b. Detalle técnico: sembrar `[security].[tenantSequence]`
 
 **Es lo único que bloquea `uspCreateTenant` hoy**, y es una decisión suya, no un
 bug. La tabla existe con su estructura completa pero está en **0 filas**, y el
