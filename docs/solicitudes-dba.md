@@ -123,31 +123,45 @@ alcanza para saber cuál de los tres eslabones se rompió.
 
 ## 0a. LO QUE SE LE LLEVA AHORA (2026-08-26)
 
-**Ya solo son dos cosas**, y la segunda es opcional. La pregunta del `tenantGuid`
-quedó contestada — ver abajo.
+**Queda UNA sola cosa**: sembrar `[security].[tenantSequence]`. El `GRANT VIEW
+DEFINITION` ya lo otorgó, y la pregunta del `tenantGuid` ya la contestó (ambas
+más abajo).
 
-> **1. Sembrar `[security].[tenantSequence]` — es lo único que bloquea.**
+> **Sembrar `[security].[tenantSequence]` — es lo único que bloquea.**
 >
 > `uspCreateTenant` falla con `The tenant sequence is not configured (50006)`
 > porque esa tabla está en 0 filas. Ya verificamos que el SP corre bien y que
 > los permisos están correctos; solo le falta su fila de configuración.
 >
-> La decisión que necesitamos de él: **el `prefix`**. Es `varchar(5)` y
-> `tenants.tenantCode` es `varchar(8)`, así que prefijo y consecutivo comparten
-> esos 8 caracteres — con un prefijo de 3 quedan 5 dígitos (`NEX00001`,
-> ~99,999 tenants); con uno de 5, solo 3 (`NEXUS001`, 999). Eso fija el techo
-> de tenants numerables, y es nomenclatura de negocio: mejor que la elija él.
+> **Prefijo propuesto: `NEX`** (decisión de Moibe, 2026-08-26 — sigue siendo de
+> él si prefiere otro). El razonamiento: `tenantCode` es `varchar(8)` y `prefix`
+> es `varchar(5)`, así que se reparten esos 8 caracteres. Con 3 letras quedan 5
+> dígitos (`NEX00001` → ~99,999 tenants); con 5 letras quedan 3 (`NEXUS001` →
+> 999). **Un prefijo más corto no cuesta nada** — no se gana nada usando 5
+> letras salvo estética, así que se prefiere el margen. 999 alcanzaría de sobra
+> para el negocio real, pero el margen es gratis.
 >
-> Las otras columnas no tienen `DEFAULT`, así que también hay que darles valor
-> al insertar: `lastSequence` (0 para arrancar), `isActive`, `createdAt`,
-> `createdBy`.
+> Es una **puerta de una sola dirección**: hoy es gratis cambiar de opinión
+> porque hay 0 tenants; con el primero creado, los códigos viejos quedarían con
+> el prefijo viejo y habría dos formatos conviviendo (o un cambio de esquema
+> para ampliar `tenantCode`).
 >
-> **2. `GRANT VIEW DEFINITION ON SCHEMA::security TO usrNexus`** _(opcional)_
->
-> Hoy `OBJECT_DEFINITION` devuelve NULL, así que no podemos leer el cuerpo de
-> sus SPs ni la definición de sus `CHECK`. Cada falla hay que deducirla desde
-> afuera en vez de leer qué valida. **No da acceso a ningún dato** — solo a la
-> definición de los objetos. Ahorra ida y vuelta.
+> La fila completa: `prefix='NEX'`, `lastSequence=0`, `isActive=1`, más
+> `createdAt` y `createdBy` con el estilo que él use (sus filas llevan su cuenta
+> de dominio, `PROCHURGRUPOCSI\carlos.ramirez`). `tenantSequenceId` es
+> `IDENTITY`, no se da.
+
+### ✅ Resuelto: `GRANT VIEW DEFINITION ON SCHEMA::security TO usrNexus`
+
+Otorgado por Charlie el 2026-08-26. Ya se puede leer el cuerpo de sus SPs y la
+definición de sus restricciones `CHECK` con `OBJECT_DEFINITION`, en vez de
+deducir desde afuera qué valida cada uno. No da acceso a ningún dato.
+
+`diagnostico_tenants.py` vuelve a volcar esas definiciones (se había quitado
+cuando devolvían NULL). Pendiente correrlo para confirmar tres cosas que hoy
+siguen siendo deducción: cómo arma exactamente `tenantCode` a partir del
+`prefix`, qué status asigna por default, y qué escribe en `createdBy` cuando lo
+llama la aplicación.
 
 ### ✅ Resuelto: `uspCreateTenant` sí devuelve el `tenantGuid`
 
