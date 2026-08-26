@@ -70,12 +70,14 @@ siguiente:
    2026-08-25. Antes de eso, `pyodbc` daba `OperationalError` con TCP cerrado, y
    ese error se ve igual que un problema de credenciales.
 
-**Lo que sigue faltando del paso 1: el SP trivial.** Y no es un trámite: la
-prueba de arriba corre `SELECT @@VERSION`, que demuestra que el login **conecta**
-pero NO que pueda ejecutar stored procedures. Como el modelo de permisos
-acordado es `EXECUTE` y nada más (sin `SELECT` a tablas), hasta que no haya un SP
-real invocado no sabemos si ese permiso está bien puesto. Es exactamente el tipo
-de cosa que aparecería después, disfrazada de bug de la aplicación.
+**Lo que faltaba del paso 1 en ese momento: el SP trivial.** _(Superado el
+2026-08-26, ver más abajo — se deja el razonamiento porque sigue siendo válido y
+explica por qué se insistía en ese paso.)_ No era un trámite: la prueba de
+arriba corre `SELECT @@VERSION`, que demuestra que el login **conecta** pero NO
+que pueda ejecutar stored procedures. Como el modelo de permisos acordado es
+`EXECUTE` y nada más (sin `SELECT` a tablas), hasta no invocar un SP real no se
+sabía si ese permiso estaba bien puesto. Es exactamente el tipo de cosa que
+aparece después, disfrazada de bug de la aplicación.
 
 **Actualización 2026-08-26: el nombre real de la base es `IA_Nexus`, y YA
 QUEDÓ VERIFICADO en producción.** Charlie lo confirmó, se actualizó
@@ -140,15 +142,25 @@ son de un minuto cada una.
 > al insertar: `lastSequence` (0 para arrancar), `isActive`, `createdAt`,
 > `createdBy`.
 >
-> **2. ¿`uspCreateTenant` devuelve el registro que creó?**
+> **2. ¿`uspCreateTenant` devuelve el `tenantGuid` del registro que creó?**
 >
-> Pregunta rápida, la puede contestar de memoria. No recibe `@tenantGuid` —lo
-> genera la base— ni declara parámetros `OUTPUT`, así que la única vía es que lo
-> regrese como result set. Si no lo hace, **un tenant recién creado queda
-> irrecuperable** desde la aplicación: `uspGetTenant` exige el GUID y no hay SP
-> de listar. Si resulta que no, vale pedirle que agregue el `SELECT` del
-> registro creado al final — y de paso un `SET NOCOUNT ON` al inicio, que evita
-> que el contador de filas del `INSERT` se cuele como primer result set.
+> Preguntarlo así, con el nombre de la columna — no basta "¿devuelve el
+> registro?". Lo que la aplicación necesita es **específicamente el GUID**,
+> porque `uspGetTenant` recibe `uniqueidentifier`: si el `SELECT` final trae la
+> fila pero solo con `tenantId` (el int interno), seguimos sin poder leer de
+> vuelta lo que acabamos de crear. El SP no recibe `@tenantGuid` —lo genera la
+> base— ni declara parámetros `OUTPUT`, así que un result set es la única vía.
+>
+> Las dos respuestas y qué hacer con cada una:
+>
+> - **Sí, y trae `tenantGuid`** → no hay nada que pedirle en este punto. El
+>   código ya lo consume (`_primer_set_con_filas` en `repositorios/tenants.py`
+>   toma el primer result set con datos), y **también se cae la petición del
+>   `SET NOCOUNT ON`**: ese helper existe justamente para que el contador de
+>   filas del `INSERT` no estorbe, así que da igual si está o no.
+> - **No, o no trae el GUID** → pedirle que el `SELECT` final incluya
+>   `tenantGuid`. Ahí sí vale sumar el `SET NOCOUNT ON` al inicio, por limpieza
+>   más que por necesidad nuestra.
 >
 > **3. `GRANT VIEW DEFINITION ON SCHEMA::security TO usrNexus`**
 >

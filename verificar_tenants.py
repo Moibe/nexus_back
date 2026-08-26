@@ -22,6 +22,7 @@ obvios y fáciles de limpiar después.
 
 import json
 import sys
+import uuid
 from datetime import datetime, timezone
 
 from db.sqlserver import ejecutar_sp_multiple, obtener_conexion
@@ -132,12 +133,27 @@ def main() -> int:
 
     registro = creado[0]
     print(f"\n✅ Fila devuelta: {registro}")
-    guid = next(
-        (v for k, v in registro.items() if "guid" in k.lower() or "id" in k.lower()),
-        None,
-    )
+
+    # Se busca el GUID por TIPO (uuid.UUID) y por nombre exacto, no con un
+    # `"id" in nombre`: en [security].[tenants] el orden de columnas es
+    # tenantId(1), tenantGuid(2), tenantStatusId(3)... así que un heurístico
+    # laxo agarraría `tenantId` —el int interno— y luego reventaría al pasarlo
+    # a uspGetTenant, que espera uniqueidentifier. Lo que la app necesita es
+    # específicamente el GUID: es lo único que uspGetTenant acepta.
+    guid = None
+    for clave, valor in registro.items():
+        if isinstance(valor, uuid.UUID) or clave.lower() in ("tenantguid", "guid"):
+            guid = valor
+            break
+
     if guid is None:
-        print("❌ La fila no trae nada que parezca el GUID. Columnas:", list(registro))
+        print("❌ La fila NO trae el tenantGuid. Columnas:", list(registro))
+        print(
+            "\nEsto no alcanza: uspGetTenant recibe `uniqueidentifier`, así que\n"
+            "aunque el SP devuelva la fila, sin el GUID el tenant sigue siendo\n"
+            "irrecuperable desde la app. Hay que pedirle a Charlie que el SELECT\n"
+            "final incluya tenantGuid (el tenantId int interno no sirve aquí)."
+        )
         return 1
     print(f"GUID del tenant nuevo: {guid}")
 
