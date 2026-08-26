@@ -19,7 +19,7 @@ rehacer trabajo. Marcar aquí lo que ya quedó.
 
 | # | Qué pedir | Por qué va en este lugar | Así se verifica | Estado |
 |---|---|---|---|---|
-| 1 | Cadena de conexión + **un SP trivial** que devuelva cualquier cosa (un `SELECT 1`, la fecha del servidor) | Antes de cualquier esquema hay que probar que la app **alcanza** la base: driver ODBC, credenciales, firewall. Si algo de esa cadena falla, se descubre ahora y no enterrado dentro de un SP real | `GET /health/db` en verde | 🟡 conexión ✅ 2026-08-25, nombre de base ✅ 2026-08-26 (`IA_Nexus`), SP pendiente |
+| 1 | Cadena de conexión + **un SP trivial** que devuelva cualquier cosa (un `SELECT 1`, la fecha del servidor) | Antes de cualquier esquema hay que probar que la app **alcanza** la base: driver ODBC, credenciales, firewall. Si algo de esa cadena falla, se descubre ahora y no enterrado dentro de un SP real | `GET /health/db` en verde | 🟡 conexión ✅ 2026-08-25, `IA_Nexus` verificada en producción ✅ 2026-08-26, **falta solo el SP trivial** |
 | 2 | `sp_ListarBandejaPreparacion` (solo lectura) | Primer SP de verdad, y de **lectura**: no puede corromper nada. Además es lo que el front ya necesita para HU027 | La Bandeja del front deja de ser memoria del navegador | ⬜ |
 | 3 | Alta de **expediente** + alta de **file** (juntas) | Van juntas porque `file.expediente_id` es NOT NULL: no se puede registrar un archivo sin que exista antes su expediente | Subir un archivo en el front y que sobreviva a un refresh | ⬜ |
 | 4 | Las secciones **2.6** y **2.7** del diccionario | Esto no es un SP, es una **plática de diseño** — conviene cuando ya haya confianza en el trato y él tenga contexto de lo anterior | Que quede acordado dónde vive el mapeo | ⬜ |
@@ -54,22 +54,24 @@ acordado es `EXECUTE` y nada más (sin `SELECT` a tablas), hasta que no haya un 
 real invocado no sabemos si ese permiso está bien puesto. Es exactamente el tipo
 de cosa que aparecería después, disfrazada de bug de la aplicación.
 
-**Actualización 2026-08-26: el nombre real de la base es `IA_Nexus`.** Charlie
-lo confirmó. Todavía no está verificado en producción — falta el mismo paso que
-con cualquier dato nuevo de conexión: actualizar `SQLSERVER_DB` en el `.env`
-**del server** (nunca en el de esta laptop — ver la nota de arriba sobre por
-qué esa variable va vacía aquí) y reiniciar `nexus-back-api`.
+**Actualización 2026-08-26: el nombre real de la base es `IA_Nexus`, y YA
+QUEDÓ VERIFICADO en producción.** Charlie lo confirmó, se actualizó
+`SQLSERVER_DB` en el `.env` del server y se reinició `nexus-back-api`.
+`GET /health/db` respondió:
 
-Esto prueba algo DISTINTO de lo que ya probó `master`: que `usrNexus` puede
-**entrar** a `IA_Nexus` específicamente, no solo autenticarse contra el server.
-Son permisos independientes en SQL Server — un login puede tener acceso a
-`master` (casi todos lo tienen, por diseño) y no tener ningún mapeo a una base
-de negocio. Si `/health/db` regresa `SQLSTATE 42000` ("el login funcionó pero
-no hay permiso sobre la base indicada" — pista ya mapeada en `app.py`), es
-exactamente esto: hace falta que Charlie mapee `usrNexus` como usuario de
-`IA_Nexus`, con roles ahí adentro. Si en cambio regresa `status: ok` con
-`"base": "IA_Nexus"`, el mapeo ya existe y el paso 1 queda solo pendiente del
-SP trivial.
+```json
+{"status":"ok","version":"Microsoft SQL Server 2022 (RTM) - 16.0.1000.6 (X64) ... Standard Edition (64-bit) on Windows Server 2022 Standard","base":"IA_Nexus"}
+```
+
+Esto prueba algo DISTINTO de lo que ya probaba `master`: que `usrNexus` puede
+**entrar** a `IA_Nexus` específicamente, no solo autenticarse contra el server
+— son permisos independientes en SQL Server, y ya están bien puestos.
+
+**Con esto, lo único que le falta al paso 1 es el SP trivial.** Eso prueba una
+cosa más, todavía sin confirmar: que el login puede **ejecutar** stored
+procedures (`EXECUTE`), no solo conectar y hacer `SELECT @@VERSION`. Son
+permisos distintos en SQL Server — se puede tener acceso a una base y cero
+`EXECUTE` otorgado.
 
 **Lo que este paso dejó como aprendizaje de diagnóstico**: `/health/db` ahora
 publica el `SQLSTATE` siempre (no solo cuando está en la tabla de pistas), y
