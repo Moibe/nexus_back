@@ -83,6 +83,38 @@ def main() -> int:
     try:
         cur = con.cursor()
 
+        titulo("0 · CÓDIGO FUENTE de los SPs")
+        print("Charlie otorgó VIEW DEFINITION el 2026-08-26, así que esto ya")
+        print("debería funcionar (antes devolvía NULL). Es la fuente de verdad:")
+        print("dice EXACTAMENTE cómo se arma tenantCode a partir del prefix, qué")
+        print("status asigna por default, y qué pone en createdBy.\n")
+        for sp in ("uspCreateTenant", "uspGetTenant", "uspUpdateTenant"):
+            cur.execute("SELECT OBJECT_DEFINITION(OBJECT_ID(?))", f"[security].[{sp}]")
+            fila = cur.fetchone()
+            fuente = fila[0] if fila else None
+            print("-" * 70)
+            print(f"----- {sp} -----")
+            print("-" * 70)
+            print(fuente if fuente else "(NULL — el GRANT no surtió efecto todavía)")
+            print()
+
+        titulo("0b · Definición de las restricciones CHECK")
+        print("CK_tenantSequence_prefix puede estar restringiendo el formato o el")
+        print("largo del prefijo — lo cual acotaría la decisión antes de tomarla.\n")
+        cur.execute(
+            """
+            SELECT SCHEMA_NAME(t.schema_id) AS esquema, t.name AS tabla,
+                   cc.name AS restriccion, cc.definition
+            FROM sys.check_constraints cc
+            JOIN sys.tables t ON t.object_id = cc.parent_object_id
+            WHERE SCHEMA_NAME(t.schema_id) IN ('security', 'reference')
+            ORDER BY esquema, tabla, restriccion
+            """
+        )
+        for f in cur.fetchall():
+            print(f"  [{f[0]}].[{f[1]}] · {f[2]}")
+            print(f"      {f[3] if f[3] else '(NULL — sin permiso)'}")
+
         titulo("1 · [security].[tenantSequence] — la tabla que hay que sembrar")
         print("El SP falla porque está vacía. Esto dice qué columnas necesita")
         print("una fila, cuáles son NOT NULL y cuáles tienen DEFAULT.")
