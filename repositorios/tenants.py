@@ -21,6 +21,24 @@ Firmas leídas de `sys.parameters`, no supuestas:
 
 Ninguno declara parámetros `OUTPUT`, así que todo lo que devuelvan vuelve como
 result set.
+
+Vocabulario de `@tenantStatusCode` (leído de `[reference].[tenantStatuses]` el
+2026-08-26 — la base es la dueña, esto es referencia, no validación):
+
+    ACTIVE     · Tenant enabled for normal platform operation.
+    SUSPENDED  · Tenant temporarily blocked from operating.
+    CLOSED     · Tenant permanently closed.
+
+A propósito NO se replica como constante con validación de este lado: el
+catálogo vive en la base y puede crecer. Si se validara aquí, agregar un estado
+exigiría un despliegue de la API — el mismo razonamiento por el que el
+`transform` de la sección 2.6 es un catálogo cerrado *deliberado* y esto no.
+
+⚠️ `[security].[tenantSequence]` está VACÍA al 2026-08-26, y por eso
+`uspCreateTenant` falla con `RAISERROR` 50006 "The tenant sequence is not
+configured". Es una fila de configuración que le toca sembrar al DBA; ver
+`docs/solicitudes-dba.md`. Hasta que exista, `crear_tenant` no funciona —
+`obtener_tenant` y `actualizar_tenant` sí, si ya hay un tenant.
 """
 
 from typing import Any
@@ -96,8 +114,8 @@ def actualizar_tenant(
     con default None: la firma del SP no permite omitir sin decidir qué se
     escribe, y un opcional invitaría a pisar datos sin querer.
 
-    `tenant_status_code` es varchar(20) y su vocabulario lo define la base —
-    todavía sin confirmar cuáles son los valores válidos.
+    `tenant_status_code` es varchar(20); los valores válidos son `ACTIVE`,
+    `SUSPENDED` y `CLOSED` — ver la nota del encabezado del módulo.
     """
     sets = ejecutar_sp_multiple(
         "[security].[uspUpdateTenant]",

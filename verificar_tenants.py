@@ -40,39 +40,48 @@ def titulo(texto: str) -> None:
 
 
 def descubrir_estados() -> list[str]:
-    """Busca el catálogo de estados de tenant para no adivinar el status code.
+    """Lee el catálogo de estados de tenant, para no adivinar el status code.
 
-    Consulta el catálogo del SISTEMA (sys.*) y, si encuentra una tabla que
-    parece catálogo de estados, la lee. Es diagnóstico de una sola vez, no
-    algo que la aplicación haga en runtime — la regla de "solo SPs" sigue
-    aplicando para el código de producción.
+    Busca en TODOS los esquemas, no solo en `security`: la primera versión de
+    esto solo miraba ahí y reportó "(ninguna)" — el catálogo vive en
+    `[reference].[tenantStatuses]`, un esquema aparte que no conocíamos.
+
+    Es diagnóstico de una sola vez sobre una tabla de catálogo, no algo que la
+    aplicación haga en runtime: la regla de "solo SPs" sigue aplicando para el
+    código de producción.
     """
     con = obtener_conexion()
     try:
         cur = con.cursor()
         cur.execute(
             """
-            SELECT t.name
+            SELECT SCHEMA_NAME(t.schema_id) AS esquema, t.name
             FROM sys.tables t
-            WHERE SCHEMA_NAME(t.schema_id) = 'security'
-              AND (t.name LIKE '%Status%' OR t.name LIKE '%Estado%')
+            WHERE t.name LIKE '%Status%' OR t.name LIKE '%Estado%'
+            ORDER BY esquema, t.name
             """
         )
-        tablas = [f[0] for f in cur.fetchall()]
-        print(f"Tablas de catálogo candidatas en [security]: {tablas or '(ninguna)'}")
+        tablas = cur.fetchall()
+        print(f"Catálogos de estado encontrados: "
+              f"{[f'[{e}].[{n}]' for e, n in tablas] or '(ninguno)'}")
 
         valores: list[str] = []
-        for tabla in tablas:
-            # El nombre viene de sys.tables, no de una request — no hay
+        for esquema, tabla in tablas:
+            # Los nombres vienen de sys.tables, no de una request — no hay
             # superficie de inyección aquí.
-            cur.execute(f"SELECT TOP 20 * FROM [security].[{tabla}]")
+            cur.execute(f"SELECT TOP 20 * FROM [{esquema}].[{tabla}]")
             columnas = [c[0] for c in cur.description]
-            print(f"\n  [security].[{tabla}] — columnas: {columnas}")
+            print(f"\n  [{esquema}].[{tabla}] — columnas: {columnas}")
             for fila in cur.fetchall():
-                print(f"    {dict(zip(columnas, fila))}")
-                for col, val in zip(columnas, fila):
-                    if "code" in col.lower() and isinstance(val, str):
-                        valores.append(val)
+                registro = dict(zip(columnas, fila))
+                print(f"    {registro}")
+                # Solo se consideran los estados ACTIVOS del catálogo: sembrar
+                # un estado con isActive=0 y luego usarlo sería incoherente.
+                if registro.get("isActive") is False:
+                    continue
+                codigo = registro.get("code")
+                if isinstance(codigo, str):
+                    valores.append(codigo)
         return valores
     finally:
         con.close()
@@ -115,6 +124,11 @@ def main() -> int:
             "uspCreateTenant devuelva el registro creado."
         )
         return 1
+
+    # Nota: si el SP falla con RAISERROR 50006 "The tenant sequence is not
+    # configured", NO es un problema de este script ni de permisos —
+    # `[security].[tenantSequence]` está vacía y le toca al DBA sembrarla.
+    # Ver la sección 0b de docs/solicitudes-dba.md.
 
     registro = creado[0]
     print(f"\n✅ Fila devuelta: {registro}")

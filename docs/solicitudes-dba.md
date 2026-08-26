@@ -67,17 +67,106 @@ Esto prueba algo DISTINTO de lo que ya probaba `master`: que `usrNexus` puede
 **entrar** a `IA_Nexus` específicamente, no solo autenticarse contra el server
 — son permisos independientes en SQL Server, y ya están bien puestos.
 
-**Con esto, lo único que le falta al paso 1 es el SP trivial.** Eso prueba una
-cosa más, todavía sin confirmar: que el login puede **ejecutar** stored
-procedures (`EXECUTE`), no solo conectar y hacer `SELECT @@VERSION`. Son
-permisos distintos en SQL Server — se puede tener acceso a una base y cero
-`EXECUTE` otorgado.
+**Paso 1 CERRADO el 2026-08-26 — el permiso `EXECUTE` quedó confirmado, y sin
+necesitar el SP trivial.** Charlie entregó tres SPs de negocio reales
+(`[security].[uspGetTenant]`, `[uspCreateTenant]`, `[uspUpdateTenant]`) y al
+llamar al de creación devolvió:
+
+```
+('42000', '[42000] ... The tenant sequence is not configured. (50006)')
+```
+
+Ese número **50006 está por encima de 50000**, o sea es un error *definido por
+el usuario*: un `RAISERROR`/`THROW` desde dentro del propio SP. Eso prueba que
+el SP **se ejecutó** y que lo que falló fue una validación suya — el permiso
+`EXECUTE` está bien puesto. El SP trivial ya no hace falta: un SP real lo
+demostró.
+
+Aprendizaje que se llevó a código: `SQLSTATE 42000` está **sobrecargado** — lo
+usa tanto un problema de permisos como un `RAISERROR` desde un SP. La pista de
+`app.py` decía solo "no hay permiso sobre la base", y en este caso habría
+mandado a revisar permisos justo cuando estaban correctos. Ya distingue las dos
+causas (la señal es el número >= 50000).
 
 **Lo que este paso dejó como aprendizaje de diagnóstico**: `/health/db` ahora
 publica el `SQLSTATE` siempre (no solo cuando está en la tabla de pistas), y
 distingue "falta configuración" de "falló la conexión". La primera versión
 devolvía únicamente `{"status":"error","error":"OperationalError"}`, que no
 alcanza para saber cuál de los tres eslabones se rompió.
+
+---
+
+## 0b. Solicitud abierta: sembrar `[security].[tenantSequence]`
+
+**Es lo único que bloquea `uspCreateTenant` hoy**, y es una decisión suya, no un
+bug. La tabla existe con su estructura completa pero está en **0 filas**, y el
+SP levanta el `RAISERROR` 50006 justo por eso.
+
+Verificado que **no** es un objeto `SEQUENCE` de SQL Server: `sys.sequences`
+está vacío en toda la base. Es esta tabla de configuración:
+
+| Columna | Tipo | Nulo | Notas |
+|---|---|---|---|
+| `tenantSequenceId` | int | N | IDENTITY |
+| `prefix` | varchar(5) | N | **decisión de negocio** — ver abajo |
+| `lastSequence` | int | N | presumiblemente arranca en 0 |
+| `isActive` | bit | N | sugiere que el SP busca la fila activa; probablemente debe haber exactamente una |
+| `createdAt` | datetime2 | N | **sin DEFAULT** — hay que darle valor al insertar |
+| `createdBy` | varchar(50) | N | **sin DEFAULT** |
+| `updatedAt` / `updatedBy` | | S | |
+
+**Por qué el `prefix` es decisión suya y no nuestra:** `[security].[tenants]`
+tiene `tenantCode varchar(8)`, así que el prefijo y el consecutivo tienen que
+caber juntos en 8 caracteres — un prefijo de 3 deja 5 dígitos (`NEX00001`), uno
+de 5 deja 3 (`NEXUS001`). Eso fija el techo de tenants numerables y es
+nomenclatura de negocio; no conviene que la aplicación lo elija.
+
+**Preguntas que conviene cerrar junto con la siembra:**
+
+1. ¿La tabla admite **más de una** fila (varias secuencias, una activa)? El
+   `isActive` lo sugiere. Importa porque si él siembra una y alguien más siembra
+   otra, el SP podría elegir la equivocada en silencio.
+2. `uspCreateTenant` no recibe `@createdBy`, así que ese campo lo llena el SP
+   solo. Con el login de la aplicación quedaría `usrNexus` en la auditoría de
+   todo lo que cree la API — correcto, pero conviene que sea a propósito. Sus
+   propias filas sembradas traen `PROCHURGRUPOCSI\carlos.ramirez`.
+3. `uspCreateTenant` tampoco recibe status, y `tenants.tenantStatusId` es NOT
+   NULL: ¿asigna `ACTIVE` (id 1) por default?
+4. ¿`uspCreateTenant` **devuelve** el registro creado? Es crítico y sigue sin
+   verificarse porque nunca llegó a insertar. El SP no recibe `@tenantGuid` (lo
+   genera la base) ni declara parámetros `OUTPUT`, así que la única vía es un
+   result set. Si no lo devuelve, **un tenant recién creado es irrecuperable
+   desde la API**: `uspGetTenant` exige el GUID y no hay SP de listar.
+
+## 0c. Estado del esquema al 2026-08-26 (leído, no supuesto)
+
+Charlie tiene el esquema construido pero casi sin sembrar. De 6 tablas en
+`[security]`, solo `roles` tiene datos:
+
+| Tabla | Filas |
+|---|---|
+| `[security].[roles]` | 4 — `ADMIN`, `CONFIGURATOR`, `REVIEWER`, `QUERY` |
+| `[reference].[tenantStatuses]` | 3 — `ACTIVE`, `SUSPENDED`, `CLOSED` |
+| `[security].[tenants]` | 0 |
+| `[security].[tenantSequence]` | 0 ← bloqueante |
+| `[security].[users]` | 0 |
+| `[security].[tenantMemberships]` | 0 |
+| `[security].[logsEndpoint]` | 0 |
+
+**Convenciones suyas que conviene respetar en todo lo que se le pida:** cada
+tabla lleva `isActive` + `isDeleted` (borrado lógico, no físico), auditoría con
+`createdAt`/`createdBy`/`updatedAt`/`updatedBy`, catálogos con
+`code`/`name`/`description`/`sortOrder`, PK `int IDENTITY` interna más
+`uniqueidentifier` público (`tenants` tiene ambos: `tenantId` y `tenantGuid`), y
+un esquema `[reference]` aparte para los catálogos. Los nombres van en inglés
+camelCase.
+
+**Pendiente menor que ahorraría mucho tiempo:** hoy `usrNexus` no tiene
+`VIEW DEFINITION`, así que no se puede leer el cuerpo de los SPs ni la
+definición de las restricciones `CHECK` (`OBJECT_DEFINITION` devuelve NULL).
+Cada falla hay que deducirla desde afuera en vez de leer qué valida el SP. Un
+`GRANT VIEW DEFINITION ON SCHEMA::security TO usrNexus` lo resolvería y **no da
+acceso a ningún dato** — solo a la definición de los objetos.
 
 ---
 
