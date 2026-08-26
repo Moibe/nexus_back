@@ -133,7 +133,19 @@ _PISTAS_SQLSTATE = {
     ),
     "08S01": "La conexión se cayó a medio camino (red inestable o TLS rechazado).",
     "28000": "Login rechazado: usuario o contraseña incorrectos.",
-    "42000": "El login funcionó pero no hay permiso sobre la base indicada.",
+    # 42000 está SOBRECARGADO: lo usa tanto un problema de permisos como un
+    # RAISERROR/THROW dentro de un stored procedure. Comprobado el 2026-08-26
+    # con `[security].[uspCreateTenant]`, que devolvió 42000 con el mensaje
+    # "The tenant sequence is not configured. (50006)" — o sea el SP corrió
+    # bien y falló su propia validación. La primera versión de esta pista solo
+    # decía "no hay permiso", que habría mandado a buscar el problema al lugar
+    # equivocado justo cuando el SP estaba funcionando.
+    "42000": (
+        "Dos causas posibles. (a) El login no tiene permiso sobre la base o el "
+        "objeto. (b) Un stored procedure se ejecutó y lanzó su propio error con "
+        "RAISERROR/THROW — si el mensaje trae un número >= 50000, es este caso: "
+        "el permiso está bien y lo que falló es una validación de negocio."
+    ),
 }
 
 
