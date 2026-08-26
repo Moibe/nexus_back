@@ -71,9 +71,11 @@ def crear_tenant(nombre: str, slug: str, settings_json: str = "{}") -> dict:
     """Da de alta un tenant y devuelve lo que el SP reporte del registro creado.
 
     El GUID lo genera la base (el SP no recibe `@tenantGuid`), y como tampoco
-    hay parámetro OUTPUT, la única vía para conocerlo es el result set. Importa
-    porque `obtener_tenant` EXIGE el GUID y no existe un SP de "listar
-    tenants": si esto regresara vacío, un tenant recién creado sería
+    hay parámetro OUTPUT, la única vía para conocerlo es el result set.
+
+    Charlie confirmó el 2026-08-26 que el SP **sí devuelve el `tenantGuid`**,
+    que era el dato indispensable: `obtener_tenant` lo EXIGE y no existe un SP
+    de "listar tenants", así que sin él un tenant recién creado sería
     irrecuperable desde la aplicación.
     """
     sets = ejecutar_sp_multiple(

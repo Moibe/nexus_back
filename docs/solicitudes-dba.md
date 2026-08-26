@@ -123,8 +123,8 @@ alcanza para saber cuál de los tres eslabones se rompió.
 
 ## 0a. LO QUE SE LE LLEVA AHORA (2026-08-26)
 
-Tres cosas, una plática corta. Ordenadas: la primera desbloquea, las otras dos
-son de un minuto cada una.
+**Ya solo son dos cosas**, y la segunda es opcional. La pregunta del `tenantGuid`
+quedó contestada — ver abajo.
 
 > **1. Sembrar `[security].[tenantSequence]` — es lo único que bloquea.**
 >
@@ -142,32 +142,29 @@ son de un minuto cada una.
 > al insertar: `lastSequence` (0 para arrancar), `isActive`, `createdAt`,
 > `createdBy`.
 >
-> **2. ¿`uspCreateTenant` devuelve el `tenantGuid` del registro que creó?**
->
-> Preguntarlo así, con el nombre de la columna — no basta "¿devuelve el
-> registro?". Lo que la aplicación necesita es **específicamente el GUID**,
-> porque `uspGetTenant` recibe `uniqueidentifier`: si el `SELECT` final trae la
-> fila pero solo con `tenantId` (el int interno), seguimos sin poder leer de
-> vuelta lo que acabamos de crear. El SP no recibe `@tenantGuid` —lo genera la
-> base— ni declara parámetros `OUTPUT`, así que un result set es la única vía.
->
-> Las dos respuestas y qué hacer con cada una:
->
-> - **Sí, y trae `tenantGuid`** → no hay nada que pedirle en este punto. El
->   código ya lo consume (`_primer_set_con_filas` en `repositorios/tenants.py`
->   toma el primer result set con datos), y **también se cae la petición del
->   `SET NOCOUNT ON`**: ese helper existe justamente para que el contador de
->   filas del `INSERT` no estorbe, así que da igual si está o no.
-> - **No, o no trae el GUID** → pedirle que el `SELECT` final incluya
->   `tenantGuid`. Ahí sí vale sumar el `SET NOCOUNT ON` al inicio, por limpieza
->   más que por necesidad nuestra.
->
-> **3. `GRANT VIEW DEFINITION ON SCHEMA::security TO usrNexus`**
+> **2. `GRANT VIEW DEFINITION ON SCHEMA::security TO usrNexus`** _(opcional)_
 >
 > Hoy `OBJECT_DEFINITION` devuelve NULL, así que no podemos leer el cuerpo de
 > sus SPs ni la definición de sus `CHECK`. Cada falla hay que deducirla desde
 > afuera en vez de leer qué valida. **No da acceso a ningún dato** — solo a la
-> definición de los objetos. Es opcional, pero ahorra ida y vuelta.
+> definición de los objetos. Ahorra ida y vuelta.
+
+### ✅ Resuelto: `uspCreateTenant` sí devuelve el `tenantGuid`
+
+Confirmado por Charlie el 2026-08-26. Dos consecuencias:
+
+1. **No hay que pedirle nada del `SELECT` final** — devuelve lo que la
+   aplicación necesita. `uspGetTenant` recibe `uniqueidentifier`, así que el
+   GUID era el dato indispensable: con solo el `tenantId` interno, un tenant
+   recién creado habría quedado irrecuperable (no hay SP de listar).
+2. **Tampoco hace falta pedirle `SET NOCOUNT ON`.** Era un plan B por si el
+   contador de filas del `INSERT` se colaba como primer result set;
+   `_primer_set_con_filas` en `repositorios/tenants.py` ya lo neutraliza, así
+   que da igual si el SP lo tiene o no.
+
+Queda por verificar **desde la aplicación** en cuanto exista la fila de
+`tenantSequence` — que él lo confirme es la mitad; la otra es que
+`verificar_tenants.py` complete el ciclo crear → leer → actualizar.
 
 Lo que **no** conviene pedirle todavía (para no romper el "de poco a poco"): el
 SP de listar tenants, el de baja, ni nada de los pasos 2-6. Primero que esto
@@ -211,11 +208,11 @@ nomenclatura de negocio; no conviene que la aplicación lo elija.
    propias filas sembradas traen `PROCHURGRUPOCSI\carlos.ramirez`.
 3. `uspCreateTenant` tampoco recibe status, y `tenants.tenantStatusId` es NOT
    NULL: ¿asigna `ACTIVE` (id 1) por default?
-4. ¿`uspCreateTenant` **devuelve** el registro creado? Es crítico y sigue sin
-   verificarse porque nunca llegó a insertar. El SP no recibe `@tenantGuid` (lo
-   genera la base) ni declara parámetros `OUTPUT`, así que la única vía es un
-   result set. Si no lo devuelve, **un tenant recién creado es irrecuperable
-   desde la API**: `uspGetTenant` exige el GUID y no hay SP de listar.
+4. ~~¿`uspCreateTenant` **devuelve** el registro creado?~~ **✅ Resuelto
+   2026-08-26: sí, y devuelve el `tenantGuid` específicamente** — que era el
+   dato indispensable, porque `uspGetTenant` exige el GUID y no hay SP de
+   listar. Pendiente solo confirmarlo desde la aplicación cuando la siembra
+   permita insertar.
 
 ## 0c. Estado del esquema al 2026-08-26 (leído, no supuesto)
 
