@@ -1,19 +1,26 @@
-"""Diagnóstico: qué le falta a `[security].[uspCreateTenant]` para funcionar.
+"""Diagnóstico del esquema de tenants: qué hay que sembrar para que funcione.
 
 Corre en el SERVER:
     cd /home/mbriseno/code/nexus_back && venv/bin/python diagnostico_tenants.py
 
-Contexto — 2026-08-26, `verificar_tenants.py` falló así:
+Hallazgos acumulados (2026-08-26):
 
-    ('42000', '[42000] ... The tenant sequence is not configured. (50006)')
+  - `[security].[uspCreateTenant]` falla con `RAISERROR` 50006 "The tenant
+    sequence is not configured". El número >= 50000 prueba que el SP se ejecutó
+    → permiso `EXECUTE` confirmado (cierra el paso 1 de docs/solicitudes-dba.md).
+  - "tenant sequence" NO es un objeto SEQUENCE de SQL Server: no hay ninguno en
+    la base. Es la tabla `[security].[tenantSequence]`, con 8 columnas y **0
+    filas** — le falta la fila de configuración que el SP espera.
+  - El vocabulario de `@tenantStatusCode` vive en `[reference].[tenantStatuses]`
+    (3 filas), en un esquema `reference` aparte.
+  - No hay permiso `VIEW DEFINITION`, así que no se puede leer el cuerpo de los
+    SPs ni la definición de las restricciones CHECK. Sus NOMBRES sí se ven, y
+    de ahí salió que `tenantSequence` tiene columnas `prefix` y `lastSequence`.
 
-El número 50006 está por encima de 50000, o sea es un error DEFINIDO POR EL
-USUARIO: un `RAISERROR`/`THROW` dentro del propio SP. Eso prueba que el SP se
-ejecutó (permiso `EXECUTE` ✅) y que lo que falló fue una validación suya.
-
-Este script busca a qué se refiere con "tenant sequence" leyendo el código
-fuente del SP y el catálogo del sistema. Todo es de SOLO LECTURA y sobre
-metadata (`sys.*`), no datos de negocio.
+Este script saca la estructura y el contenido de esas tablas para poder decirle
+a Charlie exactamente qué sembrar, en vez de reenviarle el mensaje de error.
+Todo es de solo lectura; las tablas que se leen son de catálogo/configuración,
+no datos de negocio.
 """
 
 import sys
@@ -28,121 +35,100 @@ def titulo(texto: str) -> None:
     print("=" * 70)
 
 
+def columnas_de(cur, esquema: str, tabla: str) -> None:
+    """Estructura de una tabla: tipo, nulabilidad, identity, default."""
+    cur.execute(
+        """
+        SELECT c.column_id, c.name, TYPE_NAME(c.user_type_id) AS tipo,
+               c.max_length, c.is_nullable, c.is_identity,
+               ISNULL(dc.definition, '') AS valor_default
+        FROM sys.columns c
+        JOIN sys.tables t ON t.object_id = c.object_id
+        LEFT JOIN sys.default_constraints dc
+               ON dc.parent_object_id = c.object_id
+              AND dc.parent_column_id = c.column_id
+        WHERE SCHEMA_NAME(t.schema_id) = ? AND t.name = ?
+        ORDER BY c.column_id
+        """,
+        esquema,
+        tabla,
+    )
+    print(f"\n  [{esquema}].[{tabla}]")
+    for f in cur.fetchall():
+        marcas = []
+        if not f[4]:
+            marcas.append("NOT NULL")
+        if f[5]:
+            marcas.append("IDENTITY")
+        if f[6]:
+            marcas.append(f"DEFAULT {f[6]}")
+        largo = f"({f[3]})" if f[3] not in (None, 0) else ""
+        print(f"    {f[0]:2}. {f[1]:24} {f[2]}{largo:10} {' · '.join(marcas)}")
+
+
+def contenido_de(cur, esquema: str, tabla: str, tope: int = 25) -> None:
+    """Filas de una tabla de catálogo, para conocer su vocabulario real."""
+    # Los nombres vienen de sys.tables / de este archivo, nunca de una request.
+    cur.execute(f"SELECT TOP {tope} * FROM [{esquema}].[{tabla}]")
+    columnas = [c[0] for c in cur.description]
+    filas = cur.fetchall()
+    print(f"\n  [{esquema}].[{tabla}] — {len(filas)} filas")
+    print(f"    columnas: {columnas}")
+    for f in filas:
+        print(f"    {dict(zip(columnas, f))}")
+
+
 def main() -> int:
     con = obtener_conexion()
     try:
         cur = con.cursor()
 
-        titulo("1 · Código fuente de los SPs de tenant")
-        print("Es la fuente de verdad: dice qué valida, qué devuelve, de dónde")
-        print("saca la 'sequence' y qué valores acepta @tenantStatusCode.\n")
-        for sp in ("uspCreateTenant", "uspGetTenant", "uspUpdateTenant"):
-            cur.execute("SELECT OBJECT_DEFINITION(OBJECT_ID(?))", f"[security].[{sp}]")
-            fila = cur.fetchone()
-            fuente = fila[0] if fila else None
-            print("-" * 70)
-            print(f"----- {sp} -----")
-            print("-" * 70)
-            if fuente:
-                print(fuente)
-            else:
-                print("(NULL — falta el permiso VIEW DEFINITION sobre este objeto.")
-                print(" No es bloqueante: se le puede preguntar a Charlie directo.)")
-            print()
+        titulo("1 · [security].[tenantSequence] — la tabla que hay que sembrar")
+        print("El SP falla porque está vacía. Esto dice qué columnas necesita")
+        print("una fila, cuáles son NOT NULL y cuáles tienen DEFAULT.")
+        columnas_de(cur, "security", "tenantSequence")
+        contenido_de(cur, "security", "tenantSequence")
 
-        titulo("2 · Objetos SEQUENCE en la base")
-        print("'tenant sequence' probablemente es un objeto SEQUENCE de SQL Server")
-        print("(CREATE SEQUENCE), usado para generar números o códigos de tenant.\n")
+        titulo("2 · [reference].[tenantStatuses] — vocabulario de @tenantStatusCode")
+        columnas_de(cur, "reference", "tenantStatuses")
+        contenido_de(cur, "reference", "tenantStatuses")
+
+        titulo("3 · [security].[tenants] — forma de un tenant")
+        print("Para entender qué campos existen más allá de los 3 que recibe")
+        print("uspCreateTenant, y cuáles los pone la base sola.")
+        columnas_de(cur, "security", "tenants")
+
+        titulo("4 · [security].[roles] — ya viene sembrada (4 filas)")
+        print("Sirve de EJEMPLO de cómo Charlie siembra un catálogo: mismo")
+        print("estilo probablemente aplica a lo que falta en tenantSequence.")
+        contenido_de(cur, "security", "roles")
+
+        titulo("5 · Otros esquemas en la base")
+        print("Apareció [reference], que no conocíamos. Puede haber más.")
         cur.execute(
             """
-            SELECT SCHEMA_NAME(schema_id) AS esquema, name,
-                   CAST(current_value AS varchar(40)) AS valor_actual,
-                   CAST(start_value  AS varchar(40)) AS valor_inicial,
-                   CAST(increment    AS varchar(40)) AS incremento
-            FROM sys.sequences
-            ORDER BY esquema, name
-            """
-        )
-        filas = cur.fetchall()
-        if filas:
-            for f in filas:
-                print(f"  [{f[0]}].[{f[1]}]  actual={f[2]} inicial={f[3]} incremento={f[4]}")
-        else:
-            print("  (ninguna) — no hay ningún objeto SEQUENCE en toda la base.")
-            print("  Si el SP espera una, hay que pedirle a Charlie que la cree.")
-
-        titulo("3 · Todas las tablas de [security]")
-        print("Para ubicar dónde vive la configuración que el SP busca.\n")
-        cur.execute(
-            """
-            SELECT t.name,
-                   (SELECT COUNT(*) FROM sys.columns c WHERE c.object_id = t.object_id) AS cols,
-                   ISNULL(p.rows, 0) AS filas
+            SELECT SCHEMA_NAME(t.schema_id) AS esquema, COUNT(*) AS tablas
             FROM sys.tables t
-            LEFT JOIN sys.partitions p
-                   ON p.object_id = t.object_id AND p.index_id IN (0, 1)
-            WHERE SCHEMA_NAME(t.schema_id) = 'security'
-            ORDER BY t.name
+            GROUP BY SCHEMA_NAME(t.schema_id)
+            ORDER BY esquema
             """
         )
         for f in cur.fetchall():
-            print(f"  [security].[{f[0]}]  —  {f[1]} columnas, {f[2]} filas")
+            print(f"  [{f[0]}] — {f[1]} tablas")
 
-        titulo("4 · Tablas que suenan a configuración, en CUALQUIER esquema")
+        titulo("6 · Todos los stored procedures disponibles")
+        print("Para ver el panorama completo de lo que Charlie ya expuso.")
         cur.execute(
             """
-            SELECT SCHEMA_NAME(t.schema_id) AS esquema, t.name,
-                   ISNULL(p.rows, 0) AS filas
-            FROM sys.tables t
-            LEFT JOIN sys.partitions p
-                   ON p.object_id = t.object_id AND p.index_id IN (0, 1)
-            WHERE t.name LIKE '%onfig%' OR t.name LIKE '%equence%'
-               OR t.name LIKE '%etting%' OR t.name LIKE '%arameter%'
-               OR t.name LIKE '%Status%'
-            ORDER BY esquema, t.name
+            SELECT SCHEMA_NAME(p.schema_id) AS esquema, p.name,
+                   (SELECT COUNT(*) FROM sys.parameters par
+                     WHERE par.object_id = p.object_id) AS params
+            FROM sys.procedures p
+            ORDER BY esquema, p.name
             """
         )
-        filas = cur.fetchall()
-        if filas:
-            for f in filas:
-                print(f"  [{f[0]}].[{f[1]}]  —  {f[2]} filas")
-        else:
-            print("  (ninguna)")
-
-        titulo("5 · Restricciones CHECK — de aquí sale el vocabulario de status")
-        print("El paso 0 de la prueba anterior no encontró catálogo de estados;")
-        print("puede estar como CHECK sobre la columna en vez de tabla aparte.\n")
-        cur.execute(
-            """
-            SELECT SCHEMA_NAME(t.schema_id) AS esquema, t.name AS tabla,
-                   cc.name AS restriccion, cc.definition
-            FROM sys.check_constraints cc
-            JOIN sys.tables t ON t.object_id = cc.parent_object_id
-            WHERE SCHEMA_NAME(t.schema_id) = 'security'
-               OR cc.definition LIKE '%tatus%'
-            ORDER BY esquema, tabla, restriccion
-            """
-        )
-        filas = cur.fetchall()
-        if filas:
-            for f in filas:
-                print(f"  [{f[0]}].[{f[1]}] · {f[2]}")
-                print(f"      {f[3]}")
-        else:
-            print("  (ninguna)")
-
-        titulo("6 · El mensaje de error, tal como lo tiene registrado SQL Server")
-        cur.execute(
-            "SELECT message_id, severity, text FROM sys.messages "
-            "WHERE message_id >= 50000 AND language_id = 1033 ORDER BY message_id"
-        )
-        filas = cur.fetchall()
-        if filas:
-            for f in filas:
-                print(f"  {f[0]} (sev {f[1]}): {f[2]}")
-        else:
-            print("  (ninguno) — el mensaje 50006 se levanta con RAISERROR inline")
-            print("  dentro del SP, no está registrado en sys.messages.")
+        for f in cur.fetchall():
+            print(f"  [{f[0]}].[{f[1]}]  ({f[2]} parámetros)")
 
         return 0
     finally:
