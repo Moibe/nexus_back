@@ -123,9 +123,9 @@ alcanza para saber cuál de los tres eslabones se rompió.
 
 ## 0a. LO QUE SE LE LLEVA AHORA (2026-08-26)
 
-**Queda UNA sola cosa**: sembrar `[security].[tenantSequence]`. El `GRANT VIEW
-DEFINITION` ya lo otorgó, y la pregunta del `tenantGuid` ya la contestó (ambas
-más abajo).
+**Queda la siembra de `[security].[tenantSequence]`**, y confirmar si el `GRANT
+VIEW DEFINITION` ya se ejecutó (ver abajo — pedido, sin verificar). La pregunta
+del `tenantGuid` sí quedó contestada.
 
 > **Sembrar `[security].[tenantSequence]` — es lo único que bloquea.**
 >
@@ -151,14 +151,29 @@ más abajo).
 > de dominio, `PROCHURGRUPOCSI\carlos.ramirez`). `tenantSequenceId` es
 > `IDENTITY`, no se da.
 
-### ✅ Resuelto: `GRANT VIEW DEFINITION ON SCHEMA::security TO usrNexus`
+### 🟡 Pedido, SIN VERIFICAR: `GRANT VIEW DEFINITION ON SCHEMA::security TO usrNexus`
 
-Otorgado por Charlie el 2026-08-26. Ya se puede leer el cuerpo de sus SPs y la
-definición de sus restricciones `CHECK` con `OBJECT_DEFINITION`, en vez de
-deducir desde afuera qué valida cada uno. No da acceso a ningún dato.
+Moibe se lo pidió a Charlie el 2026-08-26. **No está confirmado que se haya
+ejecutado** — y esto vale como recordatorio de la propia convención de arriba:
+se marca ✅ cuando `nexus_back` lo consume, no cuando alguien dice que quedó.
+(Este renglón estuvo un rato marcado como ✅ por una suposición; se corrigió.)
 
-`diagnostico_tenants.py` vuelve a volcar esas definiciones (se había quitado
-cuando devolvían NULL). Pendiente correrlo para confirmar tres cosas que hoy
+**Cómo verificarlo en un comando** — si devuelve el código del SP, quedó; si
+devuelve `None`, todavía no:
+
+```bash
+cd /home/mbriseno/code/nexus_back && venv/bin/python -c "
+import config
+from db.sqlserver import obtener_conexion
+c = obtener_conexion(); cur = c.cursor()
+cur.execute(\"SELECT OBJECT_DEFINITION(OBJECT_ID('[security].[uspCreateTenant]'))\")
+d = cur.fetchone()[0]
+print('GRANT ACTIVO' if d else 'TODAVIA NO — OBJECT_DEFINITION devuelve NULL')
+c.close()"
+```
+
+Cuando esté, `diagnostico_tenants.py` puede volcar el cuerpo de los SPs y la
+definición de las restricciones `CHECK`, y con eso confirmar tres cosas que hoy
 siguen siendo deducción: cómo arma exactamente `tenantCode` a partir del
 `prefix`, qué status asigna por default, y qué escribe en `createdBy` cuando lo
 llama la aplicación.
