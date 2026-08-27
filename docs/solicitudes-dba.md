@@ -454,6 +454,60 @@ convertiría el paso 2 de *escribir nombres a ciegas* a *descubrirlos del motor*
 que es como funciona el botón "Generar a partir de un documento" de la consola de
 Google.
 
+### 2.6c · El vocabulario de `transform` tiene DOS familias
+
+Descubierto el 2026-08-27 al construir el paso 3 del wizard ("Propiedades de
+campo"). El UX ya había diseñado ahí un desplegable de **"Reglas de
+transformación"** con este catálogo:
+
+| Regla del diseño | Qué hace |
+|---|---|
+| Normalización de fechas a ISO 8601 | `08/05/1997` → `1997-05-08` |
+| Eliminación de símbolos de moneda | `$1,250.00` → `1250.00` |
+| Conversión a mayúsculas o minúsculas | uniforma la caja |
+| Trim de espacios | quita espacios sobrantes |
+| Variantes textuales a valor canónico | `MEX`, `Mexico`, `MÉXICO` → un solo valor |
+
+Eso obliga a corregir lo que dice la sección 2.6 sobre el vocabulario. Hay **dos
+familias distintas** de transformación, y la columna tiene que alojar ambas:
+
+1. **Partición** (`token_1`, `token_2`): toma una PARTE de un valor compuesto.
+   Es la que resuelve `fecha_registro` = `"2024 00"`. Un `source_path` produce
+   varias filas.
+2. **Normalización** (las cinco de arriba): limpia o convierte el valor
+   COMPLETO. Un `source_path`, una fila.
+
+No compiten — se componen. `fecha_registro` necesitaría `token_1` para quedarse
+con el año, y podría además necesitar normalización. Si eso se vuelve común,
+`transform` tendría que aceptar una secuencia y no un solo nombre; hoy con un
+valor alcanza, y agregar la secuencia después no rompe nada porque la columna ya
+es texto.
+
+**Dos de estas reglas YA existen hardcodeadas** en `servicios/ia.py` para INE: la
+normalización de fechas a ISO en `_valor_normalizado` y la limpieza de puntuación
+del domicilio en `_limpiar_ine`. Cuando esto se guarde en base, esas dos dejan de
+ser código fijo y pasan a ser configuración — que es exactamente lo que el
+diccionario persigue.
+
+### 2.6d · Cardinalidad + obligatorio = `occurrenceType` de Document AI
+
+El paso 3 también captura **cardinalidad** (valor único / múltiples valores).
+Junto con el `obligatorio` que ya venía del paso 2, forma exactamente las cuatro
+combinaciones del `occurrenceType` de Document AI. Verificado contra su discovery
+document (`GoogleCloudDocumentaiV1beta3DocumentSchemaEntityTypeProperty`):
+
+| Obligatorio | Cardinalidad | `occurrenceType` |
+|---|---|---|
+| sí | único | `REQUIRED_ONCE` |
+| sí | múltiple | `REQUIRED_MULTIPLE` |
+| no | único | `OPTIONAL_ONCE` |
+| no | múltiple | `OPTIONAL_MULTIPLE` |
+
+Es la correspondencia más limpia que existe hoy entre el wizard y el motor: dos
+controles de la UI son, juntos, un solo campo del esquema del procesador. Vale
+tenerlo presente si algún día se decide que el wizard sea la fuente de verdad y
+empuje el esquema por API — ese mapeo ya no habría que inventarlo.
+
 ### 2.7 · extractor_binding
 
 Qué motor y qué despliegue concreto sirve a una versión de configuración.
