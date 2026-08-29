@@ -206,6 +206,12 @@ from seguridad import exigir_llave  # noqa: E402
 # puede quedar abierto por olvidar un decorador adentro.
 app.include_router(ia_router, prefix="/ia", dependencies=[Depends(exigir_llave)])
 
+from routers.procesadores import router as procesadores_router  # noqa: E402
+
+app.include_router(
+    procesadores_router, prefix="/procesadores", dependencies=[Depends(exigir_llave)]
+)
+
 # El grupo Documentos se registra solo si hay una base configurada.
 #
 # Mientras el DBA no entregue SQL Server, publicar esos endpoints sería publicar
