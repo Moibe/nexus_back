@@ -412,7 +412,27 @@ convivan ambas rutas sin migrar nada.
    transición `draft → active` de la versión. Es un error de configuración, no
    un hallazgo de extracción.
 
-### 2.6b · Cuándo y dónde se marca el mapeo
+### 2.6a bis · `config_version` necesita el procesador que la respalda
+
+*(Agregado el 2026-08-28, cuando "Activar" empezó a crear el Custom Extractor
+por API.)*
+
+Al activar una versión de configuración, el sistema crea (o adopta) un
+procesador de Document AI y ese vínculo tiene que persistir. Dos columnas para
+`config_version`:
+
+- `processor_id` — el id del Custom Extractor (hoy: `nexusdoc--{id}` como
+  displayName; el id real es el hash de Google, p. ej. `5cb9deac0ad13f00`).
+- `processor_version` — la versión foundation con la que nació (p. ej.
+  `pretrained-foundation-model-v1.5-pro-2025-06-20`). Se FIJA en cada
+  extracción: la default de Google cambia sin aviso y ya nos mordió la
+  reproducibilidad una vez.
+
+Encaja con la inmutabilidad de `config_version`: cada versión registra
+exactamente qué modelo la sirve. Mientras no hay base, los dos valores viven en
+el localStorage del front junto al tipo documental.
+
+## 2.6b · Cuándo y dónde se marca el mapeo
 
 No es una tabla, es la secuencia de uso — pero define qué tiene que permitir el
 modelo, así que va aquí.
