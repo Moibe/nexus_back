@@ -47,6 +47,10 @@ CORS_ALLOWED_ORIGINS = [o.strip() for o in _origins_env.split(",") if o.strip()]
 # ── SQL Server ────────────────────────────────────────────────────────────────
 # La base la diseña y mantiene el DBA; aquí solo se consumen sus stored
 # procedures. No hay ORM ni migraciones de este lado a propósito.
+# Llave compartida con el front (ver seguridad.py). Vacía = la API falla
+# cerrada en los endpoints protegidos, nunca abierta.
+NEXUS_API_KEY = os.getenv("NEXUS_API_KEY", "")
+
 SQLSERVER_HOST = os.getenv("SQLSERVER_HOST", "")
 SQLSERVER_PORT = os.getenv("SQLSERVER_PORT", "1433")
 SQLSERVER_DB = os.getenv("SQLSERVER_DB", "")

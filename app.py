@@ -196,9 +196,15 @@ def health_db():
 
 # ── Registro de routers ───────────────────────────────────────────────────────
 
-from routers.ia import router as ia_router  # noqa: E402
+from fastapi import Depends  # noqa: E402
 
-app.include_router(ia_router, prefix="/ia")
+from routers.ia import router as ia_router  # noqa: E402
+from seguridad import exigir_llave  # noqa: E402
+
+# La llave va en el include_router y no dentro de cada endpoint: así un router
+# nuevo que se registre aquí decide EXPLÍCITAMENTE si queda protegido, y no
+# puede quedar abierto por olvidar un decorador adentro.
+app.include_router(ia_router, prefix="/ia", dependencies=[Depends(exigir_llave)])
 
 # El grupo Documentos se registra solo si hay una base configurada.
 #
@@ -246,7 +252,9 @@ else:
             exc,
         )
     else:
-        app.include_router(documentos_router, prefix="/documentos")
+        app.include_router(
+            documentos_router, prefix="/documentos", dependencies=[Depends(exigir_llave)]
+        )
         DOCUMENTOS_DISPONIBLE = True
 
 
