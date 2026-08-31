@@ -466,12 +466,19 @@ Fases, entonces:
 | `active` | Cargar y etiquetar ejemplos few-shot. **Mapeos congelados** |
 | Corregir un mapeo ya activo | Obliga a versión nueva. No hay atajo, y eso es la garantía funcionando |
 
-**Esta tabla ya se implementó en el front para los campos en general** (no
-solo el mapeo): desde el 2026-09-01, abrir un tipo documental `activo` deja
+**Se probó implementar esta tabla en el front para los campos en general**
+(no solo el mapeo) el 2026-09-01: abrir un tipo documental `activo` dejaba
 todo el wizard de solo lectura, con "Crear nueva versión" como única puerta
-para volver a `draft`. Lo que falta —y sigue siendo justo el tema de esta
-sección— es el mapeo mismo: hoy no hay ninguna pantalla para marcarlo, activo
-o no.
+para volver a `draft`. Se retiró el mismo día a pedido explícito del
+usuario — por ahora prefiere que un modelo activo simplemente no responda al
+clic, sin explicación ni invitación a editar, mientras no exista una UX de
+edición pensada de verdad. La función que hacía el cambio de estado
+(`crearNuevaVersion`) sigue en `nexus_poc_svelte/src/lib/state/configuracion.svelte.ts`,
+sin usar, lista para cuando se retome. El diseño completo que se quitó está
+en el commit `d35287b` de ese repo.
+
+Sigue pendiente, igual que antes, el mapeo mismo: hoy no hay ninguna pantalla
+para marcarlo, activo o no.
 
 **Falta un paso en el diseño actual del wizard:** no hay un momento de *"corre
 este documento de muestra y muéstrame qué emite el motor"* durante `draft`. Es
