@@ -466,6 +466,13 @@ Fases, entonces:
 | `active` | Cargar y etiquetar ejemplos few-shot. **Mapeos congelados** |
 | Corregir un mapeo ya activo | Obliga a versión nueva. No hay atajo, y eso es la garantía funcionando |
 
+**Esta tabla ya se implementó en el front para los campos en general** (no
+solo el mapeo): desde el 2026-09-01, abrir un tipo documental `activo` deja
+todo el wizard de solo lectura, con "Crear nueva versión" como única puerta
+para volver a `draft`. Lo que falta —y sigue siendo justo el tema de esta
+sección— es el mapeo mismo: hoy no hay ninguna pantalla para marcarlo, activo
+o no.
+
 **Falta un paso en el diseño actual del wizard:** no hay un momento de *"corre
 este documento de muestra y muéstrame qué emite el motor"* durante `draft`. Es
 viable, porque lo que emite Document AI **no depende de nuestra configuración** —
