@@ -123,9 +123,10 @@ alcanza para saber cuál de los tres eslabones se rompió.
 
 ## 0a. LO QUE SE LE LLEVA AHORA (2026-08-26)
 
-**Queda la siembra de `[security].[tenantSequence]`**, y confirmar si el `GRANT
-VIEW DEFINITION` ya se ejecutó (ver abajo — pedido, sin verificar). La pregunta
-del `tenantGuid` sí quedó contestada.
+**Queda la siembra de `[security].[tenantSequence]`** — es lo único que sigue
+pendiente de esta ronda. El `GRANT VIEW DEFINITION` ya se confirmó
+(2026-08-31, ver abajo) y la pregunta del `tenantGuid` también quedó
+contestada.
 
 > **Sembrar `[security].[tenantSequence]` — es lo único que bloquea.**
 >
@@ -151,15 +152,16 @@ del `tenantGuid` sí quedó contestada.
 > de dominio, `PROCHURGRUPOCSI\carlos.ramirez`). `tenantSequenceId` es
 > `IDENTITY`, no se da.
 
-### 🟡 Pedido, SIN VERIFICAR: `GRANT VIEW DEFINITION ON SCHEMA::security TO usrNexus`
+### ✅ Confirmado: `GRANT VIEW DEFINITION ON SCHEMA::security TO usrNexus`
 
-Moibe se lo pidió a Charlie el 2026-08-26. **No está confirmado que se haya
-ejecutado** — y esto vale como recordatorio de la propia convención de arriba:
-se marca ✅ cuando `nexus_back` lo consume, no cuando alguien dice que quedó.
-(Este renglón estuvo un rato marcado como ✅ por una suposición; se corrigió.)
+Pedido a Charlie el 2026-08-26. **Confirmado el 2026-08-31**: Moibe corrió el
+comando de verificación de abajo directo en el server (no una suposición ni un
+"ya quedó" de palabra) y `OBJECT_DEFINITION` devolvió el cuerpo real de
+`uspCreateTenant` en vez de `NULL`. Este renglón estuvo un rato marcado como ✅
+por una suposición anterior a esa corrida; ahora sí está verificado como pide
+la convención de arriba.
 
-**Cómo verificarlo en un comando** — si devuelve el código del SP, quedó; si
-devuelve `None`, todavía no:
+**El comando que lo confirmó:**
 
 ```bash
 cd /home/mbriseno/code/nexus_back && venv/bin/python -c "
@@ -171,10 +173,11 @@ d = cur.fetchone()[0]
 print('GRANT ACTIVO' if d else 'TODAVIA NO — OBJECT_DEFINITION devuelve NULL')
 c.close()"
 ```
+→ imprimió `GRANT ACTIVO`.
 
-Cuando esté, `diagnostico_tenants.py` puede volcar el cuerpo de los SPs y la
-definición de las restricciones `CHECK`, y con eso confirmar tres cosas que hoy
-siguen siendo deducción: cómo arma exactamente `tenantCode` a partir del
+**Ya se puede usar `diagnostico_tenants.py`** para volcar el cuerpo de los SPs y
+la definición de las restricciones `CHECK`, y con eso confirmar tres cosas que
+hasta ahora eran deducción: cómo arma exactamente `tenantCode` a partir del
 `prefix`, qué status asigna por default, y qué escribe en `createdBy` cuando lo
 llama la aplicación.
 
@@ -266,12 +269,11 @@ tabla lleva `isActive` + `isDeleted` (borrado lógico, no físico), auditoría c
 un esquema `[reference]` aparte para los catálogos. Los nombres van en inglés
 camelCase.
 
-**Pendiente menor que ahorraría mucho tiempo:** hoy `usrNexus` no tiene
-`VIEW DEFINITION`, así que no se puede leer el cuerpo de los SPs ni la
-definición de las restricciones `CHECK` (`OBJECT_DEFINITION` devuelve NULL).
-Cada falla hay que deducirla desde afuera en vez de leer qué valida el SP. Un
-`GRANT VIEW DEFINITION ON SCHEMA::security TO usrNexus` lo resolvería y **no da
-acceso a ningún dato** — solo a la definición de los objetos.
+~~**Pendiente menor que ahorraría mucho tiempo:** hoy `usrNexus` no tiene
+`VIEW DEFINITION`...~~ — **resuelto el 2026-08-31** (ver la sección de arriba).
+`usrNexus` ya puede leer el cuerpo de los SPs y la definición de las
+restricciones `CHECK` vía `OBJECT_DEFINITION`; las fallas ya no hay que
+deducirlas desde afuera.
 
 ---
 
