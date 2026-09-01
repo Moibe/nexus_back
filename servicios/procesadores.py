@@ -48,6 +48,24 @@ def _prefijo_display(id_tipo: str) -> str:
     return f"nexusdoc--{id_tipo}"
 
 
+class DocumentAIError(RuntimeError):
+    """Google respondió con un error a una llamada concreta.
+
+    Lleva `status_code` aparte del mensaje (que sigue siendo el texto técnico
+    completo, para los logs) porque el router necesita DISTINGUIR dos casos que
+    para el usuario significan cosas completamente distintas: un 4xx es Google
+    rechazando ESTA configuración (algo que sí puede corregir); un 5xx o un
+    timeout es que Document AI no respondió (nada que revisar, solo reintentar).
+    Sin este campo, el router tendría que volver a parsear el mensaje para
+    saberlo — fresco de una excepción cuyo `str()` ya se pensó para logs, no
+    para bifurcar lógica.
+    """
+
+    def __init__(self, mensaje: str, status_code: int):
+        super().__init__(mensaje)
+        self.status_code = status_code
+
+
 async def _pedir(
     cliente: httpx.AsyncClient, metodo: str, api: str, ruta: str, **kwargs: Any
 ) -> dict:
@@ -64,7 +82,10 @@ async def _pedir(
             detalle = r.json().get("error", {}).get("message", "")
         except Exception:
             detalle = r.text[:300]
-        raise RuntimeError(f"Document AI respondió {r.status_code} en {metodo} {ruta}: {detalle}")
+        raise DocumentAIError(
+            f"Document AI respondió {r.status_code} en {metodo} {ruta}: {detalle}",
+            status_code=r.status_code,
+        )
     return r.json() if r.content else {}
 
 

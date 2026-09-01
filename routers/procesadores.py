@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
 from servicios.esquema import esquema_desde_campos
-from servicios.procesadores import activar_tipo_documental
+from servicios.procesadores import DocumentAIError, activar_tipo_documental
 
 logger = logging.getLogger(__name__)
 
@@ -65,11 +65,39 @@ async def activar(tipo: TipoDocumentalEntrada):
     )
     try:
         resultado = await activar_tipo_documental(tipo.id, tipo.nombre, esquema)
+    except DocumentAIError as exc:
+        # El texto técnico completo (status HTTP, ruta, el JSON de error de
+        # Google) va al log, no al usuario: un "Invalid JSON payload received
+        # at process_options.schema_override..." no le dice nada a quien está
+        # configurando un tipo documental, y en el peor caso expone detalles
+        # internos (nombres de recurso de GCP) sin necesidad.
+        logger.exception("Falló la activación del tipo %s", tipo.id)
+        if 400 <= exc.status_code < 500:
+            # Un 4xx es Google RECHAZANDO esta configuración puntual — el único
+            # caso real donde "revisa tus campos" es cierto y útil.
+            mensaje = (
+                "Document AI rechazó la configuración de este modelo. Revisa "
+                "los nombres y tipos de los campos, y vuelve a intentar la "
+                "activación."
+            )
+        else:
+            # 5xx, o cualquier otra cosa: Document AI no respondió bien. No es
+            # algo que la configuración pueda arreglar, así que decir
+            # "revisa tus campos" mandaría a buscar donde no está el problema.
+            mensaje = (
+                "No se pudo contactar a Document AI en este momento. Intenta "
+                "de nuevo en unos minutos."
+            )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=mensaje) from exc
     except RuntimeError as exc:
+        # Fallas que NO vienen de una respuesta HTTP de Google (falta
+        # DOCAI_PROJECT_ID en el .env, o el polling de la operación se agotó a
+        # los 90s): no hay un status code que triar, así que van a un mensaje
+        # genérico pero honesto — nunca el texto técnico crudo.
         logger.exception("Falló la activación del tipo %s", tipo.id)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"No se pudo activar en Document AI: {exc}",
+            detail="No se pudo completar la activación. Intenta de nuevo; si el problema persiste, avisa al equipo técnico.",
         ) from exc
 
     return resultado
