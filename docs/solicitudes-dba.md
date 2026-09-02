@@ -474,13 +474,27 @@ todo el wizard de solo lectura, con "Crear nueva versión" como única puerta
 para volver a `draft`. Se retiró el mismo día a pedido explícito del
 usuario — por ahora prefiere que un modelo activo simplemente no responda al
 clic, sin explicación ni invitación a editar, mientras no exista una UX de
-edición pensada de verdad. La función que hacía el cambio de estado
-(`crearNuevaVersion`) sigue en `nexus_poc_svelte/src/lib/state/configuracion.svelte.ts`,
-sin usar, lista para cuando se retome. El diseño completo que se quitó está
-en el commit `d35287b` de ese repo.
+edición pensada de verdad. El diseño completo que se quitó está en el commit
+`d35287b` de `nexus_poc_svelte`.
 
-Sigue pendiente, igual que antes, el mapeo mismo: hoy no hay ninguna pantalla
-para marcarlo, activo o no.
+**Retomado el 2026-09-02, ya no "sin usar":** el menú `⋮` de la tarjeta trae
+ahora un renglón "Crear nueva versión", habilitado SOLO para un modelo
+activo, que llama a `crearNuevaVersion()` — regresa el tipo a `draft`
+conservando sus campos y abre el wizard para editar. La fila de la tabla de
+arriba ("Corregir un mapeo ya activo → obliga a versión nueva") queda
+resuelta del lado del ESTADO: al publicar de nuevo, el back
+(`activar_tipo_documental` en `nexus_back/servicios/procesadores.py`) crea
+un Custom Extractor GENUINAMENTE NUEVO — nunca adopta el procesador de la
+versión anterior, que se queda viva en Document AI sin tocarse (ni se
+deshabilita ni se borra, a petición explícita). Verificado end-to-end contra
+GCP real.
+
+Sigue pendiente, igual que antes, el mapeo mismo (`extractor_field_map`): hoy
+no hay ninguna pantalla para marcarlo, activo o no. La pantalla de
+"Calibración de campos extraídos" que describe el párrafo de arriba SÍ
+existe ya en el front desde el 2026-09-02 (detrás de "Ejemplo documental" del
+mismo menú) — pero por ahora solo puebla el árbol de campos; el lado derecho
+(donde viviría el mapeo) es una réplica estática sin funcionalidad todavía.
 
 **Falta un paso en el diseño actual del wizard:** no hay un momento de *"corre
 este documento de muestra y muéstrame qué emite el motor"* durante `draft`. Es
