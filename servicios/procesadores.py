@@ -26,6 +26,8 @@ se busca ese nombre — si ya existe, se adopta en lugar de duplicar.
 
 import asyncio
 import logging
+import re
+import unicodedata
 from typing import Any
 
 import httpx
@@ -42,10 +44,43 @@ def _url(api: str, ruta: str) -> str:
     return f"https://{DOCAI_LOCATION}-documentai.googleapis.com/{api}/{ruta}"
 
 
+def _slug(texto: str) -> str:
+    """"Póliza de seguro de auto" -> "poliza-de-seguro-de-auto".
+
+    Sin acentos ni espacios: Document AI no documenta ninguna restricción de
+    charset para `displayName` (se verificó contra el discovery document), pero
+    tampoco confirma que acepte Unicode sin sorpresas — ASCII plano es la
+    apuesta segura para un campo que solo existe para leerse en la consola.
+    """
+    sin_acentos = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode()
+    return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", sin_acentos.lower())).strip("-")[:60]
+
+
 def _prefijo_display(id_tipo: str) -> str:
-    # Doble guion como separador: un displayName con guiones simples adentro
-    # (el propio id) no se confunde con el prefijo.
+    """El PREFIJO estable que identifica a un tipo documental en Document AI.
+
+    Solo esto se usa para BUSCAR (ver `_buscar_por_display`): el id interno no
+    cambia nunca, a diferencia del nombre que el usuario le puso, que sí puede
+    editarse. Si la búsqueda dependiera del nombre completo, renombrar un tipo
+    documental y volver a activarlo (Publicar cambios) crearía un procesador
+    DUPLICADO en vez de adoptar el existente — Document AI no tiene forma de
+    renombrar un procesador ya creado ni de filtrar `processors.list` por nada
+    que no sea id/parent, así que esto tiene que resolverse de este lado.
+    """
     return f"nexusdoc--{id_tipo}"
+
+
+def _display_completo(id_tipo: str, nombre: str) -> str:
+    """El displayName real que se manda a crear: prefijo estable + nombre
+    legible, para que la consola de GCP diga "INE" en vez de "tipo-mtaq965y-1".
+
+    Si el tipo se renombra después de activado, este texto se queda con el
+    nombre VIEJO — Document AI no ofrece un `patch` para actualizarlo (se
+    verificó: no existe en la API, en ninguna versión). Es un costo cosmético
+    que se acepta a cambio de no duplicar procesadores; ver `_prefijo_display`.
+    """
+    slug = _slug(nombre)
+    return f"{_prefijo_display(id_tipo)}--{slug}" if slug else _prefijo_display(id_tipo)
 
 
 class DocumentAIError(RuntimeError):
@@ -107,8 +142,22 @@ async def _esperar_operacion(cliente: httpx.AsyncClient, nombre_op: str) -> dict
     raise RuntimeError(f"La operación {nombre_op} no terminó en 90s.")
 
 
-async def _buscar_por_display(cliente: httpx.AsyncClient, display: str) -> dict | None:
-    """Busca un procesador por displayName paginando `list` (no hay filtro)."""
+async def _buscar_por_prefijo(cliente: httpx.AsyncClient, prefijo: str) -> dict | None:
+    """Busca un procesador cuyo displayName EMPIECE con `prefijo`, paginando
+    `list` (Document AI no tiene filtro server-side por nada que no sea
+    id/parent — se verificó contra la API real).
+
+    Por prefijo y no por igualdad exacta: el displayName completo incluye el
+    nombre legible del tipo documental (ver `_display_completo`), que puede
+    cambiar; el prefijo (`_prefijo_display`, basado en el id interno) no
+    cambia nunca. Buscar por igualdad exacta perdería el procesador existente
+    en cuanto el nombre visible cambiara, y crearía uno duplicado.
+
+    El corte tiene que caer justo en el separador "--": comparar con
+    `str.startswith(prefijo)` a secas confundiría, por ejemplo, el id
+    "tipo-mtaq965y-1" con "tipo-mtaq965y-10" (el segundo también empieza con
+    el texto del primero como substring plano).
+    """
     ruta = f"{_PADRE}/processors"
     token = ""
     while True:
@@ -117,7 +166,8 @@ async def _buscar_por_display(cliente: httpx.AsyncClient, display: str) -> dict 
             params["pageToken"] = token
         pagina = await _pedir(cliente, "GET", "v1", ruta, params=params)
         for p in pagina.get("processors", []):
-            if p.get("displayName") == display:
+            display = p.get("displayName", "")
+            if display == prefijo or display.startswith(f"{prefijo}--"):
                 return p
         token = pagina.get("nextPageToken", "")
         if not token:
@@ -138,9 +188,9 @@ async def activar_tipo_documental(
     if not DOCAI_PROJECT_ID:
         raise RuntimeError("Falta DOCAI_PROJECT_ID en el .env — revisa .env.example")
 
-    display = _prefijo_display(id_tipo)
+    prefijo = _prefijo_display(id_tipo)
     async with httpx.AsyncClient() as cliente:
-        existente = await _buscar_por_display(cliente, display)
+        existente = await _buscar_por_prefijo(cliente, prefijo)
         creado = existente is None
 
         if existente is None:
@@ -149,7 +199,10 @@ async def activar_tipo_documental(
                 "POST",
                 "v1",
                 f"{_PADRE}/processors",
-                json={"type": "CUSTOM_EXTRACTION_PROCESSOR", "displayName": display},
+                json={
+                    "type": "CUSTOM_EXTRACTION_PROCESSOR",
+                    "displayName": _display_completo(id_tipo, nombre),
+                },
             )
             logger.info("Procesador creado para el tipo %s: %s", id_tipo, procesador.get("name"))
         else:
@@ -209,9 +262,9 @@ async def activar_tipo_documental(
 
 
 async def eliminar_procesador(procesador_id: str) -> None:
-    """Borra un procesador. Existe para las pruebas y para deshacer errores —
-    ningún flujo del producto lo llama todavía. Es IRREVERSIBLE: borra también
-    su dataset y su esquema."""
+    """Borra un procesador: lo usa el "Borrar" del front cuando el tipo
+    documental ya tenía un Custom Extractor creado. Es IRREVERSIBLE: borra
+    también su dataset y su esquema."""
     async with httpx.AsyncClient() as cliente:
         op = await _pedir(
             cliente, "DELETE", "v1", f"{_PADRE}/processors/{procesador_id}"
