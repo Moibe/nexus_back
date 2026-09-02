@@ -35,6 +35,11 @@ class TipoDocumentalEntrada(BaseModel):
     nombre: str = Field(min_length=1, max_length=200)
     descripcion: str = ""
     campos: list[CampoEntrada]
+    # La versión YA publicada (0 = nunca activado). "Activar" siempre manda 0;
+    # "Crear nueva versión" manda la actual, para que el back publique la
+    # SIGUIENTE como procesador nuevo en vez de adoptar el vigente — ver
+    # `activar_tipo_documental`.
+    version: int = Field(default=0, ge=0)
 
 
 def _mensaje_para(exc: DocumentAIError, *, mensaje_4xx: str) -> str:
@@ -58,12 +63,14 @@ def _mensaje_para(exc: DocumentAIError, *, mensaje_4xx: str) -> str:
     tags=["Procesadores"],
     summary="Activar un tipo documental",
     description=(
-        "Crea (o adopta, si ya existía) el Custom Extractor de Document AI del "
-        "tipo documental y le sube el esquema armado desde sus campos. El "
-        "procesador nace en modalidad zero-shot: extrae leyendo solo el esquema, "
-        "sin entrenamiento. Devuelve `procesadorId` y `versionDefault`, que el "
-        "front debe guardar junto al tipo — la versión se fija en cada "
-        "extracción para que el resultado sea reproducible."
+        "Crea (o adopta, si un intento anterior ya lo dejó a medias) el Custom "
+        "Extractor de Document AI para la SIGUIENTE versión del tipo documental "
+        "(`version` + 1) y le sube el esquema armado desde sus campos. Una "
+        "versión nunca reutiliza el procesador de la anterior — esa se queda "
+        "viva sin tocarse. El procesador nace en modalidad zero-shot: extrae "
+        "leyendo solo el esquema, sin entrenamiento. Devuelve `procesadorId` y "
+        "`versionDefault`, que el front debe guardar junto al tipo — la versión "
+        "se fija en cada extracción para que el resultado sea reproducible."
     ),
 )
 async def activar(tipo: TipoDocumentalEntrada):
@@ -80,7 +87,7 @@ async def activar(tipo: TipoDocumentalEntrada):
         tipo.nombre, tipo.descripcion, [c.model_dump() for c in tipo.campos]
     )
     try:
-        resultado = await activar_tipo_documental(tipo.id, tipo.nombre, esquema)
+        resultado = await activar_tipo_documental(tipo.id, tipo.nombre, esquema, tipo.version)
     except DocumentAIError as exc:
         # El texto técnico completo (status HTTP, ruta, el JSON de error de
         # Google) va al log, no al usuario: un "Invalid JSON payload received

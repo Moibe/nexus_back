@@ -20,8 +20,18 @@ extrae con confianza >0.99.
 Sobre la idempotencia, que aquí es una trampa real: `processors.create` NO es
 idempotente (no acepta requestId) y `processors.list` no tiene filtro. Un
 doble clic en "Activar" crearía dos procesadores. El guardia es el
-displayName: se nombra `nexusdoc--{id_del_tipo}` y ANTES de crear se lista y
-se busca ese nombre — si ya existe, se adopta en lugar de duplicar.
+displayName: se nombra `nexusdoc--{id_del_tipo}--v{version}` y ANTES de crear
+se lista y se busca ese nombre exacto — si ya existe, se adopta en lugar de
+duplicar.
+
+La versión no es cosmética: "Crear nueva versión" del front (2026-09-02)
+pide una y otra vez un procesador GENUINAMENTE NUEVO para el mismo tipo
+documental, no una adopción del que ya estaba activo — el viejo se queda
+vivo tal cual en Document AI, sin tocarlo, como historial. Por eso la
+búsqueda de idempotencia va ESCOPEADA a la versión que se está publicando
+(`v{n}`), no al tipo completo: dos publicaciones del mismo tipo en momentos
+distintos deben crear procesadores DISTINTOS, pero dos clics de la MISMA
+publicación (un doble clic accidental) deben adoptarse entre sí.
 """
 
 import asyncio
@@ -68,23 +78,32 @@ def _slug(texto: str) -> str:
     return "-".join(significativas)[:60]
 
 
-def _prefijo_display(id_tipo: str) -> str:
-    """El PREFIJO estable que identifica a un tipo documental en Document AI.
+def _prefijo_display(id_tipo: str, version: int) -> str:
+    """El PREFIJO estable que identifica UNA VERSIÓN de un tipo documental en
+    Document AI.
 
-    Solo esto se usa para BUSCAR (ver `_buscar_por_display`): el id interno no
-    cambia nunca, a diferencia del nombre que el usuario le puso, que sí puede
-    editarse. Si la búsqueda dependiera del nombre completo, renombrar un tipo
-    documental y volver a activarlo (Publicar cambios) crearía un procesador
-    DUPLICADO en vez de adoptar el existente — Document AI no tiene forma de
-    renombrar un procesador ya creado ni de filtrar `processors.list` por nada
-    que no sea id/parent, así que esto tiene que resolverse de este lado.
+    Solo esto se usa para BUSCAR (ver `_buscar_por_prefijo`): el id interno y
+    la versión no cambian nunca para una publicación dada, a diferencia del
+    nombre que el usuario le puso, que sí puede editarse. Si la búsqueda
+    dependiera del nombre completo, renombrar un tipo documental y volver a
+    activarlo (Publicar cambios) crearía un procesador DUPLICADO en vez de
+    adoptar el existente — Document AI no tiene forma de renombrar un
+    procesador ya creado ni de filtrar `processors.list` por nada que no sea
+    id/parent, así que esto tiene que resolverse de este lado.
+
+    La versión SÍ forma parte del prefijo (a diferencia de antes de
+    "Crear nueva versión"): cada publicación es un procesador propio, y
+    escopear la búsqueda por versión es lo que permite que dos publicaciones
+    del mismo tipo, en momentos distintos, nunca se confundan entre sí ni se
+    adopten por error.
     """
-    return f"nexusdoc--{id_tipo}"
+    return f"nexusdoc--{id_tipo}--v{version}"
 
 
-def _display_completo(id_tipo: str, nombre: str) -> str:
-    """El displayName real que se manda a crear: prefijo estable + nombre
-    legible, para que la consola de GCP diga "INE" en vez de "tipo-mtaq965y-1".
+def _display_completo(id_tipo: str, version: int, nombre: str) -> str:
+    """El displayName real que se manda a crear: prefijo estable (con
+    versión) + nombre legible, para que la consola de GCP diga algo como
+    "nexusdoc--tipo-mtaq965y-1--v2--ine" en vez de "tipo-mtaq965y-1" a secas.
 
     Si el tipo se renombra después de activado, este texto se queda con el
     nombre VIEJO — Document AI no ofrece un `patch` para actualizarlo (se
@@ -92,7 +111,8 @@ def _display_completo(id_tipo: str, nombre: str) -> str:
     que se acepta a cambio de no duplicar procesadores; ver `_prefijo_display`.
     """
     slug = _slug(nombre)
-    return f"{_prefijo_display(id_tipo)}--{slug}" if slug else _prefijo_display(id_tipo)
+    prefijo = _prefijo_display(id_tipo, version)
+    return f"{prefijo}--{slug}" if slug else prefijo
 
 
 class DocumentAIError(RuntimeError):
@@ -166,9 +186,10 @@ async def _buscar_por_prefijo(cliente: httpx.AsyncClient, prefijo: str) -> dict 
     en cuanto el nombre visible cambiara, y crearía uno duplicado.
 
     El corte tiene que caer justo en el separador "--": comparar con
-    `str.startswith(prefijo)` a secas confundiría, por ejemplo, el id
-    "tipo-mtaq965y-1" con "tipo-mtaq965y-10" (el segundo también empieza con
-    el texto del primero como substring plano).
+    `str.startswith(prefijo)` a secas confundiría, por ejemplo, la versión
+    "v1" con "v10" (el segundo también empieza con el texto del primero como
+    substring plano) — mismo problema que ya existía con el id del tipo, y
+    que la versión hereda al vivir en el mismo prefijo.
     """
     ruta = f"{_PADRE}/processors"
     token = ""
@@ -187,9 +208,17 @@ async def _buscar_por_prefijo(cliente: httpx.AsyncClient, prefijo: str) -> dict 
 
 
 async def activar_tipo_documental(
-    id_tipo: str, nombre: str, esquema: dict
+    id_tipo: str, nombre: str, esquema: dict, version_actual: int = 0
 ) -> dict:
-    """Crea (o adopta) el procesador del tipo documental y le sube su esquema.
+    """Crea (o adopta) el procesador de ESTA versión del tipo documental y le
+    sube su esquema.
+
+    `version_actual` es la versión YA publicada según el front (0 si nunca se
+    activó). Esta llamada publica la SIGUIENTE (`version_actual + 1`) — nunca
+    reutiliza el procesador de una versión anterior, aunque exista: cada
+    versión es un Custom Extractor propio, y la anterior se queda viva sin
+    tocarse (Document AI no ofrece disable/patch más barato que eso, y no se
+    pidió borrarla). Ver el docstring del módulo.
 
     Devuelve lo que el front debe persistir junto al tipo documental:
     `procesadorId`, `procesadorNombre` (la ruta completa del recurso),
@@ -200,7 +229,8 @@ async def activar_tipo_documental(
     if not DOCAI_PROJECT_ID:
         raise RuntimeError("Falta DOCAI_PROJECT_ID en el .env — revisa .env.example")
 
-    prefijo = _prefijo_display(id_tipo)
+    version_a_publicar = version_actual + 1
+    prefijo = _prefijo_display(id_tipo, version_a_publicar)
     async with httpx.AsyncClient() as cliente:
         existente = await _buscar_por_prefijo(cliente, prefijo)
         creado = existente is None
@@ -213,13 +243,19 @@ async def activar_tipo_documental(
                 f"{_PADRE}/processors",
                 json={
                     "type": "CUSTOM_EXTRACTION_PROCESSOR",
-                    "displayName": _display_completo(id_tipo, nombre),
+                    "displayName": _display_completo(id_tipo, version_a_publicar, nombre),
                 },
             )
-            logger.info("Procesador creado para el tipo %s: %s", id_tipo, procesador.get("name"))
+            logger.info(
+                "Procesador creado para el tipo %s v%s: %s",
+                id_tipo, version_a_publicar, procesador.get("name"),
+            )
         else:
             procesador = existente
-            logger.info("Procesador ya existía para el tipo %s: se adopta.", id_tipo)
+            logger.info(
+                "Procesador ya existía para el tipo %s v%s: se adopta (doble clic).",
+                id_tipo, version_a_publicar,
+            )
 
         nombre_recurso = procesador["name"]  # projects/.../processors/{id}
 
