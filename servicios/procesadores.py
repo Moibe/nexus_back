@@ -44,16 +44,28 @@ def _url(api: str, ruta: str) -> str:
     return f"https://{DOCAI_LOCATION}-documentai.googleapis.com/{api}/{ruta}"
 
 
+_PALABRAS_VACIAS = {
+    "de", "del", "la", "el", "los", "las", "un", "una", "unos", "unas",
+    "y", "e", "o", "u", "en", "para", "por", "con", "a", "al",
+}
+
+
 def _slug(texto: str) -> str:
-    """"Póliza de seguro de auto" -> "poliza-de-seguro-de-auto".
+    """"Póliza de seguro de auto" -> "poliza-seguro-auto".
 
     Sin acentos ni espacios: Document AI no documenta ninguna restricción de
     charset para `displayName` (se verificó contra el discovery document), pero
     tampoco confirma que acepte Unicode sin sorpresas — ASCII plano es la
     apuesta segura para un campo que solo existe para leerse en la consola.
+
+    Se quitan artículos/preposiciones sueltos porque no aportan nada a algo
+    que solo se lee de un vistazo — si el texto es SOLO palabras vacías (caso
+    raro), se conservan todas para no devolver un slug vacío.
     """
     sin_acentos = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode()
-    return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", sin_acentos.lower())).strip("-")[:60]
+    palabras = re.findall(r"[a-z0-9]+", sin_acentos.lower())
+    significativas = [p for p in palabras if p not in _PALABRAS_VACIAS] or palabras
+    return "-".join(significativas)[:60]
 
 
 def _prefijo_display(id_tipo: str) -> str:
