@@ -13,7 +13,12 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
 from servicios.esquema import esquema_desde_campos
-from servicios.procesadores import DocumentAIError, activar_tipo_documental, eliminar_procesador
+from servicios.procesadores import (
+    DocumentAIError,
+    activar_tipo_documental,
+    eliminar_procesador,
+    sincronizar_clasificador as _sincronizar_clasificador,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +45,23 @@ class TipoDocumentalEntrada(BaseModel):
     # SIGUIENTE como procesador nuevo en vez de adoptar el vigente — ver
     # `activar_tipo_documental`.
     version: int = Field(default=0, ge=0)
+
+
+class TipoParaClasificador(BaseModel):
+    """Lo mínimo que el Classifier necesita de cada tipo documental ACTIVO:
+    su id estable (para nombrar el EntityType, ver
+    `esquema_clasificador_desde_tipos`) y su nombre visible (para el
+    `displayName` que se lee en la consola de Google)."""
+
+    id: str = Field(min_length=1, max_length=100)
+    nombre: str = Field(min_length=1, max_length=200)
+
+
+class SincronizarClasificadorEntrada(BaseModel):
+    # La lista COMPLETA de tipos ACTIVOS, no solo el que cambió — sin base de
+    # datos todavía, el back no tiene otra forma de saber cuáles son. Ver el
+    # docstring de `sincronizar_clasificador` en `servicios/procesadores.py`.
+    tipos: list[TipoParaClasificador]
 
 
 def _mensaje_para(exc: DocumentAIError, *, mensaje_4xx: str) -> str:
@@ -113,6 +135,55 @@ async def activar(tipo: TipoDocumentalEntrada):
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="No se pudo completar la activación. Intenta de nuevo; si el problema persiste, avisa al equipo técnico.",
+        ) from exc
+
+    return resultado
+
+
+@router.post(
+    "/clasificador/sincronizar",
+    tags=["Procesadores"],
+    summary="Sincronizar el Classifier con los tipos documentales activos",
+    description=(
+        "Crea (la primera vez) o actualiza el ÚNICO Custom Document Classifier "
+        "del sistema, con un EntityType por cada tipo documental recibido. El "
+        "front debe llamar esto con la lista COMPLETA de tipos ACTIVOS (no solo "
+        "el que cambió) cada vez que se activa, archiva o borra un tipo "
+        "documental — sin base de datos todavía, el back no tiene forma de "
+        "saber cuáles son por su cuenta. Devuelve `procesadorId`, que el front "
+        "debe guardar para usarlo al clasificar documentos entrantes, entre la "
+        "Bandeja de preparación y el pipeline."
+    ),
+)
+async def sincronizar_clasificador(entrada: SincronizarClasificadorEntrada):
+    # Sin tipos no hay nada que distinguir: un Classifier con cero categorías
+    # se crearía bien y fallaría después, al clasificar, lejos de la causa —
+    # mismo criterio que el guardia de "sin campos" en `activar`.
+    if not entrada.tipos:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No hay tipos documentales activos con los que armar el clasificador.",
+        )
+
+    try:
+        resultado = await _sincronizar_clasificador(
+            [t.model_dump() for t in entrada.tipos]
+        )
+    except DocumentAIError as exc:
+        logger.exception("Falló la sincronización del clasificador")
+        mensaje = _mensaje_para(
+            exc,
+            mensaje_4xx=(
+                "Document AI rechazó la configuración del clasificador. Revisa "
+                "los tipos documentales activos y vuelve a intentar."
+            ),
+        )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=mensaje) from exc
+    except RuntimeError as exc:
+        logger.exception("Falló la sincronización del clasificador")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="No se pudo sincronizar el clasificador. Intenta de nuevo; si el problema persiste, avisa al equipo técnico.",
         ) from exc
 
     return resultado

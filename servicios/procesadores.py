@@ -32,6 +32,14 @@ búsqueda de idempotencia va ESCOPEADA a la versión que se está publicando
 (`v{n}`), no al tipo completo: dos publicaciones del mismo tipo en momentos
 distintos deben crear procesadores DISTINTOS, pero dos clics de la MISMA
 publicación (un doble clic accidental) deben adoptarse entre sí.
+
+`sincronizar_clasificador` (2026-09-06) es un ciclo de vida DISTINTO sobre el
+mismo mecanismo: un Custom Document Classifier (no Extractor) que distingue
+ENTRE los tipos documentales activos, para el paso "identificar qué tipo de
+documento es" entre la Bandeja de preparación y el pipeline. A diferencia del
+Extractor, aquí hay UN SOLO procesador para todo el sistema (no uno por tipo
+ni por versión), y su esquema se REEMPLAZA completo en cada sincronización en
+vez de crear uno nuevo — ver el docstring de esa función para el detalle.
 """
 
 import asyncio
@@ -43,6 +51,7 @@ from typing import Any
 import httpx
 
 from config import DOCAI_LOCATION, DOCAI_PROJECT_ID
+from servicios.esquema import esquema_clasificador_desde_tipos
 from servicios.ia import SCOPES, _token  # misma credencial cacheada que /ia
 
 logger = logging.getLogger(__name__)
@@ -306,6 +315,104 @@ async def activar_tipo_documental(
         "versionDefault": version,
         "creado": creado,
         "camposEnEsquema": len(esquema["entityTypes"][0]["properties"]),
+    }
+
+
+# A diferencia de `_prefijo_display` (una entrada por VERSIÓN de UN tipo
+# documental), el Classifier es UN SOLO procesador para TODO el sistema: no
+# lleva id ni versión en el nombre, solo este prefijo fijo. Localizarlo así
+# (en vez de, por ejemplo, guardar su id en el `.env`) reutiliza la MISMA
+# idempotencia por displayName que ya resuelve el doble-clic de "Activar" —
+# aquí resuelve, además, que "sincronizar" se pueda llamar tantas veces como
+# cambien los tipos activos sin crear un segundo Classifier por accidente.
+_PREFIJO_CLASIFICADOR = "nexusdoc-clasificador"
+
+
+async def sincronizar_clasificador(tipos: list[dict]) -> dict:
+    """Crea (la primera vez) o actualiza el ÚNICO Custom Document Classifier
+    del sistema, con un EntityType por cada tipo documental de `tipos`.
+
+    A diferencia de `activar_tipo_documental` (un Extractor NUEVO por cada
+    versión que se publica, y el viejo se queda vivo como historial), aquí
+    hay UN SOLO procesador para todo el sistema: la lista de categorías
+    cambia con el tiempo, pero el processor es el mismo — se localiza
+    siempre por el mismo displayName fijo (`_PREFIJO_CLASIFICADOR`), y su
+    `datasetSchema` se REEMPLAZA por completo en cada llamada (Document AI no
+    ofrece un PATCH incremental de entityTypes, solo reemplazo total del
+    esquema), así que un tipo renombrado o eliminado desaparece solo del
+    esquema en la siguiente sincronización — no hace falta borrarlo a mano.
+
+    `tipos` es la lista COMPLETA de tipos documentales ACTIVOS
+    (`[{"id": ..., "nombre": ...}, ...]`) que el front debe mandar en cada
+    llamada: sin base de datos todavía, el back no tiene de dónde más
+    leerla (mismo motivo por el que `activar_tipo_documental` recibe el tipo
+    completo en vez de un id a buscar).
+    """
+    if not DOCAI_PROJECT_ID:
+        raise RuntimeError("Falta DOCAI_PROJECT_ID en el .env — revisa .env.example")
+
+    async with httpx.AsyncClient() as cliente:
+        existente = await _buscar_por_prefijo(cliente, _PREFIJO_CLASIFICADOR)
+        creado = existente is None
+
+        if existente is None:
+            procesador = await _pedir(
+                cliente,
+                "POST",
+                "v1",
+                f"{_PADRE}/processors",
+                json={
+                    "type": "CUSTOM_CLASSIFICATION_PROCESSOR",
+                    "displayName": _PREFIJO_CLASIFICADOR,
+                },
+            )
+            logger.info("Classifier creado: %s", procesador.get("name"))
+        else:
+            procesador = existente
+            logger.info("Classifier ya existía: se reutiliza para sincronizar.")
+
+        nombre_recurso = procesador["name"]  # projects/.../processors/{id}
+
+        # Mismo dataset `unmanaged` que el Extractor, y el mismo trago de
+        # "already initialized" cuando el processor ya se había sincronizado
+        # antes — ver el comentario gemelo en `activar_tipo_documental`.
+        try:
+            op = await _pedir(
+                cliente,
+                "PATCH",
+                "v1beta3",
+                f"{nombre_recurso}/dataset",
+                params={"updateMask": "unmanaged_dataset_config"},
+                json={"name": f"{nombre_recurso}/dataset", "unmanagedDatasetConfig": {}},
+            )
+        except RuntimeError as exc:
+            if "already initialized" not in str(exc):
+                raise
+            op = {}
+        if op.get("name") and not op.get("done"):
+            await _esperar_operacion(cliente, op["name"])
+
+        esquema = esquema_clasificador_desde_tipos(tipos)
+        await _pedir(
+            cliente,
+            "PATCH",
+            "v1beta3",
+            f"{nombre_recurso}/dataset/datasetSchema",
+            json={
+                "name": f"{nombre_recurso}/dataset/datasetSchema",
+                "documentSchema": esquema,
+            },
+        )
+
+        procesador = await _pedir(cliente, "GET", "v1", nombre_recurso)
+
+    version = (procesador.get("defaultProcessorVersion") or "").split("/")[-1]
+    return {
+        "procesadorId": nombre_recurso.split("/")[-1],
+        "procesadorNombre": nombre_recurso,
+        "versionDefault": version,
+        "creado": creado,
+        "categorias": len(esquema["entityTypes"]),
     }
 
 

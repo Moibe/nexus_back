@@ -150,3 +150,44 @@ def esquema_desde_campos(nombre_tipo: str, descripcion_tipo: str, campos: list[d
             *tipos_auxiliares,
         ],
     }
+
+
+def esquema_clasificador_desde_tipos(tipos: list[dict]) -> dict:
+    """Arma el `DocumentSchema` de un Custom Document Classifier a partir de la
+    lista de tipos documentales ACTIVOS.
+
+    A diferencia de un Extractor (UN EntityType raíz con `properties` a
+    extraer, ver `esquema_desde_campos`), un Classifier tiene VARIOS EntityTypes
+    hoja, uno por categoría a distinguir — cada uno con `baseTypes: ["document"]`
+    (aplica al documento ENTERO, no a un campo puntual) y SIN `properties`: no
+    extrae nada, solo dice a cuál categoría pertenece el documento completo.
+    `metadata.documentSplitter: false` es lo que le confirma a Document AI que
+    estas categorías cubren el documento entero — no son límites de partición
+    de un archivo compuesto (eso sería un Custom Document Splitter, un
+    procesador distinto). Verificado contra la referencia REST real de
+    `DocumentSchema.metadata.documentSplitter`: "If true, a `document` entity
+    type can be applied to subdocument (splitting). Otherwise, it can only be
+    applied to the entire document (classification)."
+
+    El `name` de cada EntityType es el ID ESTABLE del tipo documental, NUNCA su
+    nombre visible — mismo criterio que `_prefijo_display` en
+    `procesadores.py`: el nombre se puede editar cuando quiera el usuario, el id
+    no, y el pipeline necesita poder mapear la categoría que devuelva Document
+    AI de vuelta a un tipo documental sin que un renombre lo rompa. El nombre
+    visible SÍ viaja, pero en `displayName` — para que la consola de Google (y
+    cualquier humano viendo el esquema ahí) lea algo legible en vez de un id.
+    """
+    entity_types = [
+        {
+            "name": normalizar_nombre(tipo["id"]),
+            "displayName": (tipo.get("nombre") or tipo["id"]).strip() or tipo["id"],
+            "baseTypes": ["document"],
+        }
+        for tipo in tipos
+    ]
+    return {
+        "displayName": "Clasificador de tipos documentales NexusDoc",
+        "description": "Distingue a cuál tipo documental activo pertenece un documento entrante.",
+        "metadata": {"documentSplitter": False},
+        "entityTypes": entity_types,
+    }
