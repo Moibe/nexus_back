@@ -5,10 +5,24 @@ pydantic-settings. Se importa como `from config import ALGO`.
 """
 
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
+# Segunda fuente, SIN override: `.env.publico` sí está versionado y trae solo
+# configuración que no es credencial (ver su encabezado). Como load_dotenv no
+# pisa lo que ya quedó en os.environ, el `.env` real de cada máquina SIEMPRE
+# gana; esto solo rellena lo que falte. Si el archivo no existe, no pasa nada.
+#
+# La ruta va ABSOLUTA, derivada de la ubicación de este archivo, y no como
+# `".env.publico"` a secas: una ruta relativa se resuelve contra el working
+# directory del proceso, y no está garantizado que uvicorn arranque parado en
+# la raíz del repo. Si no resolviera, load_dotenv no truena — devuelve False
+# en silencio — y el síntoma sería "falta DOCAI_CLASIFICADOR_ID" en el server
+# con el archivo ahí, presente y correcto. El `.env` de arriba no tiene este
+# problema porque find_dotenv() sube desde el archivo que llama, no desde el cwd.
+load_dotenv(Path(__file__).resolve().parent / ".env.publico")
 
 
 def _numero(nombre: str, default: float) -> float:
