@@ -50,11 +50,15 @@ class TipoDocumentalEntrada(BaseModel):
 class TipoParaClasificador(BaseModel):
     """Lo mínimo que el Classifier necesita de cada tipo documental ACTIVO:
     su id estable (para nombrar el EntityType, ver
-    `esquema_clasificador_desde_tipos`) y su nombre visible (para el
-    `displayName` que se lee en la consola de Google)."""
+    `esquema_clasificador_desde_tipos`), su nombre visible (para el
+    `displayName` que se lee en la consola de Google), y opcionalmente la
+    MISMA descripción que el usuario ya capturó al dar de alta el tipo — el
+    front debe mandar `tipo.descripcion` tal cual, sin pedirle al usuario que
+    la escriba dos veces."""
 
     id: str = Field(min_length=1, max_length=100)
     nombre: str = Field(min_length=1, max_length=200)
+    descripcion: str = ""
 
 
 class SincronizarClasificadorEntrada(BaseModel):

@@ -176,15 +176,27 @@ def esquema_clasificador_desde_tipos(tipos: list[dict]) -> dict:
     AI de vuelta a un tipo documental sin que un renombre lo rompa. El nombre
     visible SÍ viaja, pero en `displayName` — para que la consola de Google (y
     cualquier humano viendo el esquema ahí) lea algo legible en vez de un id.
+
+    `descripcion` (opcional) es la MISMA descripción que el usuario ya teclea
+    al dar de alta el tipo documental (`descripcion_tipo` de
+    `esquema_desde_campos`) — no una nueva captura. La consola de Google llama
+    a esto justo "una descripción/prompt que ayuda al modelo a diferenciar
+    etiquetas escritas de forma parecida" (verificado contra la guía de Custom
+    Classifier), o sea que cumple el mismo rol aquí que en el Extractor: es
+    prompt real, no metadato decorativo. Se omite del EntityType si viene
+    vacía, en vez de mandar un `description: ""` sin sentido.
     """
-    entity_types = [
-        {
+    entity_types = []
+    for tipo in tipos:
+        entity_type = {
             "name": normalizar_nombre(tipo["id"]),
             "displayName": (tipo.get("nombre") or tipo["id"]).strip() or tipo["id"],
             "baseTypes": ["document"],
         }
-        for tipo in tipos
-    ]
+        descripcion = (tipo.get("descripcion") or "").strip()
+        if descripcion:
+            entity_type["description"] = descripcion
+        entity_types.append(entity_type)
     return {
         "displayName": "Clasificador de tipos documentales NexusDoc",
         "description": "Distingue a cuál tipo documental activo pertenece un documento entrante.",

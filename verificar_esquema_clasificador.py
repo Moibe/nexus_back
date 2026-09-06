@@ -78,8 +78,25 @@ if despues["entityTypes"][0]["displayName"] == "INE (renombrado)":
 else:
     mal(f"displayName no se actualizó: {despues['entityTypes'][0]['displayName']!r}")
 
+# ── Descripción opcional ──────────────────────────────────────────────────────
+caso("[6] La descripción del tipo viaja como `description` del EntityType")
+e_con_desc = esquema_clasificador_desde_tipos(
+    [{"id": "tipo-abc", "nombre": "INE", "descripcion": "Credencial de elector con fotografía."}]
+)
+if e_con_desc["entityTypes"][0].get("description") == "Credencial de elector con fotografía.":
+    ok("description presente y correcta")
+else:
+    mal(f"quedó: {e_con_desc['entityTypes'][0]!r}")
+
+caso("[7] Sin descripción (o vacía), el EntityType NO lleva la llave `description`")
+e_sin_desc = esquema_clasificador_desde_tipos([{"id": "tipo-abc", "nombre": "INE"}])
+if "description" not in e_sin_desc["entityTypes"][0]:
+    ok("sin `description` cuando no se manda -- no se manda un string vacío sin sentido")
+else:
+    mal(f"quedó: {e_sin_desc['entityTypes'][0]!r}")
+
 # ── Lista vacía ───────────────────────────────────────────────────────────────
-caso("[6] Sin tipos activos, el esquema sale con entityTypes vacío (no truena)")
+caso("[8] Sin tipos activos, el esquema sale con entityTypes vacío (no truena)")
 e_vacio = esquema_clasificador_desde_tipos([])
 if e_vacio["entityTypes"] == []:
     ok("entityTypes vacío, sin excepción")
