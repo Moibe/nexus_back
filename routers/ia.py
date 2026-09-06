@@ -10,14 +10,66 @@ el parseo de la respuesta viven en `servicios.ia`.
 
 import logging
 
+import httpx
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
 
 from config import MAX_SUBIDA_BYTES, MAX_SUBIDA_MB
+from errores import ErrorDocumentAI
 from servicios import ia
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Qué ve el usuario por cada causa, y con qué status. El texto se escribe AQUÍ
+# y no en el servicio a propósito: el servicio sabe qué falló, el router sabe a
+# quién se lo está contando. Mismo criterio que `_mensaje_para` en
+# routers/procesadores.py.
+#
+# Los mensajes son cortos porque el front los pinta dentro del renglón del
+# documento en el Pipeline, no en un panel aparte.
+#
+# El status NO es 502 para todos: un PDF corrupto o demasiado largo es un
+# problema del documento que mandó el cliente (4xx), no una falla de la
+# pasarela; mezclarlos hacía que cualquier monitoreo por status code contara
+# archivos malos del usuario como caídas de Document AI.
+_POR_MOTIVO: dict[str, tuple[int, str]] = {
+    "limite_paginas": (
+        status.HTTP_422_UNPROCESSABLE_ENTITY,
+        "El documento excede el máximo de páginas que Document AI procesa en línea.",
+    ),
+    "archivo_ilegible": (
+        status.HTTP_422_UNPROCESSABLE_ENTITY,
+        "El archivo no se pudo abrir: puede estar dañado, incompleto o protegido con contraseña.",
+    ),
+    "cuota": (
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        "Se alcanzó el límite de páginas por minuto de Document AI. Espera un momento y vuelve a intentar.",
+    ),
+    "servicio": (
+        status.HTTP_502_BAD_GATEWAY,
+        "Document AI no está disponible en este momento. Intenta de nuevo en unos minutos.",
+    ),
+}
+
+
+def _fallar(exc: Exception, generico: str) -> HTTPException:
+    """Traduce lo que sea que haya tronado al par (status, mensaje) que ve el
+    usuario. `generico` es el texto de cada endpoint para lo no clasificado —
+    lo único que existía antes de este mapeo."""
+    if isinstance(exc, ErrorDocumentAI):
+        codigo, mensaje = _POR_MOTIVO.get(
+            exc.motivo, (status.HTTP_502_BAD_GATEWAY, generico)
+        )
+        return HTTPException(status_code=codigo, detail=mensaje)
+    if isinstance(exc, httpx.TimeoutException):
+        # No llegó a haber respuesta: del otro lado el trabajo pudo terminar
+        # bien. Se dice así en vez de "falló", que sería afirmar de más.
+        return HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Document AI tardó demasiado en responder. El documento puede ser muy grande.",
+        )
+    return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=generico)
 
 # Los tipos que Document AI acepta en `rawDocument.mimeType`. NO es una lista
 # arbitraria nuestra: es la del proveedor, y mandar algo fuera de ella se
@@ -105,12 +157,10 @@ async def extraer_ine(imagen: UploadFile = File(...)):
         return await ia.extraer_ine(contenido, imagen.content_type)
     except Exception as exc:  # noqa: BLE001
         # El detalle de Google ya quedó en el log dentro de servicios.ia; aquí
-        # solo se devuelve un mensaje genérico para no filtrarlo al cliente.
+        # solo se devuelve el mensaje que corresponde a la causa, nunca el
+        # texto crudo.
         logger.exception("Falló la extracción de INE")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="No se pudo procesar la credencial con Document AI.",
-        ) from exc
+        raise _fallar(exc, "No se pudo procesar la credencial con Document AI.") from exc
 
 
 @router.post(
@@ -158,7 +208,4 @@ async def clasificar(archivo: UploadFile = File(...)):
         return await ia.clasificar_documento(contenido, archivo.content_type)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Falló la clasificación del documento")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="No se pudo clasificar el documento con Document AI.",
-        ) from exc
+        raise _fallar(exc, "No se pudo clasificar el documento con Document AI.") from exc

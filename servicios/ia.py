@@ -28,6 +28,7 @@ from config import (
     DOCAI_VERSION_INE,
     IA_TIMEOUT,
 )
+from errores import ErrorDocumentAI
 from servicios.ocr import bloque_de, extraer_capa_ocr
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,38 @@ def _token() -> str:
     if not _credenciales.valid:
         _credenciales.refresh(Request())
     return _credenciales.token
+
+
+def _motivo_de(status_code: int, detalle: str) -> str:
+    """Clasifica el error de Document AI en una causa accionable.
+
+    Los textos NO son inventados: se midieron mandándole entradas rotas a la
+    API real (2026-09-06). Verbatim de cada uno:
+
+      - límite: "Document pages in non-imageless mode exceed the limit: 15 got
+        28. Try using imageless mode to increase the limit to 30."
+      - cuota:  "Quota exceeded for quota metric 'Number of online process
+        document pages (US)' and limit '... per minute ...'"
+      - PDF:    "PDF document could not be opened or is corrupted (possible
+        reasons: corrupt document structure, damaged cross-reference table,
+        truncated file, or unsupported encryption)."
+      - imagen: "Invalid image content"
+
+    Se busca por SUBCADENA y no por igualdad porque los mensajes traen números
+    y nombres de cuota variables. Si Google reescribe estos textos, la
+    consecuencia es que el motivo cae en `desconocido` y el usuario ve el
+    mensaje genérico de siempre — se degrada, no se rompe.
+    """
+    t = (detalle or "").lower()
+    if status_code == 429 or "quota exceeded" in t:
+        return "cuota"
+    if "exceed the limit" in t and "pages" in t:
+        return "limite_paginas"
+    if "could not be opened or is corrupted" in t or "invalid image content" in t:
+        return "archivo_ilegible"
+    if status_code >= 500:
+        return "servicio"
+    return "desconocido"
 
 
 def _url_procesador(procesador_id: str, version: str = "") -> str:
@@ -106,11 +139,21 @@ async def _procesar(
         )
         if respuesta.status_code >= 400:
             # El detalle crudo de Google puede traer IDs de proyecto/procesador,
-            # así que se registra en el log pero NO se propaga al cliente.
+            # así que se registra en el log pero NO se propaga al cliente: viaja
+            # dentro de la excepción para que el router pueda clasificarlo, y es
+            # el router quien decide qué texto ve el usuario.
+            try:
+                detalle = respuesta.json().get("error", {}).get("message", "")
+            except Exception:  # noqa: BLE001
+                detalle = respuesta.text[:500]
             logger.error(
                 "Document AI respondió %s: %s", respuesta.status_code, respuesta.text
             )
-            raise RuntimeError(f"Document AI respondió {respuesta.status_code}")
+            raise ErrorDocumentAI(
+                f"Document AI respondió {respuesta.status_code}: {detalle}",
+                status_code=respuesta.status_code,
+                motivo=_motivo_de(respuesta.status_code, detalle),
+            )
         return respuesta.json()
 
 
