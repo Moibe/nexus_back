@@ -111,3 +111,54 @@ async def extraer_ine(imagen: UploadFile = File(...)):
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="No se pudo procesar la credencial con Document AI.",
         ) from exc
+
+
+@router.post(
+    "/clasificar",
+    tags=["IA"],
+    summary="Clasificar un documento entrante",
+    description=(
+        "Recibe un documento (imagen o PDF) y devuelve a cuál tipo documental "
+        "activo pertenece, según el Custom Document Classifier. `categoria` es "
+        "el `procesadorId` del Extractor al que hay que mandar el documento a "
+        "continuación, o `\"otro\"` cuando no corresponde a ningún tipo "
+        "configurado — en ese caso NO debe llamarse ningún extractor, el "
+        "documento debe quedar marcado para revisión manual. `confianza` "
+        "(0-100) es la de la categoría ganadora."
+    ),
+)
+async def clasificar(archivo: UploadFile = File(...)):
+    tipo = (archivo.content_type or "").split(";")[0].strip().lower()
+    if tipo not in MIME_SOPORTADOS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Document AI no procesa '{tipo or 'desconocido'}'. "
+                f"Formatos aceptados: {', '.join(sorted(MIME_SOPORTADOS))}."
+            ),
+        )
+    if archivo.size is not None and archivo.size > MAX_SUBIDA_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"El archivo excede el límite de {MAX_SUBIDA_MB:g} MB.",
+        )
+
+    contenido = await archivo.read()
+    if not contenido:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="El archivo llegó vacío."
+        )
+    if len(contenido) > MAX_SUBIDA_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"El archivo excede el límite de {MAX_SUBIDA_MB:g} MB.",
+        )
+
+    try:
+        return await ia.clasificar_documento(contenido, archivo.content_type)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Falló la clasificación del documento")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="No se pudo clasificar el documento con Document AI.",
+        ) from exc

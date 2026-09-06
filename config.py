@@ -83,6 +83,14 @@ SQLSERVER_ENCRYPT = os.getenv("SQLSERVER_ENCRYPT", "yes")
 DOCAI_PROJECT_ID = os.getenv("DOCAI_PROJECT_ID", "")
 DOCAI_LOCATION = os.getenv("DOCAI_LOCATION", "us")
 DOCAI_PROCESADOR_INE = os.getenv("DOCAI_PROCESADOR_INE", "")
+# El ÚNICO Custom Document Classifier del sistema (ver servicios/procesadores.py
+# sincronizar_clasificador). A diferencia de DOCAI_PROCESADOR_INE, este no
+# identifica un tipo documental sino el paso previo: a cuál tipo pertenece un
+# documento entrante, antes de decidir a qué extractor mandarlo.
+DOCAI_CLASIFICADOR_ID = os.getenv("DOCAI_CLASIFICADOR_ID", "")
+# Misma razón que DOCAI_VERSION_INE: sin fijarla, Google puede promover otra
+# versión a "default" sin aviso y la clasificación deja de ser reproducible.
+DOCAI_VERSION_CLASIFICADOR = os.getenv("DOCAI_VERSION_CLASIFICADOR", "")
 
 # Versión del modelo con la que se llama al procesador. Si se deja vacía, Google
 # usa la "default" del procesador — y esa la puede cambiar él, sin avisar, el

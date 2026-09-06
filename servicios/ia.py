@@ -20,9 +20,11 @@ from google.auth import default
 from google.auth.transport.requests import Request
 
 from config import (
+    DOCAI_CLASIFICADOR_ID,
     DOCAI_LOCATION,
     DOCAI_PROCESADOR_INE,
     DOCAI_PROJECT_ID,
+    DOCAI_VERSION_CLASIFICADOR,
     DOCAI_VERSION_INE,
     IA_TIMEOUT,
 )
@@ -429,3 +431,39 @@ async def extraer_ine(contenido: bytes, mime_type: str = "image/jpeg") -> dict[s
     # cual hasta que se guarde en SQL Server, sin regenerarlo en ese momento.
     datos["_metadata"] = metadata
     return datos
+
+
+async def clasificar_documento(contenido: bytes, mime_type: str) -> dict[str, Any]:
+    """Pregunta al Custom Document Classifier a cuál tipo documental activo
+    pertenece un documento entrante — el paso previo a decidir a qué extractor
+    mandarlo, entre la Bandeja de preparación y el pipeline.
+
+    A diferencia de `extraer_ine`, aquí NO hay campos que extraer: el
+    Classifier solo etiqueta el documento ENTERO con una categoría (ver
+    `servicios.procesadores.sincronizar_clasificador`). `categoria` es el
+    `name` del EntityType que ganó — hoy eso es literal el `procesadorId` del
+    Extractor al que hay que mandar el documento después (ver el docstring de
+    `esquema_clasificador_desde_tipos`), EXCEPTO cuando vale `"otro"`: esa es
+    la categoría explícita de "no corresponde a ningún tipo configurado", y
+    ahí no hay ningún extractor al que seguir — el documento debe quedar
+    marcado para revisión/configuración manual, nunca mandarse a un extractor
+    de todos modos.
+
+    `categoria` es `None` solo si Document AI respondió sin ninguna entidad —
+    caso raro con la etiqueta `otro` ya en el esquema (siempre debería poder
+    elegir ALGO), pero se contempla en vez de asumir que `entities` nunca
+    viene vacío. El front debe tratar `None` igual que `"otro"`: sin categoría
+    reconocida, sin extractor al que mandarlo.
+    """
+    if not DOCAI_CLASIFICADOR_ID:
+        raise RuntimeError(
+            "Falta DOCAI_CLASIFICADOR_ID en el .env — revisa .env.example"
+        )
+    crudo = await _procesar(
+        DOCAI_CLASIFICADOR_ID, contenido, mime_type, DOCAI_VERSION_CLASIFICADOR
+    )
+    entidades = crudo.get("document", {}).get("entities") or []
+    if not entidades:
+        return {"categoria": None, "confianza": None}
+    mejor = max(entidades, key=lambda e: e.get("confidence") or 0)
+    return {"categoria": mejor.get("type"), "confianza": _a_cien(mejor.get("confidence"))}
