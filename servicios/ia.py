@@ -67,9 +67,19 @@ def _url_procesador(procesador_id: str, version: str = "") -> str:
 
 
 async def _procesar(
-    procesador_id: str, contenido: bytes, mime_type: str, version: str = ""
+    procesador_id: str,
+    contenido: bytes,
+    mime_type: str,
+    version: str = "",
+    opciones: dict[str, Any] | None = None,
 ) -> dict:
-    """Manda el archivo a un procesador de Document AI y devuelve su JSON crudo."""
+    """Manda el archivo a un procesador de Document AI y devuelve su JSON crudo.
+
+    `opciones` se mezcla en el cuerpo del request tal cual (`imagelessMode`,
+    `processOptions`, etc. — todos campos de `ProcessRequest`). Se deja
+    genérico en vez de un parámetro por opción porque quien sabe qué opciones
+    necesita es cada función de dominio, no esta.
+    """
     if not version:
         logger.warning(
             "Se está llamando al procesador %s SIN fijar versión: Google usará la "
@@ -77,12 +87,14 @@ async def _procesar(
             "reproducible y engine_version no se puede registrar con certeza.",
             procesador_id,
         )
-    cuerpo = {
+    cuerpo: dict[str, Any] = {
         "rawDocument": {
             "mimeType": mime_type,
             "content": base64.b64encode(contenido).decode("utf-8"),
         }
     }
+    if opciones:
+        cuerpo.update(opciones)
     cabeceras = {
         "Authorization": f"Bearer {_token()}",
         "Content-Type": "application/json; charset=utf-8",
@@ -433,6 +445,27 @@ async def extraer_ine(contenido: bytes, mime_type: str = "image/jpeg") -> dict[s
     return datos
 
 
+# Cuántas páginas del documento ve el clasificador. NO es una optimización
+# prematura: resuelve un fallo real y ahorra dinero real.
+#
+# El fallo: el procesamiento EN LÍNEA de Document AI topa en 15 páginas (30 en
+# `imagelessMode`), y un documento más largo se rechaza con un 400 — medido con
+# un PDF de 28 páginas: "Document pages in non-imageless mode exceed the limit:
+# 15 got 28". Con `fromStart` el tope deja de aplicar: se midió un PDF de 70
+# páginas clasificando bien, porque Google solo procesa las primeras N.
+#
+# El dinero: la facturación es POR PÁGINA PROCESADA. Clasificar un dictamen de
+# 70 páginas cobraba 70; así cobra 2.
+#
+# Y es lo correcto semánticamente: para saber QUÉ es un documento basta el
+# principio — el documento completo hace falta para EXTRAERLE datos, que es
+# otro procesador y otra llamada. El riesgo que se acepta a cambio: un tipo
+# documental que solo se distinga después de la página 2 se clasificaría mal.
+# No aplica a ninguno de los tipos de hoy (INE, actas, comprobantes se
+# reconocen desde la carátula); si algún día aplica, subir este número.
+PAGINAS_PARA_CLASIFICAR = 2
+
+
 async def clasificar_documento(contenido: bytes, mime_type: str) -> dict[str, Any]:
     """Pregunta al Custom Document Classifier a cuál tipo documental activo
     pertenece un documento entrante — el paso previo a decidir a qué extractor
@@ -460,7 +493,19 @@ async def clasificar_documento(contenido: bytes, mime_type: str) -> dict[str, An
             "Falta DOCAI_CLASIFICADOR_ID en el .env — revisa .env.example"
         )
     crudo = await _procesar(
-        DOCAI_CLASIFICADOR_ID, contenido, mime_type, DOCAI_VERSION_CLASIFICADOR
+        DOCAI_CLASIFICADOR_ID,
+        contenido,
+        mime_type,
+        DOCAI_VERSION_CLASIFICADOR,
+        {
+            "processOptions": {"fromStart": PAGINAS_PARA_CLASIFICAR},
+            # Nunca se leen las imágenes de página de una respuesta de
+            # clasificación (solo se usa `entities`), así que pedirlas es
+            # payload que se descarta. De paso, sin imágenes el tope de
+            # páginas en línea sube de 15 a 30 — irrelevante con `fromStart`
+            # puesto, pero es la red de abajo si algún día se quita.
+            "imagelessMode": True,
+        },
     )
     entidades = crudo.get("document", {}).get("entities") or []
     if not entidades:
