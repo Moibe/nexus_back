@@ -40,6 +40,13 @@ _OCCURRENCE = {
     (False, "multiple"): "OPTIONAL_MULTIPLE",
 }
 
+# La categoría de escape del Classifier: "no es ninguno de los tipos
+# configurados". Se agrega SIEMPRE en `esquema_clasificador_desde_tipos` (ver
+# su docstring para el porqué medido) y el front la conoce por este mismo
+# nombre — cambiarlo aquí sin cambiarlo allá deja lo desconocido cayendo en el
+# camino de "categoría que no sé mapear" en vez del de "manda esto a revisión".
+CATEGORIA_OTRO = "otro"
+
 
 def normalizar_nombre(nombre: str) -> str:
     """Convierte lo que el usuario tecleó en un nombre que Google acepta.
@@ -185,11 +192,34 @@ def esquema_clasificador_desde_tipos(tipos: list[dict]) -> dict:
     Classifier), o sea que cumple el mismo rol aquí que en el Extractor: es
     prompt real, no metadato decorativo. Se omite del EntityType si viene
     vacía, en vez de mandar un `description: ""` sin sentido.
+
+    **Siempre se agrega la categoría `otro`, además de los tipos recibidos**
+    (2026-09-07, después de un fallo real en producción). No es decorativa ni
+    opcional: un Classifier SOLO con categorías reales no tiene dónde poner un
+    documento desconocido, y **fuerza** todo lo que entra a alguna de las que
+    sí tiene. Está MEDIDO dos veces en este proyecto: primero con un
+    clasificador de una sola etiqueta (una captura de Figma salió como INE con
+    99.99% de confianza), y otra vez el 2026-09-07, cuando el front empezó a
+    sincronizar solo y ESTA función reemplazó el esquema que se había armado a
+    mano —que sí traía `otro`— por uno sin él: un boleto de autobús y un PNG
+    corrupto salieron clasificados como un tipo documental de seguros. La guía
+    de Google recomienda justo esto (una etiqueta explícita para "ninguna de
+    las anteriores") y es lo que hace posible el único desenlace que el
+    producto quiere para lo desconocido: mandarlo a revisión humana o darlo de
+    alta como tipo nuevo, nunca extraerlo con el procesador equivocado.
     """
     entity_types = []
     for tipo in tipos:
+        nombre_categoria = normalizar_nombre(tipo["id"])
+        # `otro` está RESERVADO para la categoría de abajo. Con los ids que
+        # genera el front (`tipo-{base36}-{n}`) esto no puede pasar, pero un id
+        # que colisionara mandaría dos EntityTypes con el mismo `name` y
+        # Document AI rechazaría el esquema entero — o peor, se comería la
+        # categoría de escape sin avisar.
+        if nombre_categoria == CATEGORIA_OTRO:
+            nombre_categoria = f"{CATEGORIA_OTRO}_{normalizar_nombre(tipo['id'])}_tipo"
         entity_type = {
-            "name": normalizar_nombre(tipo["id"]),
+            "name": nombre_categoria,
             "displayName": (tipo.get("nombre") or tipo["id"]).strip() or tipo["id"],
             "baseTypes": ["document"],
         }
@@ -197,6 +227,24 @@ def esquema_clasificador_desde_tipos(tipos: list[dict]) -> dict:
         if descripcion:
             entity_type["description"] = descripcion
         entity_types.append(entity_type)
+
+    entity_types.append(
+        {
+            "name": CATEGORIA_OTRO,
+            "displayName": "Otro (ningún tipo documental configurado)",
+            "baseTypes": ["document"],
+            # La descripción es prompt real (ver arriba), así que dice
+            # explícitamente qué cae aquí: es lo que le da al modelo permiso de
+            # NO elegir ninguna de las otras categorías.
+            "description": (
+                "Cualquier documento que NO corresponda a ninguna de las otras "
+                "categorías de este clasificador. Úsala cuando el documento no "
+                "coincida claramente con ninguno de los tipos documentales "
+                "listados, incluso si se parece un poco a alguno."
+            ),
+        }
+    )
+
     return {
         "displayName": "Clasificador de tipos documentales NexusDoc",
         "description": "Distingue a cuál tipo documental activo pertenece un documento entrante.",

@@ -6,7 +6,11 @@ Mismo espíritu que verificar_esquema.py: casos concretos, salida legible,
 exit code 1 si algo no cuadra.
 """
 
-from servicios.esquema import esquema_clasificador_desde_tipos, normalizar_nombre
+from servicios.esquema import (
+    CATEGORIA_OTRO,
+    esquema_clasificador_desde_tipos,
+    normalizar_nombre,
+)
 
 fallas = 0
 
@@ -35,20 +39,41 @@ if e["metadata"] == {"documentSplitter": False}:
 else:
     mal(f"metadata inesperada: {e['metadata']}")
 
-caso("[2] Un EntityType por tipo, con baseTypes ['document'] y SIN properties")
-if len(e["entityTypes"]) == 2:
-    ok("2 tipos -> 2 EntityTypes")
+caso("[2] Un EntityType por tipo MÁS la categoría de escape, con baseTypes ['document'] y SIN properties")
+if len(e["entityTypes"]) == 3:
+    ok("2 tipos -> 2 EntityTypes + 'otro'")
 else:
-    mal(f"se esperaban 2 EntityTypes, salieron {len(e['entityTypes'])}")
+    mal(f"se esperaban 3 EntityTypes (2 tipos + otro), salieron {len(e['entityTypes'])}")
 for et in e["entityTypes"]:
     if et["baseTypes"] == ["document"] and "properties" not in et:
         ok(f"{et['name']}: baseTypes ['document'], sin properties")
     else:
         mal(f"{et['name']}: {et}")
 
+# ── La categoría de escape ───────────────────────────────────────────────────
+caso("[2b] SIEMPRE existe la categoría 'otro' -- sin ella el modelo fuerza todo a un tipo real")
+nombres = [et["name"] for et in e["entityTypes"]]
+if nombres[-1] == CATEGORIA_OTRO:
+    ok(f"'{CATEGORIA_OTRO}' presente, y va al final de la lista")
+else:
+    mal(f"no se encontró '{CATEGORIA_OTRO}' al final: {nombres}")
+otro = e["entityTypes"][-1]
+if otro.get("description"):
+    ok("'otro' lleva descripción (es prompt real: le da permiso de no elegir ninguna)")
+else:
+    mal("'otro' salió sin descripción")
+
+caso("[2c] Un tipo cuyo id normalizado fuera 'otro' NO pisa la categoría de escape")
+e_choque = esquema_clasificador_desde_tipos([{"id": "otro", "nombre": "Otro tipo del usuario"}])
+nombres_choque = [et["name"] for et in e_choque["entityTypes"]]
+if len(set(nombres_choque)) == len(nombres_choque) and CATEGORIA_OTRO in nombres_choque:
+    ok(f"sin nombres repetidos y con la de escape intacta: {nombres_choque}")
+else:
+    mal(f"colisión de nombres: {nombres_choque}")
+
 # ── name vs displayName ──────────────────────────────────────────────────────
 caso("[3] `name` es el ID estable normalizado; `displayName` es el nombre visible")
-et0, et1 = e["entityTypes"]
+et0, et1 = e["entityTypes"][0], e["entityTypes"][1]
 if et0["name"] == normalizar_nombre("tipo-abc") and et0["displayName"] == "INE":
     ok(f"tipo-abc -> name={et0['name']!r}, displayName={et0['displayName']!r}")
 else:
@@ -96,12 +121,15 @@ else:
     mal(f"quedó: {e_sin_desc['entityTypes'][0]!r}")
 
 # ── Lista vacía ───────────────────────────────────────────────────────────────
-caso("[8] Sin tipos activos, el esquema sale con entityTypes vacío (no truena)")
+caso("[8] Sin tipos activos, queda SOLO la categoría de escape (no truena, no sale vacío)")
 e_vacio = esquema_clasificador_desde_tipos([])
-if e_vacio["entityTypes"] == []:
-    ok("entityTypes vacío, sin excepción")
+if [et["name"] for et in e_vacio["entityTypes"]] == [CATEGORIA_OTRO]:
+    ok("solo 'otro', sin excepción")
 else:
     mal(f"quedó: {e_vacio['entityTypes']}")
+# Ojo: el endpoint igual rechaza la lista vacía con 422 antes de llegar aquí
+# (un clasificador que solo sabe decir "otro" no distingue nada), así que esto
+# es la forma de la función, no un estado que el sistema use.
 
 print()
 print("=== FALLÓ ===" if fallas else "=== ESQUEMA DEL CLASIFICADOR VERIFICADO ===")
