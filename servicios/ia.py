@@ -12,6 +12,7 @@ cómo ya se llamaba Document AI en el proyecto `document_ai`.
 import base64
 import logging
 import re
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -400,8 +401,76 @@ def _confianza_minima(datos: dict[str, Any]) -> float | None:
 _MOTIVO_NO_LEGIBLE = "Calidad del OCR inferior al umbral requerido o nulo"
 
 
+async def extraer_con_procesador(
+    procesador_id: str,
+    contenido: bytes,
+    mime_type: str,
+    version: str = "",
+    transformar: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Extrae los campos de un documento con CUALQUIER Custom Extractor.
+
+    Es el cuerpo genérico que antes vivía dentro de `extraer_ine`, sacado
+    aparte el 2026-09-07 para que un tipo documental dado de alta desde el
+    wizard pueda extraerse con SU PROPIO procesador (el que "Activar" le creó)
+    y no solo con el de INE, que estaba fijo en el `.env`. Sin esto, el
+    pipeline podía CLASIFICAR un documento correctamente y aun así no tener a
+    dónde mandarlo.
+
+    Todo lo que es específico de INE se quedó fuera, en `extraer_ine`, y llega
+    por `transformar`: una función que recibe los campos ya aplanados y
+    devuelve los campos a publicar. Se aplica ANTES de calcular
+    `confianza_minima` a propósito — es el orden que ya tenía la versión de
+    INE, y `_descomponer_anio_registro` parte un campo en dos, así que
+    calcular la confianza antes cambiaría el conjunto de campos que se mira.
+
+    La forma de la respuesta es la MISMA para todos los procesadores (ver el
+    docstring de `extraer_ine`): campos hoja con `value_raw`/`value_normalized`
+    /`confianza`/..., más `ocr`, `confianza_minima` y `_metadata`. Un extractor
+    genérico no sabe qué campos esperar — eso lo define el esquema con el que
+    se creó el procesador — así que aquí no hay ninguna limpieza por nombre de
+    campo; publica lo que Document AI haya encontrado.
+    """
+    crudo = await _procesar(procesador_id, contenido, mime_type, version)
+    procesado_en = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    metadata: dict[str, Any] = {
+        "procesado_en": procesado_en,
+        "quality_alert": False,
+        "engine": "document_ai_extractor",
+        "engine_version": version or None,
+    }
+
+    entidades = crudo.get("document", {}).get("entities")
+    if entidades is None:
+        logger.warning(
+            "La respuesta de Document AI (procesador %s) no trae "
+            "document.entities: se marca quality_alert.",
+            procesador_id,
+        )
+        metadata["quality_alert"] = True
+        metadata["motivo"] = _MOTIVO_NO_LEGIBLE
+        return {"confianza_minima": None, "_metadata": metadata}
+
+    capa_ocr, offsets_ocr = extraer_capa_ocr(crudo.get("document", {}), version or None)
+
+    datos = _extraer_entidades(entidades, offsets_ocr)
+    if transformar is not None:
+        datos = transformar(datos)
+    datos["confianza_minima"] = _confianza_minima(datos)
+    datos["ocr"] = capa_ocr
+    datos["_metadata"] = metadata
+    return datos
+
+
 async def extraer_ine(contenido: bytes, mime_type: str = "image/jpeg") -> dict[str, Any]:
     """Extrae los datos de una credencial INE.
+
+    Desde el 2026-09-07 es una capa delgada sobre `extraer_con_procesador`:
+    aporta el procesador y la versión fijos del `.env`, más las dos limpiezas
+    que solo tienen sentido en una INE (`_limpiar_ine` y
+    `_descomponer_anio_registro`). Todo lo demás —la llamada, la capa de OCR,
+    `confianza_minima`, `_metadata`, el caso de "no se reconoció nada"— es
+    común a cualquier extractor y vive allá.
 
     La respuesta tiene la forma del diccionario de datos v0.4, para que
     guardarla sea mecánico cuando exista SQL Server:
@@ -434,58 +503,23 @@ async def extraer_ine(contenido: bytes, mime_type: str = "image/jpeg") -> dict[s
     siendo un error HTTP real (502, ver routers/ia.py) y NO se convierte en
     quality_alert: ahí el problema es del servicio, no del documento, y
     esconderlo detrás de una bandera de "calidad" ocultaría una falla operativa
-    real a cualquier monitoreo que vigile el status code."""
-    crudo = await _procesar(DOCAI_PROCESADOR_INE, contenido, mime_type, DOCAI_VERSION_INE)
-    # Se captura aquí, justo al terminar la llamada real a Document AI, porque
-    # es el ÚNICO lugar donde este dato existe: Google no manda un timestamp de
-    # procesamiento en su respuesta (document.keys() no trae ninguno). Si en vez
-    # de esto se generara más tarde -p.ej. cuando el front guarde los datos en
-    # SQL Server-, dejaría de significar "cuándo procesó Document AI" y pasaría
-    # a significar "cuándo se guardó", que puede ser minutos u horas después si
-    # alguien revisa campos de baja confianza antes de confirmar.
-    procesado_en = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    metadata: dict[str, Any] = {
-        "procesado_en": procesado_en,
-        "quality_alert": False,
-        # Precursores de extraction_run.engine / engine_version. La versión es
-        # None cuando no se fijó en el .env: ahí Google usó su default y NO
-        # sabemos cuál fue — se prefiere decir "no sé" antes que registrar una
-        # suposición en una columna que existe para dar reproducibilidad.
-        "engine": "document_ai_extractor",
-        "engine_version": DOCAI_VERSION_INE or None,
-    }
+    real a cualquier monitoreo que vigile el status code.
 
-    entidades = crudo.get("document", {}).get("entities")
-    if entidades is None:
-        # Ya NO se levanta excepción: esto es un resultado de negocio válido
-        # (foto ilegible / no es una INE), no un bug de la app ni una falla del
-        # servicio — se loguea como warning, no como error, para no ensuciar los
-        # logs de errores reales con cada foto mala que suba alguien.
-        logger.warning(
-            "La respuesta de Document AI no trae document.entities: se marca "
-            "quality_alert (imagen no reconocida como INE)."
-        )
-        metadata["quality_alert"] = True
-        metadata["motivo"] = _MOTIVO_NO_LEGIBLE
-        return {"confianza_minima": None, "_metadata": metadata}
-
-    # La capa de OCR se arma ANTES que los campos, porque cada campo necesita
-    # saber a qué bloque apuntar. Los offsets no se publican: son solo el
-    # cruce interno entidad↔bloque.
-    capa_ocr, offsets_ocr = extraer_capa_ocr(
-        crudo.get("document", {}), DOCAI_VERSION_INE or None
+    Notas que aplican a la parte común, hoy en `extraer_con_procesador`:
+    `procesado_en` se captura justo al terminar la llamada real a Document AI
+    porque es el ÚNICO lugar donde ese dato existe (Google no manda timestamp
+    de procesamiento); generarlo más tarde —p. ej. al guardar en SQL Server—
+    lo convertiría en "cuándo se guardó", que puede ser horas después. Y
+    `quality_alert` NO levanta excepción: una foto ilegible es un resultado de
+    negocio válido, no un bug ni una falla del servicio, así que se loguea
+    como warning y no como error."""
+    return await extraer_con_procesador(
+        DOCAI_PROCESADOR_INE,
+        contenido,
+        mime_type,
+        DOCAI_VERSION_INE,
+        transformar=lambda datos: _descomponer_anio_registro(_limpiar_ine(datos)),
     )
-
-    datos = _descomponer_anio_registro(
-        _limpiar_ine(_extraer_entidades(entidades, offsets_ocr))
-    )
-    datos["confianza_minima"] = _confianza_minima(datos)
-    datos["ocr"] = capa_ocr
-    # Bajo su propia llave y no como hermano de los campos del documento: esto
-    # no es un dato DE la credencial, es del request. El front debe cargarlo tal
-    # cual hasta que se guarde en SQL Server, sin regenerarlo en ese momento.
-    datos["_metadata"] = metadata
-    return datos
 
 
 # Cuántas páginas del documento ve el clasificador. NO es una optimización

@@ -11,7 +11,7 @@ el parseo de la respuesta viven en `servicios.ia`.
 import logging
 
 import httpx
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
 from config import MAX_SUBIDA_BYTES, MAX_SUBIDA_MB
 from errores import ErrorDocumentAI
@@ -51,6 +51,61 @@ _POR_MOTIVO: dict[str, tuple[int, str]] = {
         "Document AI no está disponible en este momento. Intenta de nuevo en unos minutos.",
     ),
 }
+
+
+async def _leer_subida(archivo: UploadFile) -> bytes:
+    """Valida formato y tamaño de una subida, y devuelve sus bytes.
+
+    Sacado aparte el 2026-09-07, cuando `/ia/extraer` se sumó a `/ia/ine` con
+    exactamente los mismos guardias: duplicarlos era garantía de que un día
+    divergieran y un endpoint aceptara lo que el otro rechaza.
+    """
+    # `content_type` puede traer parámetros ("image/jpeg; charset=binary"), así
+    # que se compara solo el tipo/subtipo en minúsculas.
+    tipo = (archivo.content_type or "").split(";")[0].strip().lower()
+    if tipo not in MIME_SOPORTADOS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Document AI no procesa '{tipo or 'desconocido'}'. "
+                f"Formatos aceptados: {', '.join(sorted(MIME_SOPORTADOS))}."
+            ),
+        )
+
+    # Respaldo del tope global de app.py, que mide `Content-Length`: una subida
+    # con `Transfer-Encoding: chunked` no manda ese header y se le cuela.
+    #
+    # Va ANTES del read() a propósito: el parser multipart ya dejó
+    # `archivo.size` poblado sin que haya que leer nada, así que se evita subir
+    # el archivo entero a RAM para luego inflarlo ~1.33x al pasarlo a base64 en
+    # servicios.ia.
+    #
+    # Lo que esto NO evita: Starlette ya escribió el cuerpo completo en un
+    # temporal en disco antes de que este handler corra su primera línea.
+    # Taparlo exigiría contar bytes en el middleware conforme llegan.
+    if archivo.size is not None and archivo.size > MAX_SUBIDA_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"La imagen excede el límite de {MAX_SUBIDA_MB:g} MB.",
+        )
+
+    contenido = await archivo.read()
+    if not contenido:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="El archivo llegó vacío."
+        )
+
+    # Segundo cinturón: `archivo.size` viene en None si el UploadFile no lo
+    # construyó el parser multipart (por ejemplo un test que lo instancia a
+    # mano), y ahí este `len` es el único guardia. Redundante en el camino
+    # HTTP real.
+    if len(contenido) > MAX_SUBIDA_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"La imagen excede el límite de {MAX_SUBIDA_MB:g} MB.",
+        )
+
+    return contenido
 
 
 def _fallar(exc: Exception, generico: str) -> HTTPException:
@@ -110,49 +165,7 @@ MIME_SOPORTADOS = frozenset(
     ),
 )
 async def extraer_ine(imagen: UploadFile = File(...)):
-    # `content_type` puede traer parámetros ("image/jpeg; charset=binary"), así
-    # que se compara solo el tipo/subtipo en minúsculas.
-    tipo = (imagen.content_type or "").split(";")[0].strip().lower()
-    if tipo not in MIME_SOPORTADOS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"Document AI no procesa '{tipo or 'desconocido'}'. "
-                f"Formatos aceptados: {', '.join(sorted(MIME_SOPORTADOS))}."
-            ),
-        )
-
-    # Respaldo del tope global de app.py, que mide `Content-Length`: una subida
-    # con `Transfer-Encoding: chunked` no manda ese header y se le cuela.
-    #
-    # Va ANTES del read() a propósito: el parser multipart ya dejó `imagen.size`
-    # poblado sin que haya que leer nada, así que se evita subir el archivo
-    # entero a RAM para luego inflarlo ~1.33x al pasarlo a base64 en servicios.ia.
-    #
-    # Lo que esto NO evita: Starlette ya escribió el cuerpo completo en un
-    # temporal en disco antes de que este handler corra su primera línea. Taparlo
-    # exigiría contar bytes en el middleware conforme llegan.
-    if imagen.size is not None and imagen.size > MAX_SUBIDA_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"La imagen excede el límite de {MAX_SUBIDA_MB:g} MB.",
-        )
-
-    contenido = await imagen.read()
-    if not contenido:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="El archivo llegó vacío."
-        )
-
-    # Segundo cinturón: `imagen.size` viene en None si el UploadFile no lo
-    # construyó el parser multipart (por ejemplo un test que lo instancia a mano),
-    # y ahí este `len` es el único guardia. Redundante en el camino HTTP real.
-    if len(contenido) > MAX_SUBIDA_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"La imagen excede el límite de {MAX_SUBIDA_MB:g} MB.",
-        )
-
+    contenido = await _leer_subida(imagen)
     try:
         return await ia.extraer_ine(contenido, imagen.content_type)
     except Exception as exc:  # noqa: BLE001
@@ -164,14 +177,62 @@ async def extraer_ine(imagen: UploadFile = File(...)):
 
 
 @router.post(
+    "/extraer",
+    tags=["IA"],
+    summary="Extraer datos con el Custom Extractor de un tipo documental",
+    description=(
+        "La versión GENÉRICA de `/ia/ine`: recibe un documento y el "
+        "`procesador` (el `procesadorId` que devolvió `/procesadores/activar` "
+        "al activar ese tipo documental) y extrae con ESE Custom Extractor, "
+        "en vez del de INE que está fijo en el `.env`. Es lo que permite que "
+        "un tipo dado de alta desde el wizard se pueda extraer de verdad: sin "
+        "esto, el pipeline podía clasificar bien un documento y no tener a "
+        "dónde mandarlo. `version` es opcional pero recomendada — sin ella "
+        "Google usa la que tenga como default en ese momento, que puede "
+        "cambiar sin aviso, y la extracción deja de ser reproducible. "
+        "La forma de la respuesta es la misma que la de `/ia/ine` "
+        "(`confianza_minima`, `ocr`, `_metadata` y un campo por dato "
+        "encontrado), con una diferencia: aquí NO se aplica ninguna limpieza "
+        "por nombre de campo — las de INE (quitar el punto de `estado`, partir "
+        "`fecha_registro`) solo tienen sentido en una credencial."
+    ),
+)
+async def extraer_generico(
+    imagen: UploadFile = File(...),
+    procesador: str = Form(...),
+    version: str = Form(""),
+):
+    procesador = procesador.strip()
+    if not procesador:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Falta el procesador con el que extraer.",
+        )
+
+    contenido = await _leer_subida(imagen)
+    try:
+        return await ia.extraer_con_procesador(
+            procesador, contenido, imagen.content_type or "", version.strip()
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Falló la extracción con el procesador %s", procesador)
+        raise _fallar(exc, "No se pudo procesar el documento con Document AI.") from exc
+
+
+@router.post(
     "/clasificar",
     tags=["IA"],
     summary="Clasificar un documento entrante",
     description=(
         "Recibe un documento (imagen o PDF) y devuelve a cuál tipo documental "
         "activo pertenece, según el Custom Document Classifier. `categoria` es "
-        "el `procesadorId` del Extractor al que hay que mandar el documento a "
-        "continuación, o `\"otro\"` cuando no corresponde a ningún tipo "
+        "el **ID DEL TIPO DOCUMENTAL** (normalizado, ver "
+        "`esquema_clasificador_desde_tipos`), NO el `procesadorId` de su "
+        "Extractor — esta descripción decía lo segundo y era falso, lo que "
+        "costó un fallo real en producción el 2026-09-07. Con ese id el "
+        "cliente busca el tipo entre los suyos y extrae con `/ia/extraer` "
+        "usando el `procesadorId` que guardó al activarlo. La categoría es "
+        "`\"otro\"` cuando el documento no corresponde a ningún tipo "
         "configurado — en ese caso NO debe llamarse ningún extractor, el "
         "documento debe quedar marcado para revisión manual. `confianza` "
         "(0-100) es la de la categoría ganadora."
