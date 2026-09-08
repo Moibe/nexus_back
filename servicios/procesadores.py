@@ -50,7 +50,12 @@ from typing import Any
 
 import httpx
 
-from config import DOCAI_LOCATION, DOCAI_PROJECT_ID
+from config import (
+    DOCAI_CLASIFICADOR_ID,
+    DOCAI_LOCATION,
+    DOCAI_PROJECT_ID,
+    DOCAI_VERSION_CLASIFICADOR,
+)
 from servicios.esquema import esquema_clasificador_desde_tipos
 from servicios.ia import SCOPES, _token  # misma credencial cacheada que /ia
 
@@ -425,6 +430,49 @@ async def sincronizar_clasificador(tipos: list[dict]) -> dict:
         "versionDefault": version,
         "creado": creado,
         "categorias": len(esquema["entityTypes"]),
+    }
+
+
+async def consultar_esquema_clasificador() -> dict:
+    """Lee el esquema VIGENTE del Classifier directo de Document AI: qué
+    categorías tiene ahora mismo, tal como Google las guardó.
+
+    Es una herramienta de DIAGNÓSTICO (2026-09-08), no parte del flujo: cuando
+    el clasificador no reconoce algo, la primera pregunta es "¿de verdad tiene
+    la categoría que creemos que tiene?", y hasta ahora la única forma de
+    responderla era abrir la consola de GCP. Se lee de la fuente en vez de
+    reconstruirlo con `esquema_clasificador_desde_tipos`, que diría lo que
+    DEBERÍA haberse subido — justo lo que no sirve para encontrar un desfase.
+
+    El `datasetSchema` vive en v1beta3, igual que al subirlo. Lectura pura, no
+    cobra y no modifica nada.
+    """
+    if not DOCAI_CLASIFICADOR_ID:
+        raise RuntimeError("Falta DOCAI_CLASIFICADOR_ID en el .env — revisa .env.example")
+
+    recurso = f"{_PADRE}/processors/{DOCAI_CLASIFICADOR_ID}"
+    async with httpx.AsyncClient() as cliente:
+        procesador = await _pedir(cliente, "GET", "v1", recurso)
+        esquema = await _pedir(cliente, "GET", "v1beta3", f"{recurso}/dataset/datasetSchema")
+
+    tipos = (esquema.get("documentSchema") or {}).get("entityTypes") or []
+    return {
+        "procesadorId": DOCAI_CLASIFICADOR_ID,
+        "procesadorDisplayName": procesador.get("displayName", ""),
+        "estado": procesador.get("state", ""),
+        "versionDefault": (procesador.get("defaultProcessorVersion") or "").split("/")[-1],
+        # La versión que de verdad se usa al clasificar puede NO ser la default:
+        # se fija en el .env justo para que no cambie sin aviso. Se devuelven
+        # las dos para poder ver si divergieron.
+        "versionEnUso": DOCAI_VERSION_CLASIFICADOR or None,
+        "categorias": [
+            {
+                "name": t.get("name", ""),
+                "displayName": t.get("displayName", ""),
+                "description": t.get("description", ""),
+            }
+            for t in tipos
+        ],
     }
 
 

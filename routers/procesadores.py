@@ -16,6 +16,7 @@ from servicios.esquema import esquema_desde_campos
 from servicios.procesadores import (
     DocumentAIError,
     activar_tipo_documental,
+    consultar_esquema_clasificador,
     consultar_procesador,
     eliminar_procesador,
     sincronizar_clasificador as _sincronizar_clasificador,
@@ -196,6 +197,43 @@ async def sincronizar_clasificador(entrada: SincronizarClasificadorEntrada):
         ) from exc
 
     return resultado
+
+
+@router.get(
+    "/clasificador",
+    tags=["Procesadores"],
+    summary="Ver el esquema VIGENTE del Classifier",
+    description=(
+        "Diagnóstico: devuelve las categorías que el Custom Document "
+        "Classifier tiene AHORA MISMO en Document AI (`name`, `displayName` y "
+        "`description` de cada una), leídas de Google y no reconstruidas de "
+        "este lado — que es lo único que sirve para detectar un desfase entre "
+        "lo que creemos haber subido y lo que quedó. Incluye también la "
+        "versión default del procesador y la que de verdad se usa al "
+        "clasificar (`versionEnUso`, fijada en el `.env`), para poder ver si "
+        "divergieron. Lectura pura: no cobra y no modifica nada."
+    ),
+)
+async def ver_clasificador():
+    try:
+        return await consultar_esquema_clasificador()
+    except DocumentAIError as exc:
+        logger.exception("Falló la consulta del esquema del clasificador")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=_mensaje_para(
+                exc,
+                mensaje_4xx=(
+                    "Document AI no permitió leer el esquema del clasificador. "
+                    "Puede que todavía no se haya sincronizado ninguna vez."
+                ),
+            ),
+        ) from exc
+    except RuntimeError as exc:
+        logger.exception("Falló la consulta del esquema del clasificador")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+        ) from exc
 
 
 @router.get(
