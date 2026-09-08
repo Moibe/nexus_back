@@ -312,6 +312,18 @@ async def activar_tipo_documental(
     return {
         "procesadorId": nombre_recurso.split("/")[-1],
         "procesadorNombre": nombre_recurso,
+        # El nombre VISIBLE en la consola de GCP (`_display_completo`, algo
+        # como "nexusdoc--tipo-mtaq965y-1--v2--ine"), aparte del `name` de
+        # arriba, que es la ruta del recurso. Se devuelve desde el 2026-09-08
+        # a pedido explícito: el front lo guarda y lo muestra en la ficha del
+        # tipo documental para que una persona pueda casar lo que ve en
+        # NexusDoc con lo que ve en la consola de Document AI. Se lee del
+        # procesador releído, no se recalcula, justamente para que sea lo que
+        # Google TIENE y no lo que nosotros creemos que le pusimos — para un
+        # procesador adoptado (doble clic en "Activar") pueden diferir si el
+        # tipo se renombró, porque Document AI no deja renombrar un procesador
+        # ya creado.
+        "procesadorDisplayName": procesador.get("displayName", ""),
         "versionDefault": version,
         "creado": creado,
         "camposEnEsquema": len(esquema["entityTypes"][0]["properties"]),

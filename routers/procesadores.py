@@ -96,7 +96,11 @@ def _mensaje_para(exc: DocumentAIError, *, mensaje_4xx: str) -> str:
         "viva sin tocarse. El procesador nace en modalidad zero-shot: extrae "
         "leyendo solo el esquema, sin entrenamiento. Devuelve `procesadorId` y "
         "`versionDefault`, que el front debe guardar junto al tipo — la versión "
-        "se fija en cada extracción para que el resultado sea reproducible."
+        "se fija en cada extracción para que el resultado sea reproducible — "
+        "más `procesadorDisplayName`, que es el nombre VISIBLE del procesador "
+        "en la consola de GCP (algo como `nexusdoc--tipo-abc--v2--ine`): sirve "
+        "para que una persona pueda casar el tipo documental de NexusDoc con "
+        "el procesador que ve en Document AI."
     ),
 )
 async def activar(tipo: TipoDocumentalEntrada):
