@@ -428,6 +428,32 @@ async def sincronizar_clasificador(tipos: list[dict]) -> dict:
     }
 
 
+async def consultar_procesador(procesador_id: str) -> dict:
+    """Lee un procesador de Document AI: su nombre visible y su versión
+    default, sin tocarlo.
+
+    Existe (2026-09-08) porque el nombre visible solo se conocía en el momento
+    de ACTIVAR, y los tipos documentales activados antes de esa fecha se
+    quedaron sin él. Obligar a republicar solo para verlo sería carísimo: cada
+    publicación crea un Custom Extractor nuevo. Con esto el front lo puede
+    rellenar leyendo, que es gratis y además dice la VERDAD de Google, no una
+    copia local que puede haber quedado vieja.
+
+    Es de lectura pura: `processors.get` no cobra (la facturación es por página
+    procesada) y no modifica nada.
+    """
+    async with httpx.AsyncClient() as cliente:
+        procesador = await _pedir(
+            cliente, "GET", "v1", f"{_PADRE}/processors/{procesador_id}"
+        )
+    return {
+        "procesadorId": procesador_id,
+        "procesadorDisplayName": procesador.get("displayName", ""),
+        "versionDefault": (procesador.get("defaultProcessorVersion") or "").split("/")[-1],
+        "estado": procesador.get("state", ""),
+    }
+
+
 async def eliminar_procesador(procesador_id: str) -> None:
     """Borra un procesador: lo usa el "Borrar" del front cuando el tipo
     documental ya tenía un Custom Extractor creado. Es IRREVERSIBLE: borra

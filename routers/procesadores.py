@@ -16,6 +16,7 @@ from servicios.esquema import esquema_desde_campos
 from servicios.procesadores import (
     DocumentAIError,
     activar_tipo_documental,
+    consultar_procesador,
     eliminar_procesador,
     sincronizar_clasificador as _sincronizar_clasificador,
 )
@@ -195,6 +196,55 @@ async def sincronizar_clasificador(entrada: SincronizarClasificadorEntrada):
         ) from exc
 
     return resultado
+
+
+@router.get(
+    "/{procesador_id}",
+    tags=["Procesadores"],
+    summary="Consultar un Custom Extractor por su id",
+    description=(
+        "Lee un procesador de Document AI sin tocarlo: devuelve su "
+        "`procesadorDisplayName` (el nombre visible en la consola de GCP), su "
+        "`versionDefault` y su `estado`. Existe para que el front pueda "
+        "rellenar el nombre de tipos documentales activados ANTES de que "
+        "`/procesadores/activar` empezara a devolverlo — republicar solo para "
+        "eso costaría un Custom Extractor nuevo por tipo. Es lectura pura: "
+        "`processors.get` no cobra (la facturación de Document AI es por "
+        "página PROCESADA) y no modifica nada."
+    ),
+)
+async def consultar(procesador_id: str):
+    try:
+        return await consultar_procesador(procesador_id)
+    except DocumentAIError as exc:
+        if exc.status_code == 404:
+            # El procesador que el tipo documental dice tener ya no está en
+            # Google (borrado a mano, o de otro proyecto). Se responde 404 tal
+            # cual: quien llama tiene que poder distinguir "no existe" de "no
+            # se pudo consultar", porque significan cosas muy distintas para
+            # el registro local que lo apunta.
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Ese procesador ya no existe en Document AI.",
+            ) from exc
+        logger.exception("Falló la consulta del procesador %s", procesador_id)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=_mensaje_para(
+                exc,
+                mensaje_4xx=(
+                    "Document AI no permitió consultar este procesador. "
+                    "Intenta de nuevo; si el problema persiste, avisa al "
+                    "equipo técnico."
+                ),
+            ),
+        ) from exc
+    except RuntimeError as exc:
+        logger.exception("Falló la consulta del procesador %s", procesador_id)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="No se pudo consultar el procesador en Document AI.",
+        ) from exc
 
 
 @router.delete(
