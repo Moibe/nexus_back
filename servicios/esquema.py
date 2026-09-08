@@ -233,14 +233,25 @@ def esquema_clasificador_desde_tipos(tipos: list[dict]) -> dict:
             "name": CATEGORIA_OTRO,
             "displayName": "Otro (ningún tipo documental configurado)",
             "baseTypes": ["document"],
-            # La descripción es prompt real (ver arriba), así que dice
-            # explícitamente qué cae aquí: es lo que le da al modelo permiso de
-            # NO elegir ninguna de las otras categorías.
+            # La descripción es prompt real (verificado en la guía del Custom
+            # Classifier: "Use the description field to enter a prompt which
+            # describes the label"), así que dice explícitamente qué cae aquí:
+            # es lo que le da al modelo permiso de NO elegir ninguna de las
+            # otras categorías.
+            #
+            # OJO con calibrarla. La primera versión (2026-09-07) terminaba en
+            # "...incluso si se parece un poco a alguno", y eso no es neutral:
+            # es una instrucción activa de preferir el escape ante una
+            # coincidencia parcial. Con las categorías reales identificadas
+            # solo por un id opaco, esta categoría acababa siendo la MEJOR
+            # descrita del esquema — o sea, la más fácil de elegir. Se quitó
+            # esa frase el 2026-09-08. El equilibrio que se busca: que exista
+            # una salida para lo desconocido (sin ella el modelo fuerza todo a
+            # una categoría real, medido dos veces en este proyecto) sin que
+            # sea más atractiva que las categorías de verdad.
             "description": (
-                "Cualquier documento que NO corresponda a ninguna de las otras "
-                "categorías de este clasificador. Úsala cuando el documento no "
-                "coincida claramente con ninguno de los tipos documentales "
-                "listados, incluso si se parece un poco a alguno."
+                "Documento que no corresponde a ninguna de las otras "
+                "categorías de este clasificador."
             ),
         }
     )

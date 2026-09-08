@@ -574,15 +574,29 @@ async def clasificar_documento(contenido: bytes, mime_type: str) -> dict[str, An
         contenido,
         mime_type,
         DOCAI_VERSION_CLASIFICADOR,
-        {
-            "processOptions": {"fromStart": PAGINAS_PARA_CLASIFICAR},
-            # Nunca se leen las imágenes de página de una respuesta de
-            # clasificación (solo se usa `entities`), así que pedirlas es
-            # payload que se descarta. De paso, sin imágenes el tope de
-            # páginas en línea sube de 15 a 30 — irrelevante con `fromStart`
-            # puesto, pero es la red de abajo si algún día se quita.
-            "imagelessMode": True,
-        },
+        # `imagelessMode` se QUITÓ el 2026-09-08, investigando por qué el
+        # clasificador no reconocía una INE. El razonamiento con el que se
+        # había puesto era "las imágenes de página no se leen de la respuesta,
+        # así que pedirlas es payload que se descarta; de paso sube el tope de
+        # 15 a 30 páginas". Los dos motivos se cayeron al revisarlos:
+        #
+        #   - El tope ya lo resuelve `fromStart`, que procesa solo las
+        #     primeras N. El propio comentario admitía que era "irrelevante".
+        #   - Lo que el flag hace de verdad NO está documentado. La única
+        #     descripción que Google publica —en v1, v1beta3 y el proto— son
+        #     ocho palabras: "Optional. Option to remove images from the
+        #     document.", y es ambigua entre "quita las imágenes de la
+        #     RESPUESTA" y "deja de procesarlas". Las tres páginas del sitio
+        #     que lo mencionan hablan solo de límites de páginas; ninguna dice
+        #     nada sobre precisión ni sobre qué señales usa el modelo.
+        #
+        # Con esa ambigüedad, el riesgo es asimétrico: si resulta que el
+        # modelo deja de ver la imagen, una credencial —que se reconoce por su
+        # LAYOUT y su fotografía, con poco texto— pierde justo la señal que la
+        # hace reconocible. A cambio de un ahorro de payload sobre 2 páginas.
+        # No vale la pena; si algún día hace falta el tope de 30, se vuelve a
+        # evaluar midiendo.
+        {"processOptions": {"fromStart": PAGINAS_PARA_CLASIFICAR}},
     )
     entidades = crudo.get("document", {}).get("entities") or []
     if not entidades:
