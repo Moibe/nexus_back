@@ -118,3 +118,21 @@ MAX_SUBIDA_MB = _numero("MAX_SUBIDA_MB", 20)
 if MAX_SUBIDA_MB <= 0:
     raise RuntimeError(f"MAX_SUBIDA_MB tiene que ser mayor que 0 (llegó {MAX_SUBIDA_MB}).")
 MAX_SUBIDA_BYTES = int(MAX_SUBIDA_MB * 1024 * 1024)
+
+# ── Almacén de documentos ─────────────────────────────────────────────────────
+# Dónde se guardan los BYTES de un archivo subido (ver servicios/almacen.py).
+#
+# VACÍA A PROPÓSITO por ahora. El almacén está construido y probado pero NADIE
+# lo llama todavía: se dejó listo para el día que exista la tabla `file` en SQL
+# Server, sin cambiar en nada el comportamiento actual de Nexus. Mientras esté
+# vacía, `almacen.esta_configurado()` responde False y cualquier intento de
+# escribir levanta un error explícito en vez de inventarse una carpeta.
+#
+# Va a ser el punto de montaje del NAS de infraestructura de CSI. Se configura
+# aquí y no se hardcodea porque el montaje cambia por ambiente (y podría
+# cambiar en el server sin que cambie el código): en la base se guardan rutas
+# RELATIVAS justamente para que mover el montaje no obligue a migrar datos.
+#
+# Local (Windows):  C:/Moibe/almacen-nexus
+# Server de CSI:    /mnt/nas/nexus/documentos
+ALMACEN_RUTA = os.getenv("ALMACEN_RUTA", "")

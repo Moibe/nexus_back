@@ -633,3 +633,42 @@ falta `@ExpedienteId`, que en el modelo es NOT NULL. Corregir al pedirlo.
 - Lectura de la configuración activa de un tipo documental: `config_version`
   activa + sus `field_definition` + el mapeo de 2.6, que es lo que
   `servicios/ia.py` necesita para traducir la salida del motor.
+
+---
+
+## 3. Qué necesita cargar `file` ahora que existe el almacén
+
+Esto **no es una petición nueva de tablas**: es la letra chica del paso 3
+("alta de expediente + alta de file"), que hasta ahora estaba en abstracto.
+Ya existe `servicios/almacen.py` (ver el README), así que el contrato de dónde
+viven los bytes dejó de ser una suposición y se puede llevar concreto.
+
+El almacén guarda los bytes en disco y devuelve **una ruta relativa**. La base
+no guarda el archivo, guarda **cómo encontrarlo**. Lo que la aplicación necesita
+poder escribir y leer de `file`:
+
+| Concepto | Qué es | Por qué la aplicación lo necesita |
+|---|---|---|
+| **URI relativa** | `csi/3f/a9/3fa9c1…e04b` | Es lo único que ata la fila a los bytes. **Relativa a propósito**: el día que el NAS cambie de punto de montaje solo cambia una variable de entorno. Con la ruta absoluta, mover el montaje obligaría a migrar datos. Longitud: hasta ~140 caracteres |
+| **SHA-256** | 64 caracteres hex | Ya se calcula en el navegador para detectar duplicados en la Bandeja. Sirve además para dedup del lado servidor y para verificar integridad — el nombre del archivo en disco **es** este hash |
+| **Tamaño en bytes** | entero | Para cuota, para reportes y para detectar un archivo truncado sin abrirlo |
+| **MIME** | `application/pdf`, `image/jpeg`… | Va en la base y **no** en la extensión del archivo: en disco los objetos no tienen extensión, porque los mismos bytes no son dos cosas distintas por llamarse `.jpg` o `.jpeg` |
+| **Nombre original** | como lo subió el usuario | Es lo único que la persona reconoce. El nombre en disco es un hash, ilegible a propósito |
+
+### Dos preguntas de diseño que sí son para él
+
+1. **¿La unicidad de `(tenant, sha256)` la impone la base?** La aplicación
+   deduplica en disco por contenido, así que subir dos veces el mismo archivo
+   escribe **un solo objeto**. Si la base permite dos filas de `file` con el
+   mismo hash en el mismo tenant, quedan dos registros apuntando al mismo
+   archivo — lo cual puede ser correcto (el mismo documento en dos expedientes),
+   pero hay que **decidirlo**, no descubrirlo.
+
+2. **¿Cómo se sabe cuándo se puede borrar de verdad?** Consecuencia directa de
+   lo anterior: si dos filas comparten el hash, borrar una **no** debe borrar el
+   archivo. El conteo de referencias solo lo puede saber la base. La aplicación
+   no borra por su cuenta; necesita que la base le diga "esta fue la última".
+   Basta con que el SP de baja devuelva si quedan referencias.
+
+**Lo que NO se le está pidiendo**: guardar el archivo en la base (ni `varbinary`
+ni FILESTREAM). Los bytes van al NAS y la base guarda la referencia.

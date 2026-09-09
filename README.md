@@ -37,12 +37,17 @@ carpeta vive el código:
 | `config.py` | — | Constantes leídas del `.env` |
 | `routers/` | HTTP | Un archivo por dominio. Traduce request/response y elige códigos de error |
 | `repositorios/` | Datos | **Todo lo que toca SQL Server.** Un archivo por dominio, funciones que invocan SPs |
-| `servicios/` | Externo | **Todo lo que llama a servicios de terceros** (Document AI, y más adelante SFTP/SharePoint) |
+| `servicios/` | Externo | **Todo lo que sale de este proceso** (Document AI, el almacén en disco, y más adelante SFTP/SharePoint) |
 | `db/sqlserver.py` | Plomería | Conexión + helpers genéricos para invocar stored procedures |
+| `verificar_*.py` | Pruebas | Scripts sueltos que se corren a mano y dicen sí o no. No hay pytest a propósito |
 
 **Regla:** un `router` nunca importa `pyodbc` ni `httpx` directo — solo llama
 funciones de `repositorios/` o `servicios/`. Así un endpoint puede combinar
 ambas fuentes sin que el front se entere de dónde viene cada dato.
+
+`servicios/` dice "Externo" en el sentido de **fuera de este proceso**, no
+necesariamente de terceros: `almacen.py` escribe en un disco montado, no llama a
+nadie, y aun así vive ahí porque es E/S que puede tardar y fallar por su cuenta.
 
 Nombres de función: español, verbo primero (`listar_bandeja`,
 `registrar_documento`, `extraer_campos`) — igual que en el resto de tus proyectos.
@@ -267,6 +272,61 @@ válido. Ese caso a propósito **no** se convierte en `quality_alert` y a
 propósito NO comparte redacción con `motivo`: es una falla del servicio, no de
 la calidad del documento, y disfrazarla de "hay que pedir otra foto" escondería
 un problema operativo real.
+
+## Almacén de documentos (construido, **apagado**)
+
+`servicios/almacen.py` guarda los **bytes** de un archivo subido en disco. Está
+completo y verificado, pero **nadie lo llama todavía y eso es a propósito**: se
+adelantó para que el día que exista la tabla `file` en SQL Server los bytes y su
+registro puedan nacer juntos, sin diseñar esto con prisa. Mientras tanto Nexus se
+comporta exactamente igual que antes — el documento vive solo en la memoria del
+navegador y se pierde al refrescar.
+
+Cómo está apagado: `ALMACEN_RUTA` viene vacía en el `.env`, ningún router lo
+importa y `app.py` no lo registra. No hay endpoint que lo alcance.
+
+**Dónde van a vivir los archivos.** En el NAS de infraestructura de CSI, montado
+en el server, con esta forma dentro de la raíz:
+
+```
+{tenant}/{aa}/{bb}/{sha256}      p. ej.  csi/3f/a9/3fa9c1…e04b
+```
+
+Tres decisiones que conviene entender antes de tocarlo:
+
+| Decisión | Por qué |
+|---|---|
+| El nombre del archivo **es su SHA-256**, sin extensión | Subir dos veces el mismo documento ocupa un solo objeto. El front ya calcula ese hash para detectar duplicados en la Bandeja, así que no hay trabajo nuevo. Y el nombre es verificable: si el contenido se corrompe, deja de coincidir consigo mismo. El MIME vive en la base, no en la extensión. |
+| Dedup **dentro de cada tenant**, nunca global | Una dedup global filtraría información entre clientes y volvería imposible borrar o poner cuota por tenant. Se prefiere gastar disco. |
+| En la base se guarda la ruta **relativa** | El día que el NAS cambie de punto de montaje solo cambia `ALMACEN_RUTA`. Con rutas absolutas, mover el montaje obligaría a migrar datos. |
+
+**La trampa de `borrar`.** Con dedup por contenido, dos filas de `file` —el mismo
+documento en dos expedientes— apuntan al MISMO archivo. `almacen.borrar()` no
+consulta nada: borra. Quien lo llame tiene que haber comprobado **en la base** que
+ya no queda ninguna referencia. El módulo no tiene forma de saberlo.
+
+**Es síncrono.** Escribir en un NAS puede tardar, así que el endpoint que algún
+día lo use debe ser un `def` normal y **no** `async def`, para que FastAPI lo
+corra en su threadpool y no congele el event loop. Misma regla que ya aplica a
+`pyodbc` en este proyecto, por el mismo motivo.
+
+### Encenderlo (cuando toque)
+
+1. Montar el NAS en el server y darle escritura al usuario de pm2.
+2. Llenar `ALMACEN_RUTA` en el `.env` (`/mnt/nas/nexus/documentos`) y reiniciar.
+3. Escribir el router/servicio que lo llame, guardando la ruta relativa en `file`.
+
+### Verificarlo
+
+```bash
+venv/bin/python verificar_almacen.py
+```
+
+Corre **offline** en una carpeta temporal que crea y borra él mismo: no necesita
+NAS, ni credenciales, ni red, y no toca nada real. Comprueba las tres cosas que
+fallarían en silencio: que la escritura sea atómica (temporal + `os.replace`, sin
+dejar `.tmp-*` tirados), que no haya dedup entre tenants, y que ninguna ruta pueda
+salir de la raíz.
 
 ## Despliegue
 
