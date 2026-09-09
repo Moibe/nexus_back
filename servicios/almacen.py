@@ -151,10 +151,16 @@ def guardar(tenant: str, contenido: bytes, hash_esperado: str | None = None) -> 
     disco ni arriesga un archivo a medio escribir.
 
     La escritura es ATÓMICA: primero a un temporal en el MISMO directorio y
-    después `os.replace`, que en POSIX es atómico dentro del mismo sistema de
-    archivos. Sin eso, un corte de red del NAS a media escritura dejaría un
-    objeto truncado con nombre de objeto completo — es decir, basura que se ve
-    válida. Con esto, o está entero o no está.
+    después `os.replace`, que es atómico dentro del mismo sistema de archivos
+    (en POSIX por definición; en Windows vía MoveFileEx con REPLACE_EXISTING).
+    Sin eso, un corte de red del NAS a media escritura dejaría un objeto
+    truncado con nombre de objeto completo — es decir, basura que se ve válida.
+    Con esto, o está entero o no está.
+
+    Dos subidas simultáneas del MISMO archivo no se estorban: cada una escribe
+    su propio temporal y la segunda reemplaza a la primera con bytes idénticos.
+    Nadie ve nunca un objeto a medias, y no hace falta un lock — que sobre NFS
+    sería justo la parte que no se puede confiar.
     """
     if not contenido:
         raise ValueError("No hay contenido que guardar: el archivo llegó vacío.")
