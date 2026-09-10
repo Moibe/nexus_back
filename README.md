@@ -180,6 +180,7 @@ guardarla sea mecánico cuando exista SQL Server. Cada campo hoja es un
   "domicilio": {
     "estado": { "value_raw": "SON.", "value_normalized": "SON", "...": "..." }
   },
+  "confianza_promedio": 99.31,
   "confianza_minima": 98.74,
   "ocr": {
     "engine": "document_ai",
@@ -235,12 +236,23 @@ campos ausentes deberían generar renglón con `null_reason`, y para saber cuál
 se esperaban hace falta el catálogo `field_definition`. Hoy un campo que
 Document AI no encontró simplemente no aparece.
 
-`confianza_minima` (a nivel raíz, 0-100) es la menor `confianza` entre **todos**
-los campos, incluyendo los de `domicilio` — sirve de semáforo de un vistazo: un
-promedio puede esconder un solo campo mal leído si el resto salió perfecto, el
-mínimo no. Se calcula **antes** de agregar la capa de OCR, a propósito: los
+A nivel raíz vienen **dos** resúmenes de la calidad, los dos en escala 0-100 y
+calculados sobre **todos** los campos, incluyendo los de `domicilio`. Contestan
+preguntas distintas y por eso viajan los dos:
+
+| Llave | Qué contesta | Quién la usa |
+|---|---|---|
+| `confianza_promedio` | Qué tan bien salió la extracción en conjunto | La interfaz, en "Nivel de confianza obtenida" (desde el 2026-09-10) |
+| `confianza_minima` | Cuál es el peor campo | Nadie todavía; es el número que delata un dato concreto mal leído |
+
+El promedio es lo que se muestra porque es la pregunta que se hace quien mira la
+pantalla. El mínimo se conserva porque es justo lo que el promedio esconde: un
+solo campo mal leído —la CURP, digamos— se diluye si el resto de la credencial
+salió perfecta. Hasta el 2026-09-10 la interfaz mostraba el mínimo.
+
+Los dos se calculan **antes** de agregar la capa de OCR, a propósito: los
 bloques también traen `confianza`, pero esa es de LECTURA, no de extracción, y
-mezclarlas daría un número sin significado. Viene en `None` cuando
+mezclarlas daría un número sin significado. Las dos vienen en `None` cuando
 `_metadata.quality_alert` es `true` (ver abajo) — ahí no hay campos.
 
 `_metadata.procesado_en` es la fecha/hora (UTC, formato ISO) en que **ese
@@ -260,8 +272,8 @@ debe generar la base y nunca el cliente.
 pero sin ninguna estructura de documento reconocible — la imagen no es una INE,
 o es tan ilegible que no se reconoce como una. En ese caso viene junto con
 `_metadata.motivo` (`"Calidad del OCR inferior al umbral requerido o nulo"`), y
-la respuesta no trae ningún campo del documento ni `confianza_minima` (queda en
-`None`). En cualquier otro caso `quality_alert` es `false` y la llave `motivo`
+la respuesta no trae ningún campo del documento, y las dos confianzas resumen
+quedan en `None`. En cualquier otro caso `quality_alert` es `false` y la llave `motivo`
 **ni siquiera aparece** en el diccionario.
 
 Esto es DISTINTO de un `502 Bad Gateway` (`{"detail": "No se pudo procesar la

@@ -82,8 +82,8 @@ if registro.get("value_normalized") == "2024" and registro.get("numero_emision")
 else:
     mal(f"quedó: {registro}")
 
-caso("[3] extraer_ine arma la respuesta completa (ocr, confianza_minima, _metadata)")
-for llave in ("ocr", "confianza_minima", "_metadata"):
+caso("[3] extraer_ine arma la respuesta completa (ocr, las dos confianzas, _metadata)")
+for llave in ("ocr", "confianza_promedio", "confianza_minima", "_metadata"):
     if llave in ine:
         ok(f"'{llave}' presente")
     else:
@@ -110,7 +110,7 @@ else:
     mal(f"llamó a {llamadas[-1]}")
 
 caso("[6] La FORMA de la respuesta genérica es la misma que la de INE")
-for llave in ("ocr", "confianza_minima", "_metadata"):
+for llave in ("ocr", "confianza_promedio", "confianza_minima", "_metadata"):
     if llave in gen:
         ok(f"'{llave}' presente")
     else:
@@ -130,10 +130,60 @@ async def _sin_entities(procesador_id, contenido, mime_type, version="", opcione
 
 ia._procesar = _sin_entities  # type: ignore[assignment]
 vacio = asyncio.run(ia.extraer_con_procesador("proc-xyz", b"x", "image/jpeg"))
-if vacio["_metadata"]["quality_alert"] is True and vacio["confianza_minima"] is None:
-    ok("quality_alert=True y confianza_minima=None, sin excepción")
+if (
+    vacio["_metadata"]["quality_alert"] is True
+    and vacio["confianza_minima"] is None
+    and vacio["confianza_promedio"] is None
+):
+    ok("quality_alert=True y las dos confianzas en None, sin excepción")
 else:
     mal(f"quedó: {vacio}")
+
+# ── El promedio, que es el número que ve el usuario ──────────────────────────
+caso("[8] confianza_promedio es el PROMEDIO, y confianza_minima el mínimo")
+
+# Se arma a mano en vez de depender del stub: así el caso dice qué números
+# entran y cuál tiene que salir, y no hay que leer otro archivo para saberlo.
+# Incluye un campo SIN confianza (None) y uno anidado, que son los dos casos
+# que rompieron esto antes.
+def _c(v):
+    return {"value_raw": "x", "value_normalized": "x", "confianza": v,
+            "confianza_cruda": None, "metodo_confianza": "extractor_confidence",
+            "page_number": 1, "bloque_indice": None, "posicion": None}
+
+
+muestra = {
+    "nombre": _c(100.0),
+    "apellido_paterno": _c(99.94),
+    "apellido_materno": _c(78.2),
+    "sin_dato": _c(None),          # Document AI omitió `confidence`: se ignora
+    "domicilio": {"estado": _c(60.26)},   # anidado: SÍ cuenta
+}
+esperado = round((100.0 + 99.94 + 78.2 + 60.26) / 4, 2)
+promedio = ia._confianza_promedio(muestra)
+minimo = ia._confianza_minima(muestra)
+if promedio == esperado:
+    ok(f"promedio = {promedio} (los 4 con dato; el None no cuenta)")
+else:
+    mal(f"promedio quedó {promedio}, se esperaba {esperado}")
+if minimo == 60.26:
+    ok("mínimo = 60.26, el peor campo, y sale del anidado")
+else:
+    mal(f"mínimo quedó {minimo}")
+if promedio is not None and minimo is not None and promedio > minimo:
+    ok("el promedio es MAYOR que el mínimo: son números distintos de verdad")
+else:
+    mal("el promedio y el mínimo salieron iguales; el cambio no sirve de nada")
+if ia._confianza_promedio({}) is None and ia._confianza_minima({}) is None:
+    ok("sin campos, las dos devuelven None en vez de tronar")
+else:
+    mal("sin campos no devolvieron None")
+
+# Redondeo a 2: tres tercios de 100 dan 33.333... y no se publican 15 decimales.
+if ia._confianza_promedio({"a": _c(0.0), "b": _c(0.0), "c": _c(100.0)}) == 33.33:
+    ok("redondea a 2 decimales (33.33), la misma precisión que la entrada")
+else:
+    mal(f"redondeo quedó: {ia._confianza_promedio({'a': _c(0.0), 'b': _c(0.0), 'c': _c(100.0)})}")
 
 print()
 print("=== FALLÓ ===" if fallas else "=== EXTRACCIÓN GENÉRICA VERIFICADA ===")

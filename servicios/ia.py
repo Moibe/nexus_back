@@ -357,18 +357,16 @@ def _descomponer_anio_registro(datos: dict[str, Any]) -> dict[str, Any]:
     return datos
 
 
-def _confianza_minima(datos: dict[str, Any]) -> float | None:
-    """La menor `confianza` (escala 0-100) entre TODOS los campos extraídos,
-    recorriendo también los de 'domicilio'. Sirve de semáforo de un vistazo: un
-    solo campo mal leído (ej. la CURP) puede pasar desapercibido en un promedio
-    si el resto de la credencial salió perfecto; el mínimo no lo deja esconderse.
+def _confianzas(datos: dict[str, Any]) -> list[float]:
+    """Las `confianza` (escala 0-100) de TODOS los campos extraídos, recorriendo
+    también los anidados como 'domicilio'.
 
-    Se calcula ANTES de agregar la capa de OCR al resultado, a propósito: los
-    bloques de OCR también traen `confianza`, y son la confianza de LECTURA, no
-    de extracción. Mezclarlas daría un mínimo que no significa nada.
+    Se recolectan ANTES de agregar la capa de OCR al resultado, a propósito: los
+    bloques de OCR también traen `confianza`, y esa es la confianza de LECTURA,
+    no de extracción. Mezclarlas daría un número que no significa nada.
 
-    None si no se extrajo ningún campo (Document AI puede responder 200 con
-    una lista de entidades vacía si la imagen no es una INE reconocible)."""
+    Lista vacía si no se extrajo ningún campo (Document AI puede responder 200
+    con una lista de entidades vacía si la imagen no es legible)."""
     confianzas: list[float] = []
 
     def recorrer(nodo: dict[str, Any]) -> None:
@@ -388,6 +386,43 @@ def _confianza_minima(datos: dict[str, Any]) -> float | None:
                 recorrer(valor)
 
     recorrer(datos)
+    return confianzas
+
+
+def _confianza_promedio(datos: dict[str, Any]) -> float | None:
+    """El PROMEDIO de la confianza de todos los campos extraídos.
+
+    Es lo que la interfaz muestra como "Nivel de confianza obtenida" desde el
+    2026-09-10, por pedido explícito. Antes mostraba el mínimo.
+
+    El intercambio, para que quede escrito y nadie lo redescubra: el promedio
+    responde "qué tan bien salió esta extracción en conjunto", que es la
+    pregunta que se hace quien mira la pantalla. El MÍNIMO respondía otra cosa,
+    "cuál es el peor campo", y por eso sigue viajando en la respuesta: un solo
+    campo mal leído —la CURP, digamos— se diluye en el promedio cuando el resto
+    de la credencial salió perfecta, y ahí es donde el mínimo no lo deja
+    esconderse. Los dos números sirven, para preguntas distintas.
+
+    Se redondea a 2 decimales, la misma precisión con la que `_a_cien` convierte
+    cada campo de la escala 0-1 de Google: publicar más decimales que los de la
+    entrada sería inventar precisión.
+
+    None si no se extrajo ningún campo."""
+    confianzas = _confianzas(datos)
+    if not confianzas:
+        return None
+    return round(sum(confianzas) / len(confianzas), 2)
+
+
+def _confianza_minima(datos: dict[str, Any]) -> float | None:
+    """La MENOR confianza entre todos los campos: el eslabón más débil.
+
+    Ya no es lo que se muestra en la interfaz (ver `_confianza_promedio`), pero
+    se sigue calculando y publicando: es el número que delata un campo
+    concreto mal leído, y es barato conservarlo.
+
+    None si no se extrajo ningún campo."""
+    confianzas = _confianzas(datos)
     return min(confianzas) if confianzas else None
 
 
@@ -426,7 +461,7 @@ async def extraer_con_procesador(
 
     La forma de la respuesta es la MISMA para todos los procesadores (ver el
     docstring de `extraer_ine`): campos hoja con `value_raw`/`value_normalized`
-    /`confianza`/..., más `ocr`, `confianza_minima` y `_metadata`. Un extractor
+    /`confianza`/..., más `ocr`, las dos confianzas resumen y `_metadata`. Un extractor
     genérico no sabe qué campos esperar — eso lo define el esquema con el que
     se creó el procesador — así que aquí no hay ninguna limpieza por nombre de
     campo; publica lo que Document AI haya encontrado.
@@ -449,13 +484,17 @@ async def extraer_con_procesador(
         )
         metadata["quality_alert"] = True
         metadata["motivo"] = _MOTIVO_NO_LEGIBLE
-        return {"confianza_minima": None, "_metadata": metadata}
+        return {"confianza_promedio": None, "confianza_minima": None, "_metadata": metadata}
 
     capa_ocr, offsets_ocr = extraer_capa_ocr(crudo.get("document", {}), version or None)
 
     datos = _extraer_entidades(entidades, offsets_ocr)
     if transformar is not None:
         datos = transformar(datos)
+    # El PROMEDIO va primero porque es el que la interfaz muestra; el mínimo
+    # queda como dato de apoyo. Los dos se calculan sobre `datos` ANTES de
+    # meterle la capa `ocr`, que trae confianzas de otra naturaleza.
+    datos["confianza_promedio"] = _confianza_promedio(datos)
     datos["confianza_minima"] = _confianza_minima(datos)
     datos["ocr"] = capa_ocr
     datos["_metadata"] = metadata
@@ -481,8 +520,9 @@ async def extraer_ine(contenido: bytes, mime_type: str = "image/jpeg") -> dict[s
       - `ocr` es la cabecera tipo `ocr_result` con sus `bloques` (`ocr_block`),
         que es lo que permite resaltar en la imagen la región de cada dato.
         `bloque_indice` de cada campo apunta ahí por posición en la lista.
-      - `confianza_minima` (0-100) resume la calidad de la extracción — ver
-        `_confianza_minima`.
+      - `confianza_promedio` (0-100) resume la calidad de la extracción y es
+        lo que la interfaz muestra — ver `_confianza_promedio`.
+      - `confianza_minima` (0-100) es el peor campo, que el promedio esconde.
 
     Lo que TODAVÍA no cumple del diccionario, porque necesita la base: los
     campos ausentes deberían generar renglón con `null_reason`, y para saber
@@ -494,7 +534,7 @@ async def extraer_ine(contenido: bytes, mime_type: str = "image/jpeg") -> dict[s
     `_metadata.quality_alert` es True SOLO cuando Document AI respondió 200
     pero sin ninguna estructura de documento reconocible (la imagen no es una
     INE, o es ilegible al punto de no reconocerse como una) — ahí viene junto
-    con `_metadata.motivo`, `confianza_minima` en None y ningún campo del
+    con `_metadata.motivo`, las dos confianzas resumen en None y ningún campo del
     documento. En cualquier otro caso, `quality_alert` es False y `motivo` NI
     SIQUIERA aparece en el diccionario.
 
