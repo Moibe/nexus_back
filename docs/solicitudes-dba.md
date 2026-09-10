@@ -181,6 +181,34 @@ hasta ahora eran deducción: cómo arma exactamente `tenantCode` a partir del
 `prefix`, qué status asigna por default, y qué escribe en `createdBy` cuando lo
 llama la aplicación.
 
+### ⬜ Pedido: que el SP lea el prefijo de la tabla, no del código
+
+Se le pidió que `[security].[uspCreateTenant]` obtenga `prefix` y
+`lastSequence` de `[security].[tenantSequence]`, de la fila con `isActive = 1`,
+para que el prefijo deje de estar escrito también en el cuerpo del SP.
+
+**Cómo saber si ya lo hizo, sin preguntarle.** Con el `GRANT VIEW DEFINITION`
+de arriba se puede leer el cuerpo del SP, que es la única prueba que no depende
+de un "ya quedó" de palabra:
+
+```bash
+cd /home/mbriseno/code/nexus_back && venv/bin/python verificar_secuencia_tenant.py
+```
+
+Imprime el estado de la tabla, si el SP la lee filtrando por `isActive = 1`, si
+le quedan prefijos escritos en el código, y **las líneas del SP que hablan de
+eso**, para leerlas en vez de confiar en el veredicto. Sale con 0 si parece que
+ya está, 1 si parece que no, y 2 si no pudo leer el cuerpo. Todo de solo
+lectura: no crea tenants.
+
+Antes de correrlo contra la base vale `--autoprueba`, que valida la detección
+contra cuerpos de SP inventados y no toca nada.
+
+**Ojo con el orden.** Que el SP lea la tabla no sirve de nada si la tabla sigue
+vacía (ver 0b): son dos cosas distintas y el script reporta las dos por
+separado. Y la prueba de comportamiento —crear un tenant y ver qué `tenantCode`
+sale— sigue siendo `verificar_tenants.py`, que sí escribe.
+
 ### ✅ Resuelto: `uspCreateTenant` sí devuelve el `tenantGuid`
 
 Confirmado por Charlie el 2026-08-26. Dos consecuencias:
