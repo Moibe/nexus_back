@@ -51,7 +51,7 @@ def _token() -> str:
     return _credenciales.token
 
 
-def _motivo_de(status_code: int, detalle: str) -> str:
+def _motivo_de(status_code: int, detalle: str, reason: str = "") -> str:
     """Clasifica el error de Document AI en una causa accionable.
 
     Los textos NO son inventados: se midieron mandándole entradas rotas a la
@@ -70,7 +70,30 @@ def _motivo_de(status_code: int, detalle: str) -> str:
     y nombres de cuota variables. Si Google reescribe estos textos, la
     consecuencia es que el motivo cae en `desconocido` y el usuario ve el
     mensaje genérico de siempre — se degrada, no se rompe.
+
+    Y SÍ los reescribe: el del límite de páginas ya cambió desde que se midió.
+    Hoy (2026-09-21) responde "Document pages exceed the limit: 15 got 20", sin
+    la parte de imageless mode. La subcadena que se busca aquí sobrevivió el
+    cambio, pero fue suerte, no diseño.
+
+    Por eso `reason` manda sobre el texto cuando viene: la respuesta de error
+    trae un bloque `error.details[]` con un campo estable, que es parte del
+    contrato de la API y no depende de cómo esté redactado el mensaje:
+
+        {"reason": "PAGE_LIMIT_EXCEEDED",
+         "metadata": {"page_limit": "15", "pages": "20"}}
+
+    De ese bloque solo está CONFIRMADO contra la API real
+    `PAGE_LIMIT_EXCEEDED`; los demás se emparejan por subcadena
+    (`RATE_LIMIT`/`QUOTA`) a modo de apuesta barata, porque si no coinciden cae
+    igual en el texto de respaldo y no se pierde nada.
     """
+    r = (reason or "").upper()
+    if r == "PAGE_LIMIT_EXCEEDED":
+        return "limite_paginas"
+    if "RATE_LIMIT" in r or "QUOTA" in r:
+        return "cuota"
+
     t = (detalle or "").lower()
     if status_code == 429 or "quota exceeded" in t:
         return "cuota"
@@ -144,16 +167,24 @@ async def _procesar(
             # dentro de la excepción para que el router pueda clasificarlo, y es
             # el router quien decide qué texto ve el usuario.
             try:
-                detalle = respuesta.json().get("error", {}).get("message", "")
+                error = respuesta.json().get("error", {})
+                detalle = error.get("message", "")
+                # `details[].reason` es estable aunque Google reescriba el
+                # mensaje; ver `_motivo_de`.
+                razon = next(
+                    (d["reason"] for d in error.get("details", []) if d.get("reason")),
+                    "",
+                )
             except Exception:  # noqa: BLE001
                 detalle = respuesta.text[:500]
+                razon = ""
             logger.error(
                 "Document AI respondió %s: %s", respuesta.status_code, respuesta.text
             )
             raise ErrorDocumentAI(
                 f"Document AI respondió {respuesta.status_code}: {detalle}",
                 status_code=respuesta.status_code,
-                motivo=_motivo_de(respuesta.status_code, detalle),
+                motivo=_motivo_de(respuesta.status_code, detalle, razon),
             )
         return respuesta.json()
 
