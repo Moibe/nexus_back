@@ -121,6 +121,48 @@ alcanza para saber cuál de los tres eslabones se rompió.
 
 ---
 
+## 0. PENDIENTE ABIERTO (2026-09-22): `tenantCode` se trunca
+
+> **`tenantCode varchar(8)` no alcanza si el código lleva separador.**
+>
+> El razonamiento del prefijo (sección 0a, más abajo) dio por hecho que el
+> código era `NEX00001`: 3 letras + 5 dígitos, **8 justos**. Pero si
+> `uspCreateTenant` arma el código como `prefix + '-' + 5 dígitos`, con `NEX`
+> son **9 caracteres** y no caben.
+>
+> Lo grave es que **SQL Server no avisa**: al asignar a una variable más corta
+> trunca en silencio. `NEX-00001` queda como `NEX-0000`, y como se pierde el
+> último dígito, **cada bloque de diez tenants comparte código**. Si hay índice
+> único sobre la columna, el segundo del bloque falla al insertarse; si no lo
+> hay, quedan duplicados sin que nada lo señale.
+>
+> Las cuentas, con `prefix varchar(5)` y 5 dígitos de consecutivo:
+>
+> | prefijo | código      | caracteres | ¿cabe en varchar(8)? |
+> |---------|-------------|-----------:|----------------------|
+> | `AS`    | `AS-00001`  |          8 | sí, exacto           |
+> | `NEX`   | `NEX-00001` |          9 | **no, trunca**       |
+> | `NEXUS` | `NEXUS-00001` |        11 | **no, trunca**       |
+>
+> **Lo que se pide:** si el código lleva separador y se conserva `NEX`,
+> `tenantCode` necesita ser `varchar(11)` — 11 y no 9, para que cualquier
+> prefijo válido (`varchar(5)`) quepa y no haya que volver a tocar el esquema
+> si algún día se cambia. Las alternativas, si se prefiere no tocar la tabla:
+> quitar el separador (vuelve a 8), o bajar a 4 dígitos de consecutivo.
+>
+> **Cómo se comprueba, sin preguntar:**
+>
+> ```
+> cd /home/mbriseno/code/nexus_back && venv/bin/python verificar_secuencia_tenant.py
+> ```
+>
+> Su sección 4 mide el ancho declarado en `sys.columns`, lee del SP cómo arma
+> el código de verdad (separador y dígitos), calcula si cabe con el prefijo de
+> la fila activa, y —si no cabe— revisa si hay índice único para decir cuál de
+> los dos síntomas tocaría. No deduce nada: todo sale de la base.
+
+---
+
 ## 0a. LO QUE SE LE LLEVA AHORA (2026-08-26)
 
 **Queda la siembra de `[security].[tenantSequence]`** — es lo único que sigue

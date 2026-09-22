@@ -1,12 +1,25 @@
-"""¿Ya sacó Charlie el prefijo del código del SP y lo lee de la tabla?
+"""¿Ya quedó lo que se le pidió a Charlie sobre el código de tenant?
 
 Corre en el SERVER, que es donde el `.env` tiene la base:
 
     cd /home/mbriseno/code/nexus_back && venv/bin/python verificar_secuencia_tenant.py
 
-QUÉ SE LE PIDIÓ. Que `[security].[uspCreateTenant]` obtenga `prefix` y
+CONTESTA DOS PREGUNTAS, por separado — una puede estar resuelta y la otra no:
+
+  A. ¿El SP saca `prefix` y `lastSequence` de la tabla de configuración?
+  B. ¿El código completo CABE en `tenantCode`, o se trunca?
+
+QUÉ SE LE PIDIÓ (A). Que `[security].[uspCreateTenant]` obtenga `prefix` y
 `lastSequence` de `[security].[tenantSequence]`, tomando la fila con
 `isActive = 1`, en vez de traer el prefijo escrito también en el cuerpo del SP.
+
+QUÉ SE LE PIDIÓ (B). Que `tenantCode` quepa. `docs/solicitudes-dba.md` razonó
+el prefijo dando por hecho que el código era `NEX00001` —3 letras + 5 dígitos,
+8 justos en un `varchar(8)`—, pero si el SP mete un separador son 9 y **SQL
+Server trunca en silencio**: no hay error al asignar a una variable corta, solo
+códigos recortados. Con `NEX-00001` cortado a `NEX-0000`, cada bloque de diez
+tenants comparte código. Esta parte NO se deduce: se mide el ancho declarado en
+`sys.columns` y se lee del SP cómo arma el código de verdad.
 
 POR QUÉ SE PUEDE VERIFICAR SIN PREGUNTARLE. Desde el 2026-08-31 existe
 `GRANT VIEW DEFINITION ON SCHEMA::security TO usrNexus`, así que
@@ -37,17 +50,16 @@ del relleno se leía como si fuera el prefijo.
 import re
 import sys
 
-try:
-    from db.sqlserver import obtener_conexion
-except Exception as exc:  # pragma: no cover - solo pasa sin pyodbc instalado
-    print(f"No se pudo importar el acceso a SQL Server: {exc}")
-    print("¿Estás corriendo esto en el server, con el venv del proyecto?")
-    raise SystemExit(2)
-
-from errores import ConfiguracionIncompleta
+# El acceso a SQL Server se importa DENTRO de `main()`, no aquí: al nivel del
+# módulo, un `pyodbc` ausente mataba el script antes de poder llegar a
+# `--autoprueba`, que justamente no toca la base. O sea que la autoprueba solo
+# corría donde menos falta hacía (el server) y no en la máquina donde se
+# escriben las expresiones regulares.
 
 TABLA = "tenantSequence"
 ESQUEMA = "security"
+TABLA_TENANTS = "tenants"
+COLUMNA_CODIGO = "tenantCode"
 
 
 def titulo(texto: str) -> None:
@@ -115,6 +127,49 @@ def evaluar_cuerpo(cuerpo: str) -> dict:
     }
 
 
+def evaluar_ancho(cuerpo: str) -> dict:
+    """Cómo arma el SP el código, en caracteres: prefijo + separador + dígitos.
+
+    Se saca del cuerpo real y no se asume, porque la suposición ya falló una
+    vez: `docs/solicitudes-dba.md` razonó el prefijo dando por hecho que el
+    código era `NEX00001` (8 justos), pero si el SP mete un guion son 9 y
+    `tenantCode varchar(8)` los trunca EN SILENCIO — SQL Server no avisa al
+    truncar en una asignación a variable. Con todos los códigos recortados al
+    mismo largo, dos tenants distintos pueden terminar con el mismo código.
+
+    Devuelve `digitos=None` si no se reconoció el armado; entonces no se
+    inventa un veredicto, se dice que no se pudo leer.
+    """
+    limpio = _sin_comentarios(cuerpo)
+
+    # El separador: lo que va entre el prefijo y el resto de la concatenación.
+    # Se acepta vacío (pegados) y de hasta 3 caracteres.
+    sep = re.search(r"@prefix\s*\+\s*'([^']{0,3})'\s*\+", limpio, re.I)
+    if sep:
+        separador = sep.group(1)
+    elif re.search(r"@prefix\s*\+\s*(RIGHT|CAST|CONVERT|FORMAT)", limpio, re.I):
+        separador = ""  # van pegados, sin nada en medio
+    else:
+        separador = None
+
+    # Los dígitos del consecutivo: el segundo argumento de RIGHT(...), que es
+    # el ancho al que se rellena. Si no hay RIGHT, se intenta con el relleno.
+    digitos = None
+    m = re.search(r"RIGHT\s*\([^,]+,\s*(\d+)\s*\)", limpio, re.I)
+    if m:
+        digitos = int(m.group(1))
+    else:
+        relleno = re.search(r"'(0{2,10})'\s*\+", limpio)
+        if relleno:
+            digitos = len(relleno.group(1))
+
+    return {"separador": separador, "digitos": digitos}
+
+
+def largo_necesario(prefijo: str, separador: str, digitos: int) -> int:
+    return len(prefijo) + len(separador) + digitos
+
+
 # Cuerpos sintéticos para la autoprueba. El del relleno `'00000'` está en TODOS
 # a propósito: es el falso positivo que ya se coló una vez.
 _CONCAT = "    SET @code = @prefix + RIGHT('00000' + CAST(@next AS varchar(5)), 5);"
@@ -144,10 +199,57 @@ _CASOS = [
 ]
 
 
+# Casos para `evaluar_ancho`. El que importa es el del guion: es el que
+# convierte un `varchar(8)` correcto para `NEX00001` en uno que trunca.
+_CASOS_ANCHO = [
+    ("pegado, 5 digitos", _CONCAT, "", 5),
+    (
+        "con guion, 5 digitos",
+        "    SET @code = @prefix + '-' + RIGHT('00000' + CAST(@next AS varchar(5)), 5);",
+        "-",
+        5,
+    ),
+    (
+        "con guion bajo, 4 digitos",
+        "    SET @code = @prefix + '_' + RIGHT('0000' + CAST(@next AS varchar(4)), 4);",
+        "_",
+        4,
+    ),
+    (
+        "sin RIGHT: se deduce del relleno",
+        "    SET @code = @prefix + '-' + '000' + CAST(@next AS varchar(3));",
+        "-",
+        3,
+    ),
+    (
+        "el guion comentado no cuenta",
+        "    -- antes: SET @code = @prefix + '-' + RIGHT(...)\n"
+        "    SET @code = @prefix + RIGHT('00000' + CAST(@next AS varchar(5)), 5);",
+        "",
+        5,
+    ),
+]
+
+
 def autoprueba() -> int:
     """Comprueba la detección contra cuerpos de SP inventados. Sin base."""
     print("Autoprueba de la detección (no toca la base)\n")
     fallos = 0
+
+    print("  -- ancho del código (separador y dígitos) --")
+    for nombre, cuerpo, sep_esperado, dig_esperados in _CASOS_ANCHO:
+        r = evaluar_ancho(cuerpo)
+        ok = r["separador"] == sep_esperado and r["digitos"] == dig_esperados
+        if not ok:
+            fallos += 1
+        print(
+            f"  {'OK   ' if ok else 'FALLA'} {nombre:38} -> "
+            f"separador={r['separador']!r} digitos={r['digitos']} "
+            f"(esperado {sep_esperado!r}/{dig_esperados})"
+        )
+    print()
+
+    print("  -- de dónde saca el prefijo --")
     for nombre, cuerpo, esperado in _CASOS:
         s = evaluar_cuerpo(cuerpo)
         obtenido = s["lee_configuracion"] and not s["literales"]
@@ -159,11 +261,20 @@ def autoprueba() -> int:
             f"{'YA ESTÁ' if obtenido else 'TODAVÍA NO':10} literales={s['literales']}"
         )
     print()
-    print(f"{fallos} FALLARON" if fallos else f"los {len(_CASOS)} casos pasaron")
+    total = len(_CASOS) + len(_CASOS_ANCHO)
+    print(f"{fallos} FALLARON" if fallos else f"los {total} casos pasaron")
     return 1 if fallos else 0
 
 
 def main() -> int:
+    try:
+        from db.sqlserver import obtener_conexion
+        from errores import ConfiguracionIncompleta
+    except Exception as exc:  # pragma: no cover - solo pasa sin pyodbc instalado
+        print(f"No se pudo importar el acceso a SQL Server: {exc}")
+        print("¿Estás corriendo esto en el server, con el venv del proyecto?")
+        return 2
+
     try:
         conexion = obtener_conexion()
     except ConfiguracionIncompleta as exc:
@@ -175,6 +286,11 @@ def main() -> int:
     veredicto_lee_tabla = False
     veredicto_sin_literal = False
     cuerpo_leido = False
+    # El prefijo REAL que se va a usar, leído de la fila activa. Si no hay
+    # fila, más abajo se razona con el propuesto ('NEX') y se dice que es una
+    # suposición — no es lo mismo medir lo que hay que lo que se planea.
+    prefijo_activo: str | None = None
+    veredicto_cabe: bool | None = None
 
     # ── 1. La tabla de configuración ─────────────────────────────────────────
     titulo(f"1 · [{ESQUEMA}].[{TABLA}] — la fila que el SP tiene que leer")
@@ -189,6 +305,10 @@ def main() -> int:
         activas = [
             f for f in filas if "isActive" in columnas and f[columnas.index("isActive")]
         ]
+        if activas and "prefix" in columnas:
+            valor = activas[0][columnas.index("prefix")]
+            if valor is not None:
+                prefijo_activo = str(valor).strip()
         if len(activas) == 1:
             print("  OK    hay EXACTAMENTE una fila con isActive = 1")
         elif not filas:
@@ -264,6 +384,100 @@ def main() -> int:
     except Exception as exc:
         print(f"    no se pudo consultar: {exc}")
 
+    # ── 4. ¿Cabe el código en tenantCode? ────────────────────────────────────
+    titulo(f"4 · ¿cabe el código completo en [{ESQUEMA}].[{TABLA_TENANTS}].[{COLUMNA_CODIGO}]?")
+    print("  SQL Server TRUNCA EN SILENCIO al asignar a una variable corta: si no")
+    print("  cabe, no hay error, hay códigos recortados — y dos tenants distintos")
+    print("  pueden acabar con el mismo.\n")
+    declarado = None
+    try:
+        cur.execute(
+            """
+            SELECT TYPE_NAME(c.user_type_id) AS tipo, c.max_length
+            FROM sys.columns c
+            JOIN sys.tables t ON t.object_id = c.object_id
+            WHERE SCHEMA_NAME(t.schema_id) = ? AND t.name = ? AND c.name = ?
+            """,
+            ESQUEMA,
+            TABLA_TENANTS,
+            COLUMNA_CODIGO,
+        )
+        fila = cur.fetchone()
+        if not fila:
+            print(f"  no se encontró la columna (¿otro nombre, u otro esquema?)")
+        else:
+            tipo, max_length = str(fila[0]), int(fila[1])
+            # `max_length` viene en BYTES. En nvarchar/nchar cada carácter son
+            # dos, así que el ancho útil es la mitad; -1 es MAX (sin tope real).
+            if max_length == -1:
+                declarado = None
+                print(f"  {COLUMNA_CODIGO} es {tipo}(MAX): no hay tope, no puede truncar")
+                veredicto_cabe = True
+            else:
+                declarado = max_length // 2 if tipo.lower().startswith("n") else max_length
+                print(f"  declarada: {tipo}({declarado}) caracteres")
+    except Exception as exc:
+        print(f"  no se pudo leer la columna: {exc}")
+
+    if cuerpo_leido and declarado is not None:
+        forma = evaluar_ancho(cuerpo)
+        sep, dig = forma["separador"], forma["digitos"]
+        if sep is None or dig is None:
+            print("\n  No se reconoció cómo arma el SP el código; no se opina.")
+            print("  Léelo a mano en las líneas de la sección 2.")
+        else:
+            usado = prefijo_activo if prefijo_activo else "NEX"
+            de_donde = "la fila activa" if prefijo_activo else "la propuesta (no hay fila activa)"
+            necesario = largo_necesario(usado, sep, dig)
+            ejemplo = f"{usado}{sep}{'0' * (dig - 1)}1"
+            print(f"\n  separador entre prefijo y consecutivo: {sep!r}")
+            print(f"  dígitos del consecutivo:                {dig}")
+            print(f"  prefijo:                                {usado!r}  (de {de_donde})")
+            print(f"  código que saldría:                     {ejemplo}  -> {necesario} caracteres")
+            veredicto_cabe = necesario <= declarado
+            if veredicto_cabe:
+                print(f"\n  OK    {necesario} <= {declarado}: cabe completo.")
+            else:
+                print(f"\n  OJO   {necesario} > {declarado}: SE TRUNCA a {ejemplo[:declarado]!r}.")
+                print(f"        Haría falta {COLUMNA_CODIGO} de al menos {necesario}")
+                print(f"        (o un prefijo de {declarado - len(sep) - dig} letras, o un dígito menos).")
+
+        # El síntoma del truncamiento depende de esto: sin índice único, dos
+        # tenants distintos pueden quedar con el MISMO código y nadie se
+        # entera; con índice único, el insert revienta. Malo en los dos casos,
+        # pero se diagnostican distinto, así que conviene saber cuál toca.
+        if veredicto_cabe is False:
+            try:
+                cur.execute(
+                    """
+                    SELECT i.name, i.is_unique
+                    FROM sys.indexes i
+                    JOIN sys.index_columns ic ON ic.object_id = i.object_id
+                                             AND ic.index_id = i.index_id
+                    JOIN sys.columns c ON c.object_id = ic.object_id
+                                      AND c.column_id = ic.column_id
+                    JOIN sys.tables t ON t.object_id = i.object_id
+                    WHERE SCHEMA_NAME(t.schema_id) = ? AND t.name = ? AND c.name = ?
+                    """,
+                    ESQUEMA,
+                    TABLA_TENANTS,
+                    COLUMNA_CODIGO,
+                )
+                indices = cur.fetchall()
+                unicos = [i for i in indices if i[1]]
+                if unicos:
+                    print(f"\n        Hay índice ÚNICO ({unicos[0][0]}): al truncarse, el segundo")
+                    print("        tenant del mismo bloque va a FALLAR al insertarse.")
+                else:
+                    print("\n        NO hay índice único en esa columna: los códigos truncados")
+                    print("        se van a repetir en silencio, sin error.")
+            except Exception as exc:
+                print(f"\n        (no se pudo revisar si hay índice único: {exc})")
+
+        print("\n  --- líneas del SP donde se arma el código ---")
+        for n, linea in _lineas_con(cuerpo, r"@code|tenantCode|RIGHT\s*\("):
+            print(f"  {n:>4} | {linea}")
+
     conexion.close()
 
     # ── Veredicto ────────────────────────────────────────────────────────────
@@ -271,16 +485,36 @@ def main() -> int:
     if not cuerpo_leido:
         print("  INDETERMINADO — no se pudo leer el cuerpo del SP.")
         return 2
-    if veredicto_lee_tabla and veredicto_sin_literal:
-        print("  PARECE QUE SÍ: el SP lee la tabla, filtra por la fila activa y no")
-        print("  se le encontró ningún prefijo escrito en el código.")
-        print("  Confírmalo leyendo las líneas de arriba antes de marcarlo ✅.")
+
+    # Son DOS preguntas distintas y se contestan por separado: una puede estar
+    # resuelta y la otra no, y juntarlas en un solo sí/no esconde cuál falta.
+    prefijo_ok = veredicto_lee_tabla and veredicto_sin_literal
+    print("  A · ¿el SP saca prefix y lastSequence de la tabla activa?")
+    if prefijo_ok:
+        print("      PARECE QUE SÍ: lee la tabla, filtra por isActive y no le quedó")
+        print("      ningún prefijo escrito en el código.")
+    else:
+        print("      PARECE QUE TODAVÍA NO:")
+        if not veredicto_lee_tabla:
+            print("       - no lee la configuración de la tabla como se pidió")
+        if not veredicto_sin_literal:
+            print("       - todavía hay un prefijo escrito en el cuerpo del SP")
+
+    print()
+    print(f"  B · ¿el código completo cabe en {COLUMNA_CODIGO} sin truncarse?")
+    if veredicto_cabe is None:
+        print("      INDETERMINADO — no se pudo medir (ver la sección 4).")
+    elif veredicto_cabe:
+        print("      SÍ: el código que arma el SP cabe completo con el prefijo vigente.")
+    else:
+        print("      NO: SE TRUNCA. Es el más grave de los dos — no da error, y deja")
+        print("      códigos recortados que pueden repetirse entre tenants distintos.")
+
+    print("\n  Confírmalo leyendo las líneas del SP de arriba antes de marcar nada ✅.")
+    if prefijo_ok and veredicto_cabe:
         return 0
-    print("  PARECE QUE TODAVÍA NO. Lo que falta, según lo de arriba:")
-    if not veredicto_lee_tabla:
-        print("   - no lee la configuración de la tabla como se pidió")
-    if not veredicto_sin_literal:
-        print("   - todavía hay un prefijo escrito en el cuerpo del SP")
+    if veredicto_cabe is None:
+        return 2
     return 1
 
 
