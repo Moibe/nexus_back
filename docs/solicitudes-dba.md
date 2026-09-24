@@ -40,6 +40,7 @@ del otro. La verificación es siempre desde la app, no desde SSMS.
 | 4 | Las secciones **2.6** y **2.7** del diccionario | Esto no es un SP, es una **plática de diseño** — conviene cuando ya haya confianza en el trato y él tenga contexto de lo anterior | Que quede acordado dónde vive el mapeo | ⬜ |
 | 5 | Lectura de la **configuración activa** de un tipo documental | Depende de que exista lo de 2.6, porque incluye el mapeo | `servicios/ia.py` puede traducir nombres de Document AI a `field_definition_id` | ⬜ |
 | 6 | **SP transaccional** de guardado de corrida completa | El más grande y el que más decisiones de forma tiene. Con todo lo anterior andando, ya se le puede plantear con datos reales en la mano | Una extracción de INE queda guardada entera o no queda | ⬜ |
+| 7 | **API keys de cliente** (sección 5) | Va al final porque no bloquea nada de lo anterior y el front ya funciona con su maqueta. Pero es lo único que falta para que la API pueda tener clientes que NO sean nuestro propio front | Que `verificar_api_keys.py` deje de recibir la búsqueda de mentiras y consulte la base de verdad | ⬜ |
 
 **Consecuencia de los SPs de tenant para lo que sigue:** `[security].[tenants]`
 tiene **dos** identificadores — `tenantId int IDENTITY` (interno) y
@@ -814,3 +815,100 @@ poder escribir y leer de `file`:
 
 **Lo que NO se le está pidiendo**: guardar el archivo en la base (ni `varbinary`
 ni FILESTREAM). Los bytes van al NAS y la base guarda la referencia.
+
+---
+
+## 5. API keys de cliente (2026-09-24)
+
+El front ya tiene el módulo "API Key" completo: se emiten, se listan, se
+revocan y se muestran con su estado. **Todo eso vive hoy en el `localStorage`
+del navegador**, o sea que no es real — cada quien ve las suyas, no autentican
+nada, y se pierden al limpiar el navegador. Esta sección es lo que hace falta
+para que dejen de ser una maqueta.
+
+Ojo con la confusión fácil: esto **no** es la `NEXUS_API_KEY` del `.env`. Esa
+es UNA llave compartida entre el front y esta API, de servicio a servicio, y
+se queda como está (`seguridad.py`). Estas son muchas, las emite un usuario
+para que un TERCERO le pegue a NexusDoc, y cada una se revoca o vence por su
+cuenta.
+
+### Lo que hay que poder representar
+
+Una llave emitida, con:
+
+| Dato | Para qué | Nota |
+|---|---|---|
+| identificador público | buscar la fila **por índice** al validar, y nombrarla en el listado | 4 caracteres `[A-Za-z0-9]`, único. Viaja DENTRO de la llave, no es secreto |
+| hash del secret | lo único que permite verificar | SHA-256 en hex, 64 caracteres. **El secret NUNCA se guarda** |
+| nombre y descripción | que el dueño sepa cuál es cuál | los captura el usuario |
+| creada en | se muestra en el listado | |
+| expira en | la llave deja de servir sola | el usuario elige 1, 7, 30 o 90 días |
+| revocada en | matar una llave antes de que venza | nulo mientras viva |
+| tenant | a quién pertenece | el `tenantGuid`, como el resto |
+
+**Por qué el estado no es una columna**: "activa / expirada / revocada" se
+CALCULA. Una llave guardada como "activa" lo seguiría diciendo para siempre,
+porque nada la vuelve a tocar después de emitirla. Lo único que se persiste es
+la revocación, que es un hecho y no un cálculo.
+
+**Por qué SHA-256 pelón y no bcrypt/argon2**, que es la pregunta obligada al
+ver un hash: esos existen para defender contraseñas humanas, que tienen poca
+entropía y se atacan por diccionario. El secret aquí son 155 bits aleatorios
+(26 caracteres base62), así que no hay diccionario que sirva y un hash lento
+solo costaría latencia en cada request.
+
+### Lo que hay que poder pedirle a la base
+
+Cuatro operaciones. Nombres tentativos: lo que importa es la entrada y la
+salida.
+
+| Operación | Entrada | Salida | Quién la usa |
+|---|---|---|---|
+| emitir | tenant, identificador, hash, nombre, descripción, expira en | la fila creada | el alta del módulo "API Key" |
+| **buscar por identificador** | el identificador público (4 chars) | hash, revocada en, expira en | `seguridad_llaves.verificar()`, en CADA request autenticado |
+| listar | tenant | una fila por llave, **sin el hash** | el listado del módulo |
+| revocar | tenant, identificador | si se revocó | el menú `⋮` del listado |
+
+**La segunda es la que importa para el rendimiento**: corre en cada petición
+que traiga una llave, así que el identificador necesita índice único. Todo lo
+demás pasa una vez por pantalla.
+
+**La tercera no debe devolver el hash.** No es paranoia: si el listado lo
+trae, viaja por la red y acaba en el navegador, donde cualquiera lo lee desde
+la consola. Con el hash y tiempo, se puede intentar adivinar el secret sin que
+el servidor se entere de los intentos.
+
+### Cómo se verifica una llave (ya está escrito y probado)
+
+La lógica NO depende de la base y ya vive en `seguridad_llaves.py`, con sus 20
+casos en `verificar_api_keys.py`. Lo único que le falta es la segunda
+operación de la tabla de arriba — hoy recibe la función de búsqueda como
+parámetro, precisamente para no inventar un nombre de SP antes de tiempo.
+
+El orden va de más barato a más caro, y los tres primeros pasos descartan
+basura sin tocar la base:
+
+1. Forma y checksum del formato. Sin base de datos.
+2. Sacar el identificador y traer ESA fila por índice.
+3. Comparar el hash **en tiempo constante** (`hmac.compare_digest`).
+4. Rechazar si `revocada_en` no es nulo.
+5. Rechazar si `expira_en` ya pasó.
+
+Los cinco devuelven el mismo 401 genérico al cliente: decir "existe pero está
+revocada" le confirma a quien anda probando llaves que acertó una. El motivo
+real va al log.
+
+### Lo que NO se le está pidiendo
+
+- **Que la base genere las llaves.** El formato es del producto
+  (`nxdoc_live_<id>_sk_<aleatorio><checksum>`) y está especificado en el repo
+  del front, en `src/lib/apiKeys/formato.ts`, espejado aquí en
+  `seguridad_llaves.py`. La base recibe el identificador y el hash ya hechos.
+- **Que la base sepa de estados.** Solo guarda las dos fechas; el estado se
+  deriva.
+- **Registro de uso** (último acceso, conteo de llamadas). Va a hacer falta —
+  el diseño del front ya tiene un renglón "Métricas" esperándolo, y el listado
+  dice "Revocada el" donde el diseño pedía "Último uso" justamente porque ese
+  dato no existe. Pero es otra plática: mide, no autentica, y escribir en cada
+  request tiene su propio costo.
+
