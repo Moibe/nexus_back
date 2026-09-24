@@ -16,6 +16,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from config import MAX_SUBIDA_BYTES, MAX_SUBIDA_MB
 from errores import ErrorDocumentAI
 from servicios import ia
+from servicios.subidas import MIME_SOPORTADOS, SubidaInvalida, revisar_tamano, revisar_tipo
 
 logger = logging.getLogger(__name__)
 
@@ -60,17 +61,13 @@ async def _leer_subida(archivo: UploadFile) -> bytes:
     exactamente los mismos guardias: duplicarlos era garantía de que un día
     divergieran y un endpoint aceptara lo que el otro rechaza.
     """
-    # `content_type` puede traer parámetros ("image/jpeg; charset=binary"), así
-    # que se compara solo el tipo/subtipo en minúsculas.
-    tipo = (archivo.content_type or "").split(";")[0].strip().lower()
-    if tipo not in MIME_SOPORTADOS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"Document AI no procesa '{tipo or 'desconocido'}'. "
-                f"Formatos aceptados: {', '.join(sorted(MIME_SOPORTADOS))}."
-            ),
-        )
+    # La política —qué formatos y qué tope— vive en `servicios/subidas.py`
+    # desde el 2026-09-24, para que `/archivos/` exija exactamente lo mismo.
+    # Aquí solo se traduce a HTTP.
+    try:
+        revisar_tipo(archivo.content_type)
+    except SubidaInvalida as invalida:
+        raise HTTPException(status_code=invalida.http_status, detail=invalida.mensaje)
 
     # Respaldo del tope global de app.py, que mide `Content-Length`: una subida
     # con `Transfer-Encoding: chunked` no manda ese header y se le cuela.
@@ -83,11 +80,10 @@ async def _leer_subida(archivo: UploadFile) -> bytes:
     # Lo que esto NO evita: Starlette ya escribió el cuerpo completo en un
     # temporal en disco antes de que este handler corra su primera línea.
     # Taparlo exigiría contar bytes en el middleware conforme llegan.
-    if archivo.size is not None and archivo.size > MAX_SUBIDA_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"La imagen excede el límite de {MAX_SUBIDA_MB:g} MB.",
-        )
+    try:
+        revisar_tamano(archivo.size)
+    except SubidaInvalida as invalida:
+        raise HTTPException(status_code=invalida.http_status, detail=invalida.mensaje)
 
     contenido = await archivo.read()
     if not contenido:
@@ -126,24 +122,9 @@ def _fallar(exc: Exception, generico: str) -> HTTPException:
         )
     return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=generico)
 
-# Los tipos que Document AI acepta en `rawDocument.mimeType`. NO es una lista
-# arbitraria nuestra: es la del proveedor, y mandar algo fuera de ella se
-# traduce en un 400 de Google que llegaría aquí disfrazado de 502.
-#
-# DOCX y XLSX quedan FUERA a propósito aunque la bandeja del front los admita:
-# Document AI no los procesa. Se rechazan aquí con un mensaje que lo dice, en
-# vez de dejar que fallen más adentro con un error del proveedor.
-MIME_SOPORTADOS = frozenset(
-    {
-        "application/pdf",
-        "image/jpeg",
-        "image/png",
-        "image/tiff",
-        "image/gif",
-        "image/bmp",
-        "image/webp",
-    }
-)
+# `MIME_SOPORTADOS` se importa de `servicios.subidas` (ver el import de arriba):
+# la misma lista la exige `/archivos/`, y tenerla en dos lados garantizaba que un
+# día divergieran.
 
 
 @router.post(
@@ -242,20 +223,14 @@ async def extraer_generico(
     ),
 )
 async def clasificar(archivo: UploadFile = File(...)):
-    tipo = (archivo.content_type or "").split(";")[0].strip().lower()
-    if tipo not in MIME_SOPORTADOS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"Document AI no procesa '{tipo or 'desconocido'}'. "
-                f"Formatos aceptados: {', '.join(sorted(MIME_SOPORTADOS))}."
-            ),
-        )
-    if archivo.size is not None and archivo.size > MAX_SUBIDA_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"El archivo excede el límite de {MAX_SUBIDA_MB:g} MB.",
-        )
+    # Tercera copia que había de los mismos guardias, y ya había divergido: esta
+    # decía "El archivo excede" y `_leer_subida` "La imagen excede". Ahora las
+    # tres puertas usan la misma política de `servicios/subidas.py`.
+    try:
+        revisar_tipo(archivo.content_type)
+        revisar_tamano(archivo.size, "El archivo")
+    except SubidaInvalida as invalida:
+        raise HTTPException(status_code=invalida.http_status, detail=invalida.mensaje)
 
     contenido = await archivo.read()
     if not contenido:
