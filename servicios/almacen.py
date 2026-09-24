@@ -32,6 +32,36 @@ llamarse `.jpg` y `.jpeg`.
     subió, y quien mire el almacén sabe que existe), y volvería imposible
     borrar o poner cuota por tenant. Se prefiere gastar disco.
 
+## Qué es un tenant aquí (decidido el 2026-09-24)
+
+**Un tenant por CLIENTE**, y **CSI es superadmin, no un cliente más**. De ahí
+salen dos consecuencias que conviene tener presentes antes de tocar este
+módulo:
+
+1. **El prefijo separa clientes, y esa separación es el límite de privacidad.**
+   La deduplicación por prefijo deja de ser un detalle de eficiencia y pasa a
+   ser la garantía de que los documentos de un cliente no se mezclan con los de
+   otro. Cambiar la granularidad después NO es un refactor: es mover archivos.
+
+2. **Superadmin NO es un prefijo con permisos especiales.** Este módulo no sabe
+   de roles: valida un identificador y escribe. Que CSI pueda mirar lo de todos
+   se resuelve ARRIBA —llamando con el prefijo que toque— y nunca aquí. No
+   agregar un tenant "csi" que signifique "todos": sería exactamente la fuga
+   que la separación por prefijo existe para evitar.
+
+**El material de configuración es aparte.** Los documentos de ejemplo del
+asistente no son de ningún cliente: son de CSI configurando un tipo documental,
+y su procesador vive en el GCP de CSI. Van bajo un prefijo de operador
+(`csi`), separado de los prefijos de cliente. Es la razón por la que el front
+puede empezar a subir ejemplos sin que exista todavía un solo tenant en la
+base.
+
+**El prefijo NO tiene que ser el identificador del tenant.** La base guarda la
+ruta RELATIVA, así que basta una columna de mapeo: hoy puede ser un slug que
+asigna la aplicación y mañana el GUID que devuelva `uspCreateTenant`, sin mover
+un byte. Lo que sí es irreversible es la GRANULARIDAD, y esa ya quedó decidida
+arriba.
+
 ## Lo que este módulo NO resuelve, y hay que saberlo antes de usarlo
 
 `borrar` quita el objeto sin preguntar a nadie. Con deduplicación eso es
