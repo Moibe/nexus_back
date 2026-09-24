@@ -212,14 +212,6 @@ app.include_router(
     procesadores_router, prefix="/procesadores", dependencies=[Depends(exigir_llave)]
 )
 
-# Archivos SÍ se registra siempre, a diferencia de Documentos: no depende de la
-# base, solo del almacén. Si `ALMACEN_RUTA` está vacía el endpoint responde un
-# 503 que NOMBRA la variable que falta — más útil que esconder la ruta y dejar
-# a quien la busca preguntándose si existe.
-from routers.archivos import router as archivos_router  # noqa: E402
-
-app.include_router(archivos_router, prefix="/archivos", dependencies=[Depends(exigir_llave)])
-
 # El grupo Documentos se registra solo si hay una base configurada.
 #
 # Mientras el DBA no entregue SQL Server, publicar esos endpoints sería publicar
