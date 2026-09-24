@@ -165,6 +165,34 @@ def main() -> int:
             (RAIZ / "csi").exists() and (RAIZ / "cli-acme").exists(),
         )
 
+    titulo("7 · Leer de vuelta lo que se guardó")
+    r5 = cliente.get(
+        f"/archivos/{cuerpo['rutaRelativa']}", params={"mime": "image/png"}, headers=CABECERAS
+    )
+    rev("responde 200", r5.status_code == 200, f"status={r5.status_code} {r5.text[:120]}")
+    rev("devuelve los bytes EXACTOS", r5.content == PNG)
+    rev("con el Content-Type pedido", r5.headers.get("content-type", "").startswith("image/png"))
+    rev(
+        "y se puede cachear para siempre (el nombre ES el hash)",
+        "immutable" in r5.headers.get("cache-control", ""),
+        r5.headers.get("cache-control", ""),
+    )
+
+    r6 = cliente.get(
+        f"/archivos/{cuerpo['rutaRelativa']}", params={"mime": "text/html"}, headers=CABECERAS
+    )
+    rev(
+        "un MIME fuera de la lista se rechaza (si no, sería un XSS desde nuestro origen)",
+        r6.status_code == 400,
+        f"status={r6.status_code}",
+    )
+
+    r7 = cliente.get("/archivos/csi/00/00/" + "0" * 64, params={"mime": "image/png"}, headers=CABECERAS)
+    rev("un objeto que no existe da 404, no 503", r7.status_code == 404, f"status={r7.status_code}")
+
+    r8 = cliente.get(f"/archivos/{cuerpo['rutaRelativa']}", params={"mime": "image/png"})
+    rev("y sin llave tampoco se lee", r8.status_code == 401, f"status={r8.status_code}")
+
     print()
     print("=" * 72)
     print(f"{fallos} FALLARON" if fallos else "todas las comprobaciones pasaron")

@@ -46,11 +46,18 @@ documentos de ejemplo, que van bajo el prefijo de operador.
 
 import logging
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import Response
 
 from servicios import almacen
 from servicios.almacen import ErrorAlmacen
-from servicios.subidas import SubidaInvalida, normalizar_tipo, revisar_tamano, revisar_tipo
+from servicios.subidas import (
+    MIME_SOPORTADOS,
+    SubidaInvalida,
+    normalizar_tipo,
+    revisar_tamano,
+    revisar_tipo,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -146,3 +153,76 @@ def subir_archivo(
         "mime": normalizar_tipo(archivo.content_type),
         "nombreOriginal": archivo.filename or "",
     }
+
+
+@router.get(
+    "/{ruta:path}",
+    tags=["Archivos"],
+    summary="Leer un archivo del almacén",
+    description=(
+        "Devuelve los bytes guardados en esa ruta relativa. El `mime` viaja como "
+        "parámetro porque el almacén NO lo guarda: en disco los objetos no tienen "
+        "extensión, y el tipo vive en la base (o, mientras no exista la tabla, en "
+        "el catálogo de quien subió)."
+    ),
+)
+def leer_archivo(
+    ruta: str,
+    mime: str = Query(
+        "application/octet-stream",
+        description="Con qué Content-Type devolverlo. Debe ser uno de los soportados.",
+    ),
+):
+    # El `mime` lo manda el cliente, así que NO se devuelve tal cual: se valida
+    # contra la misma lista blanca de la subida. Sin esto, cualquiera podría
+    # pedir un objeto y hacer que el navegador lo interprete como `text/html`,
+    # que es un XSS servido desde nuestro propio origen.
+    limpio = normalizar_tipo(mime)
+    if limpio not in MIME_SOPORTADOS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"MIME no permitido para lectura: '{limpio or 'desconocido'}'.",
+        )
+
+    if not almacen.esta_configurado():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "El almacén de documentos no está configurado en este servidor. "
+                "Falta la variable ALMACEN_RUTA."
+            ),
+        )
+
+    # `almacen.leer` levanta `ErrorAlmacen` tanto si el archivo no está como si
+    # el disco falló, y eso aquí NO da igual: lo primero es un 404 definitivo y
+    # lo segundo un 503 que sí vale reintentar. Se distinguen con `existe()`,
+    # que es un `stat` y no trae el contenido a memoria.
+    try:
+        presente = almacen.existe(ruta)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if not presente:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Ese archivo no está en el almacén."
+        )
+
+    try:
+        contenido = almacen.leer(ruta)
+    except ValueError as exc:
+        # Ruta mal formada o que intenta salirse de la raíz. `almacen` ya valida
+        # eso con su doble cinturón; aquí solo se traduce.
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ErrorAlmacen as exc:
+        logger.exception("Falló la lectura del almacén (ruta=%s)", ruta)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo leer el archivo. Intenta de nuevo en unos minutos.",
+        ) from exc
+
+    # Inmutable por definición: el nombre del objeto ES el hash de su contenido,
+    # así que una ruta nunca cambia de bytes. Se puede cachear para siempre.
+    return Response(
+        content=contenido,
+        media_type=limpio,
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
