@@ -687,8 +687,11 @@ falta `@ExpedienteId`, que en el modelo es NOT NULL. Corregir al pedirlo.
 
 ### Pendientes de definir
 
-- Alta de expediente (`file.expediente_id` es NOT NULL, así que algo tiene que
-  crearlo antes de la primera carga — o existe un expediente de entrada).
+- ~~Alta de expediente~~ **DECIDIDO el 2026-09-24: expediente de ENTRADA
+  implícito, uno por tenant.** Ver la sección 4. Se eligió sobre "exigir el
+  expediente en cada carga" porque esto último obliga a un tercero a conocer la
+  estructura interna de NexusDoc antes de poder mandar un archivo, y eso mata a
+  la API como puerta de integración.
 - Guardado de una corrida completa: `ocr_result` + sus `ocr_block` +
   `extraction_run` + sus `entity_fact`, idealmente en **un solo SP
   transaccional** para que no queden corridas a medias.
@@ -703,6 +706,75 @@ falta `@ExpedienteId`, que en el modelo es NOT NULL. Corregir al pedirlo.
 - Lectura de la configuración activa de un tipo documental: `config_version`
   activa + sus `field_definition` + el mapeo de 2.6, que es lo que
   `servicios/ia.py` necesita para traducir la salida del motor.
+
+---
+
+## 4. LO QUE SE LE PIDE AHORA (2026-09-24) — listo para enviar
+
+Tres cosas, en este orden de urgencia. Las dos primeras desbloquean la subida
+de archivos; la tercera es un `ALTER` que ya no puede esperar.
+
+### 4.1 · Un expediente de ENTRADA por tenant
+
+**Decisión de producto tomada (Moibe, 2026-09-24):** no se le va a pedir al que
+sube que diga a qué expediente pertenece el archivo. Cada tenant tiene **un
+expediente de entrada**, y ahí caen las cargas sueltas; reasignarlas a un
+expediente real es un paso posterior del flujo, no un requisito para recibir.
+
+El motivo es la API: exigir el expediente obligaría a un sistema externo a
+conocer la estructura interna de NexusDoc antes de poder mandar un archivo.
+
+Lo que la aplicación necesita poder llamar:
+
+> **`[security].[uspGetOrCreateInboxExpediente] @tenantGuid uniqueidentifier`**
+> — devuelve el `expedienteId` del expediente de entrada de ese tenant,
+> creándolo si es la primera vez. Idempotente: llamarlo mil veces devuelve
+> siempre el mismo y no crea mil expedientes.
+
+**Pregunta para Charlie:** ¿prefiere que ese expediente lo cree
+`uspCreateTenant` de una vez, junto con el tenant? Nos da igual dónde viva la
+creación mientras exista un solo lugar al que pedirlo. Lo que NO queremos es
+que la aplicación tenga que decidir si crearlo.
+
+### 4.2 · Alta de `file`
+
+El contrato de qué campos y por qué está en la **sección 3** — llevárselo tal
+cual. Sobre la firma:
+
+> **`[security].[uspCreateFile]`** con `@tenantGuid uniqueidentifier`,
+> `@expedienteId`, `@relativeUri` (~140 chars), `@sha256` (64 hex),
+> `@sizeBytes`, `@mimeType`, `@originalName`, `@ingestionChannel`.
+> Devuelve el `fileId` creado.
+
+⚠️ **No reutilizar el placeholder `dbo.sp_RegistrarDocumento`.** Tiene tres
+defectos y usarlo de borrador escribe filas que habrá que tirar: registra un
+`document` cuando el modelo pide un `file`, le falta `@ExpedienteId` que es NOT
+NULL, y va en convención `dbo`/español cuando la real es `[security].[usp*]`
+con parámetros camelCase.
+
+`ingestion_channel` ya contempla `api` en su enum del diccionario, así que no
+hay que pedir que se agregue nada para distinguir la subida por API.
+
+**Las dos preguntas de diseño** (unicidad de `(tenant, sha256)` y si la baja
+devuelve cuántas referencias quedan) están redactadas al final de la sección 3.
+La segunda no es burocracia: sin saber si quedan referencias, la aplicación no
+puede borrar NUNCA con seguridad, porque el almacén deduplica por contenido.
+
+### 4.3 · `tenantCode` se trunca — y ya no es teórico
+
+Está descrito en la **sección 0**. Lo que cambió el 2026-09-24: se decidió
+**un tenant por CLIENTE** (ver el docstring de `servicios/almacen.py`). Antes,
+con un solo tenant para todo CSI, el truncamiento era un problema que aparecía
+en el tenant 99,999 — o sea nunca. Ahora aparece en **el segundo cliente**.
+
+Si el SP arma el código como `prefix + '-' + 5 dígitos` y el prefijo es `NEX`,
+son 9 caracteres en un `varchar(8)`: SQL Server los trunca en silencio y cada
+bloque de diez clientes comparte código. Se pide `varchar(11)` — 11 y no 9,
+para que quepa cualquier prefijo válido (`varchar(5)`) sin volver a tocar el
+esquema.
+
+**Es puerta de una sola dirección:** hay que resolverlo ANTES de que exista el
+primer cliente de verdad, no después.
 
 ---
 
