@@ -116,8 +116,14 @@ def evaluar_cuerpo(cuerpo: str) -> dict:
     literales += re.findall(r"'([A-Za-z]{2,5})'\s*\+", limpio)
 
     lee_tabla = re.search(TABLA, limpio, re.I) is not None
-    filtra_activa = re.search(r"isActive\s*=\s*1", limpio, re.I) is not None
-    lee_secuencia = re.search(r"lastSequence", limpio, re.I) is not None
+    # Los corchetes son OPCIONALES y no decorativos: Charlie escribe los
+    # identificadores delimitados (`[isActive] = 1`), y la primera versión de
+    # esto buscaba `isActive\s*=\s*1`, que el `]` de en medio rompe. Resultado:
+    # dio "TODAVÍA NO" sobre un SP que ya estaba correcto, el 2026-09-24. Es
+    # exactamente el falso negativo contra el que advierte el docstring —
+    # las líneas del SP decían lo contrario que el veredicto.
+    filtra_activa = re.search(r"\[?\s*isActive\s*\]?\s*=\s*1", limpio, re.I) is not None
+    lee_secuencia = re.search(r"\[?\s*lastSequence\s*\]?", limpio, re.I) is not None
     return {
         "lee_tabla": lee_tabla,
         "filtra_activa": filtra_activa,
@@ -196,6 +202,21 @@ _CASOS = [
      _NUEVO.replace("BEGIN", "BEGIN\n    -- antes: SET @prefix = 'NEX';"), True),
     ("nuevo + el viejo en /* bloque */",
      _NUEVO.replace("BEGIN", "BEGIN\n    /* viejo:\n       SET @prefix = 'NEX';\n    */"), True),
+    # El caso REAL de Charlie, que la primera versión no reconocía: todos los
+    # identificadores entre corchetes. Es el que produjo el falso negativo del
+    # 2026-09-24, así que se queda como caso fijo para que no vuelva.
+    ("nuevo, con identificadores entre corchetes",
+     """CREATE PROCEDURE [security].[uspCreateTenant] AS
+BEGIN
+    DECLARE @prefix VARCHAR(5), @sequenceNumber INT;
+    UPDATE TOP (1) [security].[tenantSequence] WITH (UPDLOCK, HOLDLOCK)
+       SET @prefix = [prefix],
+           @sequenceNumber = [lastSequence] + 1,
+           [lastSequence] = [lastSequence] + 1
+     WHERE [isActive] = 1;
+    IF @@ROWCOUNT = 0 THROW 50006, 'There is no active row in tenantSequence.', 1;
+    SET @tenantCode = @prefix + '-' + RIGHT('00000' + CAST(@sequenceNumber AS VARCHAR(5)), 5);
+END""", True),
 ]
 
 

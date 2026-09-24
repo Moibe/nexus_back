@@ -122,9 +122,18 @@ alcanza para saber cuál de los tres eslabones se rompió.
 
 ---
 
-## 0. PENDIENTE ABIERTO (2026-09-22): `tenantCode` se trunca
+## 0. ✅ RESUELTO (2026-09-24): `tenantCode` ya cabe
 
-> **`tenantCode varchar(8)` no alcanza si el código lleva separador.**
+> **Charlie ya lo amplió a `varchar(11)`, que es justo lo que se iba a pedir.**
+>
+> Y fue más allá: el SP trae una guarda propia —`IF LEN(@tenantCode) > 11 THROW
+> 50008`, comentada como `NEX-212`— para que si algún día la columna se angosta
+> otra vez por error, reviente en vez de truncar en silencio. Eso cubre el modo
+> de falla, no solo el síntoma.
+>
+> Queda abajo el análisis original, porque explica POR QUÉ 11 y no 9:
+>
+> **El problema que había: `tenantCode varchar(8)` no alcanzaba con separador.**
 >
 > El razonamiento del prefijo (sección 0a, más abajo) dio por hecho que el
 > código era `NEX00001`: 3 letras + 5 dígitos, **8 justos**. Pero si
@@ -166,8 +175,9 @@ alcanza para saber cuál de los tres eslabones se rompió.
 
 ## 0a. LO QUE SE LE LLEVA AHORA (2026-08-26)
 
-**Queda la siembra de `[security].[tenantSequence]`** — es lo único que sigue
-pendiente de esta ronda. El `GRANT VIEW DEFINITION` ya se confirmó
+**✅ La siembra de `[security].[tenantSequence]` ya está hecha** (Charlie,
+2026-08-31; comprobado desde la aplicación el 2026-09-24). Con eso esta ronda
+queda cerrada completa. El `GRANT VIEW DEFINITION` ya se confirmó
 (2026-08-31, ver abajo) y la pregunta del `tenantGuid` también quedó
 contestada.
 
@@ -224,7 +234,29 @@ hasta ahora eran deducción: cómo arma exactamente `tenantCode` a partir del
 `prefix`, qué status asigna por default, y qué escribe en `createdBy` cuando lo
 llama la aplicación.
 
-### ⬜ Pedido: que el SP lea el prefijo de la tabla, no del código
+### ✅ Confirmado: el SP lee el prefijo de la tabla, no del código
+
+> **Comprobado el 2026-09-24** corriendo `verificar_secuencia_tenant.py` en el
+> server. Lo que devolvió, textual:
+>
+> - La fila existe y es única: `prefix='NEX'`, `lastSequence=1`, `isActive=1`,
+>   creada por `PROCHURGRUPOCSI\carlos.ramirez` el 2026-08-31.
+> - El SP lee de la tabla, filtra por la fila activa y **no le quedó ningún
+>   prefijo escrito en el código**. Lo hace además de forma atómica:
+>   `UPDATE TOP (1) ... WITH (UPDLOCK, HOLDLOCK)` que en la misma sentencia lee
+>   `prefix`/`lastSequence` e incrementa el consecutivo, con
+>   `THROW 50006` si no hay fila activa.
+> - `tenantCode` está declarada **`varchar(11)`**, y el código que arma el SP
+>   (`NEX-00001`, 9 caracteres) **cabe completo**.
+>
+> ⚠️ **El verificador dio un falso negativo en esa corrida** y hay que saberlo:
+> reportó "todavía no lee la configuración" sobre un SP que sí la lee. Su
+> expresión regular buscaba `isActive = 1` sin contemplar los corchetes, y
+> Charlie escribe `[isActive] = 1`. Ya está arreglado, con el cuerpo real de su
+> SP como caso fijo de la autoprueba. Valió la advertencia que el propio script
+> trae impresa: **si el veredicto y las líneas del SP se contradicen, gana lo
+> que se lee.**
+
 
 Se le pidió que `[security].[uspCreateTenant]` obtenga `prefix` y
 `lastSequence` de `[security].[tenantSequence]`, de la fila con `isActive = 1`,
@@ -761,21 +793,11 @@ devuelve cuántas referencias quedan) están redactadas al final de la sección 
 La segunda no es burocracia: sin saber si quedan referencias, la aplicación no
 puede borrar NUNCA con seguridad, porque el almacén deduplica por contenido.
 
-### 4.3 · `tenantCode` se trunca — y ya no es teórico
+### 4.3 · ~~`tenantCode` se trunca~~ — YA ESTÁ HECHO
 
-Está descrito en la **sección 0**. Lo que cambió el 2026-09-24: se decidió
-**un tenant por CLIENTE** (ver el docstring de `servicios/almacen.py`). Antes,
-con un solo tenant para todo CSI, el truncamiento era un problema que aparecía
-en el tenant 99,999 — o sea nunca. Ahora aparece en **el segundo cliente**.
-
-Si el SP arma el código como `prefix + '-' + 5 dígitos` y el prefijo es `NEX`,
-son 9 caracteres en un `varchar(8)`: SQL Server los trunca en silencio y cada
-bloque de diez clientes comparte código. Se pide `varchar(11)` — 11 y no 9,
-para que quepa cualquier prefijo válido (`varchar(5)`) sin volver a tocar el
-esquema.
-
-**Es puerta de una sola dirección:** hay que resolverlo ANTES de que exista el
-primer cliente de verdad, no después.
+No pedir esto: Charlie ya amplió la columna a `varchar(11)` y le puso además una
+guarda que revienta si el código generado no cabe. Ver la sección 0. Se deja el
+renglón para que nadie lo vuelva a levantar de la lista vieja.
 
 ---
 
