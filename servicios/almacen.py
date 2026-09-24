@@ -129,6 +129,43 @@ def _raiz() -> Path:
     return Path(ALMACEN_RUTA)
 
 
+# El nombre del archivo que marca "esta carpeta ES el almacén".
+#
+# POR QUÉ HACE FALTA, desde que el destino es un recurso de red (2026-09-24, el
+# NAS //172.10.30.58/Nexus). Si el montaje se cae —un reinicio, un parpadeo de
+# red— el punto de montaje sigue existiendo como carpeta VACÍA del disco local.
+# Sin esta comprobación, `guardar()` haría `mkdir(parents=True)`, recrearía el
+# árbol ahí abajo y escribiría feliz en el disco equivocado. Cuando el NAS
+# vuelve, esos archivos quedan TAPADOS por el montaje: el catálogo apunta a
+# rutas que ya dan 404 y nadie se enteró en el momento.
+#
+# El centinela vive DENTRO del recurso compartido, así que solo se ve cuando el
+# montaje está de verdad arriba. Se crea una vez al dar de alta el almacén.
+CENTINELA = ".nexus-almacen"
+
+
+def raiz_montada() -> bool:
+    """Si la raíz del almacén es la de verdad y no un punto de montaje caído."""
+    if not ALMACEN_RUTA:
+        return False
+    try:
+        return (Path(ALMACEN_RUTA) / CENTINELA).exists()
+    except OSError:
+        # Un montaje colgado puede hacer que hasta el `stat` falle.
+        return False
+
+
+def _exigir_raiz_montada() -> None:
+    if not raiz_montada():
+        raise ErrorAlmacen(
+            f"El almacén no está disponible: no se encuentra '{CENTINELA}' en "
+            f"{ALMACEN_RUTA or '(sin configurar)'}. Si es un recurso de red, "
+            "probablemente el montaje se cayó. NO se escribe nada para no dejar "
+            "archivos en el disco local: revisa el montaje, y si es la primera "
+            f"vez, crea el centinela con `touch {ALMACEN_RUTA}/{CENTINELA}`."
+        )
+
+
 def _validar_hash(hash_hex: str) -> str:
     limpio = (hash_hex or "").strip().lower()
     if not _RE_HASH.match(limpio):
@@ -202,6 +239,8 @@ def guardar(tenant: str, contenido: bytes, hash_esperado: str | None = None) -> 
             f"{_validar_hash(hash_esperado)} y los bytes dan {hash_real}."
         )
 
+    _exigir_raiz_montada()
+
     relativa = ruta_relativa(tenant, hash_real)
     destino = _ruta_absoluta(relativa)
     temporal: Path | None = None
@@ -257,6 +296,11 @@ def leer(relativa: str) -> bytes:
     en cada lectura, y el nombre del objeto ya ES su hash, así que quien
     necesite comprobar integridad puede hacerlo sin ayuda de esta función.
     """
+    # También al LEER: sin esto, con el montaje caído toda lectura diría "no
+    # está en el almacén", que suena a dato perdido cuando el dato está bien y
+    # lo que falla es la red.
+    _exigir_raiz_montada()
+
     ruta = _ruta_absoluta(relativa)
     try:
         return ruta.read_bytes()

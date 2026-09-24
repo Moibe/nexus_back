@@ -38,10 +38,48 @@ import tempfile
 from pathlib import Path
 
 # ANTES del import de servicios.almacen — ver el docstring.
-RAIZ = Path(tempfile.mkdtemp(prefix="verificar-almacen-"))
+#
+# `--en <ruta>` corre las mismas comprobaciones DENTRO de esa ruta, en una
+# subcarpeta propia que se borra al terminar. Es la prueba de aceptación del
+# NAS: un recurso SMB no se comporta como disco local —el renombrado atómico,
+# el fsync y los permisos son otra historia— y esto lo contesta con datos en
+# vez de con suposiciones. Sin el argumento, todo pasa en un temporal del
+# sistema, como siempre.
+_ARG = None
+if "--en" in sys.argv:
+    i = sys.argv.index("--en")
+    if i + 1 >= len(sys.argv):
+        print("Falta la ruta después de --en.")
+        raise SystemExit(2)
+    _ARG = sys.argv[i + 1]
+
+if _ARG:
+    _base = Path(_ARG)
+    if not _base.is_dir():
+        print(f"No existe (o no es carpeta): {_base}")
+        print("Si es un montaje de red, revisa que esté montado ANTES de correr esto.")
+        raise SystemExit(2)
+    RAIZ = Path(tempfile.mkdtemp(prefix="verificar-almacen-", dir=str(_base)))
+    print(f"Corriendo DENTRO de {_base} — subcarpeta temporal: {RAIZ.name}")
+else:
+    RAIZ = Path(tempfile.mkdtemp(prefix="verificar-almacen-"))
 os.environ["ALMACEN_RUTA"] = str(RAIZ)
 
 from servicios import almacen  # noqa: E402
+
+# Dar de alta el almacén es crear su centinela. En el server se hace una sola
+# vez; aquí en cada corrida, porque la raíz es nueva.
+(RAIZ / almacen.CENTINELA).touch()
+
+
+def _error_de(fn):
+    """El error que levanta `fn`, para poder mirarle el mensaje."""
+    try:
+        fn()
+    except Exception as exc:  # noqa: BLE001
+        return exc
+    return None
+
 
 TENANT = "csi"
 OTRO_TENANT = "acme"
@@ -196,6 +234,31 @@ def main() -> int:
         "borrar en un tenant NO se llevó el objeto del otro",
         (RAIZ / ajeno["rutaRelativa"]).is_file(),
     )
+
+    print("\n[montaje caido: la raiz existe pero sin centinela]")
+    # El caso que de verdad importa con un NAS: el punto de montaje sigue ahí
+    # como carpeta vacía, y sin esto la aplicación escribiría en el disco local
+    # sin avisar — para que al volver el montaje esos archivos queden tapados.
+    _centinela = RAIZ / almacen.CENTINELA
+    _centinela.unlink()
+    try:
+        revisar("raiz_montada() responde False", almacen.raiz_montada() is False)
+        revisar_levanta(
+            "guardar se NIEGA en vez de escribir en el disco local",
+            almacen.ErrorAlmacen,
+            lambda: almacen.guardar(TENANT, b"no debe escribirse"),
+        )
+        revisar_levanta(
+            "leer tambien avisa, en vez de decir 'no esta'",
+            almacen.ErrorAlmacen,
+            lambda: almacen.leer(almacen.ruta_relativa(TENANT, "0" * 64)),
+        )
+        revisar(
+            "y el mensaje dice como darlo de alta",
+            "touch" in str(_error_de(lambda: almacen.guardar(TENANT, b"x"))),
+        )
+    finally:
+        _centinela.touch()
 
     print("\n[apagado: sin ALMACEN_RUTA]")
     # Se apaga a mano el valor ya importado. Es el estado real de hoy en

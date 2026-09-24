@@ -34,6 +34,12 @@ os.environ.setdefault("SQLSERVER_HOST", "")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app import app  # noqa: E402
+from servicios import almacen  # noqa: E402
+
+# Dar de alta el almacén es crear su centinela, igual que se hace una vez en el
+# server. Sin él, `guardar` se niega a escribir a propósito — es la defensa
+# contra un montaje de red caído. Ver `servicios/almacen.py`.
+(RAIZ / almacen.CENTINELA).touch()
 
 CABECERAS = {"X-API-Key": LLAVE}
 PNG = bytes.fromhex(
@@ -41,6 +47,13 @@ PNG = bytes.fromhex(
     "890000000a49444154789c6360000002000100ffff03000006000557bfabd400"
     "00000049454e44ae426082"
 )
+
+
+def _objetos():
+    """Lo que hay en el almacén, SIN contar el centinela — que no es un objeto
+    guardado sino la marca de que la carpeta es el almacén."""
+    return [p for p in RAIZ.rglob("*") if p.is_file() and p.name != almacen.CENTINELA]
+
 
 fallos = 0
 
@@ -81,8 +94,8 @@ def main() -> int:
     rev("sin X-API-Key responde 401", r.status_code == 401, f"status={r.status_code}")
     rev(
         "y no escribió nada",
-        not any(RAIZ.rglob("*")),
-        f"archivos={[str(p) for p in RAIZ.rglob('*')][:3]}",
+        not _objetos(),
+        f"archivos={[str(p) for p in _objetos()][:3]}",
     )
 
     titulo("2 · Lo que no se acepta, se rechaza antes de guardar")
@@ -103,7 +116,7 @@ def main() -> int:
 
     r = subir(cliente, sha="0" * 64)
     rev("un sha256 que no cuadra da 400", r.status_code == 400, f"status={r.status_code}")
-    rev("y no dejó el archivo a medias", not any(RAIZ.rglob("*")), "quedó basura en la raíz")
+    rev("y no dejó el archivo a medias", not _objetos(), "quedó basura en la raíz")
 
     titulo("3 · La subida buena")
     r = subir(cliente)
