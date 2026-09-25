@@ -285,19 +285,21 @@ propósito NO comparte redacción con `motivo`: es una falla del servicio, no de
 la calidad del documento, y disfrazarla de "hay que pedir otra foto" escondería
 un problema operativo real.
 
-## Almacén de documentos (construido, **apagado**)
+## Almacén de documentos (encendido en producción desde el 2026-09-25)
 
-`servicios/almacen.py` guarda los **bytes** de un archivo subido en disco. Está
-completo y verificado, pero **nadie lo llama todavía y eso es a propósito**: se
-adelantó para que el día que exista la tabla `file` en SQL Server los bytes y su
-registro puedan nacer juntos, sin diseñar esto con prisa. Mientras tanto Nexus se
-comporta exactamente igual que antes — el documento vive solo en la memoria del
-navegador y se pierde al refrescar.
+`servicios/almacen.py` guarda los **bytes** de un archivo subido en disco, y
+`routers/archivos.py` es su puerta: `POST /archivos/` para subir y
+`GET /archivos/{ruta}` para leer, los dos detrás de `X-API-Key`. Hoy lo usa el
+asistente de configuración del front para los documentos de ejemplo: el catálogo
+guarda un puntero (ruta relativa + sha256 + MIME) en vez de los bytes. La tabla
+`file` todavía no existe, así que nada de esto queda registrado en SQL Server —
+ver "Bytes primero, fila después" en el docstring del router.
 
-Cómo está apagado: `ALMACEN_RUTA` viene vacía en el `.env`, ningún router lo
-importa y `app.py` no lo registra. No hay endpoint que lo alcance.
+Con `ALMACEN_RUTA` vacía el almacén queda apagado: los dos endpoints responden
+503 y nada más cambia. Es un estado válido para una máquina de desarrollo que no
+lo necesite.
 
-**Dónde van a vivir los archivos.** En el NAS de infraestructura de CSI, montado
+**Dónde viven los archivos.** En el NAS de infraestructura de CSI, montado
 en el server, con esta forma dentro de la raíz:
 
 ```
@@ -317,28 +319,79 @@ documento en dos expedientes— apuntan al MISMO archivo. `almacen.borrar()` no
 consulta nada: borra. Quien lo llame tiene que haber comprobado **en la base** que
 ya no queda ninguna referencia. El módulo no tiene forma de saberlo.
 
-**Es síncrono.** Escribir en un NAS puede tardar, así que el endpoint que algún
-día lo use debe ser un `def` normal y **no** `async def`, para que FastAPI lo
-corra en su threadpool y no congele el event loop. Misma regla que ya aplica a
-`pyodbc` en este proyecto, por el mismo motivo.
+**Es síncrono.** Escribir en un NAS puede tardar, así que los endpoints de
+`routers/archivos.py` son `def` normales y **no** `async def`, para que FastAPI
+los corra en su threadpool y no congelen el event loop. Misma regla que ya
+aplica a `pyodbc` en este proyecto, por el mismo motivo. Quien agregue otro
+endpoint que toque el almacén tiene que seguirla.
 
-### Encenderlo (cuando toque)
+### Cómo está montado en el server
 
-1. Montar el NAS en el server y darle escritura al usuario de pm2.
-2. Llenar `ALMACEN_RUTA` en el `.env` (`/mnt/nas/nexus/documentos`) y reiniciar.
-3. Escribir el router/servicio que lo llame, guardando la ruta relativa en `file`.
+El recurso SMB `//172.10.30.58/Nexus` del NAS, montado por CIFS en `/mnt/nexus`.
+La raíz del almacén es una subcarpeta, para que el recurso pueda guardar otras
+cosas sin revolverse con el árbol de hashes:
+
+```
+ALMACEN_RUTA=/mnt/nexus/documentos        # en el .env del server
+```
+
+La línea de `/etc/fstab`:
+
+```
+//172.10.30.58/Nexus /mnt/nexus cifs credentials=/etc/nexus-nas.cred,uid=mbriseno,gid=mbriseno,file_mode=0660,dir_mode=0770,iocharset=utf8,_netdev,nofail 0 0
+```
+
+- `credentials=`: usuario, contraseña y dominio viven en `/etc/nexus-nas.cred`
+  (de root, `chmod 600`), **nunca** en este repo ni en el `fstab`. Se edita con
+  `sudo nano`: un heredoc dejaría la contraseña en el historial de bash.
+- `uid`/`gid`: SMB no conoce los usuarios de Linux; esto hace que todo aparezca
+  como de `mbriseno`, que es quien corre pm2.
+- `_netdev,nofail`: montar cuando ya hay red y, si el NAS no contesta al
+  arrancar, arrancar de todos modos. Sin `nofail` el server puede quedarse
+  colgado en el boot.
+
+**El centinela.** `/mnt/nexus/documentos/.nexus-almacen` es un archivo vacío que
+marca "esta carpeta ES el almacén". Si el montaje se cae, `/mnt/nexus` sigue ahí
+como carpeta vacía del disco local; sin el centinela el almacén escribiría en el
+disco equivocado y esos archivos quedarían tapados al volver el NAS. Con él,
+subir y leer responden 503 y no se escribe nada. **No lo borres.**
+
+**Si un día responde 503** con "no se encuentra '.nexus-almacen'":
+
+```bash
+mount | grep nexus          # ¿está montado?
+sudo mount -a               # remonta lo del fstab
+sudo dmesg | tail -5        # el motivo si no monta (error 13 = credenciales)
+```
+
+Hoy monta con una cuenta de dominio personal: cuando cambie esa contraseña, el
+siguiente remontaje falla con error 13. Se corrige editando el `.cred` y
+corriendo `sudo mount -a`. Está pendiente una cuenta de servicio de Soporte TI;
+cuando llegue, solo cambia ese archivo.
 
 ### Verificarlo
 
 ```bash
-venv/bin/python verificar_almacen.py
+venv/bin/python verificar_almacen.py                               # en un temporal
+venv/bin/python verificar_almacen.py --en /mnt/nexus/documentos    # DENTRO del NAS
+venv/bin/python verificar_subida.py                                # los endpoints
 ```
 
-Corre **offline** en una carpeta temporal que crea y borra él mismo: no necesita
-NAS, ni credenciales, ni red, y no toca nada real. Comprueba las tres cosas que
-fallarían en silencio: que la escritura sea atómica (temporal + `os.replace`, sin
-dejar `.tmp-*` tirados), que no haya dedup entre tenants, y que ninguna ruta pueda
-salir de la raíz.
+Sin argumentos corre **offline** en una carpeta temporal que crea y borra él
+mismo: no necesita NAS, ni credenciales, ni red, y no toca nada real. Comprueba
+lo que fallaría en silencio: que la escritura sea atómica (temporal +
+`os.replace`, sin dejar `.tmp-*` tirados), que no haya dedup entre tenants, que
+ninguna ruta pueda salir de la raíz, y que con el centinela ausente no se
+escriba ni se diga "no está" de lo que sí está.
+
+Con `--en <ruta>` corre lo mismo dentro de esa ruta, en una subcarpeta propia
+que borra al terminar. Es la prueba de aceptación de un montaje nuevo: un
+recurso SMB no se comporta como disco local (renombrado atómico, `fsync`,
+permisos), y esto lo contesta con datos. Pasó sobre el NAS el 2026-09-25.
+
+`verificar_subida.py` prueba `POST`/`GET /archivos/` en proceso con
+`TestClient`, también offline: llave, rechazos, idempotencia, separación por
+cliente, el MIME de lectura contra XSS, y el 503 con el montaje caído.
 
 ## Despliegue
 
