@@ -313,11 +313,20 @@ def leer(relativa: str) -> bytes:
 
 def existe(relativa: str) -> bool:
     """Si el objeto está. Útil para detectar filas de la base que apuntan a un
-    archivo que ya no existe, sin traerse su contenido a memoria."""
+    archivo que ya no existe, sin traerse su contenido a memoria.
+
+    "No lo puedo ver" NO es "no está". Con el montaje caído, o si el NAS no
+    contesta el `stat`, levanta `ErrorAlmacen` en vez de responder False. Justo
+    por el uso de arriba: una limpieza de filas huérfanas que corriera durante
+    un parpadeo de red daría por perdido el almacén COMPLETO.
+    """
+    _exigir_raiz_montada()
+
     try:
         return _ruta_absoluta(relativa).is_file()
-    except OSError:
-        return False
+    except OSError as exc:
+        logger.exception("No se pudo consultar el documento %s", relativa)
+        raise ErrorAlmacen(f"No se pudo consultar el documento: {exc}") from exc
 
 
 def borrar(relativa: str) -> bool:

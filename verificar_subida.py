@@ -206,6 +206,29 @@ def main() -> int:
     r8 = cliente.get(f"/archivos/{cuerpo['rutaRelativa']}", params={"mime": "image/png"})
     rev("y sin llave tampoco se lee", r8.status_code == 401, f"status={r8.status_code}")
 
+    titulo("8 · Con el montaje caído, 503 — nunca 404 ni escribir en el disco local")
+    # Así se ve un NAS caído desde el server: la carpeta de montaje sigue ahí,
+    # pero sin nada adentro. Quitar el centinela lo simula sin tocar la red.
+    centinela = RAIZ / almacen.CENTINELA
+    centinela.unlink()
+    try:
+        r9 = cliente.get(
+            f"/archivos/{cuerpo['rutaRelativa']}", params={"mime": "image/png"}, headers=CABECERAS
+        )
+        rev(
+            "leer lo que SÍ se guardó da 503 (reintentable), no 404 (perdido)",
+            r9.status_code == 503,
+            f"status={r9.status_code} {r9.text[:120]}",
+        )
+        rev("y el detalle no expone rutas del servidor", str(RAIZ) not in r9.text, r9.text[:160])
+
+        antes = len(_objetos())
+        r10 = subir(cliente, contenido=PNG + b"otro")
+        rev("subir da 503", r10.status_code == 503, f"status={r10.status_code} {r10.text[:120]}")
+        rev("y no escribió nada", len(_objetos()) == antes, f"{antes} -> {len(_objetos())}")
+    finally:
+        centinela.touch()
+
     print()
     print("=" * 72)
     print(f"{fallos} FALLARON" if fallos else "todas las comprobaciones pasaron")

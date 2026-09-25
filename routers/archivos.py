@@ -196,11 +196,18 @@ def leer_archivo(
     # `almacen.leer` levanta `ErrorAlmacen` tanto si el archivo no está como si
     # el disco falló, y eso aquí NO da igual: lo primero es un 404 definitivo y
     # lo segundo un 503 que sí vale reintentar. Se distinguen con `existe()`,
-    # que es un `stat` y no trae el contenido a memoria.
+    # que es un `stat` y no trae el contenido a memoria — y que con el montaje
+    # caído levanta en vez de decir "no está", para que eso sea 503 y no 404.
     try:
         presente = almacen.existe(ruta)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ErrorAlmacen as exc:
+        logger.exception("El almacén no está disponible para leer (ruta=%s)", ruta)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo leer el archivo. Intenta de nuevo en unos minutos.",
+        ) from exc
     if not presente:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Ese archivo no está en el almacén."

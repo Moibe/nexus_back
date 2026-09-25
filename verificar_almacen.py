@@ -253,6 +253,13 @@ def main() -> int:
             almacen.ErrorAlmacen,
             lambda: almacen.leer(almacen.ruta_relativa(TENANT, "0" * 64)),
         )
+        # Lo que vale de verdad: el objeto de otro tenant SÍ está en disco. Si
+        # esto dijera False, una limpieza de huérfanos lo daría por perdido.
+        revisar_levanta(
+            "existe() tampoco dice 'no esta' de lo que SI esta",
+            almacen.ErrorAlmacen,
+            lambda: almacen.existe(ajeno["rutaRelativa"]),
+        )
         revisar(
             "y el mensaje dice como darlo de alta",
             "touch" in str(_error_de(lambda: almacen.guardar(TENANT, b"x"))),
