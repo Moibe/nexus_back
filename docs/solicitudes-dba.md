@@ -750,7 +750,34 @@ de lo que ya está guardado. Desde el 2026-09-25 el almacén está encendido y
 recibiendo archivos **sin registro en la base**, así que esto dejó de ser
 preparación.
 
+### 4.0 · Lo que YA existe en la base (leído el 2026-09-29, no supuesto)
+
+Leído con `usrNexus`, solo consultas sobre `sys.*`. Charlie creó el esquema
+`[documents]` el 2026-09-22, así que **las tablas ya están — lo que falta son
+los SPs**. Sus nombres mandan sobre los de este documento:
+
+- El expediente es **`[documents].[cases]`** (`caseId` bigint, `caseGuid`,
+  `tenantId` int, `externalRef`, `caseStatusId`, `openedAt`, `closedAt`), con
+  `UNIQUE(tenantId, externalRef)` **filtrado**. Ese índice ya sirve para
+  garantizar UN expediente de entrada por tenant con un `externalRef`
+  reservado, aun con dos llamadas simultáneas.
+- **`[documents].[files]`**: `fileId` bigint, `fileGuid`, `tenantId` int NOT
+  NULL, `caseId` bigint NOT NULL, `ingestionChannelId` (FK a
+  `[reference].[ingestionChannels]`: `MANUAL, SCRIPT, SFTP, SHAREPOINT, API,
+  ART`), `storageUri` nvarchar(2048), `originalFileName` nvarchar(260),
+  `mimeType` varchar(100), `sizeBytes` bigint, `sha256` char(64), `pageCount`
+  int nulo, `receivedAt`. **No hay índice único por `(tenantId, sha256)`**: hoy
+  se permiten duplicados.
+- `[security].[tenants]` tiene **0 filas**.
+- `usrNexus` tiene EXECUTE, SELECT e INSERT sobre `[documents]`, pero **no**
+  `VIEW DEFINITION` (sobre `[security]` sí). Tampoco existen todavía las tablas
+  de configuración KIE (`few_shot_example` y compañía).
+
 ### 4.1 · Un expediente de ENTRADA por tenant
+
+> **Actualización 2026-09-29:** con los nombres reales sería
+> `[documents].[uspGetOrCreateInboxCase] @tenantGuid` → `caseId`, apoyado en el
+> `UNIQUE(tenantId, externalRef)` que ya existe. Ver 4.0.
 
 **Decisión de producto tomada (Moibe, 2026-09-24):** no se le va a pedir al que
 sube que diga a qué expediente pertenece el archivo. Cada tenant tiene **un
@@ -773,6 +800,13 @@ creación mientras exista un solo lugar al que pedirlo. Lo que NO queremos es
 que la aplicación tenga que decidir si crearlo.
 
 ### 4.2 · Alta de `file`
+
+> **Actualización 2026-09-29:** la tabla ya existe (`[documents].[files]`, ver
+> 4.0), así que el SP sería `[documents].[uspCreateFile]` con sus columnas:
+> `@tenantGuid`, `@caseId`, `@ingestionChannelCode`, `@storageUri` (RELATIVA,
+> aunque la columna se llame URI), `@originalFileName`, `@mimeType`,
+> `@sizeBytes`, `@sha256`, `@pageCount` opcional; devuelve `fileId` y
+> `fileGuid`. La firma original de abajo queda como referencia.
 
 El contrato de qué campos y por qué está en la **sección 3** — llevárselo tal
 cual. Sobre la firma:
