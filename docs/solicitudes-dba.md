@@ -742,10 +742,13 @@ falta `@ExpedienteId`, que en el modelo es NOT NULL. Corregir al pedirlo.
 
 ---
 
-## 4. LO QUE SE LE PIDE AHORA (2026-09-24) — listo para enviar
+## 4. LO QUE SE LE PIDE AHORA (2026-09-24, actualizado 2026-09-29) — listo para enviar
 
-Tres cosas, en este orden de urgencia. Las dos primeras desbloquean la subida
-de archivos; la tercera es un `ALTER` que ya no puede esperar.
+Las dos primeras desbloquean registrar cada archivo que llega al almacén; la
+tercera ya la resolvió Charlie; la cuarta salió después y bloquea el backfill
+de lo que ya está guardado. Desde el 2026-09-25 el almacén está encendido y
+recibiendo archivos **sin registro en la base**, así que esto dejó de ser
+preparación.
 
 ### 4.1 · Un expediente de ENTRADA por tenant
 
@@ -798,6 +801,42 @@ puede borrar NUNCA con seguridad, porque el almacén deduplica por contenido.
 No pedir esto: Charlie ya amplió la columna a `varchar(11)` y le puso además una
 guarda que revienta si el código generado no cabe. Ver la sección 0. Se deja el
 renglón para que nadie lo vuelva a levantar de la lista vieja.
+
+### 4.4 · Dónde se registran los ejemplos de configuración (agregado 2026-09-29)
+
+Salió al revisar el diccionario contra lo que ya está corriendo. El almacén
+está encendido desde el 2026-09-25 (NAS montado en el server), y **lo único que
+tiene guardado son documentos de ejemplo del asistente de configuración** —
+material de CSI configurando tipos documentales, bajo el prefijo de operador
+`csi`. No son de ningún cliente (ver el docstring de `servicios/almacen.py`).
+
+El choque: en el diccionario, `few_shot_example.file_id` es NOT NULL y apunta a
+`file` —"el ejemplo es un archivo real ingresado al sistema, no un binario
+aparte"—, y `file` exige tenant y expediente. Así que esos ejemplos necesitan
+una fila de `file` con un tenant y un expediente que hoy no existen. Sin
+resolver esto, el paso 7 (escribir la fila y hacer backfill) no tiene nada que
+registrar.
+
+Dos salidas, y la decisión de forma es de Charlie:
+
+- **A · Un tenant de operación de CSI** con un expediente para ejemplos. No
+  toca el esquema. Condición: que ese tenant sea el DUEÑO del material de
+  configuración y nada más — no un tenant "csi" que signifique "ver todo",
+  que es justo lo que el almacén prohíbe (la separación por prefijo es el
+  límite de privacidad entre clientes).
+- **B · `file` de plataforma**: permitir `tenant_id` y `expediente_id` nulos,
+  los dos juntos, para material que no es de ningún cliente — el mismo patrón
+  que ya usa `decision_code` (`tenant_id` NULL = de plataforma). Cambia el
+  esquema y toda consulta sobre `file` tendría que contemplar el nulo.
+
+Preferencia de la aplicación: **A**, porque no cambia nada de lo ya diseñado y
+todas las filas de `file` siguen teniendo dueño.
+
+De paso, para que no sorprenda: un PDF de ejemplo deja DOS objetos en el
+almacén —el original y una vista PNG de su página 1 para poder pintarlo—. No se
+pide nada especial para eso: la aplicación registraría cada uno como su propia
+fila de `file` con `uspCreateFile`, para que no quede ningún objeto sin
+registro.
 
 ---
 
