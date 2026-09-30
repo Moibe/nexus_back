@@ -220,6 +220,14 @@ from routers.archivos import router as archivos_router  # noqa: E402
 
 app.include_router(archivos_router, prefix="/archivos", dependencies=[Depends(exigir_llave)])
 
+# La bandeja de entrada: por donde un cliente manda archivos a la bandeja de
+# preparación del front. Mismo criterio que Archivos (solo depende del
+# almacén). PROVISIONAL en dos cosas —registro en el NAS y la llave del front—,
+# ver el docstring de `routers/bandeja.py`.
+from routers.bandeja import router as bandeja_router  # noqa: E402
+
+app.include_router(bandeja_router, prefix="/bandeja", dependencies=[Depends(exigir_llave)])
+
 # El grupo Documentos se registra solo si hay una base configurada.
 #
 # Mientras el DBA no entregue SQL Server, publicar esos endpoints sería publicar

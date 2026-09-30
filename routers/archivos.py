@@ -64,26 +64,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post(
-    "/",
-    tags=["Archivos"],
-    summary="Subir un archivo al almacén",
-    description=(
-        "Guarda los bytes y devuelve su ruta RELATIVA, que es lo que la base "
-        "guardará el día que exista la tabla `file`. Es idempotente: subir dos "
-        "veces el mismo contenido no duplica nada y responde `yaExistia: true`. "
-        "El `sha256` es opcional y sirve para VERIFICAR la integridad de la "
-        "transferencia, no para nombrar el objeto — el nombre siempre se "
-        "recalcula sobre los bytes que de verdad llegaron."
-    ),
-)
-def subir_archivo(
-    archivo: UploadFile = File(...),
-    tenant: str = Form(..., description="Prefijo de almacenamiento del cliente"),
-    sha256: str | None = Form(
-        None, description="Hash que calculó el cliente, para verificar la transferencia"
-    ),
-):
+def guardar_subida(archivo: UploadFile, tenant: str, sha256: str | None) -> dict:
+    """Valida una subida y guarda sus bytes en el almacén. Devuelve lo que
+    `almacen.guardar` devuelve, o levanta la `HTTPException` que corresponda.
+
+    Es la ÚNICA forma de recibir un archivo en esta API: la usan
+    `POST /archivos/` y `POST /bandeja/`. Tenerla en un solo lugar es lo que
+    garantiza que las dos puertas acepten y rechacen exactamente lo mismo.
+    """
     try:
         revisar_tipo(archivo.content_type)
         revisar_tamano(archivo.size, "El archivo")
@@ -133,6 +121,31 @@ def subir_archivo(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="No se pudo guardar el archivo. Intenta de nuevo en unos minutos.",
         ) from exc
+
+    return guardado
+
+
+@router.post(
+    "/",
+    tags=["Archivos"],
+    summary="Subir un archivo al almacén",
+    description=(
+        "Guarda los bytes y devuelve su ruta RELATIVA, que es lo que la base "
+        "guardará el día que exista la tabla `file`. Es idempotente: subir dos "
+        "veces el mismo contenido no duplica nada y responde `yaExistia: true`. "
+        "El `sha256` es opcional y sirve para VERIFICAR la integridad de la "
+        "transferencia, no para nombrar el objeto — el nombre siempre se "
+        "recalcula sobre los bytes que de verdad llegaron."
+    ),
+)
+def subir_archivo(
+    archivo: UploadFile = File(...),
+    tenant: str = Form(..., description="Prefijo de almacenamiento del cliente"),
+    sha256: str | None = Form(
+        None, description="Hash que calculó el cliente, para verificar la transferencia"
+    ),
+):
+    guardado = guardar_subida(archivo, tenant, sha256)
 
     # ── AQUÍ va el registro en `file`, cuando exista el SP ──────────────────
     # Orden: bytes (arriba) y DESPUÉS la fila. Ver el docstring del módulo.

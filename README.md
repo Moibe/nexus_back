@@ -285,6 +285,46 @@ propósito NO comparte redacción con `motivo`: es una falla del servicio, no de
 la calidad del documento, y disfrazarla de "hay que pedir otra foto" escondería
 un problema operativo real.
 
+## API de clientes: mandar archivos a la bandeja (desde el 2026-09-30)
+
+Por aquí un cliente manda documentos a la **bandeja de preparación** del front
+(el panel de en medio), donde aparecen solos con origen **«API REST»**, en
+menos de 10 segundos, sin que nadie suba nada a mano.
+
+```bash
+curl -X POST http://<servidor>:8083/bandeja/ \
+  -H "X-API-Key: <llave>" \
+  -F "archivo=@ine_juan_perez.pdf;type=application/pdf" \
+  -F "tenant=demo"
+```
+
+- Acepta **PDF, JPEG, PNG y TIFF** de hasta 20 MB: lo que el pipeline sabe
+  procesar. Otro formato da 400 con un mensaje que lo dice.
+- Responde **201** con la entrada creada (`id`, `rutaRelativa`, `sha256`,
+  `tamanoBytes`, `mime`, `nombreOriginal`, `canal`, `recibidoEn`).
+- Mandar dos veces el mismo archivo no duplica disco; en la bandeja el segundo
+  sale marcado como duplicado.
+
+Lo usa también el front: `GET /bandeja/?tenant=` para listar lo pendiente, y
+`POST /bandeja/{id}/retirar` (`tenant`, `motivo`: `pipeline` | `descartado`)
+cuando el documento pasa al pipeline o se descarta, para que no reaparezca.
+Retirar NO borra el archivo del almacén.
+
+**Dos cosas provisionales, y hay que saberlas antes de dársela a alguien:**
+
+1. **La llave es la misma del front** (`NEXUS_API_KEY`). No se le puede dar a
+   un cliente externo: abre también `/ia/*`, que cuesta dinero. Falta la llave
+   por cliente, de la que además se deduzca el tenant (hoy llega como campo).
+2. **El registro de lo pendiente es un archivo en el NAS**
+   (`{ALMACEN_RUTA}/.registro/bandeja-{tenant}.jsonl`, solo se agrega), no la
+   base. Pasa a `[documents].[files]` cuando existan los SPs del DBA; solo
+   cambia `servicios/bandeja.py`. Ver su docstring.
+
+El front muestra UN tenant fijo, `NEXUS_TENANT_BANDEJA` en su `.env` (default
+`demo`).
+
+Verificarlo, offline: `venv/bin/python verificar_bandeja.py`.
+
 ## Almacén de documentos (encendido en producción desde el 2026-09-25)
 
 `servicios/almacen.py` guarda los **bytes** de un archivo subido en disco, y
