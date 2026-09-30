@@ -33,6 +33,18 @@ logger = logging.getLogger(__name__)
 TAGS = [
     {"name": "Utilidad", "description": "Health checks y diagnóstico."},
     {
+        "name": "Bandeja",
+        "description": (
+            "**Para clientes.** Mandar documentos a la bandeja de preparación. "
+            "Subir acepta una API Key de cliente (`nxdoc_live_…`); listar y "
+            "retirar son solo del front."
+        ),
+    },
+    {
+        "name": "Llaves",
+        "description": "Emitir, listar y revocar API Keys de cliente. Solo el front.",
+    },
+    {
         "name": "Documentos",
         "description": "Ingesta, bandeja de preparación y pipeline documental.",
     },
@@ -222,11 +234,20 @@ app.include_router(archivos_router, prefix="/archivos", dependencies=[Depends(ex
 
 # La bandeja de entrada: por donde un cliente manda archivos a la bandeja de
 # preparación del front. Mismo criterio que Archivos (solo depende del
-# almacén). PROVISIONAL en dos cosas —registro en el NAS y la llave del front—,
-# ver el docstring de `routers/bandeja.py`.
+# almacén). Es el ÚNICO router que acepta API Keys de cliente, y solo para
+# subir: el router exige ALGUNA llave válida y las rutas de administración
+# (listar, retirar) agregan `exigir_llave` encima — ver `routers/bandeja.py`.
 from routers.bandeja import router as bandeja_router  # noqa: E402
+from seguridad import exigir_llave_o_cliente  # noqa: E402
 
-app.include_router(bandeja_router, prefix="/bandeja", dependencies=[Depends(exigir_llave)])
+app.include_router(
+    bandeja_router, prefix="/bandeja", dependencies=[Depends(exigir_llave_o_cliente)]
+)
+
+# Emitir, listar y revocar API Keys de cliente. Solo el front, con su llave.
+from routers.llaves import router as llaves_router  # noqa: E402
+
+app.include_router(llaves_router, prefix="/llaves", dependencies=[Depends(exigir_llave)])
 
 # El grupo Documentos se registra solo si hay una base configurada.
 #

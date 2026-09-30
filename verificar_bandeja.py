@@ -96,7 +96,7 @@ def main() -> int:
     rev("responde 201", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
     e = r.json()
     print(f"    {e}")
-    campos = {"id", "tenant", "rutaRelativa", "sha256", "tamanoBytes", "mime", "nombreOriginal", "canal", "recibidoEn"}
+    campos = {"id", "tenant", "rutaRelativa", "sha256", "tamanoBytes", "mime", "nombreOriginal", "canal", "llaveId", "recibidoEn"}
     rev("trae lo que pedirá uspCreateFile (para el backfill)", set(e) == campos, str(set(e) ^ campos))
     rev("canal API", e.get("canal") == "API")
     rev("el archivo SÍ está en el almacén", (RAIZ / e["rutaRelativa"]).is_file())

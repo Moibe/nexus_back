@@ -193,7 +193,22 @@ def ruta_relativa(tenant: str, hash_hex: str) -> str:
     return f"{t}/{h[0:2]}/{h[2:4]}/{h}"
 
 
+# La ÚNICA forma de ruta que existe para un objeto: `{tenant}/{aa}/{bb}/{sha256}`,
+# con `aa` y `bb` iguales a los cuatro primeros caracteres del hash.
+_RE_RELATIVA = re.compile(r"^([A-Za-z0-9_-]{1,64})/([0-9a-f]{2})/([0-9a-f]{2})/([0-9a-f]{64})$")
+
+
 def _ruta_absoluta(relativa: str) -> Path:
+    # Solo rutas de OBJETO. Sin esto, `leer` servía cualquier archivo dentro de
+    # la raíz — y ahí viven también los registros internos (`.registro/`, con
+    # los hashes de las llaves de todos los clientes y la bandeja de cada uno)
+    # y el centinela: `GET /archivos/.registro/llaves.jsonl` los devolvía, y el
+    # BFF del front lo dejaba pedir desde cualquier navegador. Lo encontró la
+    # revisión del 2026-09-30. Exigir la forma exacta cierra todo lo que no sea
+    # un objeto, sin tener que enumerar qué más vive ahí.
+    forma = _RE_RELATIVA.match(relativa or "")
+    if not forma or forma.group(2) + forma.group(3) != forma.group(4)[:4]:
+        raise ValueError(f"La ruta {relativa!r} no es la de un objeto del almacén.")
     destino = (_raiz() / relativa).resolve()
     raiz = _raiz().resolve()
     # Cinturón sobre los tirantes: aunque `ruta_relativa` ya valide sus partes,

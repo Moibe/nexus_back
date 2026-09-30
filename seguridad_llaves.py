@@ -25,23 +25,23 @@ LA FORMA
   · 26 caracteres base62 — ~155 bits, arriba del piso de 128.
   · 6 caracteres base62 — el checksum, ver `checksum_de`.
 
-QUÉ FALTA PARA QUE ESTO SIRVA
+DÓNDE SE GUARDAN, Y QUIÉN LA USA (desde el 2026-09-30)
 
-Nada llama a `verificar()` todavía, y es a propósito: no existe dónde guardar
-las llaves. La tabla y sus SPs le tocan al DBA — está pedido en
-`docs/solicitudes-dba.md`. Mientras tanto este módulo es lógica pura y
-probada: no toca la base, no importa `repositorios/`, y no inventa nombres de
-stored procedure (que es justo el error que ya se cometió una vez con los
-placeholders de `repositorios/documentos.py`).
+Las llaves se guardan en un registro PROVISIONAL en el NAS
+(`servicios/llaves_cliente.py`) mientras el DBA no entregue su tabla — está
+pedido en `docs/solicitudes-dba.md`, sección 5. Este módulo sigue siendo
+lógica pura: no sabe dónde viven las filas, recibe la búsqueda como función.
+Quien la usa es `seguridad.exigir_llave_o_cliente`, en `POST /bandeja/`.
 
-Y lo que hay que tener claro mientras tanto: que el front muestre "Revocada"
-no impide NADA. La revocación es un hecho registrado; la defensa es esta
-verificación, del lado del servidor, el día que algo empiece a aceptar llaves.
+Y lo que hay que tener claro: que el front muestre "Revocada" no impide nada
+por sí solo. La revocación es un hecho registrado; la defensa es esta
+verificación, del lado del servidor, en cada petición.
 """
 
 import hashlib
 import hmac
 import re
+import secrets
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -138,6 +138,36 @@ def hash_de(secret: str) -> str:
     sirva, y un hash lento solo costaría latencia en cada request.
     """
     return hashlib.sha256(secret.encode()).hexdigest()
+
+
+def generar(
+    ocupado: Callable[[str], bool] = lambda _identificador: False,
+    intentos: int = 100,
+) -> tuple[str, str]:
+    """Una llave nueva: devuelve `(identificador, secret)`.
+
+    La genera el SERVIDOR (desde el 2026-09-30; antes la generaba el navegador,
+    cuando las llaves todavía no autenticaban nada), por dos razones:
+
+      · El identificador de 4 caracteres tiene que ser ÚNICO, y solo quien
+        tiene todas las llaves puede garantizarlo: `ocupado` dice si ya existe,
+        y se sortea otro. Con 62^4 ≈ 14.7 millones de identificadores, chocar es
+        raro, pero no imposible — y un choque haría que `verificar` encontrara
+        la fila de OTRA llave.
+      · El aleatorio sale de `secrets`, el generador criptográfico de Python.
+
+    Misma forma y mismo checksum que `generarApiKey` en `formato.ts`: una
+    llave emitida aquí pasa `validar_formato` allá y viceversa.
+    """
+    for _ in range(intentos):
+        identificador = "".join(secrets.choice(_ALFABETO) for _ in range(_LARGO_ID))
+        if not ocupado(identificador):
+            break
+    else:
+        raise RuntimeError("No se encontró un identificador de llave libre.")
+    aleatorio = "".join(secrets.choice(_ALFABETO) for _ in range(_LARGO_ALEATORIO))
+    cuerpo = f"{PREFIJO}_{AMBIENTE}_{identificador}_{_TIPO}_{aleatorio}"
+    return identificador, cuerpo + checksum_de(cuerpo)
 
 
 def verificar(

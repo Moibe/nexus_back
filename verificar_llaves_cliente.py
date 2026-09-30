@@ -1,0 +1,275 @@
+"""¿Funcionan las API Keys de cliente de punta a punta?
+
+    venv/bin/python verificar_llaves_cliente.py
+
+OFFLINE y sin tocar nada tuyo, igual que `verificar_bandeja.py`: levanta la app
+contra un `ALMACEN_RUTA` temporal, con una llave de servicio inventada.
+
+Lo que importa no es que se emita una llave: es que una llave de cliente abra
+SOLO lo que debe, que el tenant salga de la llave y no del formulario, que
+revocada o vencida deje de servir en el acto, y que el secret no quede escrito
+en ningún lado.
+"""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+RAIZ = Path(tempfile.mkdtemp(prefix="verificar-llaves-"))
+SERVICIO = "llave-de-servicio-solo-local"
+os.environ["ALMACEN_RUTA"] = str(RAIZ)
+os.environ["NEXUS_API_KEY"] = SERVICIO
+os.environ.setdefault("SQLSERVER_HOST", "")
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+import seguridad_llaves  # noqa: E402
+from app import app  # noqa: E402
+from servicios import almacen  # noqa: E402
+
+(RAIZ / almacen.CENTINELA).touch()
+
+PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+    "890000000a49444154789c6360000002000100ffff03000006000557bfabd400"
+    "00000049454e44ae426082"
+)
+FRONT = Path(r"C:\Moibe\code\nexus_poc_svelte")
+
+fallos = 0
+
+
+def rev(descripcion: str, ok: bool, extra: str = "") -> None:
+    global fallos
+    if ok:
+        print(f"  OK    {descripcion}")
+    else:
+        fallos += 1
+        print(f"  FALLA {descripcion}" + (f"  -> {extra}" if extra else ""))
+
+
+def titulo(texto: str) -> None:
+    print("\n" + "=" * 72 + "\n" + texto + "\n" + "=" * 72)
+
+
+def srv(extra=None):
+    return {"X-API-Key": SERVICIO, **(extra or {})}
+
+
+def emitir(c, tenant="demo", nombre="Integración demo", descripcion="Pruebas", dias=30, llave=SERVICIO):
+    return c.post(
+        "/llaves/",
+        json={"tenant": tenant, "nombre": nombre, "descripcion": descripcion, "dias": dias},
+        headers={"X-API-Key": llave},
+    )
+
+
+def subir(c, llave, tenant=None, contenido=PNG, nombre="ine.png"):
+    datos = {} if tenant is None else {"tenant": tenant}
+    return c.post(
+        "/bandeja/", files={"archivo": (nombre, contenido, "image/png")}, data=datos, headers={"X-API-Key": llave}
+    )
+
+
+def pendientes(c, tenant="demo"):
+    return c.get("/bandeja/", params={"tenant": tenant}, headers=srv()).json()["entradas"]
+
+
+def main() -> int:
+    c = TestClient(app)
+
+    titulo("1 · Emitir: el secret sale UNA vez y no queda escrito")
+    r = emitir(c)
+    rev("responde 201", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
+    cuerpo = r.json()
+    secret, llave = cuerpo["secret"], cuerpo["llave"]
+    rev("el secret tiene el formato y el checksum del producto", seguridad_llaves.validar_formato(secret), secret[:16])
+    rev("el id de la respuesta es el del secret", seguridad_llaves.id_de(secret) == llave["id"])
+    rev("la llave no trae hash ni secret", not ({"secret", "secret_hash", "hash"} & set(llave)), str(set(llave)))
+    rev("vence a los 30 días",
+        abs((datetime.fromisoformat(llave["expiraEn"]) - datetime.fromisoformat(llave["creadaEn"])) - timedelta(days=30)) < timedelta(seconds=2))
+    rev("la respuesta pide no guardarse (no-store)", r.headers.get("cache-control") == "no-store", str(r.headers.get("cache-control")))
+    contenido = (RAIZ / ".registro" / "llaves.jsonl").read_text(encoding="utf-8")
+    rev("en el registro NO está el secret", secret not in contenido)
+    rev("sí está su hash", seguridad_llaves.hash_de(secret) in contenido)
+
+    titulo("2 · Emitir rechaza lo inválido")
+    rev("sin nombre da 400", emitir(c, nombre="  ").status_code == 400)
+    rev("sin descripción da 400", emitir(c, descripcion="").status_code == 400)
+    rev("5 días (no es 1, 7, 30 ni 90) da 400", emitir(c, dias=5).status_code == 400)
+    rev("un tenant con ../ da 400", emitir(c, tenant="../otro").status_code == 400)
+    rev("sin llave de servicio da 401", emitir(c, llave="").status_code == 401)
+    rev("con una llave de CLIENTE da 401 (un cliente no emite llaves)", emitir(c, llave=secret).status_code == 401)
+
+    titulo("3 · Listar: sin hashes, y cada quien lo suyo")
+    r_acme = emitir(c, tenant="cli-acme", nombre="Acme")
+    secret_acme = r_acme.json()["secret"]
+    lista = c.get("/llaves/", params={"tenant": "demo"}, headers=srv()).json()["llaves"]
+    rev("demo ve su llave", [x["id"] for x in lista] == [llave["id"]], str([x["id"] for x in lista]))
+    rev("y no la de acme", r_acme.json()["llave"]["id"] not in [x["id"] for x in lista])
+    rev("el listado no trae hashes", "secret_hash" not in json.dumps(lista) and seguridad_llaves.hash_de(secret) not in json.dumps(lista))
+    rev("listar con una llave de cliente da 401", c.get("/llaves/", params={"tenant": "demo"}, headers={"X-API-Key": secret}).status_code == 401)
+
+    titulo("4 · Con la llave de cliente se sube, y el tenant sale de la llave")
+    r = subir(c, secret)
+    rev("sube sin decir tenant (201)", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
+    e = r.json()
+    rev("quedó en el tenant de la llave", e.get("tenant") == "demo" and e["rutaRelativa"].startswith("demo/"), e.get("rutaRelativa", ""))
+    rev("y anota con qué llave entró", e.get("llaveId") == llave["id"])
+    rev("aparece en la bandeja de demo", e["id"] in [x["id"] for x in pendientes(c)])
+    rev("mandando su PROPIO tenant también pasa", subir(c, secret, tenant="demo", contenido=PNG + b"2").status_code == 201)
+
+    titulo("5 · Una llave de cliente no puede escribir en otro cliente")
+    antes = len(pendientes(c, "cli-acme"))
+    r = subir(c, secret, tenant="cli-acme", contenido=PNG + b"ajeno")
+    rev("pedir otro tenant da 403", r.status_code == 403, f"{r.status_code} {r.text[:120]}")
+    rev("y no se subió nada a acme", len(pendientes(c, "cli-acme")) == antes)
+    r = subir(c, secret_acme, contenido=PNG + b"acme")
+    rev("la llave de acme sube a acme", r.status_code == 201 and r.json()["tenant"] == "cli-acme")
+
+    titulo("6 · Una llave de cliente abre SOLO subir a la bandeja")
+    cliente = {"X-API-Key": secret}
+    rev("listar la bandeja: 401", c.get("/bandeja/", params={"tenant": "demo"}, headers=cliente).status_code == 401)
+    rev("retirar de la bandeja: 401",
+        c.post(f"/bandeja/{e['id']}/retirar", data={"tenant": "demo", "motivo": "descartado"}, headers=cliente).status_code == 401)
+    rev("subir a /archivos/: 401",
+        c.post("/archivos/", files={"archivo": ("x.png", PNG, "image/png")}, data={"tenant": "demo"}, headers=cliente).status_code == 401)
+    rev("revocar llaves: 401", c.post(f"/llaves/{llave['id']}/revocar", json={"tenant": "demo"}, headers=cliente).status_code == 401)
+    # Se enumeran desde el OpenAPI y no desde `app.routes`: esta versión de
+    # FastAPI guarda los routers incluidos agrupados, y `app.routes` no los
+    # aplana — la lista salía vacía y la comprobación pasaba sin probar nada.
+    rutas = c.get("/openapi.json").json()["paths"]
+    probadas, abiertas = 0, []
+    for ruta, metodos in rutas.items():
+        if not ruta.startswith(("/ia/", "/procesadores/", "/archivos/", "/llaves/")):
+            continue
+        for metodo in metodos:
+            probadas += 1
+            rr = c.request(metodo.upper(), ruta.replace("{", "x").replace("}", ""), headers=cliente)
+            if rr.status_code != 401:
+                abiertas.append(f"{metodo.upper()} {ruta} -> {rr.status_code}")
+    rev(f"ninguna de las {probadas} rutas de /ia, /procesadores, /archivos y /llaves la acepta",
+        probadas >= 5 and not abiertas, f"probadas={probadas}; " + "; ".join(abiertas))
+
+    titulo("7 · Llaves falsas o alteradas: 401")
+    ident, falsa = seguridad_llaves.generar()
+    rev("una llave con formato perfecto pero que nadie emitió", subir(c, falsa).status_code == 401)
+    cuerpo_malo = secret[:-6][:-1] + ("a" if secret[-7] != "a" else "b")
+    alterada = cuerpo_malo + seguridad_llaves.checksum_de(cuerpo_malo)
+    rev("la llave buena con UN carácter cambiado (y checksum recalculado)", subir(c, alterada).status_code == 401)
+    rev("basura", subir(c, "nxdoc_live_hola").status_code == 401)
+    rev("sin llave", subir(c, "").status_code == 401)
+
+    titulo("8 · Revocada deja de servir en el acto")
+    r = c.post(f"/llaves/{llave['id']}/revocar", json={"tenant": "demo"}, headers=srv())
+    rev("revocar responde 200", r.status_code == 200, r.text[:120])
+    rev("la llave revocada ya no sube (401)", subir(c, secret, contenido=PNG + b"tarde").status_code == 401)
+    otra_vez = c.post(f"/llaves/{llave['id']}/revocar", json={"tenant": "demo"}, headers=srv())
+    rev("revocar otra vez es idempotente: 200 con la fecha de la primera vez",
+        otra_vez.status_code == 200 and otra_vez.json().get("revocadaEn") == r.json().get("revocadaEn"), otra_vez.text[:160])
+    id_acme = r_acme.json()["llave"]["id"]
+    rev("revocar la de acme como si fuera de demo da 404",
+        c.post(f"/llaves/{id_acme}/revocar", json={"tenant": "demo"}, headers=srv()).status_code == 404)
+    rev("y la de acme sigue sirviendo", subir(c, secret_acme, contenido=PNG + b"acme2").status_code == 201)
+    lista = c.get("/llaves/", params={"tenant": "demo"}, headers=srv()).json()["llaves"]
+    rev("el listado la muestra revocada", lista[0]["revocadaEn"] is not None)
+
+    titulo("9 · Vencida deja de servir sola")
+    ident, vencida = seguridad_llaves.generar()
+    hace_un_rato = datetime.now(timezone.utc) - timedelta(minutes=1)
+    with open(RAIZ / ".registro" / "llaves.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "evento": "emitida", "id": ident, "tenant": "demo",
+            "secret_hash": seguridad_llaves.hash_de(vencida), "nombre": "vieja", "descripcion": "x",
+            "creadaEn": (hace_un_rato - timedelta(days=1)).isoformat(), "expiraEn": hace_un_rato.isoformat(),
+        }) + "\n")
+    rev("una llave que venció hace un minuto: 401", subir(c, vencida).status_code == 401)
+
+    titulo("10 · La llave de servicio sigue igual")
+    rev("sube diciendo el tenant", subir(c, SERVICIO, tenant="demo", contenido=PNG + b"srv").status_code == 201)
+    rev("sin tenant da 400", subir(c, SERVICIO, contenido=PNG + b"srv2").status_code == 400)
+    rev("lista la bandeja", c.get("/bandeja/", params={"tenant": "demo"}, headers=srv()).status_code == 200)
+
+    titulo("11 · Veinte emisiones al mismo tiempo: veinte ids distintos")
+    ids, errores = [], []
+
+    def una(i):
+        rr = emitir(c, nombre=f"lote {i}")
+        (ids.append(rr.json()["llave"]["id"]) if rr.status_code == 201 else errores.append(rr.status_code))
+
+    hilos = [threading.Thread(target=una, args=(i,)) for i in range(20)]
+    for h in hilos:
+        h.start()
+    for h in hilos:
+        h.join()
+    rev("las 20 respondieron 201", len(ids) == 20, str(errores))
+    rev("con 20 ids distintos", len(set(ids)) == 20)
+
+    titulo("12 · Si el registro no está, 503 y no se deja pasar a nadie")
+    (RAIZ / almacen.CENTINELA).unlink()
+    try:
+        rev("una llave de cliente: 503 (no se pudo verificar), no 201", subir(c, secret_acme, contenido=PNG + b"caido").status_code == 503)
+        rev("emitir: 503", emitir(c).status_code == 503)
+    finally:
+        (RAIZ / almacen.CENTINELA).touch()
+
+    titulo("12b · Los registros internos NO se pueden leer por /archivos/")
+    for ruta in (".registro/llaves.jsonl", ".registro/bandeja-demo.jsonl", ".nexus-almacen"):
+        rr = c.get(f"/archivos/{ruta}", params={"mime": "application/pdf"}, headers=srv())
+        rev(f"GET /archivos/{ruta} con la llave de servicio: no lo sirve ({rr.status_code})",
+            rr.status_code in (400, 404) and "secret_hash" not in rr.text, rr.text[:120])
+
+    titulo("12c · Un acento cortado a media escritura no tumba el registro")
+    registro_llaves = RAIZ / ".registro" / "llaves.jsonl"
+    with open(registro_llaves, "ab") as f:
+        f.write('{"evento": "emitida", "id": "Zz9z", "nombre": "Juá'.encode("utf-8")[:-1])  # la "á" a la mitad
+    rev("la llave de acme sigue sirviendo", subir(c, secret_acme, contenido=PNG + b"utf8").status_code == 201)
+    rev("se sigue pudiendo listar", c.get("/llaves/", params={"tenant": "demo"}, headers=srv()).status_code == 200)
+    rev("y emitir", emitir(c, nombre="después del corte").status_code == 201)
+
+    titulo("13 · Swagger")
+    o = c.get("/openapi.json").json()
+    rev("subir a la bandeja lleva candado", o["paths"]["/bandeja/"]["post"].get("security") == [{"APIKeyHeader": []}])
+    rev("en el formulario de subir, `tenant` ya es opcional",
+        "tenant" not in (o["components"]["schemas"].get("Body_subir_a_bandeja_bandeja__post", {}).get("required") or []))
+    rev("están las rutas de llaves", "/llaves/" in o["paths"] and "/llaves/{identificador}/revocar" in o["paths"])
+
+    titulo("14 · El validador del FRONT acepta las llaves que emite el servidor")
+    if not (FRONT / "src" / "lib" / "apiKeys" / "formato.ts").exists() or shutil.which("node") is None:
+        print("  (se salta: no está el repo del front o no hay node en esta máquina)")
+    else:
+        llaves = [seguridad_llaves.generar()[1] for _ in range(25)]
+        guion = (
+            "const m = await import('file:///' + process.argv[1].replace(/\\\\/g, '/'));"
+            "const ls = JSON.parse(process.argv[2]);"
+            "console.log(JSON.stringify(ls.map((l) => [m.validarFormato(l), m.idDe(l)])));"
+        )
+        salida = subprocess.run(
+            ["node", "--experimental-strip-types", "--no-warnings", "--input-type=module", "-e", guion,
+             str(FRONT / "src" / "lib" / "apiKeys" / "formato.ts"), json.dumps(llaves)],
+            cwd=FRONT, capture_output=True, text=True, timeout=60,
+        )
+        if salida.returncode != 0:
+            rev("node pudo cargar formato.ts", False, salida.stderr[:300])
+        else:
+            resultado = json.loads(salida.stdout.strip().splitlines()[-1])
+            rev("las 25 pasan validarFormato() del front", all(ok for ok, _ in resultado), str(resultado[:3]))
+            rev("y el front les saca el mismo id", [i for _, i in resultado] == [seguridad_llaves.id_de(l) for l in llaves])
+
+    print("\n" + "=" * 72)
+    print(f"{fallos} FALLARON" if fallos else "todas las comprobaciones pasaron")
+    return 1 if fallos else 0
+
+
+if __name__ == "__main__":
+    try:
+        codigo = main()
+    finally:
+        shutil.rmtree(RAIZ, ignore_errors=True)
+    raise SystemExit(codigo)

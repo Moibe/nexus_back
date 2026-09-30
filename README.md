@@ -292,38 +292,56 @@ Por aquí un cliente manda documentos a la **bandeja de preparación** del front
 menos de 10 segundos, sin que nadie suba nada a mano.
 
 ```bash
-curl -X POST http://<servidor>:8083/bandeja/ \
-  -H "X-API-Key: <llave>" \
-  -F "archivo=@ine_juan_perez.pdf;type=application/pdf" \
-  -F "tenant=demo"
+curl -X POST http://<servidor>:8083/bandeja/   -H "X-API-Key: nxdoc_live_XXXX_sk_…"   -F "archivo=@ine_juan_perez.pdf;type=application/pdf"
 ```
 
+- **La llave es una API Key de cliente**, emitida en el módulo "API Key" del
+  front (menú del engrane). El cliente NO manda `tenant`: sale de la llave. Si
+  lo manda y es otro, es 403 y no se sube nada.
+- Esa llave abre **solo** `POST /bandeja/`. Todo lo demás (`/ia`,
+  `/procesadores`, `/archivos`, `/llaves`, listar o retirar de la bandeja) es
+  401 con ella.
 - Acepta **PDF, JPEG, PNG y TIFF** de hasta 20 MB: lo que el pipeline sabe
   procesar. Otro formato da 400 con un mensaje que lo dice.
 - Responde **201** con la entrada creada (`id`, `rutaRelativa`, `sha256`,
-  `tamanoBytes`, `mime`, `nombreOriginal`, `canal`, `recibidoEn`).
+  `tamanoBytes`, `mime`, `nombreOriginal`, `canal`, `llaveId`, `recibidoEn`).
 - Mandar dos veces el mismo archivo no duplica disco; en la bandeja el segundo
   sale marcado como duplicado.
+- Revocada o vencida, la llave deja de servir en la siguiente petición.
+
+También acepta la llave de servicio del front (`NEXUS_API_KEY`), y ahí `tenant`
+es obligatorio: es lo que usa Swagger (`/docs`, botón **Authorize**) para
+probar a mano. **Esa llave no se le da a un cliente**: abre todo.
 
 Lo usa también el front: `GET /bandeja/?tenant=` para listar lo pendiente, y
 `POST /bandeja/{id}/retirar` (`tenant`, `motivo`: `pipeline` | `descartado`)
 cuando el documento pasa al pipeline o se descarta, para que no reaparezca.
 Retirar NO borra el archivo del almacén.
 
-**Dos cosas provisionales, y hay que saberlas antes de dársela a alguien:**
+### Las API Keys de cliente
 
-1. **La llave es la misma del front** (`NEXUS_API_KEY`). No se le puede dar a
-   un cliente externo: abre también `/ia/*`, que cuesta dinero. Falta la llave
-   por cliente, de la que además se deduzca el tenant (hoy llega como campo).
-2. **El registro de lo pendiente es un archivo en el NAS**
-   (`{ALMACEN_RUTA}/.registro/bandeja-{tenant}.jsonl`, solo se agrega), no la
-   base. Pasa a `[documents].[files]` cuando existan los SPs del DBA; solo
-   cambia `servicios/bandeja.py`. Ver su docstring.
+Las emite, lista y revoca el front contra `/llaves/` (solo con la llave de
+servicio). El servidor genera la llave, guarda **solo el SHA-256 del secret** y
+devuelve el secret una única vez. Formato y verificación en
+`seguridad_llaves.py` (espejo de `src/lib/apiKeys/formato.ts` del front);
+quién acepta qué, en `seguridad.py`.
 
-El front muestra UN tenant fijo, `NEXUS_TENANT_BANDEJA` en su `.env` (default
-`demo`).
+### Provisional
 
-Verificarlo, offline: `venv/bin/python verificar_bandeja.py`.
+**Dónde viven las cosas.** Lo pendiente de la bandeja y las llaves están en
+registros de solo agregar dentro del NAS (`{ALMACEN_RUTA}/.registro/`, ver
+`servicios/registro.py`), no en SQL Server. Pasan a la base cuando existan los
+SPs del DBA; solo cambian `servicios/bandeja.py` y
+`servicios/llaves_cliente.py`.
+
+**Un solo cliente.** El front opera con un tenant fijo, `NEXUS_TENANT` en su
+`.env` (default `demo`): de él muestra la bandeja y a él pertenecen las llaves.
+
+**Solo red interna.** El puerto 8083 no está publicado hacia fuera. Para un
+cliente externo hay que publicarlo por el dominio (con Soporte TI).
+
+Verificarlo, offline: `venv/bin/python verificar_bandeja.py` y
+`venv/bin/python verificar_llaves_cliente.py`.
 
 ## Almacén de documentos (encendido en producción desde el 2026-09-25)
 
