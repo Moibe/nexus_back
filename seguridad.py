@@ -20,12 +20,28 @@ Qué se protege y qué no:
 
 import secrets
 
-from fastapi import HTTPException, Request, status
+from fastapi import HTTPException, Security, status
+from fastapi.security import APIKeyHeader
 
 from config import NEXUS_API_KEY
 
+# La llave se declara como ESQUEMA DE SEGURIDAD en vez de leer el header a mano.
+# Para quien llama no cambia nada —el mismo header `X-API-Key`—, pero así
+# Swagger (`/docs`) sabe que existe: muestra el botón "Authorize", marca con
+# candado los endpoints protegidos y manda la llave en cada "Try it out".
+# Leyéndola a mano, Swagger no se enteraba y toda prueba desde ahí daba 401.
+#
+# `auto_error=False` a propósito: con `True`, FastAPI contestaría él mismo un
+# 403 "Not authenticated" cuando falta el header, en vez del 401 de abajo, que
+# dice qué header poner. Los mensajes y códigos se quedan como estaban.
+_esquema_llave = APIKeyHeader(
+    name="X-API-Key",
+    auto_error=False,
+    description="La llave de API de NexusDoc (NEXUS_API_KEY en el .env del server).",
+)
 
-async def exigir_llave(request: Request) -> None:
+
+async def exigir_llave(llave: str | None = Security(_esquema_llave)) -> None:
     """Dependencia de FastAPI: corta la petición si no trae la llave correcta.
 
     Sin llave configurada, la API FALLA CERRADA (503) en vez de quedar abierta:
@@ -43,7 +59,7 @@ async def exigir_llave(request: Request) -> None:
             ),
         )
 
-    recibida = request.headers.get("x-api-key", "")
+    recibida = llave or ""
     # compare_digest y no `==`: compara en tiempo constante, así el tiempo de
     # respuesta no filtra cuántos caracteres del intento iban bien.
     if not secrets.compare_digest(recibida, NEXUS_API_KEY):
