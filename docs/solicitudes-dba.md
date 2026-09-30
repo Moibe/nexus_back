@@ -773,6 +773,29 @@ los SPs**. Sus nombres mandan sobre los de este documento:
   `VIEW DEFINITION` (sobre `[security]` sí). Tampoco existen todavía las tablas
   de configuración KIE (`few_shot_example` y compañía).
 
+### ✅ 4.1 y 4.2 ENTREGADOS (2026-09-30)
+
+Charlie creó y validó los dos SPs, en `[security]` y con los nombres de la
+primera petición (leídos del catálogo, definición completa):
+
+- **`[security].[uspGetOrCreateInboxExpediente] @tenantGuid`** → devuelve
+  `expedienteId` (el `caseId`) y `expedienteGuid` (el `caseGuid`). Crea el
+  expediente con `externalRef = 'INBOX'` apoyado en `UX_cases_tenant_externalRef`
+  y tolera la carrera (atrapa 2601/2627 y relee). Errores: 50001 tenant no
+  existe, 50002 falta el estado OPEN.
+- **`[security].[uspCreateFile] @tenantGuid, @caseGuid, @relativeUri
+  nvarchar(2048), @sha256 char(64), @sizeBytes bigint, @mimeType varchar(100),
+  @originalName nvarchar(260), @ingestionChannel varchar(20)`** → devuelve
+  `fileId` y `fileGuid`. Valida sha256 (64 hex), canal contra
+  `[reference].[ingestionChannels]` (lo pone en mayúsculas), y obligatorios.
+  Errores 50001–50008.
+
+**La traducción `expedienteId` → `caseGuid` es la correcta**: la aplicación
+maneja el GUID, no el entero interno. **Bloqueo real para usarlos:** `tenants`
+sigue con 0 filas — hace falta el tenant de operación de CSI (pregunta 4.4,
+opción A) antes de registrar nada. Las cuatro preguntas de diseño siguen sin
+enviar.
+
 ### 4.1 · Un expediente de ENTRADA por tenant
 
 > **Actualización 2026-09-29:** con los nombres reales sería
