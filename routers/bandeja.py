@@ -109,8 +109,12 @@ def subir_a_bandeja(
             "Solo con la llave de servicio del front es obligatorio."
         ),
     ),
+    # `examples=[""]`: sin esto, Swagger rellena el campo con la palabra
+    # "string" al dar "Try it out", y esa prueba recibe un 400 por hash inválido.
     sha256: str | None = Form(
-        None, description="Hash que calculó el cliente, para verificar la transferencia"
+        None,
+        description="Opcional. El SHA-256 del archivo, para verificar la transferencia.",
+        examples=[""],
     ),
     quien: Identidad = Depends(exigir_llave_o_cliente),
 ):

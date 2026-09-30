@@ -144,7 +144,7 @@ def main() -> int:
     # Se enumeran desde el OpenAPI y no desde `app.routes`: esta versión de
     # FastAPI guarda los routers incluidos agrupados, y `app.routes` no los
     # aplana — la lista salía vacía y la comprobación pasaba sin probar nada.
-    rutas = c.get("/openapi.json").json()["paths"]
+    rutas = c.get("/openapi-interno.json").json()["paths"]
     probadas, abiertas = 0, []
     for ruta, metodos in rutas.items():
         if not ruta.startswith(("/ia/", "/procesadores/", "/archivos/", "/llaves/")):
@@ -233,12 +233,29 @@ def main() -> int:
     rev("se sigue pudiendo listar", c.get("/llaves/", params={"tenant": "demo"}, headers=srv()).status_code == 200)
     rev("y emitir", emitir(c, nombre="después del corte").status_code == 201)
 
-    titulo("13 · Swagger")
-    o = c.get("/openapi.json").json()
+    titulo("13 · Swagger: la documentación interna tiene todo")
+    o = c.get("/openapi-interno.json").json()
     rev("subir a la bandeja lleva candado", o["paths"]["/bandeja/"]["post"].get("security") == [{"APIKeyHeader": []}])
-    rev("en el formulario de subir, `tenant` ya es opcional",
+    rev("en el formulario de subir, `tenant` es opcional",
         "tenant" not in (o["components"]["schemas"].get("Body_subir_a_bandeja_bandeja__post", {}).get("required") or []))
     rev("están las rutas de llaves", "/llaves/" in o["paths"] and "/llaves/{identificador}/revocar" in o["paths"])
+    rev("/docs-interno se sirve", c.get("/docs-interno").status_code == 200)
+
+    titulo("13b · Swagger: la documentación PÚBLICA trae solo lo del cliente")
+    pub = c.get("/openapi.json").json()
+    rev("una sola operación: POST /bandeja/", {k: sorted(v) for k, v in pub["paths"].items()} == {"/bandeja/": ["post"]},
+        str({k: sorted(v) for k, v in pub["paths"].items()}))
+    formulario = pub["components"]["schemas"]["Documento"]
+    rev("el formulario ya no pide `tenant`", "tenant" not in formulario["properties"], str(list(formulario["properties"])))
+    rev("pide el archivo", "archivo" in (formulario.get("required") or []))
+    rev("con candado", pub["paths"]["/bandeja/"]["post"].get("security") == [{"APIKeyHeader": []}])
+    texto = json.dumps(pub)
+    rev("no menciona la llave de servicio ni rutas internas",
+        not any(x in texto for x in ("NEXUS_API_KEY", "/llaves", "/ia/", "/procesadores", "/archivos", "retirar")), "")
+    rev("/docs se sirve", c.get("/docs").status_code == 200)
+    rev("/redoc ya no existe", c.get("/redoc").status_code == 404)
+    rev("con el formulario PÚBLICO (sin tenant) y una llave de cliente, la subida funciona",
+        subir(c, secret_acme, contenido=PNG + b"publico").status_code == 201)
 
     titulo("14 · El validador del FRONT acepta las llaves que emite el servidor")
     if not (FRONT / "src" / "lib" / "apiKeys" / "formato.ts").exists() or shutil.which("node") is None:

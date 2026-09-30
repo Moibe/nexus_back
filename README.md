@@ -310,8 +310,20 @@ curl -X POST http://<servidor>:8083/bandeja/   -H "X-API-Key: nxdoc_live_XXXX_sk
 - Revocada o vencida, la llave deja de servir en la siguiente petición.
 
 También acepta la llave de servicio del front (`NEXUS_API_KEY`), y ahí `tenant`
-es obligatorio: es lo que usa Swagger (`/docs`, botón **Authorize**) para
-probar a mano. **Esa llave no se le da a un cliente**: abre todo.
+es obligatorio. **Esa llave no se le da a un cliente**: abre todo.
+
+### Swagger: una documentación para clientes y otra interna
+
+- **`/docs` es la PÚBLICA**: solo "Mandar un documento", con textos para quien
+  integra, y el formulario pide únicamente el archivo. Se prueba con una API Key
+  de cliente: **Authorize** → **Try it out** → archivo → **Execute**.
+- **`/docs-interno` tiene todo** (bandeja, llaves, IA, procesadores, archivos),
+  para el equipo.
+
+La pública se DERIVA del esquema completo en `documentacion.py`, así que no
+puede desfasarse de lo que la API hace. Ocultar rutas no es la seguridad —eso
+lo dan las llaves—, es orden. Cuando se publique la API hacia fuera, solo se
+expone la pública. ReDoc está apagado.
 
 Lo usa también el front: `GET /bandeja/?tenant=` para listar lo pendiente, y
 `POST /bandeja/{id}/retirar` (`tenant`, `motivo`: `pipeline` | `descartado`)

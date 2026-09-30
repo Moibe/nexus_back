@@ -54,11 +54,18 @@ TAGS = [
     },
 ]
 
+# La documentación automática se apaga (`docs_url`, `redoc_url`, `openapi_url` en
+# None) porque la sirve `documentacion.py` en dos versiones: `/docs`, la PÚBLICA,
+# solo con lo que un cliente puede usar, y `/docs-interno` con todo. Ver su
+# docstring.
 app = FastAPI(
-    title="NexusDoc AI · API",
+    title="NexusDoc AI · API interna",
     description="Ingesta, procesamiento y configuración documental para NexusDoc AI.",
     version="0.0.1",
     openapi_tags=TAGS,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 @app.middleware("http")
@@ -299,6 +306,13 @@ else:
             documentos_router, prefix="/documentos", dependencies=[Depends(exigir_llave)]
         )
         DOCUMENTOS_DISPONIBLE = True
+
+
+# Al final, con todos los routers ya incluidos: la documentación pública se
+# deriva del esquema completo.
+import documentacion  # noqa: E402
+
+documentacion.instalar(app)
 
 
 if __name__ == "__main__":
