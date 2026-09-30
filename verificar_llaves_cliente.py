@@ -233,6 +233,46 @@ def main() -> int:
     rev("se sigue pudiendo listar", c.get("/llaves/", params={"tenant": "demo"}, headers=srv()).status_code == 200)
     rev("y emitir", emitir(c, nombre="después del corte").status_code == 201)
 
+    titulo("12d · Uso y métricas por llave")
+    from datetime import date as _date
+    from servicios import uso_llaves
+    r_m = emitir(c, nombre="con métricas")
+    sec_m, id_m = r_m.json()["secret"], r_m.json()["llave"]["id"]
+    for i in range(3):
+        subir(c, sec_m, contenido=PNG + bytes([100 + i]))
+    c.post("/bandeja/", files={"archivo": ("x.zip", b"zz", "application/zip")}, headers={"X-API-Key": sec_m})  # se rechaza: 400
+    hoy = _date.today().isoformat()
+    m = c.get(f"/llaves/{id_m}/metricas", params={"tenant": "demo", "desde": hoy, "hasta": hoy}, headers=srv())
+    rev("métricas responde 200", m.status_code == 200, m.text[:120])
+    a = m.json()["actual"]
+    rev("cuenta aceptadas Y rechazadas: 4 solicitudes, 3 exitosas, 1 error",
+        (a["solicitudes"], a["exitosas"], a["errores"]) == (4, 3, 1), str(a))
+    rev("% de éxito 75.0", a["porcentajeExito"] == 75.0)
+    rev("latencia P50 es un entero", isinstance(a["latenciaP50Ms"], int))
+    rev("el consumo semanal es 4 de 500,000", m.json()["limiteSemanal"]["consumo"] == 4 and m.json()["limiteSemanal"]["limite"] == 500_000)
+    rev("trae último uso", m.json()["ultimoUso"] is not None)
+    lst = c.get("/llaves/", params={"tenant": "demo"}, headers=srv()).json()["llaves"]
+    rev("el listado trae ultimoUso", next(l for l in lst if l["id"] == id_m)["ultimoUso"] is not None)
+    rev("métricas de otro tenant: 404", c.get(f"/llaves/{id_m}/metricas", params={"tenant": "cli-acme", "desde": hoy, "hasta": hoy}, headers=srv()).status_code == 404)
+    rev("con una llave de cliente: 401", c.get(f"/llaves/{id_m}/metricas", params={"tenant": "demo", "desde": hoy, "hasta": hoy}, headers={"X-API-Key": sec_m}).status_code == 401)
+    rev("periodo al revés: 400", c.get(f"/llaves/{id_m}/metricas", params={"tenant": "demo", "desde": "2026-09-30", "hasta": "2026-09-01"}, headers=srv()).status_code == 400)
+    contenido_uso = (RAIZ / ".registro" / "uso-llaves.jsonl").read_text(encoding="utf-8")
+    rev("el registro de uso NO guarda el secret", sec_m not in contenido_uso)
+    rev("una llave falsa también se anota (bajo su id), sin abrir nada",
+        subir(c, "nxdoc_live_QqQq_sk_" + "b" * 32).status_code == 401 and '"llave": "QqQq"' in (RAIZ / ".registro" / "uso-llaves.jsonl").read_text(encoding="utf-8"))
+
+    titulo("12e · El tope semanal responde 429 y no se sube nada")
+    original = uso_llaves.LIMITE_SEMANAL
+    uso_llaves.LIMITE_SEMANAL = uso_llaves.consumo_semanal(id_m)  # ya está al tope
+    try:
+        antes = len(pendientes(c))
+        rr = subir(c, sec_m, contenido=PNG + b"tope")
+        rev("429 con el mensaje del límite", rr.status_code == 429 and "límite semanal" in rr.text, f"{rr.status_code} {rr.text[:100]}")
+        rev("y no entró a la bandeja", len(pendientes(c)) == antes)
+        rev("la llave de servicio no tiene tope", subir(c, SERVICIO, tenant="demo", contenido=PNG + b"srv-tope").status_code == 201)
+    finally:
+        uso_llaves.LIMITE_SEMANAL = original
+
     titulo("13 · Swagger: la documentación interna tiene todo")
     o = c.get("/openapi-interno.json").json()
     rev("subir a la bandeja lleva candado", o["paths"]["/bandeja/"]["post"].get("security") == [{"APIKeyHeader": []}])

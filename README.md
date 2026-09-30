@@ -338,10 +338,19 @@ devuelve el secret una única vez. Formato y verificación en
 `seguridad_llaves.py` (espejo de `src/lib/apiKeys/formato.ts` del front);
 quién acepta qué, en `seguridad.py`.
 
+### Uso y métricas por llave
+
+Cada llamada con API Key de cliente queda registrada (`servicios/uso_llaves.py`,
+desde un middleware: cuentan también las rechazadas) y alimenta "Métricas" en
+el front vía `GET /llaves/{id}/metricas?tenant=&desde=&hasta=`. Cada llave
+tiene un **tope semanal** (`LIMITE_SEMANAL`, 500,000; lunes a domingo, UTC):
+al llegar, la API responde **429** a esa llave hasta el lunes. El conteo
+semanal vive en memoria y se calienta del registro al arrancar (un proceso).
+
 ### Provisional
 
-**Dónde viven las cosas.** Lo pendiente de la bandeja y las llaves están en
-registros de solo agregar dentro del NAS (`{ALMACEN_RUTA}/.registro/`, ver
+**Dónde viven las cosas.** Lo pendiente de la bandeja, las llaves y su uso
+están en registros de solo agregar dentro del NAS (`{ALMACEN_RUTA}/.registro/`, ver
 `servicios/registro.py`), no en SQL Server. Pasan a la base cuando existan los
 SPs del DBA; solo cambian `servicios/bandeja.py` y
 `servicios/llaves_cliente.py`.

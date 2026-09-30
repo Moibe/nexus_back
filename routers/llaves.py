@@ -15,10 +15,12 @@ Los handlers son `def`: el registro es I/O síncrono y debe ir al threadpool.
 
 import logging
 
+from datetime import date
+
 from fastapi import APIRouter, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 
-from servicios import llaves_cliente
+from servicios import llaves_cliente, uso_llaves
 from servicios.almacen import ErrorAlmacen
 
 logger = logging.getLogger(__name__)
@@ -78,7 +80,12 @@ def emitir(datos: Emision, response: Response):
 )
 def listar(tenant: str = Query(...)):
     try:
-        return {"llaves": llaves_cliente.listar(tenant)}
+        llaves = llaves_cliente.listar(tenant)
+        # "Último uso" en cada tarjeta, como pide el diseño.
+        ultimos = uso_llaves.ultimos_usos([l["id"] for l in llaves])
+        for l in llaves:
+            l["ultimoUso"] = ultimos.get(l["id"])
+        return {"llaves": llaves}
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ErrorAlmacen as exc:
@@ -108,3 +115,25 @@ def revocar(identificador: str, datos: Revocacion):
         )
     logger.info("API Key revocada (id=%s, tenant=%s)", identificador, datos.tenant)
     return {"revocada": True, "revocadaEn": revocada_en}
+
+
+@router.get(
+    "/{identificador}/metricas",
+    tags=["Llaves"],
+    summary="Métricas de consumo de una API Key",
+    description=(
+        "Solicitudes, éxito, errores y latencia del periodo, comparados con el "
+        "periodo anterior de la misma duración; consumo de la semana contra el "
+        "tope; y último uso. Fechas en ISO (AAAA-MM-DD), días completos en UTC."
+    ),
+)
+def metricas(identificador: str, tenant: str = Query(...), desde: date = Query(...), hasta: date = Query(...)):
+    try:
+        # Solo las llaves del tenant: que no se puedan leer métricas ajenas.
+        if not any(l["id"] == identificador for l in llaves_cliente.listar(tenant)):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Esa API Key no existe o es de otro cliente.")
+        return uso_llaves.metricas(identificador, desde, hasta)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ErrorAlmacen as exc:
+        raise _no_disponible(exc, f"metricas, tenant={tenant}") from exc

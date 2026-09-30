@@ -69,6 +69,57 @@ app = FastAPI(
 )
 
 @app.middleware("http")
+async def medir_uso_de_llaves(request: Request, call_next):
+    """Registra cada llamada que trae una API Key de cliente y aplica su tope
+    semanal. Va como middleware para contar TAMBIÉN las rechazadas (401, 413,
+    429): una métrica de errores que no cuenta los rechazos no sirve.
+
+    Solo mira la FORMA del header: si parece llave de cliente, se anota bajo
+    su identificador público, sea válida o no. Ni verifica ni lee el secret.
+    """
+    import time
+
+    from starlette.concurrency import run_in_threadpool
+
+    import seguridad_llaves
+    from servicios import uso_llaves
+
+    llave_id = seguridad_llaves.id_de(request.headers.get("x-api-key", ""))
+    if llave_id is None:
+        return await call_next(request)
+
+    inicio = time.perf_counter()
+    # El tope se consulta en el threadpool: lee el registro del NAS. Si el
+    # registro no se puede leer, la llamada PASA — el tope es una cortesía de
+    # cuota, no una defensa, y no debe tumbar el servicio.
+    try:
+        excedida = await run_in_threadpool(uso_llaves.excede_limite, llave_id)
+    except Exception:  # noqa: BLE001
+        excedida = False
+    if excedida:
+        respuesta = JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={
+                "detail": (
+                    f"Esta API Key alcanzó su límite semanal de {uso_llaves.LIMITE_SEMANAL:,} "
+                    "solicitudes. Se reinicia el lunes."
+                )
+            },
+        )
+    else:
+        respuesta = await call_next(request)
+    ms = int((time.perf_counter() - inicio) * 1000)
+    try:
+        bytes_ = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        bytes_ = 0
+    await run_in_threadpool(
+        uso_llaves.registrar, llave_id, request.url.path, request.method, respuesta.status_code, ms, bytes_
+    )
+    return respuesta
+
+
+@app.middleware("http")
 async def limitar_tamano_subida(request: Request, call_next):
     """Rechaza cuerpos demasiado grandes ANTES de que Starlette parsee el
     multipart.
@@ -313,6 +364,21 @@ else:
 import documentacion  # noqa: E402
 
 documentacion.instalar(app)
+
+
+@app.on_event("startup")
+def calentar_uso_de_llaves() -> None:
+    """Carga el índice de uso de las llaves ANTES de atender la primera
+    petición. Si se calentara en la primera llamada, esa llamada pagaría la
+    lectura del registro completo (segundos, con cientos de miles de líneas).
+    Si el almacén no está, se deja para la siguiente llamada; no se tumba el
+    arranque por esto."""
+    from servicios import uso_llaves
+
+    try:
+        uso_llaves.calentar()
+    except Exception:  # noqa: BLE001
+        logger.warning("No se pudo cargar el índice de uso de llaves al arrancar; se intentará al usarse.")
 
 
 if __name__ == "__main__":
