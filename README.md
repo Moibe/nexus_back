@@ -372,6 +372,19 @@ resuelve UNA vez por petición y se comparte con la dependencia del endpoint ví
 `request.state` (`seguridad.analisis_de`), así que no se lee el registro dos
 veces. Verificado con sockets reales en `probar-corte-temprano.mjs`.
 
+**Un efecto del proxy, medido el 2026-10-01.** Contestar antes de leer el
+cuerpo es lo estándar (el cliente manda `Expect: 100-continue` y el servidor
+responde sin que se suba nada), pero el Apache de Soporte TI no sabe relevar
+esa respuesta temprana: la convierte en un **500 HTML**. Pasa SOLO con llave
+inválida Y cuerpo grande Y un cliente que use `Expect` (curl lo activa arriba
+de ~1 MB). Medido por el dominio con llave mala: hasta 1 MB llega el 401
+limpio; de 5 MB en adelante sale el 500. Sin `Expect` —que es lo que hacen los
+navegadores y la mayoría de las librerías— siempre llega el 401 limpio. Por la
+IP interna el 401 siempre es limpio. Se queda así: lo degradado es la claridad
+del error en una petición que de todos modos iba a fallar por autenticación, y
+a cambio el servidor no recibe los bytes. Está en la lista de cosas que pedirle
+a Soporte TI, junto con subir el tope de 20 MiB a 25 MB.
+
 ### Provisional
 
 **Dónde viven las cosas.** Lo pendiente de la bandeja, las llaves y su uso
