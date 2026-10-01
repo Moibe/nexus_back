@@ -15,7 +15,7 @@ Los handlers son `def`: el registro es I/O síncrono y debe ir al threadpool.
 
 import logging
 
-from datetime import date
+from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
@@ -124,10 +124,15 @@ def revocar(identificador: str, datos: Revocacion):
     description=(
         "Solicitudes, éxito, errores y latencia del periodo, comparados con el "
         "periodo anterior de la misma duración; consumo de la semana contra el "
-        "tope; y último uso. Fechas en ISO (AAAA-MM-DD), días completos en UTC."
+        "tope; y último uso. El periodo son dos instantes ISO 8601 CON zona, "
+        "`[desde, hasta)`: incluye `desde` y excluye `hasta`. Para un día "
+        "completo de quien mira, la medianoche local de ese día y la del "
+        "siguiente (p. ej. `2026-09-30T00:00:00-06:00` y "
+        "`2026-10-01T00:00:00-06:00`); el signo + de una URL va como %2B. El "
+        "tope semanal es la semana natural en UTC."
     ),
 )
-def metricas(identificador: str, tenant: str = Query(...), desde: date = Query(...), hasta: date = Query(...)):
+def metricas(identificador: str, tenant: str = Query(...), desde: datetime = Query(...), hasta: datetime = Query(...)):
     try:
         # Solo las llaves del tenant: que no se puedan leer métricas ajenas.
         if not any(l["id"] == identificador for l in llaves_cliente.listar(tenant)):

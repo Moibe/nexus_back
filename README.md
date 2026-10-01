@@ -347,6 +347,15 @@ tiene un **tope semanal** (`LIMITE_SEMANAL`, 500,000; lunes a domingo, UTC):
 al llegar, la API responde **429** a esa llave hasta el lunes. El conteo
 semanal vive en memoria y se calienta del registro al arrancar (un proceso).
 
+**El periodo son dos instantes con zona, `[desde, hasta)`**, no fechas: el
+registro guarda UTC pero "hoy" es el día de quien mira, y con fechas leídas
+como días UTC lo que entraba después de las 18:00 en México (ya es mañana en
+UTC) quedaba fuera de "hoy". Para el 30 de septiembre en México:
+`desde=2026-09-30T00:00:00-06:00` y `hasta=2026-10-01T00:00:00-06:00` (el `+`
+de un desfase positivo va como `%2B` en la URL). Sin zona responde 400. El
+tope semanal NO sigue la zona del periodo: es siempre la semana natural UTC,
+porque es lo que el servidor aplica.
+
 ### Provisional
 
 **Dónde viven las cosas.** Lo pendiente de la bandeja, las llaves y su uso

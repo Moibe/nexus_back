@@ -234,15 +234,16 @@ def main() -> int:
     rev("y emitir", emitir(c, nombre="después del corte").status_code == 201)
 
     titulo("12d · Uso y métricas por llave")
-    from datetime import date as _date
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
     from servicios import uso_llaves
     r_m = emitir(c, nombre="con métricas")
     sec_m, id_m = r_m.json()["secret"], r_m.json()["llave"]["id"]
     for i in range(3):
         subir(c, sec_m, contenido=PNG + bytes([100 + i]))
     c.post("/bandeja/", files={"archivo": ("x.zip", b"zz", "application/zip")}, headers={"X-API-Key": sec_m})  # se rechaza: 400
-    hoy = _date.today().isoformat()
-    m = c.get(f"/llaves/{id_m}/metricas", params={"tenant": "demo", "desde": hoy, "hasta": hoy}, headers=srv())
+    ahora_utc = _dt.now(_tz.utc)
+    p_hoy = {"desde": (ahora_utc - _td(hours=1)).isoformat(), "hasta": (ahora_utc + _td(hours=1)).isoformat()}
+    m = c.get(f"/llaves/{id_m}/metricas", params={"tenant": "demo", **p_hoy}, headers=srv())
     rev("métricas responde 200", m.status_code == 200, m.text[:120])
     a = m.json()["actual"]
     rev("cuenta aceptadas Y rechazadas: 4 solicitudes, 3 exitosas, 1 error",
@@ -253,13 +254,57 @@ def main() -> int:
     rev("trae último uso", m.json()["ultimoUso"] is not None)
     lst = c.get("/llaves/", params={"tenant": "demo"}, headers=srv()).json()["llaves"]
     rev("el listado trae ultimoUso", next(l for l in lst if l["id"] == id_m)["ultimoUso"] is not None)
-    rev("métricas de otro tenant: 404", c.get(f"/llaves/{id_m}/metricas", params={"tenant": "cli-acme", "desde": hoy, "hasta": hoy}, headers=srv()).status_code == 404)
-    rev("con una llave de cliente: 401", c.get(f"/llaves/{id_m}/metricas", params={"tenant": "demo", "desde": hoy, "hasta": hoy}, headers={"X-API-Key": sec_m}).status_code == 401)
-    rev("periodo al revés: 400", c.get(f"/llaves/{id_m}/metricas", params={"tenant": "demo", "desde": "2026-09-30", "hasta": "2026-09-01"}, headers=srv()).status_code == 400)
+    rev("métricas de otro tenant: 404", c.get(f"/llaves/{id_m}/metricas", params={"tenant": "cli-acme", **p_hoy}, headers=srv()).status_code == 404)
+    rev("con una llave de cliente: 401", c.get(f"/llaves/{id_m}/metricas", params={"tenant": "demo", **p_hoy}, headers={"X-API-Key": sec_m}).status_code == 401)
+    rev("periodo al revés: 400", c.get(f"/llaves/{id_m}/metricas", params={"tenant": "demo", "desde": "2026-09-30T00:00:00Z", "hasta": "2026-09-01T00:00:00Z"}, headers=srv()).status_code == 400)
     contenido_uso = (RAIZ / ".registro" / "uso-llaves.jsonl").read_text(encoding="utf-8")
     rev("el registro de uso NO guarda el secret", sec_m not in contenido_uso)
     rev("una llave falsa también se anota (bajo su id), sin abrir nada",
         subir(c, "nxdoc_live_QqQq_sk_" + "b" * 32).status_code == 401 and '"llave": "QqQq"' in (RAIZ / ".registro" / "uso-llaves.jsonl").read_text(encoding="utf-8"))
+
+    titulo("12f · El periodo viaja como instantes: el día es el de quien mira, no el de UTC")
+    # Dos eventos de fecha fija, inyectados en el índice (solo en memoria: el
+    # servidor de la prueba es este mismo proceso). Uno entra a las 18:30 del
+    # 15 de enero en México (UTC-6) y a las 00:30 del 16 en UTC — el caso que
+    # fallaba—; el otro a las 23:30 del 14 en México y a las 05:30 del 15 en UTC.
+    # 2020 queda lejos de "esta semana": no mueve el tope de 12e.
+    tarde_mx = (_dt(2020, 1, 16, 0, 30, tzinfo=_tz.utc), 201, 50, 10)
+    noche_mx = (_dt(2020, 1, 15, 5, 30, tzinfo=_tz.utc), 201, 50, 10)
+    uso_llaves._eventos_de(id_m)  # calienta el índice si no lo estaba
+    uso_llaves._indice.setdefault(id_m, []).extend([tarde_mx, noche_mx])
+
+    def periodo(desde: str, hasta: str):
+        return c.get(f"/llaves/{id_m}/metricas", params={"tenant": "demo", "desde": desde, "hasta": hasta}, headers=srv())
+
+    try:
+        r = periodo("2020-01-15T00:00:00-06:00", "2020-01-16T00:00:00-06:00")
+        rev("el 15 de enero EN MÉXICO incluye lo de las 18:30 (00:30 UTC del 16)", r.status_code == 200 and r.json()["actual"]["solicitudes"] == 1, r.text[:160])
+        r = periodo("2020-01-15T00:00:00Z", "2020-01-16T00:00:00Z")
+        rev("el 15 de enero EN UTC incluye solo lo de las 05:30 UTC", r.status_code == 200 and r.json()["actual"]["solicitudes"] == 1, r.text[:160])
+        r = periodo("2020-01-14T00:00:00-06:00", "2020-01-15T00:00:00-06:00")
+        rev("el 14 EN MÉXICO incluye lo de las 23:30 (05:30 UTC del 15)", r.status_code == 200 and r.json()["actual"]["solicitudes"] == 1, r.text[:160])
+        r = periodo("2020-01-15T00:00:00-06:00", "2020-01-16T00:00:00-06:00")
+        rev("el periodo anterior (el 14 en México) trae la otra solicitud", r.json()["anterior"]["solicitudes"] == 1, r.text[:200])
+        r = periodo("2020-01-16T00:00:00+05:30", "2020-01-17T00:00:00+05:30")
+        rev("un desfase positivo con minutos (+05:30) también", r.status_code == 200 and r.json()["actual"]["solicitudes"] == 1, r.text[:160])
+        r = periodo("2020-01-14T00:00:00-06:00", "2020-01-16T00:00:00-06:00")
+        dias = {d["dia"]: d["solicitudes"] for d in r.json()["porDia"]}
+        rev("porDia agrupa por el día de quien mira (14 y 15 en México)", dias == {"2020-01-14": 1, "2020-01-15": 1}, str(dias))
+        r = periodo("2020-01-14T00:00:00Z", "2020-01-17T00:00:00Z")
+        dias = {d["dia"]: d["solicitudes"] for d in r.json()["porDia"]}
+        rev("y en UTC, por día UTC (15 y 16)", dias == {"2020-01-15": 1, "2020-01-16": 1}, str(dias))
+        r = periodo("2020-01-15T00:00:00-06:00", "2020-01-16T00:00:00-06:00")
+        rev("el periodo se devuelve como se pidió", r.json()["desde"].startswith("2020-01-15T00:00:00-06:00"), r.text[:160])
+
+        rev("sin zona horaria: 400 (ambiguo)", periodo("2020-01-15T00:00:00", "2020-01-16T00:00:00").status_code == 400)
+        rev("solo fechas, sin hora ni zona: 400", periodo("2020-01-15", "2020-01-16").status_code == 400)
+        rev("fin igual al inicio: 400 (periodo vacío)", periodo("2020-01-15T00:00:00Z", "2020-01-15T00:00:00Z").status_code == 400)
+        rev("fin antes del inicio: 400", periodo("2020-01-16T00:00:00Z", "2020-01-15T00:00:00Z").status_code == 400)
+        rev("basura: 422, no 500", periodo("ayer", "hoy").status_code == 422)
+        rr = periodo("0001-01-01T00:00:00Z", "9999-12-31T00:00:00Z")
+        rev("un periodo de milenios no revienta (400, no 500)", rr.status_code == 400, f"{rr.status_code} {rr.text[:100]}")
+    finally:
+        uso_llaves._indice[id_m] = [e for e in uso_llaves._indice.get(id_m, []) if e not in (tarde_mx, noche_mx)]
 
     titulo("12e · El tope semanal responde 429 y no se sube nada")
     original = uso_llaves.LIMITE_SEMANAL

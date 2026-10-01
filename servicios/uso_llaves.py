@@ -29,7 +29,7 @@ desde `AVISO_DESDE`.
 
 import statistics
 import threading
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 from servicios import registro
 
@@ -169,26 +169,46 @@ def _resumen(eventos: list[_Evento]) -> dict:
     }
 
 
-def metricas(llave_id: str, desde: date, hasta: date) -> dict:
-    """Las cifras del periodo [desde, hasta] (días completos, UTC), comparadas
-    con el periodo inmediato anterior de la misma duración — que es lo que el
-    diseño llama "vs. semana anterior". Más el consumo de la semana en curso
-    contra el tope, y el último uso de la llave."""
-    if hasta < desde:
-        raise ValueError("El fin del periodo es anterior al inicio.")
-    ini = datetime(desde.year, desde.month, desde.day, tzinfo=timezone.utc)
-    fin = datetime(hasta.year, hasta.month, hasta.day, tzinfo=timezone.utc) + timedelta(days=1)
-    duracion = fin - ini
+def metricas(llave_id: str, desde: datetime, hasta: datetime) -> dict:
+    """Las cifras del periodo [desde, hasta), comparadas con el periodo
+    inmediato anterior de la misma duración — que es lo que el diseño llama
+    "vs. semana anterior". Más el consumo de la semana en curso contra el
+    tope, y el último uso de la llave.
+
+    El periodo llega como DOS INSTANTES con su zona, no como fechas, y es
+    semiabierto: incluye `desde` y excluye `hasta`. Es lo que evita el error de
+    día: el registro guarda UTC, pero "hoy" para quien mira es el día de SU
+    zona. Con fechas leídas como días UTC, todo lo que entraba después de las
+    18:00 en México (que ya es mañana en UTC) quedaba fuera de "hoy". Quien
+    llama manda la medianoche local de cada extremo (p. ej.
+    `2026-09-30T00:00:00-06:00` a `2026-10-01T00:00:00-06:00` para el 30 de
+    septiembre), y así cada extremo lleva su propio desfase, también si el
+    periodo cruza un cambio de horario.
+
+    `porDia` agrupa por día EN LA ZONA de `desde` (su desfase), que es el día
+    que ve quien consulta."""
+    if desde.tzinfo is None or hasta.tzinfo is None:
+        raise ValueError("El periodo debe traer zona horaria (por ejemplo 2026-09-30T00:00:00-06:00 o ...Z).")
+    if hasta <= desde:
+        raise ValueError("El fin del periodo es anterior o igual al inicio.")
+    try:
+        ini = desde.astimezone(timezone.utc)
+        fin = hasta.astimezone(timezone.utc)
+        duracion = fin - ini
+        inicio_anterior = ini - duracion
+    except OverflowError as exc:
+        raise ValueError("El periodo queda fuera de las fechas que se pueden calcular.") from exc
     todos = _eventos_de(llave_id)
     actual = [e for e in todos if ini <= e[0] < fin]
-    anterior = [e for e in todos if ini - duracion <= e[0] < ini]
+    anterior = [e for e in todos if inicio_anterior <= e[0] < ini]
     ahora = _ahora()
     semana = inicio_de_semana(ahora)
     consumo = sum(1 for e in todos if e[0] >= semana)
     ultimo = max((e[0] for e in todos), default=None)
+    desfase = desde.utcoffset() or timedelta(0)
     por_dia: dict[str, int] = {}
     for e in actual:
-        clave = e[0].date().isoformat()
+        clave = (e[0] + desfase).date().isoformat()
         por_dia[clave] = por_dia.get(clave, 0) + 1
     return {
         "desde": desde.isoformat(),
