@@ -150,6 +150,24 @@ async def limitar_tamano_subida(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def solo_lo_publico_por_el_dominio_publico(request: Request, call_next):
+    """Si la petición llegó por el dominio público, solo pasa lo de la
+    documentación pública: mandar un documento. Lo demás responde 404, incluso
+    con la llave de servicio. Ver superficie_publica.py para el porqué.
+
+    Va fuera de los demás middlewares (se define después de ellos) para que lo
+    rechazado ni se cuente como uso de una llave ni se procese.
+    """
+    import superficie_publica
+
+    if superficie_publica.por_nombre_publico(request.headers) and not superficie_publica.permitida(
+        request.method, request.url.path
+    ):
+        return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": "Not Found"})
+    return await call_next(request)
+
+
 # CORS se registra AL FINAL a propósito. Starlette mete cada middleware en el
 # índice 0, así que el último registrado queda como el MÁS EXTERNO: de este modo
 # el 413 que devuelve `limitar_tamano_subida` sí pasa por CORS y sale con sus

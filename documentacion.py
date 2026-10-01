@@ -27,7 +27,13 @@ from fastapi import FastAPI
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from config import HOSTS_PUBLICOS
+
 RUTA_PUBLICA = "/bandeja/"
+
+# El servidor que se ve en el ejemplo de curl: el dominio público, que es por
+# donde el cliente llega de verdad. Sin ninguno configurado, queda el marcador.
+_SERVIDOR_PUBLICO = f"https://{sorted(HOSTS_PUBLICOS)[0]}" if HOSTS_PUBLICOS else "<servidor>"
 
 _DESCRIPCION_PUBLICA = """
 Por aquí se mandan documentos a **NexusDoc AI**. Cada documento que llega
@@ -48,7 +54,7 @@ Aquí mismo puedes probarla: botón **Authorize**, pega tu llave, y luego
 ### Ejemplo
 
 ```bash
-curl -X POST <servidor>/bandeja/ \\
+curl -X POST __SERVIDOR__/bandeja/ \\
   -H "X-API-Key: nxdoc_live_XXXX_sk_…" \\
   -F "archivo=@ine_juan_perez.pdf;type=application/pdf"
 ```
@@ -153,7 +159,7 @@ def esquema_publico(completo: dict) -> dict:
         "info": {
             "title": "NexusDoc AI · API para clientes",
             "version": completo["info"].get("version", ""),
-            "description": _DESCRIPCION_PUBLICA,
+            "description": _DESCRIPCION_PUBLICA.replace("__SERVIDOR__", _SERVIDOR_PUBLICO),
         },
         "tags": [{"name": "Documentos", "description": "Mandar documentos a NexusDoc AI."}],
         "paths": {RUTA_PUBLICA: {"post": operacion}},

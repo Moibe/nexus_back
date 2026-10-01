@@ -44,6 +44,16 @@ PORT = int(_numero("PORT", 8083))
 _origins_env = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:7000,http://127.0.0.1:7000")
 CORS_ALLOWED_ORIGINS = [o.strip() for o in _origins_env.split(",") if o.strip()]
 
+# ── Dominio público ───────────────────────────────────────────────────────────
+# Los nombres con los que esta API se publica hacia clientes: el reverse proxy
+# de Soporte TI reenvía por ellos. Lo que llega por uno de estos nombres solo
+# puede usar lo de la documentación pública (mandar un documento); ver
+# superficie_publica.py. Varios, separados por coma. Una variable presente pero
+# VACÍA vale lo mismo que ausente: un renglón en blanco en el .env no debe
+# apagar la restricción sin que nadie se entere.
+_hosts_env = os.getenv("NEXUS_HOSTS_PUBLICOS", "").strip() or "nexus-doc-api.buzzword.com.mx"
+HOSTS_PUBLICOS = frozenset(h.strip().lower() for h in _hosts_env.split(",") if h.strip())
+
 # ── SQL Server ────────────────────────────────────────────────────────────────
 # La base la diseña y mantiene el DBA; aquí solo se consumen sus stored
 # procedures. No hay ORM ni migraciones de este lado a propósito.

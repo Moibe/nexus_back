@@ -367,8 +367,18 @@ SPs del DBA; solo cambian `servicios/bandeja.py` y
 **Un solo cliente.** El front opera con un tenant fijo, `NEXUS_TENANT` en su
 `.env` (default `demo`): de él muestra la bandeja y a él pertenecen las llaves.
 
-**Solo red interna.** El puerto 8083 no está publicado hacia fuera. Para un
-cliente externo hay que publicarlo por el dominio (con Soporte TI).
+**El dominio de los clientes** es `nexus-doc-api.buzzword.com.mx` (proxy de
+Soporte TI hacia el 8083, con certificado válido). Se pidió que reenviara solo
+`/bandeja/`, `/docs` y `/openapi.json`, pero el 2026-10-01, al estrenarlo, se
+vio que reenvía TODO, incluidos `/docs-interno` y `/health/db` (que sin llave da
+la versión de SQL Server y el nombre de la base). Por eso el back se protege
+solo, sin depender del proxy: `superficie_publica.py` y un middleware en
+`app.py` hacen que **lo que llega por un nombre público** (`Host`,
+`X-Forwarded-Host` o `Forwarded`; ver `NEXUS_HOSTS_PUBLICOS`) **solo pueda usar
+`POST /bandeja/`, `GET /docs` y `GET /openapi.json`**; lo demás responde 404,
+incluso con la llave de servicio. El front llama por IP, y eso no cambia. Si el
+proxy no conservara ningún nombre, la guarda no lo vería: al estrenar un dominio
+se comprueba desde fuera que `/docs-interno` responde 404.
 
 Verificarlo, offline: `venv/bin/python verificar_bandeja.py` y
 `venv/bin/python verificar_llaves_cliente.py`.

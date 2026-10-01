@@ -337,10 +337,73 @@ def main() -> int:
     texto = json.dumps(pub)
     rev("no menciona la llave de servicio ni rutas internas",
         not any(x in texto for x in ("NEXUS_API_KEY", "/llaves", "/ia/", "/procesadores", "/archivos", "retirar")), "")
+    descripcion_publica = pub["info"]["description"]
+    rev("el ejemplo de curl usa el dominio público, no un marcador",
+        "curl -X POST https://nexus-doc-api.buzzword.com.mx/bandeja/" in descripcion_publica
+        and "<servidor>" not in descripcion_publica and "__SERVIDOR__" not in descripcion_publica, descripcion_publica[400:600])
     rev("/docs se sirve", c.get("/docs").status_code == 200)
     rev("/redoc ya no existe", c.get("/redoc").status_code == 404)
     rev("con el formulario PÚBLICO (sin tenant) y una llave de cliente, la subida funciona",
         subir(c, secret_acme, contenido=PNG + b"publico").status_code == 201)
+
+    titulo("13c · Por el DOMINIO PÚBLICO solo sale lo de la documentación pública")
+    # Soporte TI reenvió TODO el back por el dominio (se comprobó el 2026-10-01:
+    # la documentación interna y /health/db, que da la versión de SQL Server).
+    # Esta guarda lo cierra desde aquí: por un nombre público solo pasan tres rutas.
+    import config
+    from servicios import uso_llaves as _uso
+    publico = sorted(config.HOSTS_PUBLICOS)[0]
+    rev("el dominio público de fábrica es el de los clientes", publico == "nexus-doc-api.buzzword.com.mx", publico)
+
+    def por(host, metodo, ruta, headers=None, **kw):
+        """Una petición como la entrega el proxy: con el nombre público en Host."""
+        return c.request(metodo, ruta, headers={"Host": host, **(headers or {})}, **kw)
+
+    rev("lo acordado funciona: GET /docs → 200", por(publico, "GET", "/docs").status_code == 200)
+    rev("GET /openapi.json → 200", por(publico, "GET", "/openapi.json").status_code == 200)
+    rr = por(publico, "POST", "/bandeja/", headers={"X-API-Key": secret_acme},
+             files={"archivo": ("dominio.png", PNG + b"dominio", "image/png")})
+    rev("POST /bandeja/ con llave de cliente → 201", rr.status_code == 201, f"{rr.status_code} {rr.text[:100]}")
+
+    cerradas = [
+        ("GET", "/docs-interno"), ("GET", "/openapi-interno.json"), ("GET", "/health"), ("GET", "/health/db"),
+        ("GET", "/llaves/"), ("POST", "/llaves/"), ("GET", "/bandeja/"), ("POST", "/archivos/"),
+        ("GET", "/archivos/demo/aa/bb/x"), ("GET", "/procesadores/clasificador"), ("POST", "/ia/ine"),
+        ("POST", "/bandeja/xyz/retirar"), ("POST", "/bandeja"), ("GET", "/redoc"), ("GET", "/"),
+    ]
+    resultado = [(m, r, por(publico, m, r, headers={"X-API-Key": SERVICIO}).status_code) for m, r in cerradas]
+    rev("todo lo demás responde 404, aun con la llave de SERVICIO", all(s == 404 for _, _, s in resultado),
+        str([x for x in resultado if x[2] != 404]))
+    rev("y el 404 no da pistas", por(publico, "GET", "/docs-interno").json() == {"detail": "Not Found"})
+
+    # Por dentro (IP o localhost, que es como llama el front) nada cambia.
+    rev("por la IP interna: /docs-interno → 200", c.get("/docs-interno", headers={"Host": "172.10.30.15:8083"}).status_code == 200)
+    rev("por localhost: /health → 200", c.get("/health", headers={"Host": "127.0.0.1:8083"}).status_code == 200)
+    rev("y el front puede listar llaves", c.get("/llaves/", params={"tenant": "demo"}, headers=srv({"Host": "172.10.30.15:8083"})).status_code == 200)
+
+    # Un proxy puede no conservar Host y dejar el nombre en X-Forwarded-Host.
+    interno = "172.10.30.15:8083"
+    variantes = {
+        "X-Forwarded-Host con el nombre público": {"Host": interno, "X-Forwarded-Host": publico},
+        "X-Forwarded-Host con varios, el público al final": {"Host": interno, "X-Forwarded-Host": f"otro.com, {publico}"},
+        "X-Forwarded-Host con varios, el público primero": {"Host": interno, "X-Forwarded-Host": f"{publico}, otro.com"},
+        "con puerto en Host": {"Host": f"{publico}:443"},
+        "en mayúsculas": {"Host": publico.upper()},
+        "Forwarded: host=": {"Host": interno, "Forwarded": f"for=10.0.0.9;host={publico};proto=https"},
+    }
+    for nombre, cab in variantes.items():
+        ok = all(c.get(r, headers=cab).status_code == 404 for r in ("/docs-interno", "/health/db", "/llaves/"))
+        rev(f"también se restringe: {nombre}", ok)
+    rev("un Host de otro dominio con X-Forwarded-Host ajeno NO se restringe",
+        c.get("/docs-interno", headers={"Host": interno, "X-Forwarded-Host": "otro.com"}).status_code == 200)
+
+    id_acme = seguridad_llaves.id_de(secret_acme)
+    antes = len(_uso._eventos_de(id_acme))
+    por(publico, "GET", "/llaves/", headers={"X-API-Key": secret_acme})
+    rev("lo que el dominio rechaza ni se cuenta como uso de la llave", len(_uso._eventos_de(id_acme)) == antes)
+    rev("una subida buena por el dominio SÍ cuenta", len(_uso._eventos_de(id_acme)) == antes and
+        (por(publico, "POST", "/bandeja/", headers={"X-API-Key": secret_acme}, files={"archivo": ("d2.png", PNG + b"dominio2", "image/png")}).status_code == 201)
+        and len(_uso._eventos_de(id_acme)) == antes + 1)
 
     titulo("14 · El validador del FRONT acepta las llaves que emite el servidor")
     if not (FRONT / "src" / "lib" / "apiKeys" / "formato.ts").exists() or shutil.which("node") is None:
