@@ -25,7 +25,7 @@ import secrets
 from dataclasses import dataclass
 from typing import Literal
 
-from fastapi import HTTPException, Security, status
+from fastapi import HTTPException, Request, Security, status
 from fastapi.security import APIKeyHeader
 
 import seguridad_llaves
@@ -102,35 +102,106 @@ class Identidad:
     llave_id: str | None = None
 
 
-def exigir_llave_o_cliente(llave: str | None = Security(_esquema_llave)) -> Identidad:
-    """Dependencia de FastAPI: la llave de servicio O una API Key de cliente.
+@dataclass(frozen=True)
+class Analisis:
+    """Lo que se sabe de la llave que trae una petición, resuelto UNA vez.
 
-    Es `def` y no `async def` a propósito: verificar una llave de cliente lee
-    el registro en el NAS, que es I/O síncrono y debe ir al threadpool.
+    Existe porque la misma pregunta se hace en dos lugares: el middleware que
+    corta antes de leer el cuerpo (`app.py`) y la dependencia del endpoint. Sin
+    esto, cada petición leería el registro de llaves dos veces.
+
+    `conocida` es la pieza que no se puede deducir del rechazo: dice si la
+    llave EXISTE en el registro, aunque esté revocada o vencida. El registro de
+    uso la necesita para no anotar identificadores inventados — ver
+    `servicios/uso_llaves.py`.
+    """
+
+    identidad: Identidad | None
+    #: El 401 o 503 que hay que contestar, ya armado; `None` si la llave sirve.
+    rechazo: HTTPException | None
+    llave_id: str | None = None
+    conocida: bool = False
+
+
+def analizar_llave(recibida: str) -> Analisis:
+    """Resuelve la llave sin contestar todavía: la llave de servicio, una API
+    Key de cliente, o el rechazo que corresponde.
+
+    No levanta: devuelve el rechazo dentro del `Analisis`, para que quien
+    llame decida CUÁNDO contestarlo. El middleware lo contesta antes de leer el
+    cuerpo; la dependencia lo levanta como siempre.
 
     Todos los rechazos dicen lo mismo —401 con el mensaje genérico—: decir
     "existe pero está revocada" le confirmaría a quien anda probando llaves
     que acertó una. El motivo real va al log, con el identificador público
     (que no es secreto) y nunca con la llave.
     """
-    recibida = llave or ""
     if seguridad_llaves.partes_de(recibida) is None:
         # No tiene forma de llave de cliente: es la del servicio, o nada.
-        _comprobar_llave_de_servicio(recibida)
-        return Identidad("servicio")
+        try:
+            _comprobar_llave_de_servicio(recibida)
+        except HTTPException as exc:
+            return Analisis(identidad=None, rechazo=exc)
+        return Analisis(identidad=Identidad("servicio"), rechazo=None)
 
     identificador = seguridad_llaves.id_de(recibida)
     try:
         fila = llaves_cliente.buscar_por_id(identificador) if identificador else None
-    except ErrorAlmacen as exc:
+    except ErrorAlmacen:
         logger.exception("No se pudo leer el registro de llaves")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="No se pudo verificar la llave en este momento. Intenta de nuevo en unos minutos.",
-        ) from exc
+        return Analisis(
+            identidad=None,
+            llave_id=identificador,
+            rechazo=HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="No se pudo verificar la llave en este momento. Intenta de nuevo en unos minutos.",
+            ),
+        )
     # La fila se busca UNA vez y se le pasa a `verificar` ya resuelta, para no
     # leer el registro dos veces por petición.
     if fila is None or not seguridad_llaves.verificar(recibida, lambda _id: fila):
         logger.info("Llave de cliente rechazada (id=%s)", identificador)
+        return Analisis(
+            identidad=None,
+            llave_id=identificador,
+            # Que la fila exista es lo que separa una llave revocada o vencida
+            # —uso real de un cliente, que sus métricas deben contar— de un
+            # identificador inventado, que no debe dejar rastro.
+            conocida=fila is not None,
+            rechazo=HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_NO_AUTORIZADO),
+        )
+    return Analisis(
+        identidad=Identidad("cliente", tenant=fila["tenant"], llave_id=identificador),
+        rechazo=None,
+        llave_id=identificador,
+        conocida=True,
+    )
+
+
+def analisis_de(request: Request, recibida: str) -> Analisis:
+    """El análisis de esta petición, calculado una sola vez y guardado en
+    `request.state`. Lo comparten el middleware de `app.py` y la dependencia."""
+    guardado = getattr(request.state, "analisis_de_llave", None)
+    if isinstance(guardado, Analisis):
+        return guardado
+    analisis = analizar_llave(recibida)
+    request.state.analisis_de_llave = analisis
+    return analisis
+
+
+def exigir_llave_o_cliente(request: Request, llave: str | None = Security(_esquema_llave)) -> Identidad:
+    """Dependencia de FastAPI: la llave de servicio O una API Key de cliente.
+
+    Es `def` y no `async def` a propósito: verificar una llave de cliente lee
+    el registro en el NAS, que es I/O síncrono y debe ir al threadpool.
+
+    Normalmente el trabajo ya está hecho: el middleware de `app.py` resolvió la
+    llave antes de leer el cuerpo y dejó el resultado en `request.state`. Si no
+    (una petición sin cuerpo), se resuelve aquí.
+    """
+    analisis = analisis_de(request, llave or "")
+    if analisis.rechazo is not None:
+        raise analisis.rechazo
+    if analisis.identidad is None:  # defensivo: no debería pasar
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_NO_AUTORIZADO)
-    return Identidad("cliente", tenant=fila["tenant"], llave_id=identificador)
+    return analisis.identidad

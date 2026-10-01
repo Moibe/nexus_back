@@ -340,8 +340,9 @@ quién acepta qué, en `seguridad.py`.
 
 ### Uso y métricas por llave
 
-Cada llamada con API Key de cliente queda registrada (`servicios/uso_llaves.py`,
-desde un middleware: cuentan también las rechazadas) y alimenta "Métricas" en
+Cada llamada con una API Key de cliente que EXISTE queda registrada
+(`servicios/uso_llaves.py`, desde un middleware: cuentan también las rechazadas,
+como las de una llave revocada que sigue llamando) y alimenta "Métricas" en
 el front vía `GET /llaves/{id}/metricas?tenant=&desde=&hasta=`. Cada llave
 tiene un **tope semanal** (`LIMITE_SEMANAL`, 500,000; lunes a domingo, UTC):
 al llegar, la API responde **429** a esa llave hasta el lunes. El conteo
@@ -355,6 +356,21 @@ UTC) quedaba fuera de "hoy". Para el 30 de septiembre en México:
 de un desfase positivo va como `%2B` en la URL). Sin zona responde 400. El
 tope semanal NO sigue la zona del periodo: es siempre la semana natural UTC,
 porque es lo que el servidor aplica.
+
+### La llave se revisa antes de leer el cuerpo
+
+FastAPI parsea el `multipart` ANTES de resolver la dependencia que exige la
+llave, así que una subida sin llave válida se recibía ENTERA —hasta el tope de
+20 MiB— y recién entonces contestaba 401 (medido: 19 MB a 4 MB/s, 4.5 s y todos
+los bytes enviados). Desde el 2026-10-01 la API está publicada en internet, así
+que el middleware `autenticar_y_medir_las_llaves` de `app.py` resuelve la llave
+primero y contesta el 401 **sin leer un byte** (medido: 0.00 s, 0 bytes). Solo
+corta cuando la petición trae cuerpo, para no pedirle llave a `/health` ni a
+`/docs`, que están abiertos a propósito; que ninguna ruta abierta reciba cuerpo
+lo comprueba `verificar_llaves_cliente.py` recorriendo el OpenAPI. La llave se
+resuelve UNA vez por petición y se comparte con la dependencia del endpoint vía
+`request.state` (`seguridad.analisis_de`), así que no se lee el registro dos
+veces. Verificado con sockets reales en `probar-corte-temprano.mjs`.
 
 ### Provisional
 

@@ -4,12 +4,19 @@ semanal por llave.
 
 ## Qué se registra
 
-UNA línea por petición que trajo una llave de cliente (con forma de llave,
-sea válida o no): cuándo, qué llave (su identificador público, nunca el
-secret), qué ruta, con qué código respondió, cuánto tardó y cuántos bytes
-traía. Se registra desde el middleware de `app.py`, así que entran también
-las rechazadas —401 por llave mala o revocada, 413, 429—: una métrica de
-errores que no cuenta los rechazos no sirve para nada.
+UNA línea por petición que trajo una llave de cliente QUE EXISTE: cuándo, qué
+llave (su identificador público, nunca el secret), qué ruta, con qué código
+respondió, cuánto tardó y cuántos bytes traía. Se registra desde el middleware
+de `app.py`, y entran también las rechazadas —401 por llave revocada o vencida,
+429—: una métrica de errores que no cuenta los rechazos no sirve para nada, y
+a quien tiene una llave revocada que sigue llamando hay que podérselo mostrar.
+
+NO se anota un identificador que NO EXISTE, y esa es la diferencia con cómo
+nació esto (corregido el 2026-10-01). Antes se anotaba cualquier cosa con forma
+de llave: una inundación de identificadores inventados hacía crecer sin tope el
+índice en memoria y este archivo del NAS, dos recursos del servidor, sin que
+hubiera jamás un cliente detrás. Mientras el puerto 8083 solo se alcanzaba
+desde la intranet era una rareza; con la API publicada en internet, no.
 
 Registro PROVISIONAL de solo agregar en el NAS, `uso-llaves.jsonl` (ver
 `servicios/registro.py`), igual que las llaves y la bandeja. Cuando exista la
@@ -20,9 +27,9 @@ líneas al día, no miles.
 ## El tope semanal
 
 `LIMITE_SEMANAL` solicitudes por llave por semana natural (lunes a domingo,
-UTC). Al llegar, la API responde 429 a esa llave hasta el lunes. Cuentan TODAS
-las peticiones con esa llave, aceptadas o no: si no, una llave rechazada
-podría martillar sin límite. Está implementado a pedido explícito
+UTC). Al llegar, la API responde 429 a esa llave hasta el lunes. Cuentan todas
+las peticiones de esa llave, aceptadas o no: si no, una llave revocada que
+sigue llamando martillaría sin límite. Está implementado a pedido explícito
 (2026-09-30) aunque hoy nadie se acerque: el aviso amarillo del front sale
 desde `AVISO_DESDE`.
 """

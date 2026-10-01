@@ -68,54 +68,120 @@ app = FastAPI(
     openapi_url=None,
 )
 
-@app.middleware("http")
-async def medir_uso_de_llaves(request: Request, call_next):
-    """Registra cada llamada que trae una API Key de cliente y aplica su tope
-    semanal. Va como middleware para contar TAMBIÉN las rechazadas (401, 413,
-    429): una métrica de errores que no cuenta los rechazos no sirve.
+def _trae_cuerpo(request: Request) -> bool:
+    """¿Esta petición viene con cuerpo? Es lo que decide si vale la pena
+    cortar antes de leerlo."""
+    if "chunked" in request.headers.get("transfer-encoding", "").lower():
+        return True
+    try:
+        return int(request.headers.get("content-length") or 0) > 0
+    except ValueError:
+        return True  # ilegible: trátala como si trajera cuerpo
 
-    Solo mira la FORMA del header: si parece llave de cliente, se anota bajo
-    su identificador público, sea válida o no. Ni verifica ni lee el secret.
+
+@app.middleware("http")
+async def autenticar_y_medir_las_llaves(request: Request, call_next):
+    """Resuelve la llave ANTES de leer el cuerpo, aplica el tope semanal y
+    registra el uso de las llaves de cliente.
+
+    Son tres cosas en un mismo lugar porque dependen del mismo dato —quién
+    manda esta petición— y resolverlo cuesta una lectura del registro de
+    llaves: se hace UNA vez y se comparte con la dependencia del endpoint por
+    `request.state` (ver `seguridad.analisis_de`).
+
+    ## Por qué corta aquí y no en la dependencia del endpoint (2026-10-01)
+
+    FastAPI parsea el `multipart` ANTES de resolver la dependencia que exige la
+    llave, así que una petición sin llave válida se subía ENTERA —hasta el tope
+    de 20 MiB— y recién entonces recibía su 401. Medido: 19 MB a 4 MB/s
+    tardaban 4.5 s con todos los bytes enviados. Daba igual mientras el puerto
+    8083 solo se alcanzara desde la intranet; desde el 2026-10-01 la API está
+    publicada en internet por `nexus-doc-api.buzzword.com.mx`, y eso convierte
+    el detalle en un desperdicio de red y disco que cualquiera puede provocar.
+    Ahora el 401 sale sin leer un solo byte (el mismo corte temprano que ya
+    hacía el 413 de `limitar_tamano_subida`: medido, 5 ms y 0 bytes subidos).
+
+    SOLO corta cuando la petición TRAE CUERPO. Una petición sin cuerpo sigue su
+    camino y la contesta el endpoint como siempre: así `/health` y `/docs`
+    —abiertos a propósito— no empiezan a pedir llave porque alguien mande un
+    header raro. Esto se apoya en que NINGUNA ruta abierta recibe cuerpo, y lo
+    comprueba `verificar_llaves_cliente.py` recorriendo el OpenAPI: si algún
+    día se agrega una ruta pública con cuerpo, esa prueba falla y hay que
+    revisar esta regla.
+
+    ## Qué uso se anota, y qué no
+
+    Se anota CADA llamada de una llave que EXISTE, aceptada o rechazada: una
+    métrica de errores que no cuenta los rechazos no sirve, y a quien tiene una
+    llave revocada que sigue llamando hay que poder mostrárselo.
+
+    Lo que ya NO se anota es un identificador que no existe. Antes se anotaba
+    cualquier cosa con forma de llave, así que una inundación de llaves
+    inventadas hacía crecer sin tope el índice en memoria y el archivo del NAS
+    —dos recursos del servidor— sin que hubiera nunca un cliente detrás.
     """
     import time
 
     from starlette.concurrency import run_in_threadpool
 
+    import seguridad
     import seguridad_llaves
     from servicios import uso_llaves
 
-    llave_id = seguridad_llaves.id_de(request.headers.get("x-api-key", ""))
-    if llave_id is None:
+    llave = request.headers.get("x-api-key", "")
+    trae_cuerpo = _trae_cuerpo(request)
+    # Sin cuerpo que cortar y sin llave de cliente que medir, no hay nada que
+    # hacer aquí: ni se lee el registro.
+    if not trae_cuerpo and seguridad_llaves.partes_de(llave) is None:
+        return await call_next(request)
+
+    try:
+        analisis = await run_in_threadpool(seguridad.analisis_de, request, llave)
+    except Exception:  # noqa: BLE001
+        # Un fallo inesperado al resolver la llave no puede tumbar la petición
+        # desde aquí: sigue su curso y la dependencia del endpoint decide.
+        logger.exception("No se pudo resolver la llave en el middleware")
         return await call_next(request)
 
     inicio = time.perf_counter()
-    # El tope se consulta en el threadpool: lee el registro del NAS. Si el
-    # registro no se puede leer, la llamada PASA — el tope es una cortesía de
-    # cuota, no una defensa, y no debe tumbar el servicio.
-    try:
-        excedida = await run_in_threadpool(uso_llaves.excede_limite, llave_id)
-    except Exception:  # noqa: BLE001
-        excedida = False
-    if excedida:
+    respuesta = None
+    if analisis.rechazo is not None and trae_cuerpo:
+        # El 401 (o el 503 si el registro no se pudo leer), sin leer el cuerpo.
         respuesta = JSONResponse(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            content={
-                "detail": (
-                    f"Esta API Key alcanzó su límite semanal de {uso_llaves.LIMITE_SEMANAL:,} "
-                    "solicitudes. Se reinicia el lunes."
-                )
-            },
+            status_code=analisis.rechazo.status_code, content={"detail": analisis.rechazo.detail}
         )
-    else:
+    elif analisis.identidad is not None and analisis.identidad.tipo == "cliente":
+        # El tope se consulta en el threadpool: lee el registro del NAS. Si el
+        # registro no se puede leer, la llamada PASA — el tope es una cortesía
+        # de cuota, no una defensa, y no debe tumbar el servicio.
+        try:
+            excedida = await run_in_threadpool(uso_llaves.excede_limite, analisis.llave_id)
+        except Exception:  # noqa: BLE001
+            excedida = False
+        if excedida:
+            respuesta = JSONResponse(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                content={
+                    "detail": (
+                        f"Esta API Key alcanzó su límite semanal de {uso_llaves.LIMITE_SEMANAL:,} "
+                        "solicitudes. Se reinicia el lunes."
+                    )
+                },
+            )
+    if respuesta is None:
         respuesta = await call_next(request)
-    ms = int((time.perf_counter() - inicio) * 1000)
-    try:
-        bytes_ = int(request.headers.get("content-length") or 0)
-    except ValueError:
-        bytes_ = 0
-    await run_in_threadpool(
-        uso_llaves.registrar, llave_id, request.url.path, request.method, respuesta.status_code, ms, bytes_
-    )
+
+    if analisis.llave_id and analisis.conocida:
+        ms = int((time.perf_counter() - inicio) * 1000)
+        try:
+            # Lo que la petición DIJO traer: si se cortó antes, esos bytes no
+            # se leyeron, pero es el tamaño que el cliente intentó mandar.
+            bytes_ = int(request.headers.get("content-length") or 0)
+        except ValueError:
+            bytes_ = 0
+        await run_in_threadpool(
+            uso_llaves.registrar, analisis.llave_id, request.url.path, request.method, respuesta.status_code, ms, bytes_
+        )
     return respuesta
 
 

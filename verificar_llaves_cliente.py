@@ -259,8 +259,8 @@ def main() -> int:
     rev("periodo al revés: 400", c.get(f"/llaves/{id_m}/metricas", params={"tenant": "demo", "desde": "2026-09-30T00:00:00Z", "hasta": "2026-09-01T00:00:00Z"}, headers=srv()).status_code == 400)
     contenido_uso = (RAIZ / ".registro" / "uso-llaves.jsonl").read_text(encoding="utf-8")
     rev("el registro de uso NO guarda el secret", sec_m not in contenido_uso)
-    rev("una llave falsa también se anota (bajo su id), sin abrir nada",
-        subir(c, "nxdoc_live_QqQq_sk_" + "b" * 32).status_code == 401 and '"llave": "QqQq"' in (RAIZ / ".registro" / "uso-llaves.jsonl").read_text(encoding="utf-8"))
+    # Una llave INVENTADA ya no deja rastro: ver 12g.
+    rev("una llave falsa se rechaza sin abrir nada", subir(c, "nxdoc_live_QqQq_sk_" + "b" * 32).status_code == 401)
 
     titulo("12f · El periodo viaja como instantes: el día es el de quien mira, no el de UTC")
     # Dos eventos de fecha fija, inyectados en el índice (solo en memoria: el
@@ -305,6 +305,65 @@ def main() -> int:
         rev("un periodo de milenios no revienta (400, no 500)", rr.status_code == 400, f"{rr.status_code} {rr.text[:100]}")
     finally:
         uso_llaves._indice[id_m] = [e for e in uso_llaves._indice.get(id_m, []) if e not in (tarde_mx, noche_mx)]
+
+    titulo("12g · Ni un byte ni un renglón de más por una llave que no existe")
+    # Dos agujeros que importaban poco mientras el 8083 era solo intranet, y
+    # dejaron de importar poco cuando la API se publicó en internet
+    # (2026-10-01): el cuerpo se leía entero antes del 401, y CUALQUIER id con
+    # forma de llave se anotaba en el registro de uso y en el índice en memoria.
+    archivo_uso = RAIZ / ".registro" / "uso-llaves.jsonl"
+    falsa = "nxdoc_live_Ff9f_sk_" + "c" * 26 + seguridad_llaves.checksum_de("nxdoc_live_Ff9f_sk_" + "c" * 26)
+    rev("la llave inventada tiene formato válido (el checksum no es seguridad)", seguridad_llaves.validar_formato(falsa))
+
+    antes_texto = archivo_uso.read_text(encoding="utf-8") if archivo_uso.exists() else ""
+    antes_indice = set(uso_llaves._indice)
+    rr = subir(c, falsa, contenido=PNG + b"inventada")
+    rev("una llave inventada: 401", rr.status_code == 401, f"{rr.status_code} {rr.text[:90]}")
+    despues_texto = archivo_uso.read_text(encoding="utf-8") if archivo_uso.exists() else ""
+    rev("NO deja renglón en el registro de uso del NAS", despues_texto == antes_texto)
+    rev("NI entra al índice en memoria", set(uso_llaves._indice) == antes_indice, str(set(uso_llaves._indice) - antes_indice))
+    rev("y no se puede inflar: 25 intentos con ids distintos no agregan nada",
+        all(subir(c, seguridad_llaves.generar()[1], contenido=PNG + bytes([i])).status_code == 401 for i in range(25))
+        and archivo_uso.read_text(encoding="utf-8") == antes_texto and set(uso_llaves._indice) == antes_indice)
+
+    # Una llave que SÍ existe pero fue revocada: su uso sí se cuenta, porque es
+    # un cliente de verdad y su dueño tiene que poder verlo en Métricas.
+    r_rev = emitir(c, nombre="para revocar y medir")
+    sec_rev, id_rev = r_rev.json()["secret"], r_rev.json()["llave"]["id"]
+    c.post(f"/llaves/{id_rev}/revocar", json={"tenant": "demo"}, headers=srv())
+    n_antes = len(uso_llaves._eventos_de(id_rev))
+    rev("una llave REVOCADA: 401", subir(c, sec_rev, contenido=PNG + b"revocada").status_code == 401)
+    rev("y SÍ se anota, para que sus métricas lo muestren", len(uso_llaves._eventos_de(id_rev)) == n_antes + 1)
+    m_rev = c.get(f"/llaves/{id_rev}/metricas", params={"tenant": "demo", **p_hoy}, headers=srv()).json()
+    rev("las métricas de la revocada cuentan ese error", m_rev["actual"]["errores"] >= 1, str(m_rev["actual"]))
+
+    # El corte temprano: la dependencia del endpoint ya no es quien contesta.
+    # Con TestClient no hay socket real, así que aquí se comprueba el QUÉ (el
+    # 401 y que nada se haya guardado) y en `probar-corte-temprano.mjs`, contra
+    # un servidor de verdad, el CUÁNDO (que no se suben los bytes).
+    grande = PNG + b"x" * (3 * 1024 * 1024)
+    antes_pend = len(pendientes(c))
+    # Foto nueva: la revocada de arriba sí anotó, y con razón.
+    antes_texto = archivo_uso.read_text(encoding="utf-8")
+    rev("un archivo de 3 MB sin llave: 401", subir(c, "", contenido=grande).status_code == 401)
+    rev("con llave inventada: 401", subir(c, falsa, contenido=grande).status_code == 401)
+    rev("y nada entró a la bandeja", len(pendientes(c)) == antes_pend)
+    rev("el registro de uso sigue igual", archivo_uso.read_text(encoding="utf-8") == antes_texto)
+
+    titulo("12h · Ninguna ruta ABIERTA recibe cuerpo")
+    # De esto depende la regla del middleware: corta solo cuando hay cuerpo,
+    # así que una ruta pública con cuerpo se volvería inalcanzable sin llave.
+    # Si esta prueba falla, hay que revisar `autenticar_y_medir_las_llaves`.
+    esquema = c.get("/openapi-interno.json", headers=srv()).json()
+    sin_candado = [
+        f"{metodo.upper()} {ruta}"
+        for ruta, ops in esquema["paths"].items()
+        for metodo, op in ops.items()
+        if op.get("requestBody") is not None and not op.get("security")
+    ]
+    rev("toda operación con cuerpo pide llave", sin_candado == [], str(sin_candado))
+    con_cuerpo = [f"{m.upper()} {r}" for r, ops in esquema["paths"].items() for m, op in ops.items() if op.get("requestBody")]
+    rev("y hay varias así (la prueba no pasa por vacía)", len(con_cuerpo) >= 5, str(len(con_cuerpo)))
 
     titulo("12e · El tope semanal responde 429 y no se sube nada")
     original = uso_llaves.LIMITE_SEMANAL
