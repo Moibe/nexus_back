@@ -382,8 +382,18 @@ limpio; de 5 MB en adelante sale el 500. Sin `Expect` —que es lo que hacen los
 navegadores y la mayoría de las librerías— siempre llega el 401 limpio. Por la
 IP interna el 401 siempre es limpio. Se queda así: lo degradado es la claridad
 del error en una petición que de todos modos iba a fallar por autenticación, y
-a cambio el servidor no recibe los bytes. Está en la lista de cosas que pedirle
-a Soporte TI, junto con subir el tope de 20 MiB a 25 MB.
+a cambio el servidor no recibe los bytes. Está pedido a Soporte TI.
+
+Al mismo Apache le pasa con el **413**, por lo mismo: `limitar_tamano_subida`
+también contesta sin leer el cuerpo.
+
+**El tope de tamaño es NUESTRO, no del proxy** (medido el 2026-10-01, y
+corrige lo que se creyó primero). `MAX_SUBIDA_MB` son 20, o sea 20 MiB
+exactos, y es lo que dice el Swagger público. Apache no tiene ningún límite
+en medio: sin `Expect`, una subida de 60 MB por el dominio llega hasta el
+back y la rechaza NUESTRO 413 con su mensaje. Lo que se vio como "el proxy
+corta en 20 MiB" era nuestro 413 temprano convertido en 500. O sea que no hay
+nada que pedirle a Soporte sobre el tamaño.
 
 ### Provisional
 
