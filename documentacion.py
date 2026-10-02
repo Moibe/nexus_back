@@ -272,8 +272,12 @@ def instalar(app: FastAPI) -> None:
             openapi_url="/openapi.json",
             title="NexusDoc AI · API para clientes",
             # Sin la sección "Schemas" al pie: al cliente no le dice nada que
-            # no esté ya en la operación.
-            swagger_ui_parameters={"defaultModelsExpandDepth": -1},
+            # no esté ya en la operación. Y la API key que se pone en "Authorize"
+            # se queda (localStorage del navegador) entre recargas y pestañas:
+            # QA y usuarios la probaban y la tenían que volver a pegar cada vez
+            # (2026-10-02). Se va solo con "Logout", al borrar datos del sitio o
+            # en una ventana de incógnito al cerrarla.
+            swagger_ui_parameters={"defaultModelsExpandDepth": -1, "persistAuthorization": True},
         )
 
     @app.get("/openapi-interno.json", include_in_schema=False)
@@ -282,4 +286,8 @@ def instalar(app: FastAPI) -> None:
 
     @app.get("/docs-interno", include_in_schema=False)
     def docs_interno() -> HTMLResponse:
-        return get_swagger_ui_html(openapi_url="/openapi-interno.json", title="NexusDoc AI · API interna")
+        return get_swagger_ui_html(
+            openapi_url="/openapi-interno.json",
+            title="NexusDoc AI · API interna",
+            swagger_ui_parameters={"persistAuthorization": True},
+        )
