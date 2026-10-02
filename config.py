@@ -4,6 +4,7 @@ Sigue el patrón de geospace_nucleo: constantes a nivel de módulo, sin clases n
 pydantic-settings. Se importa como `from config import ALGO`.
 """
 
+import ipaddress
 import os
 
 from dotenv import load_dotenv
@@ -66,6 +67,39 @@ NEXUS_API_KEY = os.getenv("NEXUS_API_KEY", "")
 # secret que no se sabe cifrar no se guarda. NO se cambia a la ligera: lo que se
 # cifró con la anterior ya no se puede descifrar.
 WEBHOOKS_CLAVE_CIFRADO = os.getenv("WEBHOOKS_CLAVE_CIFRADO", "").strip()
+
+
+def _redes(nombre: str, default: str) -> list:
+    """Una lista de redes separadas por coma. Vacía o ausente = el default: una
+    guarda de seguridad no se apaga por dejar el renglón en blanco."""
+    crudo = (os.getenv(nombre) or "").strip() or default
+    redes = []
+    for parte in crudo.split(","):
+        parte = parte.strip()
+        if not parte:
+            continue
+        try:
+            redes.append(ipaddress.ip_network(parte, strict=False))
+        except ValueError as exc:
+            raise RuntimeError(f"{nombre}: {parte!r} no es una red válida (ej. 172.10.0.0/16).") from exc
+    return redes
+
+
+# La guarda contra SSRF de los webhooks (servicios/entrega_webhooks.py) ya
+# rechaza toda dirección que no sea pública. Pero la red interna de CSI usa
+# 172.10.x.x, que NO es privada según el estándar (las privadas son 172.16 a
+# 172.31): para Python es "pública" y pasaría. Por eso se bloquea aquí, de forma
+# explícita. Varias, separadas por coma.
+WEBHOOKS_REDES_BLOQUEADAS = _redes("WEBHOOKS_REDES_BLOQUEADAS", "172.10.0.0/16")
+
+# SOLO para desarrollo: deja validar webhooks que apuntan a localhost. En el
+# server NUNCA: abriría la puerta a que una URL le pegue a los servicios de la
+# propia máquina (los hooks de despliegue no piden token).
+WEBHOOKS_PERMITIR_LOCAL = (os.getenv("WEBHOOKS_PERMITIR_LOCAL") or "").strip().lower() in {"1", "true", "si", "sí", "yes"}
+
+# Cuánto se espera al endpoint del cliente al validar (y, cuando exista, al
+# entregar).
+WEBHOOKS_TIMEOUT_S = _numero("WEBHOOKS_TIMEOUT_S", 10)
 
 SQLSERVER_HOST = os.getenv("SQLSERVER_HOST", "")
 SQLSERVER_PORT = os.getenv("SQLSERVER_PORT", "1433")

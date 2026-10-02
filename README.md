@@ -434,6 +434,7 @@ sea rechazado. **Todavía no se envía ningún aviso**: esto es el registro.
 | `GET /webhooks/?tenant=` | Los vigentes, del más nuevo al más viejo. Nunca trae el secret ni su cifrado. |
 | `POST /webhooks/{id}/estado` | Lo activa o desactiva. |
 | `POST /webhooks/{id}/eliminar` | Lo da de baja. Repetirlo no es error. |
+| `POST /webhooks/{id}/validar` | Le manda al endpoint un **aviso de prueba firmado** y lo da por validado si responde 2xx. Un endpoint que no responde bien no es error de esta llamada: contesta 200 con `validado: false` y el motivo. 429 si se repite muy seguido. |
 
 Las cuatro piden la llave de servicio (solo las usa el front) y por el dominio
 público responden 404, como todo lo que no sea `POST /bandeja/`. La URL se
@@ -460,18 +461,68 @@ el DBA entregue las tablas; solo cambia `servicios/webhooks_cliente.py`. Como
 no se reescribe nada, eliminar un webhook deja su línea —con el secret
 cifrado— en el archivo, sin usarse.
 
-**Lo que falta para ENVIAR**, y tiene que estar antes de encenderlo:
+### Validar la conexión (desde el 2026-10-01)
 
-1. **Guarda contra SSRF al entregar**: resolver el nombre y rechazar IPs
-   privadas, loopback y link-local, también en redirecciones. La validación
-   del alta solo mira la forma.
-2. **La firma**: HMAC-SHA256 del cuerpo con el secret (`secret_para_firmar`),
-   con marca de tiempo contra repeticiones, y documentar las cabeceras para el
-   cliente.
-3. **Reintentos con retroceso y registro de entregas**, que es lo que alimenta
-   las métricas del front.
-4. **Avisar del fin de un documento**: el pipeline corre en el navegador, así
+Un webhook nace **sin validar** (`validadoEn: null`) y no recibirá avisos hasta
+que su endpoint responda 2xx a un aviso de prueba. El front, mientras tanto,
+solo le ofrece "Validar conexión" (y eliminarlo).
+
+**La guarda contra SSRF** (`servicios/entrega_webhooks.py`). Validar es que el
+servidor le haga una petición, desde la red de CSI, a una URL que escribió
+alguien. Por eso, al ENTREGAR —no al registrar: el DNS puede cambiar entre las
+dos—:
+
+- solo `https://`;
+- se resuelve el nombre y se rechaza si **cualquiera** de sus direcciones no es
+  pública (privadas, loopback, link-local, reservadas, multicast, IPv4
+  escondidas en IPv6);
+- y además las de `WEBHOOKS_REDES_BLOQUEADAS`, por defecto **`172.10.0.0/16`**:
+  la red interna de CSI usa 172.10.x.x, que **no es privada** según el estándar
+  (las privadas son 172.16-172.31), así que para Python es "pública" y la regla
+  anterior la dejaría pasar. Medido: `172.10.30.15` da `is_global=True`;
+- se conecta a la IP ya revisada, con el nombre original en `Host` y en el SNI
+  (el certificado se sigue revisando contra el nombre): un DNS que cambie
+  entre la revisión y la conexión no se cuela;
+- sin seguir redirecciones, sin proxies del entorno y sin leer la respuesta.
+
+`WEBHOOKS_PERMITIR_LOCAL=1` deja validar contra localhost: **solo para
+desarrollo**, nunca en el server. Y para que el botón no sirva de relevo de
+ráfagas hacia terceros, se deja una validación cada 5 s por webhook y 20 por
+minuto en total.
+
+### Cómo se firma un aviso (lo que el cliente necesita)
+
+Según **[Standard Webhooks](https://www.standardwebhooks.com/)**, de donde viene
+el prefijo `whsec_`. El cliente puede verificarlo con las bibliotecas que ya
+existen para casi cualquier lenguaje (`standardwebhooks`, `svix`), sin
+programarlo a mano. Cada aviso es un `POST` con JSON:
+
+```http
+POST /webhooks/nexusdoc HTTP/1.1
+Content-Type: application/json
+webhook-id: msg_2c1f0e9a8b7d6c5e4f3a2b1c
+webhook-timestamp: 1696180000
+webhook-signature: v1,<HMAC-SHA256 en base64>
+
+{"type":"webhook.validacion","timestamp":"2026-10-01T20:00:00+00:00","data":{"webhookId":"wh_...","mensaje":"..."}}
+```
+
+- Lo firmado es `{webhook-id}.{webhook-timestamp}.{cuerpo tal cual llegó}`.
+- La llave HMAC-SHA256 es lo que va después de `whsec_`, **decodificado en
+  base64**. La firma va en base64, precedida de `v1,`.
+- El cliente debe rechazar marcas de tiempo de más de 5 minutos (repeticiones)
+  y puede usar `webhook-id` para no procesar dos veces el mismo aviso.
+
+`verificar_webhooks.py` comprueba la firma contra el **vector de prueba
+publicado** por el estándar, y contra una verificación escrita aparte.
+
+**Lo que falta para enviar EVENTOS** (la guarda y la firma ya están):
+
+1. **Reintentos con retroceso y registro de entregas**, que es lo que alimenta
+   las métricas del front (hoy contestan ceros).
+2. **Avisar del fin de un documento**: el pipeline corre en el navegador, así
    que el servidor no se entera solo; el front tiene que decírselo.
+3. **Publicar el formato** de arriba en la documentación pública para clientes.
 
 Verificarlo, offline: `venv/bin/python verificar_webhooks.py`.
 

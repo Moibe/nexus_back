@@ -5,7 +5,8 @@ Lo usa SOLO el front (módulo "Webhooks"), con su llave de servicio: el router
 entero va detrás de `exigir_llave` en `app.py`, y por el dominio público no se
 alcanza (`superficie_publica.py` solo deja pasar tres rutas).
 
-TODAVÍA NO SE ENVÍA NINGÚN AVISO: esto es el registro. El secret de firma se
+TODAVÍA NO SE ENVÍAN AVISOS DE EVENTOS: esto es el registro, más el aviso de
+prueba con el que se valida la conexión (`/validar`). El secret de firma se
 genera AQUÍ, en el servidor, y viaja una sola vez: en la respuesta del alta,
 con `Cache-Control: no-store`. Se guarda cifrado y no se escribe en logs; la URL
 tampoco se loguea, porque hay endpoints que llevan un token en la consulta.
@@ -21,7 +22,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 
-from servicios import webhooks_cliente
+from servicios import entrega_webhooks, webhooks_cliente
 from servicios.almacen import ErrorAlmacen
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,10 @@ class CambioDeEstado(BaseModel):
 
 
 class Baja(BaseModel):
+    tenant: str
+
+
+class Validacion(BaseModel):
     tenant: str
 
 
@@ -150,3 +155,55 @@ def eliminar(identificador: str, datos: Baja):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
     logger.info("Webhook eliminado (id=%s, tenant=%s)", identificador, datos.tenant)
     return {"eliminado": True}
+
+
+@router.post(
+    "/{identificador}/validar",
+    tags=["Webhooks"],
+    summary="Validar la conexión de un webhook",
+    description=(
+        "Le manda al endpoint un aviso de prueba firmado (`webhook.validacion`, "
+        "Standard Webhooks) y lo da por validado si responde 2xx en el tiempo "
+        "límite. No sigue redirecciones y solo llega a direcciones públicas. "
+        "Un endpoint que no responde bien NO es un error de esta llamada: responde "
+        "200 con `validado: false` y el motivo."
+    ),
+)
+def validar(identificador: str, datos: Validacion):
+    try:
+        objetivo = webhooks_cliente.para_validar(datos.tenant, identificador)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except webhooks_cliente.SinCifrado as exc:
+        raise _sin_cifrado(exc) from exc
+    except ErrorAlmacen as exc:
+        raise _no_disponible(exc, f"validar, tenant={datos.tenant}") from exc
+    if objetivo is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
+
+    espera = entrega_webhooks.limite_validaciones.motivo_para_esperar(identificador)
+    if espera:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=espera)
+
+    url, secret = objetivo
+    try:
+        resultado = entrega_webhooks.entregar(
+            url,
+            secret,
+            "webhook.validacion",
+            {
+                "webhookId": identificador,
+                "mensaje": "Aviso de prueba de NexusDoc. Responde con un código 2xx para validar este webhook.",
+            },
+        )
+    except entrega_webhooks.Rechazo as exc:
+        logger.info("Validación fallida (id=%s, tenant=%s): %s", identificador, datos.tenant, exc)
+        return {"validado": False, "motivo": str(exc)}
+    try:
+        webhook = webhooks_cliente.marcar_validado(datos.tenant, identificador, resultado["codigo"], resultado["ms"])
+    except ErrorAlmacen as exc:
+        raise _no_disponible(exc, f"marcar validado, tenant={datos.tenant}") from exc
+    if webhook is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
+    logger.info("Webhook validado (id=%s, tenant=%s, codigo=%s, ms=%s)", identificador, datos.tenant, resultado["codigo"], resultado["ms"])
+    return {"validado": True, "webhook": webhook, **resultado}

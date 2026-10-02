@@ -4,8 +4,16 @@ Lo definitivo son las tablas que se le van a pedir al DBA (el webhook de cada
 endpoint de cliente, y sus entregas). Mientras tanto viven en un registro de
 solo agregar en el NAS, `webhooks.jsonl` (ver `servicios/registro.py`), igual
 que las API Keys: un evento `registrado` por webhook, uno `estado` cada vez que
-se activa o desactiva, y uno `eliminado`. El día que existan las tablas cambia
-ESTE módulo y nada más.
+se activa o desactiva, uno `validado` cuando su endpoint respondió al aviso de
+prueba, y uno `eliminado`. El día que existan las tablas cambia ESTE módulo y
+nada más.
+
+## Validado antes de usarse
+
+Un webhook nace SIN validar: hasta que su endpoint responda 2xx a un aviso de
+prueba firmado (`POST /webhooks/{id}/validar`, ver
+`servicios/entrega_webhooks.py`), no recibirá avisos, y el front solo le ofrece
+"Validar conexión". `validadoEn` dice cuándo se validó; `None` es pendiente.
 
 ## Todavía no se envía nada
 
@@ -39,6 +47,7 @@ cifrado se queda en el archivo, sin usarse. Con las tablas, borrar la fila lo
 destruye de verdad.
 """
 
+import base64
 import secrets
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
@@ -59,7 +68,10 @@ ESTADOS = ("activo", "inactivo")
 
 LARGO_MAXIMO_URL = 2048
 PREFIJO_SECRET = "whsec_"
-# 24 bytes = 192 bits, en hexadecimal: 48 caracteres después del prefijo.
+# 24 bytes = 192 bits, en base64: 32 caracteres después del prefijo. Base64 y no
+# hexadecimal porque así lo esperan las bibliotecas de Standard Webhooks del
+# lado del cliente (ver `servicios/entrega_webhooks.py`); los primeros secrets,
+# en hexadecimal, también son base64 válido y siguen sirviendo.
 _BYTES_SECRET = 24
 
 _LOCALES = {"localhost", "127.0.0.1", "::1"}
@@ -134,12 +146,13 @@ def validar_url(texto: str) -> str:
     return f"{esquema}://{nombre}{partes.path or '/'}{consulta}"
 
 
-def _indice() -> tuple[dict[str, dict], dict[str, str], set[str]]:
-    """Los webhooks registrados por id, el estado vigente de cada uno y los
-    eliminados."""
+def _indice() -> tuple[dict[str, dict], dict[str, str], set[str], dict[str, str]]:
+    """Los webhooks registrados por id, el estado vigente de cada uno, los
+    eliminados, y cuándo se validó cada uno."""
     registrados: dict[str, dict] = {}
     estados: dict[str, str] = {}
     eliminados: set[str] = set()
+    validados: dict[str, str] = {}
     for e in registro.eventos(ARCHIVO):
         identificador = e.get("id")
         if not isinstance(identificador, str):
@@ -157,10 +170,13 @@ def _indice() -> tuple[dict[str, dict], dict[str, str], set[str]]:
             estados[identificador] = e["estado"] if e.get("estado") in ESTADOS else "inactivo"
         elif tipo == "eliminado":
             eliminados.add(identificador)
-    return registrados, estados, eliminados
+        elif tipo == "validado" and isinstance(e.get("en"), str):
+            # El último gana: es la validación vigente.
+            validados[identificador] = e["en"]
+    return registrados, estados, eliminados, validados
 
 
-def _publico(webhook: dict, estado: str) -> dict:
+def _publico(webhook: dict, estado: str, validado_en: str | None) -> dict:
     """El webhook como lo ve el listado: SIN el secret ni su cifrado."""
     return {
         "id": webhook["id"],
@@ -168,6 +184,7 @@ def _publico(webhook: dict, estado: str) -> dict:
         "eventos": [e for e in EVENTOS if e in (webhook.get("eventos") or [])],
         "estado": estado,
         "creadoEn": webhook.get("creadoEn"),
+        "validadoEn": validado_en,
     }
 
 
@@ -200,7 +217,7 @@ def registrar(tenant: str, url: str, eventos: list[str]) -> tuple[str, dict]:
     # Buscar repetidos, sortear el id y escribir bajo el MISMO candado: si no,
     # dos altas simultáneas podrían colarse con la misma URL o el mismo id.
     with registro.candado:
-        registrados, _, eliminados = _indice()
+        registrados, _, eliminados, _ = _indice()
         if any(
             w.get("tenant") == tenant and w.get("url") == url and i not in eliminados
             for i, w in registrados.items()
@@ -211,7 +228,7 @@ def registrar(tenant: str, url: str, eventos: list[str]) -> tuple[str, dict]:
         identificador = "wh_" + secrets.token_hex(6)
         while identificador in registrados:
             identificador = "wh_" + secrets.token_hex(6)
-        secret = PREFIJO_SECRET + secrets.token_hex(_BYTES_SECRET)
+        secret = PREFIJO_SECRET + base64.b64encode(secrets.token_bytes(_BYTES_SECRET)).decode()
         evento = {
             "evento": "registrado",
             "id": identificador,
@@ -222,14 +239,14 @@ def registrar(tenant: str, url: str, eventos: list[str]) -> tuple[str, dict]:
             "creadoEn": _ahora().isoformat(timespec="seconds"),
         }
         registro.agregar(ARCHIVO, evento)
-    return secret, _publico(evento, "activo")
+    return secret, _publico(evento, "activo", None)
 
 
 def listar(tenant: str) -> list[dict]:
     """Los webhooks vigentes del tenant, del más nuevo al más viejo, sin
     secrets."""
     tenant = almacen._validar_tenant(tenant)
-    registrados, estados, eliminados = _indice()
+    registrados, estados, eliminados, validados = _indice()
     propios = [
         (posicion, w)
         for posicion, (i, w) in enumerate(registrados.items())
@@ -238,7 +255,7 @@ def listar(tenant: str) -> list[dict]:
     # Dos altas en el mismo segundo empatan en `creadoEn`: desempata el orden
     # del registro, para que el más nuevo siga saliendo primero.
     propios.sort(key=lambda par: (par[1].get("creadoEn") or "", par[0]), reverse=True)
-    return [_publico(w, estados.get(w["id"], "activo")) for _, w in propios]
+    return [_publico(w, estados.get(w["id"], "activo"), validados.get(w["id"])) for _, w in propios]
 
 
 def cambiar_estado(tenant: str, identificador: str, estado: str) -> dict | None:
@@ -251,7 +268,7 @@ def cambiar_estado(tenant: str, identificador: str, estado: str) -> dict | None:
     if estado not in ESTADOS:
         raise ValueError("El estado tiene que ser activo o inactivo.")
     with registro.candado:
-        registrados, estados, eliminados = _indice()
+        registrados, estados, eliminados, validados = _indice()
         webhook = _vigente(registrados, eliminados, tenant, identificador)
         if webhook is None:
             return None
@@ -260,7 +277,7 @@ def cambiar_estado(tenant: str, identificador: str, estado: str) -> dict | None:
                 ARCHIVO,
                 {"evento": "estado", "id": identificador, "estado": estado, "en": _ahora().isoformat(timespec="seconds")},
             )
-    return _publico(webhook, estado)
+    return _publico(webhook, estado, validados.get(identificador))
 
 
 def eliminar(tenant: str, identificador: str) -> bool:
@@ -270,7 +287,7 @@ def eliminar(tenant: str, identificador: str) -> bool:
     `False` si no existe o es de otro tenant."""
     tenant = almacen._validar_tenant(tenant)
     with registro.candado:
-        registrados, _, eliminados = _indice()
+        registrados, _, eliminados, _ = _indice()
         webhook = registrados.get(identificador)
         if webhook is None or webhook.get("tenant") != tenant:
             return False
@@ -289,7 +306,7 @@ def secret_para_firmar(identificador: str) -> str | None:
     se pruebe de ida y vuelta (`verificar_webhooks.py`): un secret que se
     guarda pero no se puede recuperar no firmaría nada. Levanta `SinCifrado` si
     la llave actual no lo abre, que es lo que pasa si alguien la cambió."""
-    registrados, _, eliminados = _indice()
+    registrados, _, eliminados, _ = _indice()
     webhook = registrados.get(identificador)
     if webhook is None or identificador in eliminados:
         return None
@@ -299,3 +316,29 @@ def secret_para_firmar(identificador: str) -> str | None:
         raise SinCifrado(
             "El secret de este webhook no se puede descifrar con la llave actual: ¿cambió WEBHOOKS_CLAVE_CIFRADO?"
         ) from exc
+
+
+def para_validar(tenant: str, identificador: str) -> tuple[str, str] | None:
+    """`(url, secret)` de un webhook vigente del tenant, para mandarle el aviso de
+    prueba; `None` si no existe, es de otro tenant o se eliminó. Levanta
+    `SinCifrado` si su secret no se puede descifrar."""
+    tenant = almacen._validar_tenant(tenant)
+    registrados, _, eliminados, _ = _indice()
+    if _vigente(registrados, eliminados, tenant, identificador) is None:
+        return None
+    return registrados[identificador]["url"], secret_para_firmar(identificador)
+
+
+def marcar_validado(tenant: str, identificador: str, codigo: int, ms: int) -> dict | None:
+    """Registra que el endpoint respondió al aviso de prueba. Devuelve el webhook,
+    o `None` si se eliminó mientras se validaba: el aviso ya salió, pero no se
+    valida algo que ya no existe."""
+    tenant = almacen._validar_tenant(tenant)
+    en = _ahora().isoformat(timespec="seconds")
+    with registro.candado:
+        registrados, estados, eliminados, _ = _indice()
+        webhook = _vigente(registrados, eliminados, tenant, identificador)
+        if webhook is None:
+            return None
+        registro.agregar(ARCHIVO, {"evento": "validado", "id": identificador, "en": en, "codigo": codigo, "ms": ms})
+    return _publico(webhook, estados.get(identificador, "activo"), en)

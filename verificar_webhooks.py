@@ -10,12 +10,28 @@ Lo que importa no es que se registre un webhook: es que el secret salga UNA
 vez, que no quede escrito en claro en ningún lado, que el servidor SÍ pueda
 recuperarlo para firmar (si no, guardarlo no serviría de nada), que sin llave
 de cifrado no se guarde nada, y que cada quien vea y toque solo lo suyo.
+
+Y de la validación de conexión: que el aviso de prueba vaya firmado como pide
+Standard Webhooks —verificado con una implementación escrita aparte y con el
+vector de prueba publicado—, que solo un 2xx valide, y que la guarda contra
+SSRF rechace la red interna de CSI SIN llegar a conectar. El endpoint de cliente
+es un servidor HTTP de verdad en 127.0.0.1.
 """
 
+import base64
+import contextlib
+import hashlib
+import hmac
+import http.server
+import ipaddress
+import json
 import os
 import re
 import shutil
+import socket
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 from cryptography.fernet import Fernet
@@ -32,7 +48,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import config  # noqa: E402
 from app import app  # noqa: E402
-from servicios import almacen, webhooks_cliente  # noqa: E402
+from servicios import almacen, entrega_webhooks, webhooks_cliente  # noqa: E402
 
 (RAIZ / almacen.CENTINELA).touch()
 REGISTRO = RAIZ / ".registro" / "webhooks.jsonl"
@@ -81,10 +97,11 @@ def main() -> int:
     rev("responde 201", r.status_code == 201, f"{r.status_code} {r.text[:200]}")
     cuerpo = r.json()
     secret, webhook = cuerpo["secret"], cuerpo["webhook"]
-    rev("el secret es whsec_ + 48 hexadecimales", re.fullmatch(r"whsec_[0-9a-f]{48}", secret) is not None, secret[:12])
+    rev("el secret es whsec_ + 32 caracteres base64 (24 bytes)",
+        re.fullmatch(r"whsec_[A-Za-z0-9+/]{32}", secret) is not None and len(base64.b64decode(secret[6:])) == 24, secret[:12])
     rev("la respuesta pide no guardarse (no-store)", r.headers.get("cache-control") == "no-store")
     rev("el webhook no trae el secret ni su cifrado",
-        set(webhook) == {"id", "url", "eventos", "estado", "creadoEn"}, str(set(webhook)))
+        set(webhook) == {"id", "url", "eventos", "estado", "creadoEn", "validadoEn"}, str(set(webhook)))
     rev("nace activo", webhook["estado"] == "activo")
     rev("los eventos salen en el orden del diseño, no en el pedido",
         webhook["eventos"] == ["documento.completado", "documento.fallido"], str(webhook["eventos"]))
@@ -139,7 +156,7 @@ def main() -> int:
     titulo("4 · Listar: sin secrets, del más nuevo al más viejo, cada quien lo suyo")
     lista = listado(c)
     rev("trae los del cliente", len(lista) >= 6, str(len(lista)))
-    rev("ninguno trae secret ni cifrado", all(set(w) == {"id", "url", "eventos", "estado", "creadoEn"} for w in lista))
+    rev("ninguno trae secret ni cifrado", all(set(w) == {"id", "url", "eventos", "estado", "creadoEn", "validadoEn"} for w in lista))
     rev("el primero es el más nuevo, el último el más viejo",
         lista[0]["url"] == "https://api.empresa.com/" and lista[-1]["id"] == webhook["id"],
         str([w["url"] for w in lista]))
@@ -213,9 +230,215 @@ def main() -> int:
     del_front = tuple(re.findall(r"valor: '([^']+)'", bloque))
     rev("misma lista y mismo orden", del_front == webhooks_cliente.EVENTOS, str(del_front))
 
+    titulo("10 · Validar: un aviso de prueba firmado, y solo vale un 2xx")
+    entrega_webhooks.limite_validaciones.reiniciar()
+    receptor = Receptor.iniciar()
+    url_local = f"http://127.0.0.1:{receptor.puerto}/hooks/nexus"
+    config.WEBHOOKS_PERMITIR_LOCAL = False
+    nuevo = alta(c, url=url_local).json()
+    wid, wsecret = nuevo["webhook"]["id"], nuevo["secret"]
+    rev("nace sin validar", nuevo["webhook"]["validadoEn"] is None)
+    rev("y así lo lista", next(w for w in listado(c) if w["id"] == wid)["validadoEn"] is None)
+    v = validar(c, wid)
+    rev("sin WEBHOOKS_PERMITIR_LOCAL, localhost se rechaza como dirección interna",
+        v.status_code == 200 and v.json()["validado"] is False and "interna" in v.json()["motivo"], v.text[:200])
+    rev("y no se le mandó nada", receptor.recibidos == [])
+    config.WEBHOOKS_PERMITIR_LOCAL = True
+    entrega_webhooks.limite_validaciones.reiniciar()
+    receptor.responder(200)
+    v = validar(c, wid)
+    cuerpo_v = v.json()
+    rev("responde 2xx: queda validado", v.status_code == 200 and cuerpo_v.get("validado") is True, v.text[:200])
+    rev("trae validadoEn, el código y los ms",
+        bool(cuerpo_v.get("webhook", {}).get("validadoEn")) and cuerpo_v.get("codigo") == 200 and isinstance(cuerpo_v.get("ms"), int))
+    rev("el listado lo dice", next(w for w in listado(c) if w["id"] == wid)["validadoEn"] == cuerpo_v["webhook"]["validadoEn"])
+    rev("llegó UN aviso", len(receptor.recibidos) == 1, str(len(receptor.recibidos)))
+    aviso = receptor.recibidos[-1]
+    cab = {k.lower(): val for k, val in aviso["cabeceras"].items()}
+    rev("un POST a la ruta registrada", aviso["metodo"] == "POST" and aviso["ruta"] == "/hooks/nexus", f"{aviso['metodo']} {aviso['ruta']}")
+    rev("con las tres cabeceras de Standard Webhooks", all(k in cab for k in ("webhook-id", "webhook-timestamp", "webhook-signature")))
+    rev("la firma se verifica como lo haría una biblioteca de Standard Webhooks", _firma_valida(wsecret, cab, aviso["cuerpo"]))
+    rev("y NO se verifica con otro secret", not _firma_valida("whsec_" + base64.b64encode(b"x" * 24).decode(), cab, aviso["cuerpo"]))
+    rev("la marca de tiempo es de ahora", abs(int(cab["webhook-timestamp"]) - time.time()) < 60)
+    datos = json.loads(aviso["cuerpo"])
+    rev("el cuerpo dice qué es y de qué webhook",
+        datos.get("type") == "webhook.validacion" and datos.get("data", {}).get("webhookId") == wid, str(datos)[:160])
+    rev("es JSON", cab.get("content-type") == "application/json")
+    rev("el secret NO viaja en el aviso", wsecret not in aviso["cuerpo"].decode() and all(wsecret not in str(x) for x in cab.values()))
+    rev("la firma coincide con el vector de prueba publicado por Standard Webhooks",
+        entrega_webhooks.firmar("whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw", "msg_p5jXN8AQM9LWM0D4loKWxJek", "1614265330",
+                                b'{"test": 2432232314}') == "v1,g0hM9SsE+OTPJTGt/tmIKtSyZlE3uFJELVlNIOLJ1OE=")
+
+    titulo("11 · Lo que NO valida")
+    for codigo, texto in ((500, "respondió 500"), (404, "respondió 404"), (302, "redirección")):
+        entrega_webhooks.limite_validaciones.reiniciar()
+        receptor.responder(codigo, cabeceras={"Location": "http://10.0.0.1/"} if codigo == 302 else None)
+        i = alta(c, url=f"{url_local}/{codigo}").json()["webhook"]["id"]
+        v = validar(c, i).json()
+        rev(f"{codigo}: no se valida, y dice por qué", v.get("validado") is False and texto in v.get("motivo", ""), str(v)[:200])
+        rev(f"{codigo}: sigue pendiente", next(w for w in listado(c) if w["id"] == i)["validadoEn"] is None)
+    entrega_webhooks.limite_validaciones.reiniciar()
+    config.WEBHOOKS_TIMEOUT_S = 1
+    receptor.responder(200, retraso=2.5)
+    i = alta(c, url=f"{url_local}/lento").json()["webhook"]["id"]
+    v = validar(c, i).json()
+    rev("si no responde a tiempo: no se valida, y lo dice", v.get("validado") is False and "no respondió" in v.get("motivo", ""), str(v)[:200])
+    config.WEBHOOKS_TIMEOUT_S = 10
+    receptor.responder(200)
+    rev("validar uno de otro cliente da 404", c.post(f"/webhooks/{wid}/validar", json={"tenant": "acme"}, headers=srv()).status_code == 404)
+    borrado = alta(c, url=f"{url_local}/borrado").json()["webhook"]["id"]
+    c.post(f"/webhooks/{borrado}/eliminar", json={"tenant": "demo"}, headers=srv())
+    rev("validar uno eliminado da 404", validar(c, borrado).status_code == 404)
+    entrega_webhooks.limite_validaciones.reiniciar()
+    validar(c, wid)
+    v = validar(c, wid)
+    rev("dos seguidas del mismo: la segunda espera (429)", v.status_code == 429 and "Espera" in v.text, f"{v.status_code} {v.text[:120]}")
+    entrega_webhooks.limite_validaciones.reiniciar()
+    rev("sin llave de servicio da 401", c.post(f"/webhooks/{wid}/validar", json={"tenant": "demo"}).status_code == 401)
+
+    titulo("12 · La guarda contra la red interna, al ENTREGAR (sin llegar a conectar)")
+    config.WEBHOOKS_PERMITIR_LOCAL = False
+    internas = {
+        "el server de CSI, 172.10.30.15": "https://172.10.30.15/hook",
+        "el NAS de CSI, 172.10.30.58": "https://172.10.30.58/hook",
+        "una privada, 10.1.2.3": "https://10.1.2.3/hook",
+        "la de metadatos de nube, 169.254.169.254": "https://169.254.169.254/latest",
+        "CGNAT, 100.64.1.1": "https://100.64.1.1/hook",
+        "loopback": "https://127.0.0.1/hook",
+        "loopback IPv6": "https://[::1]/hook",
+        "una privada escondida en IPv6": "https://[::ffff:10.0.0.1]/hook",
+        "0.0.0.0": "https://0.0.0.0/hook",
+    }
+    for nombre, url in internas.items():
+        rev(f"{nombre}: rechazada", _rechazo(url, "interna"))
+    with dns_falso({"interno.prueba": ["172.10.30.15"], "mixto.prueba": ["93.184.216.34", "10.0.0.5"],
+                    "publico.prueba": ["93.184.216.34"]}):
+        rev("un nombre que resuelve a CSI: rechazado", _rechazo("https://interno.prueba/hook", "interna"))
+        rev("un nombre con UNA dirección privada entre públicas: rechazado", _rechazo("https://mixto.prueba/hook", "interna"))
+        rev("http:// a una dirección pública: rechazado (solo https)", _rechazo("http://publico.prueba/hook", "https"))
+    with dns_falso({}):
+        rev("un nombre que no resuelve: lo dice", _rechazo("https://noexiste.prueba/hook", "resolver"))
+    config.WEBHOOKS_PERMITIR_LOCAL = True
+    with dns_falso({"receptor.prueba": ["127.0.0.1"]}):
+        receptor.responder(200)
+        antes = len(receptor.recibidos)
+        entrega_webhooks.entregar(f"http://receptor.prueba:{receptor.puerto}/fijada", wsecret, "webhook.validacion", {})
+        ultimo = {k.lower(): val for k, val in receptor.recibidos[-1]["cabeceras"].items()}
+        rev("se conecta a la IP revisada, con el nombre original en Host",
+            len(receptor.recibidos) == antes + 1 and ultimo.get("host") == f"receptor.prueba:{receptor.puerto}",
+            str(ultimo.get("host")))
+    config.WEBHOOKS_PERMITIR_LOCAL = False
+    receptor.detener()
+
     print("\n" + "=" * 72)
     print(f"{fallos} FALLARON" if fallos else "todas las comprobaciones pasaron")
     return 1 if fallos else 0
+
+
+def validar(c, identificador, tenant="demo"):
+    return c.post(f"/webhooks/{identificador}/validar", json={"tenant": tenant}, headers=srv())
+
+
+class Receptor(http.server.BaseHTTPRequestHandler):
+    """Un endpoint de cliente de verdad, en 127.0.0.1: guarda lo que recibe y
+    contesta lo que se le pida."""
+
+    recibidos: list = []
+    respuesta = {"codigo": 200, "retraso": 0.0, "cabeceras": None}
+
+    def do_POST(self):  # noqa: N802 (nombre de http.server)
+        largo = int(self.headers.get("Content-Length") or 0)
+        Receptor.recibidos.append(
+            {"metodo": "POST", "ruta": self.path, "cabeceras": dict(self.headers.items()), "cuerpo": self.rfile.read(largo)}
+        )
+        r = Receptor.respuesta
+        time.sleep(r["retraso"])
+        self.send_response(r["codigo"])
+        for k, val in (r["cabeceras"] or {}).items():
+            self.send_header(k, val)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, *args):  # sin ruido en la consola
+        pass
+
+    @classmethod
+    def iniciar(cls):
+        cls.recibidos = []
+        servidor = http.server.ThreadingHTTPServer(("127.0.0.1", 0), cls)
+        threading.Thread(target=servidor.serve_forever, daemon=True).start()
+
+        class Control:
+            puerto = servidor.server_address[1]
+
+            @property
+            def recibidos(self):
+                return cls.recibidos
+
+            def responder(self, codigo, retraso=0.0, cabeceras=None):
+                cls.respuesta = {"codigo": codigo, "retraso": retraso, "cabeceras": cabeceras}
+
+            def detener(self):
+                servidor.shutdown()
+
+        return Control()
+
+
+@contextlib.contextmanager
+def dns_falso(tabla: dict):
+    """`getaddrinfo` de mentira para los nombres de la tabla; cualquier otro
+    NOMBRE no resuelve. Las IPs literales pasan al de verdad, que no sale a la red."""
+    original = socket.getaddrinfo
+
+    def falso(host, puerto, *args, **kwargs):
+        if host in tabla:
+            return [
+                (socket.AF_INET6 if ":" in ip else socket.AF_INET, socket.SOCK_STREAM, 6, "",
+                 (ip, puerto, 0, 0) if ":" in ip else (ip, puerto))
+                for ip in tabla[host]
+            ]
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            raise socket.gaierror(socket.EAI_NONAME, "nombre desconocido") from None
+        return original(host, puerto, *args, **kwargs)
+
+    entrega_webhooks.socket.getaddrinfo = falso
+    try:
+        yield
+    finally:
+        entrega_webhooks.socket.getaddrinfo = original
+
+
+def _rechazo(url: str, texto: str) -> bool:
+    """¿`entregar` rechaza esta URL con un motivo que dice `texto`, SIN haber
+    llegado a abrir una conexión?"""
+    original = entrega_webhooks.httpx.Client
+
+    def prohibido(*args, **kwargs):
+        raise AssertionError("intentó conectar")
+
+    entrega_webhooks.httpx.Client = prohibido
+    try:
+        entrega_webhooks.entregar(url, "whsec_" + base64.b64encode(b"k" * 24).decode(), "webhook.validacion", {})
+    except entrega_webhooks.Rechazo as exc:
+        return texto in str(exc)
+    except AssertionError:
+        return False
+    finally:
+        entrega_webhooks.httpx.Client = original
+    return False
+
+
+def _firma_valida(secret: str, cab: dict, cuerpo: bytes) -> bool:
+    """Como lo hace una biblioteca de Standard Webhooks, escrita aparte y a
+    propósito SIN usar `entrega_webhooks`: si las dos compartieran un error, la
+    prueba no lo vería."""
+    llave = base64.b64decode(secret.split("_", 1)[1])
+    contenido = f"{cab['webhook-id']}.{cab['webhook-timestamp']}.".encode() + cuerpo
+    esperada = "v1," + base64.b64encode(hmac.new(llave, contenido, hashlib.sha256).digest()).decode()
+    return any(hmac.compare_digest(f, esperada) for f in cab["webhook-signature"].split(" "))
 
 
 def _estado_ilegible_es_inactivo(c) -> bool:
