@@ -283,6 +283,7 @@ def main() -> int:
         i = alta(c, url=f"{url_local}/{codigo}").json()["webhook"]["id"]
         v = validar(c, i).json()
         rev(f"{codigo}: no se valida, y dice por qué", v.get("validado") is False and texto in v.get("motivo", ""), str(v)[:200])
+        rev(f"{codigo}: y con qué código respondió", v.get("codigo") == codigo, str(v.get("codigo")))
         rev(f"{codigo}: sigue pendiente", next(w for w in listado(c) if w["id"] == i)["validadoEn"] is None)
     entrega_webhooks.limite_validaciones.reiniciar()
     config.WEBHOOKS_TIMEOUT_S = 1
@@ -290,6 +291,7 @@ def main() -> int:
     i = alta(c, url=f"{url_local}/lento").json()["webhook"]["id"]
     v = validar(c, i).json()
     rev("si no responde a tiempo: no se valida, y lo dice", v.get("validado") is False and "no respondió" in v.get("motivo", ""), str(v)[:200])
+    rev("y sin código: no se llegó a recibir respuesta", "codigo" in v and v["codigo"] is None, str(v))
     config.WEBHOOKS_TIMEOUT_S = 10
     receptor.responder(200)
     rev("validar uno de otro cliente da 404", c.post(f"/webhooks/{wid}/validar", json={"tenant": "acme"}, headers=srv()).status_code == 404)

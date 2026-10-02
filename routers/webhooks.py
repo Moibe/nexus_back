@@ -213,7 +213,10 @@ def validar(identificador: str, datos: Validacion):
         )
     except entrega_webhooks.Rechazo as exc:
         logger.info("Validación fallida (id=%s, tenant=%s): %s", identificador, datos.tenant, exc)
-        return {"validado": False, "motivo": str(exc)}
+        # `codigo`: el HTTP con el que respondió el endpoint, o `None` si no se
+        # llegó a hablar con él (tiempo agotado, la guarda, un nombre que no
+        # resuelve). El front lo muestra en el aviso de "Entrega fallida".
+        return {"validado": False, "motivo": str(exc), "codigo": exc.codigo}
     try:
         webhook = webhooks_cliente.marcar_validado(datos.tenant, identificador, resultado["codigo"], resultado["ms"])
     except ErrorAlmacen as exc:
