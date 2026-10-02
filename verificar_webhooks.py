@@ -584,6 +584,36 @@ def main() -> int:
     config.WEBHOOKS_PERMITIR_LOCAL = False
     rx.detener()
 
+    titulo("17 · Editar: nueva URL y eventos, y vuelve a quedar sin validar")
+    entrega_webhooks.limite_validaciones.reiniciar()
+    config.WEBHOOKS_PERMITIR_LOCAL = False
+    ed = alta(c, url="https://172.10.30.15/para-editar").json()
+    eid, esecret = ed["webhook"]["id"], ed["secret"]
+    validar(c, eid)
+    rev("antes de editar está Con fallos", bool(next(w for w in listado(c) if w["id"] == eid)["fallidaEn"]))
+    r = c.post(f"/webhooks/{eid}/editar", json={"tenant": "demo", "url": "HTTPS://Nuevo.Empresa.com/hook",
+                                               "eventos": ["documento.fallido"]}, headers=srv())
+    w = r.json().get("webhook", {})
+    rev("responde 200 con el webhook editado y la URL normalizada",
+        r.status_code == 200 and w.get("url") == "https://nuevo.empresa.com/hook" and w.get("eventos") == ["documento.fallido"], r.text[:200])
+    rev("vuelve a quedar sin validar y sin fallas", w.get("validadoEn") is None and w.get("fallidaEn") is None)
+    en_lista = next(x for x in listado(c) if x["id"] == eid)
+    rev("el listado lo dice", en_lista["url"] == "https://nuevo.empresa.com/hook" and en_lista["fallidaEn"] is None)
+    rev("conserva su secret", webhooks_cliente.secret_para_firmar(eid) == esecret)
+    alta(c, url="https://rival.empresa.com/hook")
+    rev("a la URL de otro webhook suyo: 409",
+        c.post(f"/webhooks/{eid}/editar", json={"tenant": "demo", "url": "https://rival.empresa.com/hook",
+                                                "eventos": ["documento.completado"]}, headers=srv()).status_code == 409)
+    rev("a su propia URL (solo cambia eventos): 200",
+        c.post(f"/webhooks/{eid}/editar", json={"tenant": "demo", "url": "https://nuevo.empresa.com/hook",
+                                                "eventos": ["documento.completado"]}, headers=srv()).status_code == 200)
+    rev("sin eventos: 400",
+        c.post(f"/webhooks/{eid}/editar", json={"tenant": "demo", "url": "https://x.empresa.com/", "eventos": []}, headers=srv()).status_code == 400)
+    rev("http:// a un dominio: 400",
+        c.post(f"/webhooks/{eid}/editar", json={"tenant": "demo", "url": "http://x.empresa.com/", "eventos": ["documento.completado"]}, headers=srv()).status_code == 400)
+    rev("de otro cliente: 404",
+        c.post(f"/webhooks/{eid}/editar", json={"tenant": "acme", "url": "https://y.empresa.com/", "eventos": ["documento.completado"]}, headers=srv()).status_code == 404)
+
     print("\n" + "=" * 72)
     print(f"{fallos} FALLARON" if fallos else "todas las comprobaciones pasaron")
     return 1 if fallos else 0

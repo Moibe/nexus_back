@@ -58,6 +58,12 @@ class Validacion(BaseModel):
     tenant: str
 
 
+class Edicion(BaseModel):
+    tenant: str
+    url: str = Field(..., description="La nueva URL: https://, o http:// solo hacia localhost")
+    eventos: list[str] = Field(..., description="Los eventos de suscripción, completos")
+
+
 class Aviso(BaseModel):
     tenant: str
     tipo: str = Field(..., description="documento.completado, documento.fallido o documento.rechazado")
@@ -301,3 +307,30 @@ def historial(identificador: str, tenant: str = Query(...), limite: int = Query(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ErrorAlmacen as exc:
         raise _no_disponible(exc, f"historial, tenant={tenant}") from exc
+
+
+@router.post(
+    "/{identificador}/editar",
+    tags=["Webhooks"],
+    summary="Editar un webhook",
+    description=(
+        "Le cambia la URL y los eventos. Queda SIN validar (el endpoint pudo "
+        "cambiar) y conserva su secret de firma. 409 si otro webhook del cliente "
+        "ya tiene esa URL."
+    ),
+)
+def editar(identificador: str, datos: Edicion):
+    try:
+        webhook = webhooks_cliente.editar(datos.tenant, identificador, datos.url, datos.eventos)
+    except webhooks_cliente.Duplicado as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ErrorAlmacen as exc:
+        raise _no_disponible(exc, f"editar, tenant={datos.tenant}") from exc
+    if webhook is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
+    # Sin validar ya no recibe avisos: lo que tuviera pendiente se cancela.
+    entregas_webhooks.cancelar_de(identificador, "El webhook se editó y quedó sin validar.")
+    logger.info("Webhook editado (id=%s, tenant=%s)", identificador, datos.tenant)
+    return {"webhook": webhook}

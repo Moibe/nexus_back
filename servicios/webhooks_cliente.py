@@ -6,7 +6,9 @@ solo agregar en el NAS, `webhooks.jsonl` (ver `servicios/registro.py`), igual
 que las API Keys: un evento `registrado` por webhook, uno `estado` cada vez que
 se activa o desactiva, uno `validado` cuando su endpoint respondió al aviso de
 prueba, uno `validacion_fallida` cuando no respondió en ninguno de sus intentos
-(es lo que el front muestra como "Con fallos"), y uno `eliminado`. El día que existan las tablas cambia ESTE módulo y
+(es lo que el front muestra como "Con fallos"), uno `editado` cuando se le
+cambian la URL o los eventos —y entonces vuelve a quedar SIN validar: el
+endpoint pudo cambiar—, y uno `eliminado`. El día que existan las tablas cambia ESTE módulo y
 nada más.
 
 ## Validado antes de usarse
@@ -177,6 +179,16 @@ def _indice() -> tuple[dict[str, dict], dict[str, str], set[str], dict[str, str]
             validados[identificador] = e["en"]
         elif tipo == "validacion_fallida" and isinstance(e.get("en"), str):
             fallidas[identificador] = e
+        elif tipo == "editado" and identificador in registrados:
+            # Nueva URL y eventos; el secret es el mismo. La validación anterior
+            # (buena o fallida) era de la URL de antes: no vale para la nueva.
+            registrados[identificador] = {
+                **registrados[identificador],
+                "url": e.get("url", registrados[identificador].get("url")),
+                "eventos": e.get("eventos", registrados[identificador].get("eventos")),
+            }
+            validados.pop(identificador, None)
+            fallidas.pop(identificador, None)
     return registrados, estados, eliminados, validados, fallidas
 
 
@@ -402,3 +414,35 @@ def para_entregar(identificador: str) -> tuple[str, str] | None:
     ):
         return None
     return webhook["url"], secret_para_firmar(identificador)
+
+
+def editar(tenant: str, identificador: str, url: str, eventos: list[str]) -> dict | None:
+    """Le cambia la URL y los eventos a un webhook del tenant. Queda SIN
+    validar —el endpoint pudo cambiar— y conserva su secret. Devuelve cómo
+    quedó, o `None` si no existe, es de otro tenant o se eliminó. Levanta
+    `ValueError` con datos inválidos y `Duplicado` si otra de sus URLs ya es esa."""
+    tenant = almacen._validar_tenant(tenant)
+    url = validar_url(url)
+    pedidos = set(eventos or [])
+    desconocidos = pedidos - set(EVENTOS)
+    if desconocidos:
+        raise ValueError(f"Evento de suscripción desconocido: {', '.join(sorted(desconocidos))}.")
+    elegidos = [e for e in EVENTOS if e in pedidos]
+    if not elegidos:
+        raise ValueError("Elige al menos un evento de suscripción.")
+    with registro.candado:
+        registrados, estados, eliminados, _, _ = _indice()
+        webhook = _vigente(registrados, eliminados, tenant, identificador)
+        if webhook is None:
+            return None
+        if any(
+            i != identificador and w.get("tenant") == tenant and w.get("url") == url and i not in eliminados
+            for i, w in registrados.items()
+        ):
+            raise Duplicado("Ya tienes otro webhook con esa URL.")
+        registro.agregar(
+            ARCHIVO,
+            {"evento": "editado", "id": identificador, "url": url, "eventos": elegidos,
+             "en": _ahora().isoformat(timespec="seconds")},
+        )
+    return _publico({**webhook, "url": url, "eventos": elegidos}, estados.get(identificador, "activo"), None, None)
