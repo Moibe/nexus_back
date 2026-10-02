@@ -481,6 +481,12 @@ se admiten 3 validaciones a la vez en total y una sola por webhook (si no, 429).
 Cada intento queda en el **historial** (`GET /webhooks/{id}/intentos`); las
 métricas, en cambio, cuentan solo los avisos: las validaciones son pruebas.
 
+**Editar** (`POST /webhooks/{id}/editar`) cambia URL y eventos y conserva el
+secret. Solo **cambiar la URL** lo deja otra vez sin validar —el endpoint es
+otro— y cancela lo que tuviera pendiente; cambiar solo los eventos no toca la
+validación ni lo pendiente. El evento `editado` lleva `urlCambio`; uno viejo sin
+esa marca se lee como cambio de URL (ante la duda, que se valide de nuevo).
+
 **La guarda contra SSRF** (`servicios/entrega_webhooks.py`). Validar es que el
 servidor le haga una petición, desde la red de CSI, a una URL que escribió
 alguien. Por eso, al ENTREGAR —no al registrar: el DNS puede cambiar entre las

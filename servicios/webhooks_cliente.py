@@ -7,8 +7,9 @@ que las API Keys: un evento `registrado` por webhook, uno `estado` cada vez que
 se activa o desactiva, uno `validado` cuando su endpoint respondió al aviso de
 prueba, uno `validacion_fallida` cuando no respondió en ninguno de sus intentos
 (es lo que el front muestra como "Con fallos"), uno `editado` cuando se le
-cambian la URL o los eventos —y entonces vuelve a quedar SIN validar: el
-endpoint pudo cambiar—, y uno `eliminado`. El día que existan las tablas cambia ESTE módulo y
+cambian la URL o los eventos —si cambió la URL vuelve a quedar SIN validar: el
+endpoint es otro; si solo cambiaron los eventos, sigue como estaba—, y uno
+`eliminado`. El día que existan las tablas cambia ESTE módulo y
 nada más.
 
 ## Validado antes de usarse
@@ -180,15 +181,18 @@ def _indice() -> tuple[dict[str, dict], dict[str, str], set[str], dict[str, str]
         elif tipo == "validacion_fallida" and isinstance(e.get("en"), str):
             fallidas[identificador] = e
         elif tipo == "editado" and identificador in registrados:
-            # Nueva URL y eventos; el secret es el mismo. La validación anterior
-            # (buena o fallida) era de la URL de antes: no vale para la nueva.
+            # Nueva URL y eventos; el secret es el mismo. Si cambió la URL, la
+            # validación anterior (buena o fallida) era de otro endpoint y ya no
+            # vale. Un `editado` sin la marca se lee como cambio de URL: ante la
+            # duda, que se vuelva a validar.
             registrados[identificador] = {
                 **registrados[identificador],
                 "url": e.get("url", registrados[identificador].get("url")),
                 "eventos": e.get("eventos", registrados[identificador].get("eventos")),
             }
-            validados.pop(identificador, None)
-            fallidas.pop(identificador, None)
+            if e.get("urlCambio", True):
+                validados.pop(identificador, None)
+                fallidas.pop(identificador, None)
     return registrados, estados, eliminados, validados, fallidas
 
 
@@ -417,10 +421,11 @@ def para_entregar(identificador: str) -> tuple[str, str] | None:
 
 
 def editar(tenant: str, identificador: str, url: str, eventos: list[str]) -> dict | None:
-    """Le cambia la URL y los eventos a un webhook del tenant. Queda SIN
-    validar —el endpoint pudo cambiar— y conserva su secret. Devuelve cómo
-    quedó, o `None` si no existe, es de otro tenant o se eliminó. Levanta
-    `ValueError` con datos inválidos y `Duplicado` si otra de sus URLs ya es esa."""
+    """Le cambia la URL y los eventos a un webhook del tenant, y conserva su
+    secret. Si la URL cambió queda SIN validar —el endpoint es otro—; si solo
+    cambiaron los eventos, sigue como estaba. Devuelve cómo quedó, o `None` si
+    no existe, es de otro tenant o se eliminó. Levanta `ValueError` con datos
+    inválidos y `Duplicado` si otra de sus URLs ya es esa."""
     tenant = almacen._validar_tenant(tenant)
     url = validar_url(url)
     pedidos = set(eventos or [])
@@ -431,10 +436,11 @@ def editar(tenant: str, identificador: str, url: str, eventos: list[str]) -> dic
     if not elegidos:
         raise ValueError("Elige al menos un evento de suscripción.")
     with registro.candado:
-        registrados, estados, eliminados, _, _ = _indice()
+        registrados, estados, eliminados, validados, fallidas = _indice()
         webhook = _vigente(registrados, eliminados, tenant, identificador)
         if webhook is None:
             return None
+        cambio_url = url != webhook.get("url")
         if any(
             i != identificador and w.get("tenant") == tenant and w.get("url") == url and i not in eliminados
             for i, w in registrados.items()
@@ -442,7 +448,14 @@ def editar(tenant: str, identificador: str, url: str, eventos: list[str]) -> dic
             raise Duplicado("Ya tienes otro webhook con esa URL.")
         registro.agregar(
             ARCHIVO,
-            {"evento": "editado", "id": identificador, "url": url, "eventos": elegidos,
+            {"evento": "editado", "id": identificador, "url": url, "eventos": elegidos, "urlCambio": cambio_url,
              "en": _ahora().isoformat(timespec="seconds")},
         )
-    return _publico({**webhook, "url": url, "eventos": elegidos}, estados.get(identificador, "activo"), None, None)
+    if cambio_url:
+        return _publico({**webhook, "url": url, "eventos": elegidos}, estados.get(identificador, "activo"), None, None)
+    return _publico(
+        {**webhook, "eventos": elegidos},
+        estados.get(identificador, "activo"),
+        validados.get(identificador),
+        fallidas.get(identificador, {}).get("en"),
+    )

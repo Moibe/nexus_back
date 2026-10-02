@@ -314,9 +314,9 @@ def historial(identificador: str, tenant: str = Query(...), limite: int = Query(
     tags=["Webhooks"],
     summary="Editar un webhook",
     description=(
-        "Le cambia la URL y los eventos. Queda SIN validar (el endpoint pudo "
-        "cambiar) y conserva su secret de firma. 409 si otro webhook del cliente "
-        "ya tiene esa URL."
+        "Le cambia la URL y los eventos, y conserva su secret de firma. Si la URL "
+        "cambió queda SIN validar (el endpoint es otro); si solo cambiaron los "
+        "eventos, sigue como estaba. 409 si otro webhook del cliente ya tiene esa URL."
     ),
 )
 def editar(identificador: str, datos: Edicion):
@@ -330,7 +330,9 @@ def editar(identificador: str, datos: Edicion):
         raise _no_disponible(exc, f"editar, tenant={datos.tenant}") from exc
     if webhook is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
-    # Sin validar ya no recibe avisos: lo que tuviera pendiente se cancela.
-    entregas_webhooks.cancelar_de(identificador, "El webhook se editó y quedó sin validar.")
+    # Si quedó sin validar (cambió la URL) ya no recibe avisos: lo que tuviera
+    # pendiente se cancela. Con la misma URL, lo pendiente sigue su curso.
+    if webhook["validadoEn"] is None:
+        entregas_webhooks.cancelar_de(identificador, "El webhook cambió de URL y quedó sin validar.")
     logger.info("Webhook editado (id=%s, tenant=%s)", identificador, datos.tenant)
     return {"webhook": webhook}

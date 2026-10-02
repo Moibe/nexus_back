@@ -614,6 +614,26 @@ def main() -> int:
     rev("de otro cliente: 404",
         c.post(f"/webhooks/{eid}/editar", json={"tenant": "acme", "url": "https://y.empresa.com/", "eventos": ["documento.completado"]}, headers=srv()).status_code == 404)
 
+    titulo("18 · Editar uno validado: solo la URL lo deja sin validar")
+    config.WEBHOOKS_PERMITIR_LOCAL = True
+    rx = Receptor.iniciar()
+    rx.responder(200)
+    entrega_webhooks.limite_validaciones.reiniciar()
+    va = alta(c, url=f"http://127.0.0.1:{rx.puerto}/validado-editable").json()["webhook"]["id"]
+    rev("se valida", validar(c, va).json().get("validado") is True)
+    r = c.post(f"/webhooks/{va}/editar", json={"tenant": "demo", "url": f"http://127.0.0.1:{rx.puerto}/validado-editable",
+                                              "eventos": ["documento.completado", "documento.rechazado"]}, headers=srv())
+    w = r.json().get("webhook", {})
+    rev("solo eventos: sigue validado, con los eventos nuevos",
+        r.status_code == 200 and bool(w.get("validadoEn")) and w.get("eventos") == ["documento.completado", "documento.rechazado"], r.text[:200])
+    rev("y el listado lo dice", bool(next(x for x in listado(c) if x["id"] == va)["validadoEn"]))
+    r = c.post(f"/webhooks/{va}/editar", json={"tenant": "demo", "url": f"http://127.0.0.1:{rx.puerto}/otra-ruta",
+                                              "eventos": ["documento.completado"]}, headers=srv())
+    rev("con otra URL: queda sin validar", r.status_code == 200 and r.json()["webhook"]["validadoEn"] is None, r.text[:200])
+    rev("y el listado lo dice", next(x for x in listado(c) if x["id"] == va)["validadoEn"] is None)
+    config.WEBHOOKS_PERMITIR_LOCAL = False
+    rx.detener()
+
     print("\n" + "=" * 72)
     print(f"{fallos} FALLARON" if fallos else "todas las comprobaciones pasaron")
     return 1 if fallos else 0
