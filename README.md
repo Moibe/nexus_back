@@ -422,6 +422,59 @@ se comprueba desde fuera que `/docs-interno` responde 404.
 Verificarlo, offline: `venv/bin/python verificar_bandeja.py` y
 `venv/bin/python verificar_llaves_cliente.py`.
 
+## Webhooks de cliente: el registro (desde el 2026-10-01)
+
+El módulo "Webhooks" del front registra aquí los endpoints a los que NexusDoc
+le avisará a un cliente cuando un documento suyo termine de procesarse, falle o
+sea rechazado. **Todavía no se envía ningún aviso**: esto es el registro.
+
+| Ruta | Qué hace |
+|---|---|
+| `POST /webhooks/` | Lo registra ACTIVO y devuelve su secret de firma (`whsec_` + 48 hexadecimales) **una sola vez**, con `Cache-Control: no-store`. 409 si el cliente ya tiene esa URL (se compara normalizada: esquema y host en minúsculas, sin el puerto de siempre). |
+| `GET /webhooks/?tenant=` | Los vigentes, del más nuevo al más viejo. Nunca trae el secret ni su cifrado. |
+| `POST /webhooks/{id}/estado` | Lo activa o desactiva. |
+| `POST /webhooks/{id}/eliminar` | Lo da de baja. Repetirlo no es error. |
+
+Las cuatro piden la llave de servicio (solo las usa el front) y por el dominio
+público responden 404, como todo lo que no sea `POST /bandeja/`. La URL se
+valida con la misma regla que en el front —`https://`, o `http://` solo hacia
+localhost, sin usuario ni contraseña y sin fragmento—, porque la del front se
+puede saltar. Eventos: `documento.completado`, `documento.fallido`,
+`documento.rechazado` y `expediente.completado`.
+
+**El secret se guarda CIFRADO, no hasheado.** Al revés que una API Key —que la
+presenta el cliente y aquí solo se comprueba—, el secret de un webhook lo usa el
+SERVIDOR para firmar cada aviso, así que tiene que poder recuperarlo. Se cifra
+con Fernet y la llave `WEBHOOKS_CLAVE_CIFRADO` del `.env`, que nunca va al NAS:
+quien lea el registro no puede firmar avisos falsos. Sin esa llave el alta
+responde 503 y no se guarda nada.
+
+> **La llave no se cambia ni se pierde.** Lo cifrado con ella ya no se puede
+> descifrar con otra, y esos webhooks habría que volver a crearlos. Respáldala
+> aparte. Generarla (una por ambiente):
+> `python3 -c "import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"`
+
+**Provisional**: un registro de solo agregar en el NAS
+(`{ALMACEN_RUTA}/.registro/webhooks.jsonl`), como el de las llaves, hasta que
+el DBA entregue las tablas; solo cambia `servicios/webhooks_cliente.py`. Como
+no se reescribe nada, eliminar un webhook deja su línea —con el secret
+cifrado— en el archivo, sin usarse.
+
+**Lo que falta para ENVIAR**, y tiene que estar antes de encenderlo:
+
+1. **Guarda contra SSRF al entregar**: resolver el nombre y rechazar IPs
+   privadas, loopback y link-local, también en redirecciones. La validación
+   del alta solo mira la forma.
+2. **La firma**: HMAC-SHA256 del cuerpo con el secret (`secret_para_firmar`),
+   con marca de tiempo contra repeticiones, y documentar las cabeceras para el
+   cliente.
+3. **Reintentos con retroceso y registro de entregas**, que es lo que alimenta
+   las métricas del front.
+4. **Avisar del fin de un documento**: el pipeline corre en el navegador, así
+   que el servidor no se entera solo; el front tiene que decírselo.
+
+Verificarlo, offline: `venv/bin/python verificar_webhooks.py`.
+
 ## Almacén de documentos (encendido en producción desde el 2026-09-25)
 
 `servicios/almacen.py` guarda los **bytes** de un archivo subido en disco, y

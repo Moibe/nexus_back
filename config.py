@@ -61,6 +61,12 @@ HOSTS_PUBLICOS = frozenset(h.strip().lower() for h in _hosts_env.split(",") if h
 # cerrada en los endpoints protegidos, nunca abierta.
 NEXUS_API_KEY = os.getenv("NEXUS_API_KEY", "")
 
+# Llave Fernet con la que se cifran los secrets de firma de los webhooks (ver
+# servicios/webhooks_cliente.py). Sin ella el alta de webhooks responde 503: un
+# secret que no se sabe cifrar no se guarda. NO se cambia a la ligera: lo que se
+# cifró con la anterior ya no se puede descifrar.
+WEBHOOKS_CLAVE_CIFRADO = os.getenv("WEBHOOKS_CLAVE_CIFRADO", "").strip()
+
 SQLSERVER_HOST = os.getenv("SQLSERVER_HOST", "")
 SQLSERVER_PORT = os.getenv("SQLSERVER_PORT", "1433")
 SQLSERVER_DB = os.getenv("SQLSERVER_DB", "")

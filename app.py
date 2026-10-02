@@ -391,6 +391,12 @@ from routers.llaves import router as llaves_router  # noqa: E402
 
 app.include_router(llaves_router, prefix="/llaves", dependencies=[Depends(exigir_llave)])
 
+# Registrar, listar, activar/desactivar y eliminar webhooks de cliente. Solo el
+# front, con su llave. Todavía no se envía ningún aviso.
+from routers.webhooks import router as webhooks_router  # noqa: E402
+
+app.include_router(webhooks_router, prefix="/webhooks", dependencies=[Depends(exigir_llave)])
+
 # El grupo Documentos se registra solo si hay una base configurada.
 #
 # Mientras el DBA no entregue SQL Server, publicar esos endpoints sería publicar
