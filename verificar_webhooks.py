@@ -58,6 +58,9 @@ from app import app  # noqa: E402
 from servicios import almacen, entrega_webhooks, entregas_webhooks, webhooks_cliente  # noqa: E402
 
 (RAIZ / almacen.CENTINELA).touch()
+# Validar reintenta con esperas de 1, 2, 4 y 8 s: aquí sin esperar, o cada
+# validación fallida tardaría 15 s.
+entregas_webhooks.ESPERAS_VALIDACION_S = (0, 0, 0, 0)
 REGISTRO = RAIZ / ".registro" / "webhooks.jsonl"
 FRONT = Path(r"C:\Moibe\code\nexus_poc_svelte")
 URL = "https://api.empresa.com/webhooks/nexusdoc"
@@ -108,7 +111,7 @@ def main() -> int:
         re.fullmatch(r"whsec_[A-Za-z0-9+/]{32}", secret) is not None and len(base64.b64decode(secret[6:])) == 24, secret[:12])
     rev("la respuesta pide no guardarse (no-store)", r.headers.get("cache-control") == "no-store")
     rev("el webhook no trae el secret ni su cifrado",
-        set(webhook) == {"id", "url", "eventos", "estado", "creadoEn", "validadoEn"}, str(set(webhook)))
+        set(webhook) == {"id", "url", "eventos", "estado", "creadoEn", "validadoEn", "fallidaEn"}, str(set(webhook)))
     rev("nace activo", webhook["estado"] == "activo")
     rev("los eventos salen en el orden del diseño, no en el pedido",
         webhook["eventos"] == ["documento.completado", "documento.fallido"], str(webhook["eventos"]))
@@ -163,7 +166,7 @@ def main() -> int:
     titulo("4 · Listar: sin secrets, del más nuevo al más viejo, cada quien lo suyo")
     lista = listado(c)
     rev("trae los del cliente", len(lista) >= 6, str(len(lista)))
-    rev("ninguno trae secret ni cifrado", all(set(w) == {"id", "url", "eventos", "estado", "creadoEn", "validadoEn"} for w in lista))
+    rev("ninguno trae secret ni cifrado", all(set(w) == {"id", "url", "eventos", "estado", "creadoEn", "validadoEn", "fallidaEn"} for w in lista))
     rev("el primero es el más nuevo, el último el más viejo",
         lista[0]["url"] == "https://api.empresa.com/" and lista[-1]["id"] == webhook["id"],
         str([w["url"] for w in lista]))
@@ -284,6 +287,7 @@ def main() -> int:
         v = validar(c, i).json()
         rev(f"{codigo}: no se valida, y dice por qué", v.get("validado") is False and texto in v.get("motivo", ""), str(v)[:200])
         rev(f"{codigo}: y con qué código respondió", v.get("codigo") == codigo, str(v.get("codigo")))
+        rev(f"{codigo}: tras 5 intentos", v.get("intentos") == 5, str(v.get("intentos")))
         rev(f"{codigo}: sigue pendiente", next(w for w in listado(c) if w["id"] == i)["validadoEn"] is None)
     entrega_webhooks.limite_validaciones.reiniciar()
     config.WEBHOOKS_TIMEOUT_S = 1
@@ -507,6 +511,79 @@ def main() -> int:
     config.WEBHOOKS_PERMITIR_LOCAL = False
     rx.detener()
 
+    titulo('16 · Validar con reintentos, "Con fallos" y el historial de intentos')
+    config.WEBHOOKS_PERMITIR_LOCAL = True
+    rx = Receptor.iniciar()
+    base_rx = f"http://127.0.0.1:{rx.puerto}"
+    entrega_webhooks.limite_validaciones.reiniciar()
+    rx.responder(500)
+    nuevo = alta(c, url=f"{base_rx}/siempre-500").json()
+    w500 = nuevo["webhook"]["id"]
+    rev("nace sin fallas (fallidaEn vacío)", nuevo["webhook"]["fallidaEn"] is None)
+    v = validar(c, w500).json()
+    rev("500 en todos: no se valida, tras 5 intentos", v.get("validado") is False and v.get("intentos") == 5, str(v)[:200])
+    rev("al endpoint le llegaron los 5", len(rx.recibidos) == 5, str(len(rx.recibidos)))
+    rev("los 5 con el MISMO webhook-id", len({x["cabeceras"].get("webhook-id") for x in rx.recibidos}) == 1)
+    rev('queda "Con fallos": fallidaEn, y sigue sin validar',
+        bool(v.get("webhook", {}).get("fallidaEn")) and v["webhook"]["validadoEn"] is None, str(v.get("webhook")))
+    en_lista = next(w for w in listado(c) if w["id"] == w500)
+    rev("el listado lo dice", bool(en_lista["fallidaEn"]) and en_lista["validadoEn"] is None)
+    h = c.get(f"/webhooks/{w500}/intentos", params={"tenant": "demo"}, headers=srv())
+    hist = h.json().get("intentos", [])
+    rev("el historial trae los 5 intentos", h.status_code == 200 and len(hist) == 5, h.text[:200])
+    rev("del más reciente al más viejo (5, 4, 3, 2, 1)", [x["n"] for x in hist] == [5, 4, 3, 2, 1], str([x["n"] for x in hist]))
+    rev("cada uno con su hora, su código y su motivo",
+        all(x["en"] and x["codigo"] == 500 and x["ok"] is False and "500" in (x["motivo"] or "") for x in hist))
+    rev("de tipo webhook.validacion", all(x["tipo"] == "webhook.validacion" for x in hist))
+    ahora = datetime.now(timezone.utc)
+    q = {"tenant": "demo", "desde": (ahora - timedelta(hours=1)).isoformat(), "hasta": (ahora + timedelta(hours=1)).isoformat()}
+    rev("las validaciones NO cuentan en las métricas (son pruebas, no avisos)",
+        c.get(f"/webhooks/{w500}/metricas", params=q, headers=srv()).json()["actual"]["solicitudes"] == 0)
+
+    rx.recibidos.clear()
+    rx.secuencia([500, 500, 200])
+    entrega_webhooks.limite_validaciones.reiniciar()
+    v = validar(c, w500).json()
+    rev("500, 500 y 200: se valida al tercer intento",
+        v.get("validado") is True and v.get("intentos") == 3 and len(rx.recibidos) == 3, str(v)[:200])
+    rev("validado gana a la falla anterior", bool(v["webhook"]["validadoEn"]))
+
+    entrega_webhooks.limite_validaciones.reiniciar()
+    config.WEBHOOKS_PERMITIR_LOCAL = False
+    interna = alta(c, url="https://172.10.30.15/historial").json()["webhook"]["id"]
+    v = validar(c, interna).json()
+    rev("una dirección interna NO se reintenta: un solo intento",
+        v.get("validado") is False and v.get("intentos") == 1 and "interna" in v.get("motivo", ""), str(v)[:200])
+    hist = c.get(f"/webhooks/{interna}/intentos", params={"tenant": "demo"}, headers=srv()).json()["intentos"]
+    rev("y en el historial, sin código ni tiempo (no llegó a conectar)",
+        len(hist) == 1 and hist[0]["codigo"] is None and hist[0]["ms"] is None, str(hist))
+    config.WEBHOOKS_PERMITIR_LOCAL = True
+
+    entrega_webhooks.limite_validaciones.reiniciar()
+    entregas_webhooks._validando.add(w500)
+    r = validar(c, w500)
+    rev("si ese webhook ya se está validando: 429", r.status_code == 429 and "ya se está validando" in r.text, r.text[:160])
+    entregas_webhooks._validando.discard(w500)
+    tomados = [entregas_webhooks._cupo_validacion.acquire(blocking=False) for _ in range(entregas_webhooks.MAX_VALIDACIONES_SIMULTANEAS)]
+    entrega_webhooks.limite_validaciones.reiniciar()
+    r = validar(c, interna)
+    rev("con el cupo de validaciones simultáneas lleno: 429", r.status_code == 429 and "otras validaciones" in r.text, r.text[:160])
+    for tomado in tomados:
+        if tomado:
+            entregas_webhooks._cupo_validacion.release()
+
+    rev("historial de otro cliente: 404",
+        c.get(f"/webhooks/{w500}/intentos", params={"tenant": "acme"}, headers=srv()).status_code == 404)
+    rev("el historial respeta el límite",
+        len(c.get(f"/webhooks/{w500}/intentos", params={"tenant": "demo", "limite": 2}, headers=srv()).json()["intentos"]) == 2)
+    hm = c.get(f"/webhooks/{wm}/intentos", params={"tenant": "demo"}, headers=srv()).json()["intentos"]
+    de_avisos = [x for x in hm if x["tipo"] == "documento.completado"]
+    rev("trae también las entregas de avisos, cada una con su entradaId",
+        len(de_avisos) >= 3 and all(x["entradaId"] for x in de_avisos), str(hm[:2])[:200])
+    rev("y la validación con la que se dio de alta", any(x["tipo"] == "webhook.validacion" for x in hm))
+    config.WEBHOOKS_PERMITIR_LOCAL = False
+    rx.detener()
+
     print("\n" + "=" * 72)
     print(f"{fallos} FALLARON" if fallos else "todas las comprobaciones pasaron")
     return 1 if fallos else 0
@@ -558,6 +635,7 @@ class Receptor(http.server.BaseHTTPRequestHandler):
 
     recibidos: list = []
     respuesta = {"codigo": 200, "retraso": 0.0, "cabeceras": None}
+    pendientes_de_secuencia: list = []
 
     def do_POST(self):  # noqa: N802 (nombre de http.server)
         largo = int(self.headers.get("Content-Length") or 0)
@@ -566,7 +644,8 @@ class Receptor(http.server.BaseHTTPRequestHandler):
         )
         r = Receptor.respuesta
         time.sleep(r["retraso"])
-        self.send_response(r["codigo"])
+        codigo = Receptor.pendientes_de_secuencia.pop(0) if Receptor.pendientes_de_secuencia else r["codigo"]
+        self.send_response(codigo)
         for k, val in (r["cabeceras"] or {}).items():
             self.send_header(k, val)
         self.send_header("Content-Length", "2")
@@ -591,6 +670,10 @@ class Receptor(http.server.BaseHTTPRequestHandler):
 
             def responder(self, codigo, retraso=0.0, cabeceras=None):
                 cls.respuesta = {"codigo": codigo, "retraso": retraso, "cabeceras": cabeceras}
+                cls.pendientes_de_secuencia = []
+
+            def secuencia(self, codigos):
+                cls.pendientes_de_secuencia = list(codigos)
 
             def detener(self):
                 servidor.shutdown()

@@ -435,7 +435,8 @@ eventos", abajo.
 | `GET /webhooks/?tenant=` | Los vigentes, del más nuevo al más viejo. Nunca trae el secret ni su cifrado. |
 | `POST /webhooks/{id}/estado` | Lo activa o desactiva. |
 | `POST /webhooks/{id}/eliminar` | Lo da de baja. Repetirlo no es error. |
-| `POST /webhooks/{id}/validar` | Le manda al endpoint un **aviso de prueba firmado** y lo da por validado si responde 2xx. Un endpoint que no responde bien no es error de esta llamada: contesta 200 con `validado: false` y el motivo. 429 si se repite muy seguido. |
+| `POST /webhooks/{id}/validar` | Le manda al endpoint un **aviso de prueba firmado** hasta 5 veces y lo da por validado en el primer 2xx; si ninguno entra, queda **"Con fallos"** (`fallidaEn`). Un endpoint que no responde bien no es error de esta llamada: contesta 200 con `validado: false`, el motivo, el código y cuántos intentos hubo. 429 si se repite muy seguido o hay demasiadas validaciones en curso. |
+| `GET /webhooks/{id}/intentos` | El **historial de intentos**: cada vez que NexusDoc le habló al endpoint —validaciones y entregas—, con hora, tipo, número de intento, código, ms, motivo y, en las entregas, el `entradaId`. |
 | `POST /webhooks/eventos` | El front avisa que un documento terminó; se programa una entrega por cada webhook que deba recibirlo. |
 | `GET /webhooks/{id}/metricas` | Solicitudes, errores, tasa de error y P50/P90/P99 de sus entregas en un periodo, contra el anterior. |
 
@@ -468,7 +469,17 @@ cifrado— en el archivo, sin usarse.
 
 Un webhook nace **sin validar** (`validadoEn: null`) y no recibirá avisos hasta
 que su endpoint responda 2xx a un aviso de prueba. El front, mientras tanto,
-solo le ofrece "Validar conexión" (y eliminarlo).
+solo le ofrece "Validar conexión" (y su historial, y eliminarlo).
+
+**Hasta 5 intentos.** Validar manda el aviso de prueba hasta 5 veces, con el
+mismo `webhook-id` y esperas de 1, 2, 4 y 8 s entre intentos, y se detiene en el
+primer 2xx. Si ninguno entra, se anota `validacion_fallida` y el webhook queda
+**"Con fallos"** (`fallidaEn`) hasta que se valide. No se reintenta lo que no
+puede cambiar —una dirección interna, una URL que no es https—: ahí es un solo
+intento. Lo peor, cinco tiempos agotados, tarda ~65 s y ocupa un hilo, así que
+se admiten 3 validaciones a la vez en total y una sola por webhook (si no, 429).
+Cada intento queda en el **historial** (`GET /webhooks/{id}/intentos`); las
+métricas, en cambio, cuentan solo los avisos: las validaciones son pruebas.
 
 **La guarda contra SSRF** (`servicios/entrega_webhooks.py`). Validar es que el
 servidor le haga una petición, desde la red de CSI, a una URL que escribió

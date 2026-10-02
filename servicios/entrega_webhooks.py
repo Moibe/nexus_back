@@ -81,12 +81,18 @@ _MENSAJE_INTERNA = (
 class Rechazo(Exception):
     """El aviso no se mandó, o el endpoint no lo aceptó. El mensaje es para el
     usuario: dice qué pasó sin detalles de la red interna. `codigo` y `ms`, si
-    se llegó a hablar con el endpoint: alimentan las métricas de entregas."""
+    se llegó a hablar con el endpoint: alimentan las métricas de entregas.
 
-    def __init__(self, mensaje: str, codigo: int | None = None, ms: int | None = None):
+    `definitivo`: reintentar no puede cambiar el resultado —la URL apunta a una
+    dirección interna, no es https o no es válida—, así que la validación no
+    reintenta. Lo demás (un 500, un tiempo agotado, un nombre que hoy no
+    resuelve) sí puede cambiar."""
+
+    def __init__(self, mensaje: str, codigo: int | None = None, ms: int | None = None, definitivo: bool = False):
         super().__init__(mensaje)
         self.codigo = codigo
         self.ms = ms
+        self.definitivo = definitivo
 
 
 # ── La firma ────────────────────────────────────────────────────────────────
@@ -141,7 +147,7 @@ def _resolver(host: str, puerto: int) -> str:
     if not direcciones:
         raise Rechazo(f"No se pudo resolver el nombre {host}. Revisa que la URL esté bien escrita.")
     if any(_bloqueada(d) for d in direcciones):
-        raise Rechazo(_MENSAJE_INTERNA)
+        raise Rechazo(_MENSAJE_INTERNA, definitivo=True)
     return str(direcciones[0])
 
 
@@ -180,12 +186,12 @@ def enviar(url: str, secret: str, cuerpo: bytes, id_mensaje: str) -> dict:
     esquema = partes.scheme
     host = partes.hostname
     if esquema not in ("https", "http") or not host:
-        raise Rechazo("La URL del webhook no es válida.")
+        raise Rechazo("La URL del webhook no es válida.", definitivo=True)
     defecto = 443 if esquema == "https" else 80
     puerto = partes.port or defecto
     ip = _resolver(host, puerto)
     if esquema == "http" and not ipaddress.ip_address(ip).is_loopback:
-        raise Rechazo("Los avisos solo se envían por https://.")
+        raise Rechazo("Los avisos solo se envían por https://.", definitivo=True)
 
     marca = str(int(time.time()))
 

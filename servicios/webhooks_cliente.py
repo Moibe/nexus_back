@@ -5,7 +5,8 @@ endpoint de cliente, y sus entregas). Mientras tanto viven en un registro de
 solo agregar en el NAS, `webhooks.jsonl` (ver `servicios/registro.py`), igual
 que las API Keys: un evento `registrado` por webhook, uno `estado` cada vez que
 se activa o desactiva, uno `validado` cuando su endpoint respondió al aviso de
-prueba, y uno `eliminado`. El día que existan las tablas cambia ESTE módulo y
+prueba, uno `validacion_fallida` cuando no respondió en ninguno de sus intentos
+(es lo que el front muestra como "Con fallos"), y uno `eliminado`. El día que existan las tablas cambia ESTE módulo y
 nada más.
 
 ## Validado antes de usarse
@@ -146,13 +147,14 @@ def validar_url(texto: str) -> str:
     return f"{esquema}://{nombre}{partes.path or '/'}{consulta}"
 
 
-def _indice() -> tuple[dict[str, dict], dict[str, str], set[str], dict[str, str]]:
+def _indice() -> tuple[dict[str, dict], dict[str, str], set[str], dict[str, str], dict[str, dict]]:
     """Los webhooks registrados por id, el estado vigente de cada uno, los
-    eliminados, y cuándo se validó cada uno."""
+    eliminados, cuándo se validó cada uno, y su última validación fallida."""
     registrados: dict[str, dict] = {}
     estados: dict[str, str] = {}
     eliminados: set[str] = set()
     validados: dict[str, str] = {}
+    fallidas: dict[str, dict] = {}
     for e in registro.eventos(ARCHIVO):
         identificador = e.get("id")
         if not isinstance(identificador, str):
@@ -173,11 +175,15 @@ def _indice() -> tuple[dict[str, dict], dict[str, str], set[str], dict[str, str]
         elif tipo == "validado" and isinstance(e.get("en"), str):
             # El último gana: es la validación vigente.
             validados[identificador] = e["en"]
-    return registrados, estados, eliminados, validados
+        elif tipo == "validacion_fallida" and isinstance(e.get("en"), str):
+            fallidas[identificador] = e
+    return registrados, estados, eliminados, validados, fallidas
 
 
-def _publico(webhook: dict, estado: str, validado_en: str | None) -> dict:
-    """El webhook como lo ve el listado: SIN el secret ni su cifrado."""
+def _publico(webhook: dict, estado: str, validado_en: str | None, fallida_en: str | None = None) -> dict:
+    """El webhook como lo ve el listado: SIN el secret ni su cifrado.
+    `fallidaEn` es su última validación fallida; sin validar y con ella, el
+    front lo muestra "Con fallos"."""
     return {
         "id": webhook["id"],
         "url": webhook.get("url", ""),
@@ -185,6 +191,7 @@ def _publico(webhook: dict, estado: str, validado_en: str | None) -> dict:
         "estado": estado,
         "creadoEn": webhook.get("creadoEn"),
         "validadoEn": validado_en,
+        "fallidaEn": fallida_en,
     }
 
 
@@ -217,7 +224,7 @@ def registrar(tenant: str, url: str, eventos: list[str]) -> tuple[str, dict]:
     # Buscar repetidos, sortear el id y escribir bajo el MISMO candado: si no,
     # dos altas simultáneas podrían colarse con la misma URL o el mismo id.
     with registro.candado:
-        registrados, _, eliminados, _ = _indice()
+        registrados, _, eliminados, _, _ = _indice()
         if any(
             w.get("tenant") == tenant and w.get("url") == url and i not in eliminados
             for i, w in registrados.items()
@@ -246,7 +253,7 @@ def listar(tenant: str) -> list[dict]:
     """Los webhooks vigentes del tenant, del más nuevo al más viejo, sin
     secrets."""
     tenant = almacen._validar_tenant(tenant)
-    registrados, estados, eliminados, validados = _indice()
+    registrados, estados, eliminados, validados, fallidas = _indice()
     propios = [
         (posicion, w)
         for posicion, (i, w) in enumerate(registrados.items())
@@ -255,7 +262,10 @@ def listar(tenant: str) -> list[dict]:
     # Dos altas en el mismo segundo empatan en `creadoEn`: desempata el orden
     # del registro, para que el más nuevo siga saliendo primero.
     propios.sort(key=lambda par: (par[1].get("creadoEn") or "", par[0]), reverse=True)
-    return [_publico(w, estados.get(w["id"], "activo"), validados.get(w["id"])) for _, w in propios]
+    return [
+        _publico(w, estados.get(w["id"], "activo"), validados.get(w["id"]), fallidas.get(w["id"], {}).get("en"))
+        for _, w in propios
+    ]
 
 
 def cambiar_estado(tenant: str, identificador: str, estado: str) -> dict | None:
@@ -268,7 +278,7 @@ def cambiar_estado(tenant: str, identificador: str, estado: str) -> dict | None:
     if estado not in ESTADOS:
         raise ValueError("El estado tiene que ser activo o inactivo.")
     with registro.candado:
-        registrados, estados, eliminados, validados = _indice()
+        registrados, estados, eliminados, validados, fallidas = _indice()
         webhook = _vigente(registrados, eliminados, tenant, identificador)
         if webhook is None:
             return None
@@ -277,7 +287,7 @@ def cambiar_estado(tenant: str, identificador: str, estado: str) -> dict | None:
                 ARCHIVO,
                 {"evento": "estado", "id": identificador, "estado": estado, "en": _ahora().isoformat(timespec="seconds")},
             )
-    return _publico(webhook, estado, validados.get(identificador))
+    return _publico(webhook, estado, validados.get(identificador), fallidas.get(identificador, {}).get("en"))
 
 
 def eliminar(tenant: str, identificador: str) -> bool:
@@ -287,7 +297,7 @@ def eliminar(tenant: str, identificador: str) -> bool:
     `False` si no existe o es de otro tenant."""
     tenant = almacen._validar_tenant(tenant)
     with registro.candado:
-        registrados, _, eliminados, _ = _indice()
+        registrados, _, eliminados, _, _ = _indice()
         webhook = registrados.get(identificador)
         if webhook is None or webhook.get("tenant") != tenant:
             return False
@@ -306,7 +316,7 @@ def secret_para_firmar(identificador: str) -> str | None:
     se pruebe de ida y vuelta (`verificar_webhooks.py`): un secret que se
     guarda pero no se puede recuperar no firmaría nada. Levanta `SinCifrado` si
     la llave actual no lo abre, que es lo que pasa si alguien la cambió."""
-    registrados, _, eliminados, _ = _indice()
+    registrados, _, eliminados, _, _ = _indice()
     webhook = registrados.get(identificador)
     if webhook is None or identificador in eliminados:
         return None
@@ -323,7 +333,7 @@ def para_validar(tenant: str, identificador: str) -> tuple[str, str] | None:
     prueba; `None` si no existe, es de otro tenant o se eliminó. Levanta
     `SinCifrado` si su secret no se puede descifrar."""
     tenant = almacen._validar_tenant(tenant)
-    registrados, _, eliminados, _ = _indice()
+    registrados, _, eliminados, _, _ = _indice()
     if _vigente(registrados, eliminados, tenant, identificador) is None:
         return None
     return registrados[identificador]["url"], secret_para_firmar(identificador)
@@ -336,19 +346,37 @@ def marcar_validado(tenant: str, identificador: str, codigo: int, ms: int) -> di
     tenant = almacen._validar_tenant(tenant)
     en = _ahora().isoformat(timespec="seconds")
     with registro.candado:
-        registrados, estados, eliminados, _ = _indice()
+        registrados, estados, eliminados, _, fallidas = _indice()
         webhook = _vigente(registrados, eliminados, tenant, identificador)
         if webhook is None:
             return None
         registro.agregar(ARCHIVO, {"evento": "validado", "id": identificador, "en": en, "codigo": codigo, "ms": ms})
-    return _publico(webhook, estados.get(identificador, "activo"), en)
+    return _publico(webhook, estados.get(identificador, "activo"), en, fallidas.get(identificador, {}).get("en"))
+
+
+def marcar_fallida(tenant: str, identificador: str, intentos: int, codigo: int | None, motivo: str) -> dict | None:
+    """Registra que su endpoint no respondió al aviso de prueba en ninguno de
+    sus intentos: el webhook queda "Con fallos" hasta que se valide. Devuelve el
+    webhook, o `None` si se eliminó mientras se validaba."""
+    tenant = almacen._validar_tenant(tenant)
+    en = _ahora().isoformat(timespec="seconds")
+    with registro.candado:
+        registrados, estados, eliminados, validados, _ = _indice()
+        webhook = _vigente(registrados, eliminados, tenant, identificador)
+        if webhook is None:
+            return None
+        registro.agregar(
+            ARCHIVO,
+            {"evento": "validacion_fallida", "id": identificador, "en": en, "intentos": intentos, "codigo": codigo, "motivo": motivo},
+        )
+    return _publico(webhook, estados.get(identificador, "activo"), validados.get(identificador), en)
 
 
 def suscritos(tenant: str, tipo: str) -> list[str]:
     """Los webhooks del tenant que deben recibir un aviso de `tipo`: vigentes,
     VALIDADOS, activos y suscritos a ese tipo."""
     tenant = almacen._validar_tenant(tenant)
-    registrados, estados, eliminados, validados = _indice()
+    registrados, estados, eliminados, validados, _ = _indice()
     return [
         i
         for i, w in registrados.items()
@@ -364,7 +392,7 @@ def para_entregar(identificador: str) -> tuple[str, str] | None:
     """`(url, secret)` si el webhook sigue en condiciones de recibir —vigente,
     validado y activo—; si no, `None`, y sus entregas pendientes se cancelan.
     Levanta `SinCifrado` si su secret no se puede descifrar."""
-    registrados, estados, eliminados, validados = _indice()
+    registrados, estados, eliminados, validados, _ = _indice()
     webhook = registrados.get(identificador)
     if (
         webhook is None

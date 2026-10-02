@@ -178,10 +178,13 @@ def eliminar(identificador: str, datos: Baja):
     summary="Validar la conexión de un webhook",
     description=(
         "Le manda al endpoint un aviso de prueba firmado (`webhook.validacion`, "
-        "Standard Webhooks) y lo da por validado si responde 2xx en el tiempo "
-        "límite. No sigue redirecciones y solo llega a direcciones públicas. "
-        "Un endpoint que no responde bien NO es un error de esta llamada: responde "
-        "200 con `validado: false` y el motivo."
+        "Standard Webhooks) hasta 5 veces, con esperas de 1, 2, 4 y 8 s, y lo da "
+        "por validado en el primer 2xx. Si ninguno entra, el webhook queda "
+        "\"Con fallos\" (`fallidaEn`). No reintenta una dirección interna ni una "
+        "URL que no sea https. Un endpoint que no responde bien NO es un error de "
+        "esta llamada: responde 200 con `validado: false`, el motivo, el código "
+        "y cuántos intentos hubo. 429 si se repite muy seguido o hay demasiadas "
+        "validaciones en curso. Cada intento queda en el historial."
     ),
 )
 def validar(identificador: str, datos: Validacion):
@@ -202,29 +205,29 @@ def validar(identificador: str, datos: Validacion):
 
     url, secret = objetivo
     try:
-        resultado = entrega_webhooks.entregar(
-            url,
-            secret,
-            "webhook.validacion",
-            {
-                "webhookId": identificador,
-                "mensaje": "Aviso de prueba de NexusDoc. Responde con un código 2xx para validar este webhook.",
-            },
-        )
-    except entrega_webhooks.Rechazo as exc:
-        logger.info("Validación fallida (id=%s, tenant=%s): %s", identificador, datos.tenant, exc)
-        # `codigo`: el HTTP con el que respondió el endpoint, o `None` si no se
-        # llegó a hablar con él (tiempo agotado, la guarda, un nombre que no
-        # resuelve). El front lo muestra en el aviso de "Entrega fallida".
-        return {"validado": False, "motivo": str(exc), "codigo": exc.codigo}
+        r = entregas_webhooks.validar(datos.tenant, identificador, url, secret)
+    except entregas_webhooks.ValidacionOcupada as exc:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
     try:
-        webhook = webhooks_cliente.marcar_validado(datos.tenant, identificador, resultado["codigo"], resultado["ms"])
+        if r["ok"]:
+            webhook = webhooks_cliente.marcar_validado(datos.tenant, identificador, r["codigo"], r["ms"])
+        else:
+            webhook = webhooks_cliente.marcar_fallida(datos.tenant, identificador, r["intentos"], r["codigo"], r["motivo"])
     except ErrorAlmacen as exc:
-        raise _no_disponible(exc, f"marcar validado, tenant={datos.tenant}") from exc
+        raise _no_disponible(exc, f"marcar la validación, tenant={datos.tenant}") from exc
     if webhook is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
-    logger.info("Webhook validado (id=%s, tenant=%s, codigo=%s, ms=%s)", identificador, datos.tenant, resultado["codigo"], resultado["ms"])
-    return {"validado": True, "webhook": webhook, **resultado}
+    if r["ok"]:
+        logger.info(
+            "Webhook validado (id=%s, tenant=%s, intentos=%s, codigo=%s, ms=%s)",
+            identificador, datos.tenant, r["intentos"], r["codigo"], r["ms"],
+        )
+        return {"validado": True, "webhook": webhook, "codigo": r["codigo"], "ms": r["ms"], "intentos": r["intentos"]}
+    logger.info("Validación fallida (id=%s, tenant=%s, intentos=%s): %s", identificador, datos.tenant, r["intentos"], r["motivo"])
+    # `codigo`: el HTTP con el que respondió el endpoint en el último intento, o
+    # `None` si no se llegó a hablar con él (tiempo agotado, la guarda, un nombre
+    # que no resuelve).
+    return {"validado": False, "motivo": r["motivo"], "codigo": r["codigo"], "intentos": r["intentos"], "webhook": webhook}
 
 
 @router.post(
@@ -276,3 +279,25 @@ def metricas(identificador: str, tenant: str = Query(...), desde: datetime = Que
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ErrorAlmacen as exc:
         raise _no_disponible(exc, f"metricas, tenant={tenant}") from exc
+
+
+@router.get(
+    "/{identificador}/intentos",
+    tags=["Webhooks"],
+    summary="Historial de intentos de un webhook",
+    description=(
+        "Cada vez que NexusDoc le habló a su endpoint —validaciones y entregas de "
+        "avisos—, del más reciente al más viejo: cuándo, de qué tipo, qué número "
+        "de intento, si entró, el código de respuesta, cuánto tardó y el motivo. "
+        "De las entregas, también el `entradaId` del documento."
+    ),
+)
+def historial(identificador: str, tenant: str = Query(...), limite: int = Query(50, ge=1, le=200)):
+    try:
+        if not any(w["id"] == identificador for w in webhooks_cliente.listar(tenant)):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
+        return {"intentos": entregas_webhooks.historial(tenant, identificador, limite)}
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ErrorAlmacen as exc:
+        raise _no_disponible(exc, f"historial, tenant={tenant}") from exc

@@ -137,6 +137,11 @@ volver a mandar.
 **Responde con un 2xx en menos de 10 segundos**, y procesa después si tardas.
 Si no, lo reintentamos a los 5 s, 5 min, 30 min, 2 h y 5 h. Por eso un mismo
 aviso puede llegarte más de una vez: usa `webhook-id` para procesarlo solo una.
+
+**Al validar la conexión** te llega un aviso de prueba, `webhook.validacion`,
+firmado igual que los demás. Si no respondes 2xx lo intentamos hasta 5 veces
+(con el mismo `webhook-id`); si ninguno entra, el webhook queda marcado como
+"Con fallos" y no recibe avisos hasta que se vuelva a validar.
 """
 
 _OPERACION = """
