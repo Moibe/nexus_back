@@ -16,6 +16,12 @@ Standard Webhooks —verificado con una implementación escrita aparte y con el
 vector de prueba publicado—, que solo un 2xx valide, y que la guarda contra
 SSRF rechace la red interna de CSI SIN llegar a conectar. El endpoint de cliente
 es un servidor HTTP de verdad en 127.0.0.1.
+
+Y de los avisos de eventos: que solo se acepten de entradas reales que pasaron
+al pipeline, un resultado final por entrada; que cada entrega llegue firmada y
+con el MISMO webhook-id en todos sus reintentos; que el calendario completo se
+cumpla (con un reloj de mentira, sin esperar horas); que desactivar o eliminar
+cancele lo pendiente; que un reinicio no pierda nada; y las métricas.
 """
 
 import base64
@@ -32,6 +38,7 @@ import socket
 import tempfile
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from cryptography.fernet import Fernet
@@ -48,7 +55,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import config  # noqa: E402
 from app import app  # noqa: E402
-from servicios import almacen, entrega_webhooks, webhooks_cliente  # noqa: E402
+from servicios import almacen, entrega_webhooks, entregas_webhooks, webhooks_cliente  # noqa: E402
 
 (RAIZ / almacen.CENTINELA).touch()
 REGISTRO = RAIZ / ".registro" / "webhooks.jsonl"
@@ -330,9 +337,213 @@ def main() -> int:
     config.WEBHOOKS_PERMITIR_LOCAL = False
     receptor.detener()
 
+    titulo("13 · Avisos de eventos: solo de entradas reales que pasaron al pipeline")
+    entregas_webhooks._pendientes.clear()
+    entregas_webhooks._cargado = True
+    entrega_webhooks.limite_validaciones.reiniciar()
+    config.WEBHOOKS_PERMITIR_LOCAL = True
+    rx = Receptor.iniciar()
+    rx.responder(200)
+    base_rx = f"http://127.0.0.1:{rx.puerto}"
+    # Las secciones anteriores dejaron webhooks validados y suscritos en "demo":
+    # recibirían estos avisos también (es lo correcto), así que se parte de cero.
+    for w in listado(c):
+        c.post(f"/webhooks/{w['id']}/eliminar", json={"tenant": "demo"}, headers=srv())
+    entregas_webhooks._pendientes.clear()
+
+    def webhook_validado(ruta, eventos, tenant="demo"):
+        r = alta(c, url=f"{base_rx}/{ruta}", eventos=eventos, tenant=tenant).json()
+        entrega_webhooks.limite_validaciones.reiniciar()
+        v = validar(c, r["webhook"]["id"], tenant=tenant).json()
+        assert v.get("validado"), v
+        return r["webhook"]["id"], r["secret"]
+
+    wa, secret_a = webhook_validado("a", ["documento.completado", "documento.rechazado"])
+    wb, _ = webhook_validado("b", ["documento.fallido"])
+    wc = alta(c, url=f"{base_rx}/c-sin-validar", eventos=["documento.completado"]).json()["webhook"]["id"]
+    wd, _ = webhook_validado("d-inactivo", ["documento.completado"])
+    c.post(f"/webhooks/{wd}/estado", json={"tenant": "demo", "estado": "inactivo"}, headers=srv())
+    webhook_validado("e-otro-cliente", ["documento.completado"], tenant="acme")
+    rx.recibidos.clear()
+
+    e1 = entrada_al_pipeline(c)
+    e_pendiente = subir_entrada(c)
+    e_descartada = subir_entrada(c)
+    c.post(f"/bandeja/{e_descartada}/retirar", data={"tenant": "demo", "motivo": "descartado"}, headers=srv())
+
+    rev("una entrada que no existe: 404", avisar_evento(c, "documento.completado", "noexiste").status_code == 404)
+    rev("una que sigue en la bandeja: 404", avisar_evento(c, "documento.completado", e_pendiente).status_code == 404)
+    rev("una descartada: 404", avisar_evento(c, "documento.completado", e_descartada).status_code == 404)
+    rev("la de otro cliente: 404", avisar_evento(c, "documento.completado", e1, tenant="acme").status_code == 404)
+    rev("un tipo inventado: 400", avisar_evento(c, "documento.archivado", e1).status_code == 400)
+    r = avisar_evento(c, "expediente.completado", e1)
+    rev("expediente.completado: 400 (el expediente no existe)", r.status_code == 400 and "expediente" in r.text.lower(), r.text[:120])
+    rev("rechazado con un motivo fuera de la lista: 400", avisar_evento(c, "documento.rechazado", e1, motivo="porque si").status_code == 400)
+    rev("completado CON motivo: 400", avisar_evento(c, "documento.completado", e1, motivo="error_del_servicio").status_code == 400)
+    rev("sin llave de servicio: 401",
+        c.post("/webhooks/eventos", json={"tenant": "demo", "tipo": "documento.completado", "entradaId": e1}).status_code == 401)
+    r = avisar_evento(c, "documento.completado", e1, tipo_documental="INE")
+    rev("un aviso válido programa UNA entrega: solo el validado, activo y suscrito",
+        r.status_code == 200 and r.json() == {"programadas": 1, "duplicado": False}, r.text[:160])
+    r = avisar_evento(c, "documento.completado", e1, tipo_documental="INE")
+    rev("repetirlo no programa nada (duplicado)", r.status_code == 200 and r.json() == {"programadas": 0, "duplicado": True}, r.text[:160])
+    r = avisar_evento(c, "documento.rechazado", e1, motivo="tipo_no_identificado")
+    rev("otro resultado final para la misma entrada: 409", r.status_code == 409, r.text[:160])
+    e2 = entrada_al_pipeline(c)
+    rev("fallido le llega al suscrito a fallido",
+        avisar_evento(c, "documento.fallido", e2, motivo="error_del_servicio").json() == {"programadas": 1, "duplicado": False})
+    rev("fallido NO es final: después puede completarse",
+        avisar_evento(c, "documento.completado", e2).json() == {"programadas": 1, "duplicado": False})
+
+    titulo("14 · Entregas: firmadas, con reintentos, y que sobreviven a un reinicio")
+    entregadas = entregas_webhooks.procesar_vencidas()
+    rev("se intentaron las tres programadas", entregadas == 3, str(entregadas))
+    rev("y llegaron tres", len(rx.recibidos) == 3, str(len(rx.recibidos)))
+    rev("ninguna al webhook sin validar, al inactivo ni al de otro cliente",
+        all(x["ruta"] in ("/a", "/b") for x in rx.recibidos), str([x["ruta"] for x in rx.recibidos]))
+    al_a = next(x for x in rx.recibidos if x["ruta"] == "/a" and json.loads(x["cuerpo"])["data"]["entradaId"] == e1)
+    cab = {k.lower(): v for k, v in al_a["cabeceras"].items()}
+    datos = json.loads(al_a["cuerpo"])
+    rev("firmada: la verifica una implementación aparte de Standard Webhooks", _firma_valida(secret_a, cab, al_a["cuerpo"]))
+    rev("type documento.completado", datos["type"] == "documento.completado")
+    rev("data: entradaId, estado, tipoDocumental, sin motivo",
+        datos["data"]["entradaId"] == e1 and datos["data"]["estado"] == "completado"
+        and datos["data"]["tipoDocumental"] == "INE" and datos["data"]["motivo"] is None, str(datos["data"]))
+    rev("data trae cuándo se recibió y cuándo terminó", bool(datos["data"].get("recibidoEn")) and bool(datos["data"].get("terminadoEn")))
+    rev("el cuerpo no trae el nombre del archivo ni datos extraídos", "nombreOriginal" not in al_a["cuerpo"].decode())
+    rev("no queda nada pendiente", entregas_webhooks.pendientes() == 0)
+
+    reloj = [datetime.now(timezone.utc)]
+    entregas_webhooks._ahora = lambda: reloj[0]
+    try:
+        rx.recibidos.clear()
+        rx.responder(500)
+        e3 = entrada_al_pipeline(c)
+        avisar_evento(c, "documento.completado", e3)
+        entregas_webhooks.procesar_vencidas()
+        rev("1er intento: 500, queda pendiente", entregas_webhooks.pendientes() == 1 and len(rx.recibidos) == 1)
+        rev("al momento no se reintenta", entregas_webhooks.procesar_vencidas() == 0)
+        for espera in entregas_webhooks.CALENDARIO_S[1:]:
+            reloj[0] += timedelta(seconds=espera)
+            entregas_webhooks.procesar_vencidas()
+        rev("seis intentos en total, según el calendario", len(rx.recibidos) == 6, str(len(rx.recibidos)))
+        ids = {x["cabeceras"].get("webhook-id") for x in rx.recibidos}
+        rev("el MISMO webhook-id en todos (para que el cliente no repita)", len(ids) == 1, str(ids))
+        rev("el mismo cuerpo en todos", len({x["cuerpo"] for x in rx.recibidos}) == 1)
+        rev("agotada: ya no queda pendiente", entregas_webhooks.pendientes() == 0)
+        reloj[0] += timedelta(days=1)
+        rev("y no se vuelve a intentar", entregas_webhooks.procesar_vencidas() == 0 and len(rx.recibidos) == 6)
+        rev("quedó anotada como agotada", '"evento": "agotada"' in (RAIZ / ".registro" / "entregas-webhooks.jsonl").read_text(encoding="utf-8"))
+
+        rx.recibidos.clear()
+        rx.responder(500)
+        e4 = entrada_al_pipeline(c)
+        avisar_evento(c, "documento.completado", e4)
+        entregas_webhooks.procesar_vencidas()
+        rx.responder(200)
+        reloj[0] += timedelta(seconds=5)
+        entregas_webhooks.procesar_vencidas()
+        rev("falla y al reintentar entra: dos intentos y listo", len(rx.recibidos) == 2 and entregas_webhooks.pendientes() == 0)
+
+        rx.recibidos.clear()
+        rx.responder(500)
+        e5 = entrada_al_pipeline(c)
+        avisar_evento(c, "documento.completado", e5)
+        entregas_webhooks.procesar_vencidas()
+        c.post(f"/webhooks/{wa}/estado", json={"tenant": "demo", "estado": "inactivo"}, headers=srv())
+        rev("desactivar el webhook cancela lo pendiente", entregas_webhooks.pendientes() == 0)
+        reloj[0] += timedelta(hours=10)
+        entregas_webhooks.procesar_vencidas()
+        rev("y ya no se le manda nada", len(rx.recibidos) == 1)
+        c.post(f"/webhooks/{wa}/estado", json={"tenant": "demo", "estado": "activo"}, headers=srv())
+
+        rx.recibidos.clear()
+        rx.responder(200)
+        e6 = entrada_al_pipeline(c)
+        avisar_evento(c, "documento.completado", e6)
+        # Un reinicio: lo pendiente se va de la memoria y se recupera del registro.
+        entregas_webhooks._pendientes.clear()
+        entregas_webhooks._cargado = False
+        entregas_webhooks.procesar_vencidas()
+        rev("tras un reinicio, lo pendiente se recupera del registro y se entrega",
+            len(rx.recibidos) == 1 and json.loads(rx.recibidos[0]["cuerpo"])["data"]["entradaId"] == e6)
+
+        rx.recibidos.clear()
+        e7 = entrada_al_pipeline(c)
+        avisar_evento(c, "documento.completado", e7)
+        c.post(f"/webhooks/{wa}/eliminar", json={"tenant": "demo"}, headers=srv())
+        rev("eliminar el webhook también cancela lo pendiente", entregas_webhooks.pendientes() == 0)
+    finally:
+        entregas_webhooks._ahora = lambda: datetime.now(timezone.utc)
+
+    titulo("15 · Métricas de entregas")
+    wm, _ = webhook_validado("metricas", ["documento.completado"])
+    entregas_webhooks._pendientes.clear()
+    rx.recibidos.clear()
+    for codigo in (200, 200, 500):
+        rx.responder(codigo)
+        en = entrada_al_pipeline(c)
+        avisar_evento(c, "documento.completado", en)
+        entregas_webhooks.procesar_vencidas()
+    entregas_webhooks._pendientes.clear()
+    ahora = datetime.now(timezone.utc)
+    q = {"tenant": "demo", "desde": (ahora - timedelta(hours=1)).isoformat(), "hasta": (ahora + timedelta(hours=1)).isoformat()}
+    r = c.get(f"/webhooks/{wm}/metricas", params=q, headers=srv())
+    m = r.json()
+    rev("responde 200 con actual y anterior", r.status_code == 200 and {"actual", "anterior"} <= set(m), r.text[:200])
+    act = m.get("actual", {})
+    rev("cuenta los tres intentos", act.get("solicitudes") == 3, str(act))
+    rev("uno con error: 33.3 %", act.get("errores") == 1 and act.get("tasaError") == 33.3, str(act))
+    rev("trae P50, P90 y P99", all(isinstance(act.get(k), int) for k in ("p50Ms", "p90Ms", "p99Ms")), str(act))
+    rev("P50 ≤ P90 ≤ P99", act["p50Ms"] <= act["p90Ms"] <= act["p99Ms"])
+    rev("el periodo anterior, vacío", m["anterior"]["solicitudes"] == 0 and m["anterior"]["tasaError"] is None)
+    rev("de otro cliente: 404", c.get(f"/webhooks/{wm}/metricas", params={**q, "tenant": "acme"}, headers=srv()).status_code == 404)
+    rev("sin zona horaria: 400",
+        c.get(f"/webhooks/{wm}/metricas", params={**q, "desde": "2026-10-01T00:00:00"}, headers=srv()).status_code == 400)
+    rev("percentil de rango más cercano", entregas_webhooks._percentil([10, 20, 30, 40], 50) == 20
+        and entregas_webhooks._percentil([10, 20, 30, 40], 99) == 40 and entregas_webhooks._percentil([], 50) is None)
+    config.WEBHOOKS_PERMITIR_LOCAL = False
+    rx.detener()
+
     print("\n" + "=" * 72)
     print(f"{fallos} FALLARON" if fallos else "todas las comprobaciones pasaron")
     return 1 if fallos else 0
+
+
+PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+    "890000000a49444154789c6360000002000100ffff03000006000557bfabd400"
+    "00000049454e44ae426082"
+)
+
+
+def subir_entrada(c, tenant="demo") -> str:
+    """Una entrada nueva en la bandeja, como la subiría el front. Cada una con
+    bytes distintos: el almacén deduplica por contenido."""
+    contenido = PNG + secrets_token()
+    r = c.post("/bandeja/", files={"archivo": ("ine.png", contenido, "image/png")}, data={"tenant": tenant}, headers=srv())
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+def secrets_token() -> bytes:
+    return os.urandom(8)
+
+
+def entrada_al_pipeline(c, tenant="demo") -> str:
+    """Una entrada que ya pasó al pipeline: la que sí puede avisar."""
+    i = subir_entrada(c, tenant)
+    r = c.post(f"/bandeja/{i}/retirar", data={"tenant": tenant, "motivo": "pipeline"}, headers=srv())
+    assert r.status_code == 200, r.text
+    return i
+
+
+def avisar_evento(c, tipo, entrada, motivo=None, tipo_documental=None, tenant="demo"):
+    return c.post(
+        "/webhooks/eventos",
+        json={"tenant": tenant, "tipo": tipo, "entradaId": entrada, "motivo": motivo, "tipoDocumental": tipo_documental},
+        headers=srv(),
+    )
 
 
 def validar(c, identificador, tenant="demo"):

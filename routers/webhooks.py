@@ -5,8 +5,11 @@ Lo usa SOLO el front (módulo "Webhooks"), con su llave de servicio: el router
 entero va detrás de `exigir_llave` en `app.py`, y por el dominio público no se
 alcanza (`superficie_publica.py` solo deja pasar tres rutas).
 
-TODAVÍA NO SE ENVÍAN AVISOS DE EVENTOS: esto es el registro, más el aviso de
-prueba con el que se valida la conexión (`/validar`). El secret de firma se
+Además del registro: el aviso de prueba con el que se valida la conexión
+(`/validar`), la recepción de los avisos de eventos que manda el front cuando
+un documento termina (`/eventos`, que los entrega y reintenta en segundo plano:
+ver `servicios/entregas_webhooks.py`) y las métricas de esas entregas. El
+secret de firma se
 genera AQUÍ, en el servidor, y viaja una sola vez: en la respuesta del alta,
 con `Cache-Control: no-store`. Se guarda cifrado y no se escribe en logs; la URL
 tampoco se loguea, porque hay endpoints que llevan un token en la consulta.
@@ -17,12 +20,13 @@ Los handlers son `def`: el registro es I/O síncrono y debe ir al threadpool.
 """
 
 import logging
+from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 
-from servicios import entrega_webhooks, webhooks_cliente
+from servicios import entrega_webhooks, entregas_webhooks, webhooks_cliente
 from servicios.almacen import ErrorAlmacen
 
 logger = logging.getLogger(__name__)
@@ -52,6 +56,14 @@ class Baja(BaseModel):
 
 class Validacion(BaseModel):
     tenant: str
+
+
+class Aviso(BaseModel):
+    tenant: str
+    tipo: str = Field(..., description="documento.completado, documento.fallido o documento.rechazado")
+    entradaId: str = Field(..., description="El id de la entrada de la bandeja: el que recibió el cliente al subir")
+    tipoDocumental: str | None = Field(None, description="El tipo que identificó el clasificador, si lo hubo")
+    motivo: str | None = Field(None, description="Código del motivo, para fallido y rechazado")
 
 
 def _no_disponible(exc: Exception, que: str) -> HTTPException:
@@ -131,6 +143,8 @@ def cambiar_estado(identificador: str, datos: CambioDeEstado):
         raise _no_disponible(exc, f"estado, tenant={datos.tenant}") from exc
     if webhook is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
+    if datos.estado == "inactivo":
+        entregas_webhooks.cancelar_de(identificador, "El webhook se desactivó.")
     logger.info("Webhook %s (id=%s, tenant=%s)", datos.estado, identificador, datos.tenant)
     return {"webhook": webhook}
 
@@ -153,6 +167,7 @@ def eliminar(identificador: str, datos: Baja):
         raise _no_disponible(exc, f"eliminar, tenant={datos.tenant}") from exc
     if not existia:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
+    entregas_webhooks.cancelar_de(identificador, "El webhook se eliminó.")
     logger.info("Webhook eliminado (id=%s, tenant=%s)", identificador, datos.tenant)
     return {"eliminado": True}
 
@@ -207,3 +222,54 @@ def validar(identificador: str, datos: Validacion):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
     logger.info("Webhook validado (id=%s, tenant=%s, codigo=%s, ms=%s)", identificador, datos.tenant, resultado["codigo"], resultado["ms"])
     return {"validado": True, "webhook": webhook, **resultado}
+
+
+@router.post(
+    "/eventos",
+    tags=["Webhooks"],
+    summary="Avisar que un documento terminó",
+    description=(
+        "Lo llama el front cuando un documento que llegó por la API llega a su "
+        "resultado. Se acepta solo si la entrada existe, es del cliente y pasó al "
+        "pipeline; se acepta UN resultado final por entrada, y repetir el mismo "
+        "aviso no programa nada (`duplicado: true`). Programa una entrega por cada "
+        "webhook validado, activo y suscrito, y las entrega y reintenta en segundo plano."
+    ),
+)
+def recibir_aviso(datos: Aviso):
+    try:
+        resultado = entregas_webhooks.avisar(datos.tenant, datos.tipo, datos.entradaId, datos.tipoDocumental, datos.motivo)
+    except entregas_webhooks.AvisoRechazado as exc:
+        raise HTTPException(status_code=exc.codigo, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ErrorAlmacen as exc:
+        raise _no_disponible(exc, f"aviso, tenant={datos.tenant}") from exc
+    if not resultado["duplicado"]:
+        logger.info(
+            "Aviso %s de la entrada %s (tenant=%s): %s entrega(s)",
+            datos.tipo, datos.entradaId, datos.tenant, resultado["programadas"],
+        )
+    return resultado
+
+
+@router.get(
+    "/{identificador}/metricas",
+    tags=["Webhooks"],
+    summary="Métricas de entregas de un webhook",
+    description=(
+        "Solicitudes, errores, tasa de error y latencia P50/P90/P99 de las entregas "
+        "del periodo, comparadas con el periodo anterior de la misma duración. Cada "
+        "INTENTO es una solicitud. El periodo son dos instantes ISO 8601 CON zona, "
+        "`[desde, hasta)`, igual que en las métricas de las API Keys."
+    ),
+)
+def metricas(identificador: str, tenant: str = Query(...), desde: datetime = Query(...), hasta: datetime = Query(...)):
+    try:
+        if not any(w["id"] == identificador for w in webhooks_cliente.listar(tenant)):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
+        return entregas_webhooks.metricas(tenant, identificador, desde, hasta)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ErrorAlmacen as exc:
+        raise _no_disponible(exc, f"metricas, tenant={tenant}") from exc

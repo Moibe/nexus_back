@@ -424,9 +424,10 @@ Verificarlo, offline: `venv/bin/python verificar_bandeja.py` y
 
 ## Webhooks de cliente: el registro (desde el 2026-10-01)
 
-El módulo "Webhooks" del front registra aquí los endpoints a los que NexusDoc
-le avisará a un cliente cuando un documento suyo termine de procesarse, falle o
-sea rechazado. **Todavía no se envía ningún aviso**: esto es el registro.
+El módulo "Webhooks" del front registra aquí los endpoints a los que NexusDoc le
+avisa a un cliente cuando un documento suyo termina de procesarse, falla o es
+rechazado. Desde el 2026-10-01 los avisos **se envían**: ver "Los avisos de
+eventos", abajo.
 
 | Ruta | Qué hace |
 |---|---|
@@ -435,6 +436,8 @@ sea rechazado. **Todavía no se envía ningún aviso**: esto es el registro.
 | `POST /webhooks/{id}/estado` | Lo activa o desactiva. |
 | `POST /webhooks/{id}/eliminar` | Lo da de baja. Repetirlo no es error. |
 | `POST /webhooks/{id}/validar` | Le manda al endpoint un **aviso de prueba firmado** y lo da por validado si responde 2xx. Un endpoint que no responde bien no es error de esta llamada: contesta 200 con `validado: false` y el motivo. 429 si se repite muy seguido. |
+| `POST /webhooks/eventos` | El front avisa que un documento terminó; se programa una entrega por cada webhook que deba recibirlo. |
+| `GET /webhooks/{id}/metricas` | Solicitudes, errores, tasa de error y P50/P90/P99 de sus entregas en un periodo, contra el anterior. |
 
 Las cuatro piden la llave de servicio (solo las usa el front) y por el dominio
 público responden 404, como todo lo que no sea `POST /bandeja/`. La URL se
@@ -516,13 +519,56 @@ webhook-signature: v1,<HMAC-SHA256 en base64>
 `verificar_webhooks.py` comprueba la firma contra el **vector de prueba
 publicado** por el estándar, y contra una verificación escrita aparte.
 
-**Lo que falta para enviar EVENTOS** (la guarda y la firma ya están):
+### Los avisos de eventos (desde el 2026-10-01)
 
-1. **Reintentos con retroceso y registro de entregas**, que es lo que alimenta
-   las métricas del front (hoy contestan ceros).
-2. **Avisar del fin de un documento**: el pipeline corre en el navegador, así
-   que el servidor no se entera solo; el front tiene que decírselo.
-3. **Publicar el formato** de arriba en la documentación pública para clientes.
+`servicios/entregas_webhooks.py`. **De dónde salen:** el pipeline corre en el
+navegador, así que el front le dice al servidor cómo terminó cada documento que
+llegó por la API (`POST /webhooks/eventos`). Solo esos: son los únicos cuyo id
+conoce el cliente, el `id` que recibió al subir. Lo subido a mano no se avisa.
+
+| Resultado en el pipeline | Aviso | `motivo` |
+|---|---|---|
+| procesado | `documento.completado` | — |
+| no soportado / no reconocido / sin tipo que aplique | `documento.rechazado` | `formato_no_soportado` / `documento_no_reconocido` / `tipo_no_identificado` |
+| error del servicio | `documento.fallido` | `error_del_servicio` |
+| tipo reconocido pero sin extractor o sin calibrar | `documento.fallido` | `tipo_sin_configurar` |
+
+**No se le cree a ciegas al front**, que hoy se alcanza desde internet sin
+iniciar sesión: la entrada tiene que existir en la bandeja de ese cliente y
+haber salido de ella hacia el pipeline; el tipo y el motivo vienen de listas
+cerradas y el resto del cuerpo lo arma el servidor; y se acepta un resultado
+final por entrada (repetir el mismo aviso no programa nada). Así, quien use el
+front para mandar avisos falsos no puede inventar documentos ni multiplicar
+envíos: a lo sumo adelantar el resultado de una entrada real. Cerrar eso del
+todo es cerrar el front.
+
+**La entrega.** Una por cada webhook validado, activo y suscrito a ese tipo. El
+`webhook-id` y el cuerpo son los mismos en todos los intentos; la marca de
+tiempo y la firma, de cada uno. Si no responde 2xx en 10 s se reintenta a los
+5 s, 5 min, 30 min, 2 h y 5 h (seis intentos en ~7.6 h, el calendario de
+Standard Webhooks recortado); agotados, queda `agotada`. Desactivar o eliminar
+el webhook cancela lo pendiente.
+
+**El trabajador** es un hilo que arranca con la app y revisa cada segundo. Lo
+pendiente vive en memoria (un solo proceso uvicorn) y el registro
+(`.registro/entregas-webhooks.jsonl`) es lo durable: al arrancar se reconstruye,
+así que un reinicio no pierde avisos, a lo sumo los retrasa. Entrega de uno en
+uno: con muchos clientes y endpoints lentos, para entonces un pool de hilos y la
+tabla del DBA.
+
+**Las métricas** salen de los intentos: cada uno es una solicitud; la tasa de
+error es la de intentos fallidos; las latencias, de los que llegaron a la red.
+
+**Lo que este diseño no cubre todavía:**
+
+- Si el navegador no logra avisarle al servidor (tres intentos), ese aviso se
+  pierde. Se va el día que el pipeline pase al servidor.
+- Un endpoint que falla siempre no se desactiva solo.
+- El cliente se entera de que terminó, pero todavía no hay ruta de la API para
+  que consulte el resultado extraído.
+
+El formato y cómo verificar la firma están en la documentación pública
+(`/docs`), que es lo que lee el cliente.
 
 Verificarlo, offline: `venv/bin/python verificar_webhooks.py`.
 

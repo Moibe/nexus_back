@@ -342,3 +342,35 @@ def marcar_validado(tenant: str, identificador: str, codigo: int, ms: int) -> di
             return None
         registro.agregar(ARCHIVO, {"evento": "validado", "id": identificador, "en": en, "codigo": codigo, "ms": ms})
     return _publico(webhook, estados.get(identificador, "activo"), en)
+
+
+def suscritos(tenant: str, tipo: str) -> list[str]:
+    """Los webhooks del tenant que deben recibir un aviso de `tipo`: vigentes,
+    VALIDADOS, activos y suscritos a ese tipo."""
+    tenant = almacen._validar_tenant(tenant)
+    registrados, estados, eliminados, validados = _indice()
+    return [
+        i
+        for i, w in registrados.items()
+        if w.get("tenant") == tenant
+        and i not in eliminados
+        and i in validados
+        and estados.get(i, "activo") == "activo"
+        and tipo in (w.get("eventos") or [])
+    ]
+
+
+def para_entregar(identificador: str) -> tuple[str, str] | None:
+    """`(url, secret)` si el webhook sigue en condiciones de recibir —vigente,
+    validado y activo—; si no, `None`, y sus entregas pendientes se cancelan.
+    Levanta `SinCifrado` si su secret no se puede descifrar."""
+    registrados, estados, eliminados, validados = _indice()
+    webhook = registrados.get(identificador)
+    if (
+        webhook is None
+        or identificador in eliminados
+        or identificador not in validados
+        or estados.get(identificador, "activo") != "activo"
+    ):
+        return None
+    return webhook["url"], secret_para_firmar(identificador)

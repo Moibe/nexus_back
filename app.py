@@ -471,6 +471,23 @@ def calentar_uso_de_llaves() -> None:
         logger.warning("No se pudo cargar el índice de uso de llaves al arrancar; se intentará al usarse.")
 
 
+@app.on_event("startup")
+def arrancar_entregas_de_webhooks() -> None:
+    """El trabajador que entrega los avisos de webhook y los reintenta (ver
+    `servicios/entregas_webhooks.py`). Reconstruye lo pendiente del registro:
+    un reinicio no pierde avisos, a lo sumo los retrasa."""
+    from servicios import entregas_webhooks
+
+    entregas_webhooks.iniciar()
+
+
+@app.on_event("shutdown")
+def detener_entregas_de_webhooks() -> None:
+    from servicios import entregas_webhooks
+
+    entregas_webhooks.detener()
+
+
 if __name__ == "__main__":
     import uvicorn
 

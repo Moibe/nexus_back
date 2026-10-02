@@ -117,6 +117,21 @@ def retirar(tenant: str, id_entrada: str, motivo: str) -> bool:
     return True
 
 
+def entrada_en_pipeline(tenant: str, id_entrada: str) -> dict | None:
+    """La entrada, si entró a la bandeja de `tenant` y salió de ella porque PASÓ
+    AL PIPELINE. `None` si no existe, es de otro tenant, sigue pendiente o se
+    descartó. Es lo que deja aceptar un aviso de "este documento terminó" solo
+    de algo que de verdad se mandó a procesar (ver `entregas_webhooks.avisar`)."""
+    eventos = registro.eventos(_nombre(tenant))
+    entrada = next((e for e in eventos if e.get("evento") == "entrada" and e.get("id") == id_entrada), None)
+    if entrada is None:
+        return None
+    retiro = next((e for e in eventos if e.get("evento") == "retiro" and e.get("id") == id_entrada), None)
+    if retiro is None or retiro.get("motivo") != "pipeline":
+        return None
+    return _publica(entrada)
+
+
 def _publica(entrada: dict) -> dict:
     """La entrada como la ve quien consulta, sin el campo interno `evento`."""
     return {k: v for k, v in entrada.items() if k != "evento"}

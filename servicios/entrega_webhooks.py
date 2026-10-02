@@ -1,8 +1,9 @@
 """Entregar un aviso a un webhook de cliente: la guarda contra SSRF y la firma.
 
-Hoy lo usa SOLO la validación de conexión (`POST /webhooks/{id}/validar`), que
-manda un aviso de prueba. El envío de eventos reales usará esto mismo cuando
-exista; la guarda y la firma ya son las definitivas.
+Lo usan la validación de conexión (`POST /webhooks/{id}/validar`, un aviso de
+prueba) y las entregas de eventos reales con sus reintentos
+(`servicios/entregas_webhooks.py`). Aquí vive lo que es igual para los dos: la
+guarda, la firma y el envío de UN intento.
 
 ## La guarda contra SSRF: el servidor no le pega a la red interna
 
@@ -79,7 +80,13 @@ _MENSAJE_INTERNA = (
 
 class Rechazo(Exception):
     """El aviso no se mandó, o el endpoint no lo aceptó. El mensaje es para el
-    usuario: dice qué pasó sin detalles de la red interna."""
+    usuario: dice qué pasó sin detalles de la red interna. `codigo` y `ms`, si
+    se llegó a hablar con el endpoint: alimentan las métricas de entregas."""
+
+    def __init__(self, mensaje: str, codigo: int | None = None, ms: int | None = None):
+        super().__init__(mensaje)
+        self.codigo = codigo
+        self.ms = ms
 
 
 # ── La firma ────────────────────────────────────────────────────────────────
@@ -141,10 +148,34 @@ def _resolver(host: str, puerto: int) -> str:
 # ── La entrega ──────────────────────────────────────────────────────────────
 
 
+def armar_cuerpo(tipo: str, datos: dict, momento: datetime | None = None) -> bytes:
+    """El cuerpo de un aviso, como lo pide Standard Webhooks: `type`,
+    `timestamp` (cuándo ocurrió lo que se avisa) y `data`. Se arma UNA vez por
+    aviso: en sus reintentos viaja idéntico."""
+    momento = momento or datetime.now(timezone.utc)
+    return json.dumps(
+        {"type": tipo, "timestamp": momento.isoformat(timespec="seconds"), "data": datos},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode()
+
+
+def nuevo_id_mensaje() -> str:
+    return "msg_" + secrets.token_hex(12)
+
+
 def entregar(url: str, secret: str, tipo: str, datos: dict) -> dict:
-    """Manda un aviso firmado a `url` y devuelve `{"codigo", "ms"}` si el endpoint
-    respondió 2xx. Si no se mandó o no lo aceptó, levanta `Rechazo` con el
-    motivo."""
+    """Arma un aviso nuevo y lo manda en UN intento. Lo usa la validación."""
+    return enviar(url, secret, armar_cuerpo(tipo, datos), nuevo_id_mensaje())
+
+
+def enviar(url: str, secret: str, cuerpo: bytes, id_mensaje: str) -> dict:
+    """Manda `cuerpo` firmado a `url`, en UN intento, y devuelve
+    `{"codigo", "ms"}` si el endpoint respondió 2xx. Si no se mandó o no lo
+    aceptó, levanta `Rechazo` con el motivo.
+
+    `id_mensaje` es el MISMO en todos los intentos de un aviso (`webhook-id`);
+    la marca de tiempo y la firma son de este intento."""
     partes = urlsplit(url)
     esquema = partes.scheme
     host = partes.hostname
@@ -156,14 +187,7 @@ def entregar(url: str, secret: str, tipo: str, datos: dict) -> dict:
     if esquema == "http" and not ipaddress.ip_address(ip).is_loopback:
         raise Rechazo("Los avisos solo se envían por https://.")
 
-    ahora = datetime.now(timezone.utc)
-    cuerpo = json.dumps(
-        {"type": tipo, "timestamp": ahora.isoformat(timespec="seconds"), "data": datos},
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode()
-    id_mensaje = "msg_" + secrets.token_hex(12)
-    marca = str(int(ahora.timestamp()))
+    marca = str(int(time.time()))
 
     nombre = f"[{host}]" if ":" in host else host
     destino_ip = f"[{ip}]" if ":" in ip else ip
@@ -190,23 +214,31 @@ def entregar(url: str, secret: str, tipo: str, datos: dict) -> dict:
             with cliente.stream("POST", destino, content=cuerpo, headers=cabeceras, extensions=extensiones) as r:
                 codigo = r.status_code
     except httpx.TimeoutException as exc:
-        raise Rechazo(f"El endpoint no respondió en {espera:g} segundos.") from exc
+        raise Rechazo(f"El endpoint no respondió en {espera:g} segundos.", ms=_transcurrido(inicio)) from exc
     except httpx.ConnectError as exc:
         if "CERTIFICATE_VERIFY_FAILED" in str(exc) or "certificate" in str(exc).lower():
-            raise Rechazo("El certificado HTTPS del endpoint no es válido para ese nombre.") from exc
-        raise Rechazo("No se pudo conectar con el endpoint.") from exc
+            raise Rechazo("El certificado HTTPS del endpoint no es válido para ese nombre.", ms=_transcurrido(inicio)) from exc
+        raise Rechazo("No se pudo conectar con el endpoint.", ms=_transcurrido(inicio)) from exc
     except httpx.HTTPError as exc:
-        raise Rechazo("La conexión con el endpoint falló antes de recibir respuesta.") from exc
-    ms = round((time.monotonic() - inicio) * 1000)
+        raise Rechazo("La conexión con el endpoint falló antes de recibir respuesta.", ms=_transcurrido(inicio)) from exc
+    ms = _transcurrido(inicio)
 
     if 200 <= codigo < 300:
         return {"codigo": codigo, "ms": ms}
     if 300 <= codigo < 400:
         raise Rechazo(
             f"El endpoint respondió con una redirección ({codigo}). NexusDoc no sigue "
-            "redirecciones: registra la dirección final."
+            "redirecciones: registra la dirección final.",
+            codigo=codigo,
+            ms=ms,
         )
-    raise Rechazo(f"El endpoint respondió {codigo}. Para validarlo tiene que responder con un código 2xx.")
+    raise Rechazo(
+        f"El endpoint respondió {codigo}. Tiene que responder con un código 2xx.", codigo=codigo, ms=ms
+    )
+
+
+def _transcurrido(inicio: float) -> int:
+    return round((time.monotonic() - inicio) * 1000)
 
 
 # ── Cuántas validaciones ────────────────────────────────────────────────────

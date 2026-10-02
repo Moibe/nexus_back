@@ -61,6 +61,82 @@ curl -X POST __SERVIDOR__/bandeja/ \\
 
 Tu llave vence en la fecha que se eligió al emitirla, y se puede revocar en
 cualquier momento: a partir de ahí, cada petición con ella responde **401**.
+
+### Avisos de resultado (webhooks)
+
+Si tienes un webhook configurado y validado en NexusDoc, te avisamos por HTTPS
+cuando un documento que mandaste por esta API termina:
+
+| Evento | Cuándo |
+|---|---|
+| `documento.completado` | Se procesó y la extracción terminó. |
+| `documento.rechazado` | No se puede procesar tal como vino: reenviarlo igual no sirve. |
+| `documento.fallido` | NexusDoc no pudo procesarlo; reenviarlo más tarde sí puede funcionar. |
+
+Cada aviso es un `POST` con este JSON:
+
+```json
+{
+  "type": "documento.completado",
+  "timestamp": "2026-10-01T21:04:11+00:00",
+  "data": {
+    "entradaId": "2ff89e2c5741435a83372bac1a202477",
+    "estado": "completado",
+    "motivo": null,
+    "tipoDocumental": "INE",
+    "recibidoEn": "2026-10-01T21:03:52+00:00",
+    "terminadoEn": "2026-10-01T21:04:11+00:00"
+  }
+}
+```
+
+`entradaId` es el `id` que recibiste al subir el documento. `motivo` viene en
+los rechazados (`formato_no_soportado`, `documento_no_reconocido`,
+`tipo_no_identificado`) y en los fallidos (`error_del_servicio`,
+`tipo_sin_configurar`).
+
+**Comprueba que el aviso es de NexusDoc.** Va firmado según
+[Standard Webhooks](https://www.standardwebhooks.com/) con el secret
+(`whsec_…`) que se te dio al configurar el webhook, así que puedes usar
+cualquiera de sus bibliotecas. Las cabeceras:
+
+```
+webhook-id: msg_…              el mismo en todos los reintentos de un aviso
+webhook-timestamp: 1696194251
+webhook-signature: v1,<firma>
+```
+
+La firma es un HMAC-SHA256 de `{webhook-id}.{webhook-timestamp}.{cuerpo}` —el
+cuerpo tal cual llegó—, en base64, con la llave que resulta de decodificar en
+base64 lo que va después de `whsec_`. En Python:
+
+```python
+import base64, hashlib, hmac, time
+
+def es_de_nexusdoc(secret, cabeceras, cuerpo: bytes) -> bool:
+    llave = base64.b64decode(secret.removeprefix("whsec_"))
+    firmado = f"{cabeceras['webhook-id']}.{cabeceras['webhook-timestamp']}.".encode() + cuerpo
+    esperada = "v1," + base64.b64encode(hmac.new(llave, firmado, hashlib.sha256).digest()).decode()
+    reciente = abs(time.time() - int(cabeceras["webhook-timestamp"])) < 300
+    return reciente and any(hmac.compare_digest(f, esperada) for f in cabeceras["webhook-signature"].split())
+```
+
+En Node:
+
+```js
+const crypto = require("node:crypto");
+const llave = Buffer.from(secret.slice("whsec_".length), "base64");
+const esperada = "v1," + crypto.createHmac("sha256", llave)
+  .update(`${headers["webhook-id"]}.${headers["webhook-timestamp"]}.${cuerpo}`)
+  .digest("base64");
+```
+
+Descarta los avisos de más de 5 minutos: así una copia interceptada no se puede
+volver a mandar.
+
+**Responde con un 2xx en menos de 10 segundos**, y procesa después si tardas.
+Si no, lo reintentamos a los 5 s, 5 min, 30 min, 2 h y 5 h. Por eso un mismo
+aviso puede llegarte más de una vez: usa `webhook-id` para procesarlo solo una.
 """
 
 _OPERACION = """
