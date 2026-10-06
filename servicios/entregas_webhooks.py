@@ -76,6 +76,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from config import ENTREGAS_WEBHOOKS_ACTIVAS
 from servicios import bandeja, entrega_webhooks, registro, webhooks_cliente
 from servicios.almacen import ErrorAlmacen
 
@@ -370,6 +371,12 @@ def _bucle() -> None:
 def iniciar() -> None:
     """Arranca el trabajador. La llama `app.py` al arrancar."""
     global _hilo
+    if not ENTREGAS_WEBHOOKS_ACTIVAS:
+        logger.warning(
+            "Trabajador de entregas de webhooks APAGADO (ENTREGAS_WEBHOOKS=off): "
+            "este proceso no entrega ni reintenta avisos."
+        )
+        return
     if _hilo is not None and _hilo.is_alive():
         return
     _detener.clear()

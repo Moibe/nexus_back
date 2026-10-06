@@ -101,6 +101,14 @@ WEBHOOKS_PERMITIR_LOCAL = (os.getenv("WEBHOOKS_PERMITIR_LOCAL") or "").strip().l
 # entregar).
 WEBHOOKS_TIMEOUT_S = _numero("WEBHOOKS_TIMEOUT_S", 10)
 
+# Apaga el trabajador que entrega y reintenta los avisos de webhook
+# (servicios/entregas_webhooks.py). Es para un entorno que COMPARTE el almacén
+# con otro: el trabajador reconstruye sus pendientes leyendo el registro del
+# NAS, y con el registro compartido reintentaría las entregas del otro entorno
+# hacia los endpoints reales de los clientes. Vacía o ausente = encendido, o
+# sea que producción no cambia; solo lo apagan los valores off/0/no/false.
+ENTREGAS_WEBHOOKS_ACTIVAS = (os.getenv("ENTREGAS_WEBHOOKS") or "").strip().lower() not in {"off", "0", "no", "false"}
+
 SQLSERVER_HOST = os.getenv("SQLSERVER_HOST", "")
 SQLSERVER_PORT = os.getenv("SQLSERVER_PORT", "1433")
 SQLSERVER_DB = os.getenv("SQLSERVER_DB", "")
