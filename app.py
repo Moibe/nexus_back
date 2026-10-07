@@ -414,6 +414,15 @@ app.include_router(
     organizaciones_router, prefix="/organizaciones", tags=["Organizaciones"], dependencies=[Depends(exigir_llave)]
 )
 
+# Usuarios dentro de una organización (Sprint 1, HU06 y HU07). El permiso lo
+# da la membresía con rol ADMIN, no la llave: cada administrador opera sobre
+# SU organización, la del JWT.
+from routers.usuarios import router as usuarios_router  # noqa: E402
+
+app.include_router(
+    usuarios_router, prefix="/usuarios", tags=["Usuarios"], dependencies=[Depends(exigir_llave)]
+)
+
 # El grupo Documentos se registra solo si hay una base configurada.
 #
 # Mientras el DBA no entregue SQL Server, publicar esos endpoints sería publicar

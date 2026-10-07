@@ -133,6 +133,10 @@ def _indice() -> tuple[dict[str, dict], dict[str, str], dict[str, dict]]:
             # LOCKED / INACTIVE / UNKNOWN_EMAIL: bitácora, no cuentan.
         elif tipo == "estado" and u:
             u["activo"] = bool(e.get("activo"))
+        elif tipo == "datos" and u:
+            u["nombre"] = e.get("nombre", u["nombre"])
+            u["apellidos"] = e.get("apellidos", u["apellidos"])
+            u["telefono"] = e.get("telefono", u.get("telefono"))
         elif tipo == "membresia" and u:
             tenant = e.get("tenantGuid")
             if isinstance(tenant, str):
@@ -183,6 +187,7 @@ def _publico(u: dict) -> dict:
         "debeCambiarContrasena": u["debeCambiar"],
         "activo": u["activo"],
         "ultimoLoginEn": u["ultimoLoginEn"],
+        "creadoEn": u["creadoEn"],
         "membresias": list(u["membresias"]),
     }
 
@@ -288,14 +293,39 @@ def agregar_membresia(guid: str, tenant_guid: str, rol: str = "ADMIN") -> dict:
     return por_guid(guid)
 
 
+def actualizar_datos(guid: str, nombre: str, apellidos: str = "", telefono: str | None = None) -> dict:
+    """Cambia nombre, apellidos y teléfono. El correo NO se toca: es la
+    identidad con la que entra, y cambiarlo es otra historia."""
+    nombre, apellidos = nombre.strip(), (apellidos or "").strip()
+    if not nombre:
+        raise ValueError("El nombre es obligatorio.")
+    with registro.candado:
+        usuarios, _, _ = _indice()
+        if guid not in usuarios:
+            raise NoEncontrado(guid)
+        registro.agregar(
+            ARCHIVO,
+            {
+                "evento": "datos",
+                "guid": guid,
+                "nombre": nombre,
+                "apellidos": apellidos,
+                "telefono": telefono,
+                "en": _ahora().isoformat(timespec="seconds"),
+            },
+        )
+    return por_guid(guid)
+
+
 def de_tenant(tenant_guid: str) -> list[dict]:
     """Los usuarios de una organización, para su listado."""
     usuarios, _, _ = _indice()
-    return [
+    de_la_organizacion = [
         _publico(u)
         for u in usuarios.values()
         if any(m["tenantGuid"] == tenant_guid for m in u["membresias"])
     ]
+    return sorted(de_la_organizacion, key=lambda u: u["creadoEn"] or "")
 
 
 # ── uspGetUserForLogin ──────────────────────────────────────────────────────

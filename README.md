@@ -1056,3 +1056,33 @@ distingue quién pide.
 **Nombre, slug y código.** El nombre se puede repetir; el slug no. Al segundo
 "Seguros Monterrey" le toca `seguros-monterrey-1`, que es el "ID asignado" que
 anuncia el diseño. El código (`NEX-00001`) sigue una secuencia.
+
+## Usuarios de una organización (Sprint 1 · HU06 y HU07, desde el 2026-10-07)
+
+`routers/usuarios.py` + `servicios/roles.py`. Verificación:
+`verificar_usuarios.py`.
+
+**Quién puede**: el administrador de la organización (membresía con rol
+`ADMIN`). Opera siempre sobre SU organización, la del JWT — nunca recibe el
+tenant por parámetro, para que nadie toque la de al lado cambiando un id.
+
+| Ruta | Qué hace |
+|---|---|
+| `GET /usuarios/` | los de mi organización, numerados (001, 002…) y con el nombre del rol resuelto |
+| `GET /usuarios/roles` | el catálogo que se puede asignar |
+| `POST /usuarios/` | alta con rol; devuelve `contrasenaTemporal` UNA vez (no hay correo). 409 `correo_registrado` |
+| `POST /usuarios/{guid}` | HU07: cambia datos y rol. El correo no se toca |
+
+**Los roles salen del DISEÑO, no de la base**: Supervisor, Analista, Operador,
+Compliance Officer, Auditor y Viewer, con la descripción exacta que la
+pantalla muestra. `security.roles` tiene otros cuatro (ADMIN, CONFIGURATOR,
+REVIEWER, QUERY) de antes del diseño; hay que pedirle al DBA que siembre estos
+seis. `ADMIN` existe aparte: es el administrador, nace con la organización
+(HU02) y no se ofrece en el selector.
+
+**Dos reglas que encierra el router**: nadie puede asignarse `ADMIN` desde el
+selector, y un administrador no puede quitarse a sí mismo ese rol (dejaría la
+organización sin quien la administre).
+
+El JWT lleva ahora `tnt` (su organización) y `rol`, para que el front sepa qué
+ofrecer sin preguntar en cada pantalla.

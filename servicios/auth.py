@@ -99,7 +99,8 @@ def emitir_acceso(usuario: dict, sesion_guid: str) -> tuple[str, datetime]:
     """El JWT de acceso y cuándo vence. Claims cortos: `sub` (guid), `sid`
     (sesión, para poder invalidar), `eml`, `nom`, `adm` (admin de plataforma),
     `dcc` (debe cambiar contraseña: con esto el front solo deja llegar a la
-    pantalla de cambio)."""
+    pantalla de cambio), y —si pertenece a una organización— `tnt` (su guid) y
+    `rol`, que es lo que decide qué puede hacer dentro de ella (HU07)."""
     ahora = datetime.now(timezone.utc)
     vence = ahora + timedelta(minutes=config.AUTH_ACCESO_MIN)
     claims = {
@@ -109,6 +110,11 @@ def emitir_acceso(usuario: dict, sesion_guid: str) -> tuple[str, datetime]:
         "nom": f"{usuario['nombre']} {usuario['apellidos']}".strip(),
         "adm": bool(usuario["esAdminPlataforma"]),
         "dcc": bool(usuario["debeCambiarContrasena"]),
+        **(
+            {"tnt": usuario["membresias"][0]["tenantGuid"], "rol": usuario["membresias"][0]["rol"]}
+            if usuario.get("membresias")
+            else {}
+        ),
         "iat": int(ahora.timestamp()),
         "exp": int(vence.timestamp()),
         "jti": str(uuid.uuid4()),
