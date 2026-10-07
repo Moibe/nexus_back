@@ -1003,10 +1003,11 @@ El mismo valor en el `.env` de `nexus_back` (firma los JWT) y en el del front
 (los verifica sin llamar aquí). Sin él, `/auth/*` responde 503 y el front no
 deja entrar a nadie.
 
-**Crear al primer administrador** (una vez por ambiente, en el servidor):
+**Crear al primer administrador** (una vez por ambiente, en el servidor; ahí el virtualenv es `venv/`, sin punto — en la laptop es `.venv/`):
 
 ```
-.venv/bin/python bootstrap_admin.py --email alguien@grupocsi.com --nombre Nombre --apellidos "Apellidos"
+cd /home/mbriseno/code/nexus_back-dev   # o nexus_back en prod
+venv/bin/python bootstrap_admin.py --email alguien@grupocsi.com --nombre Nombre --apellidos "Apellidos"
 ```
 
 Imprime la contraseña temporal UNA vez (no hay correo en este sprint). Al
