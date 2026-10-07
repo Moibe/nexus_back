@@ -1030,3 +1030,71 @@ real va al log.
   dato no existe. Pero es otra plática: mide, no autentica, y escribir en cada
   request tiene su propio costo.
 
+
+## 6. Sprint 1 · Acceso (HU01 Bootstrap del Super Admin, HU03 Login con JWT, HU04 Cambio de contraseña en primer login) — borrador 2026-10-07
+
+Fuente: página "Sprint 1" del Figma (`node-id=2-2`), secciones `92:3242`, `184:7335` y `107:846`; tickets NEX-232, NEX-234 y NEX-235. Decisión de producto (Moisés, 2026-10-07): **sin correo**. Las pantallas a las que llevaría un correo se abren directo; la contraseña temporal del bootstrap se entrega por consola, no por mail.
+
+### 6.0 · Lo que YA existe (leído el 2026-10-07, no supuesto)
+
+- `security.users` (userId, userGuid, email, firstName, secondName, lastName, secondLastName, phoneNumber, emailConfirmed, phoneConfirmed, lastLoginAt, isActive, isDeleted, auditoría). **Sin contraseña ni nada de login.** Solo PK y UQ por userGuid: **no hay índice único por email**.
+- `security.roles` con 4 filas: ADMIN, CONFIGURATOR, REVIEWER, QUERY. (El Figma de HU07 dibuja 6 roles distintos — Supervisor, Compliance Officer, Analista, Operador, Auditor, Viewer —; se resuelve en HU07, no aquí.)
+- `security.tenantMemberships` (tenantId, userId, statusCode varchar(20), joinedAt…) con UQ (tenantId, userId). **Sin rol.**
+- `dbo.uspRegistrarResultadoLogin(@idUsuario uniqueidentifier, @email, @exitoso bit, @platformId int, @tipoAutenticacion varchar(20), @latitude, @longitude, @device, @ipAddress, @userAgent)`: sin VIEW DEFINITION para `usrNexus`; no sabemos en qué tabla escribe. Parece heredado de otro producto.
+- `security.logsEndpoint`: log de peticiones, vacío.
+
+### 6.1 · Reglas que trae el diseño (para que los SPs las encierren)
+
+- **Intentos fallidos:** la alerta dice "después de N intentos más, tu cuenta se bloqueará durante 15 minutos" con N = 4, 3, 2, 1 → **5 intentos**, y la pantalla de bloqueo trae un contador ("Espera 10:05") → **bloqueo de 15 minutos**, temporal, se levanta solo.
+- **Contraseña:** mínimo **12 caracteres**, con mayúscula, minúscula, número y carácter especial. Se valida en el front y en el back; la base solo guarda el hash.
+- **Primer acceso:** el usuario entra con la contraseña temporal y **no puede usar nada** hasta cambiarla (interstitial "Bienvenido" → "Configura tu nueva contraseña" → "Contraseña actualizada" → login de nuevo).
+- **Cuenta desactivada:** el login lo dice con una pantalla propia (no un error genérico).
+- **Super Admin:** no pertenece a un tenant; administra la plataforma (crea organizaciones, HU02).
+
+### 6.2 · Qué le pedimos a la base
+
+Principio: **la base nunca ve una contraseña ni un token**. El back calcula el hash (argon2id) y la base guarda y compara solo hashes; los JWT de acceso no se guardan; los refresh tokens se guardan hasheados (SHA-256) para poder invalidarlos (HU05).
+
+**Tablas (nombres sugeridos, tú decides):**
+
+1. `security.userCredentials` — 1:1 con `users` (o como columnas en `users`, si lo prefieres):
+   - `userId` (PK, FK users)
+   - `passwordHash varchar(255)` — el back manda el string completo de argon2id (`$argon2id$v=19$m=…`), autocontenido.
+   - `mustChangePassword bit` — en 1 al nacer (bootstrap y alta de usuario) y al restablecer (HU10).
+   - `passwordChangedAt datetime2 NULL`
+   - `failedAttempts int NOT NULL DEFAULT 0`
+   - `lockedUntil datetime2 NULL`
+   - auditoría.
+2. `security.sessions` — un renglón por refresh token:
+   - `sessionId`, `sessionGuid`, `userId`, `refreshTokenHash char(64)` (UNIQUE), `issuedAt`, `expiresAt`, `revokedAt NULL`, `revokedReason varchar(40) NULL`, `ipAddress varchar(45)`, `userAgent nvarchar(500)`.
+3. `security.loginAttempts` — bitácora (si `dbo.uspRegistrarResultadoLogin` ya escribe en una tabla equivalente, reusarla y decirnos cuál): `userId NULL` (si el correo no existe), `email`, `succeeded bit`, `attemptedAt`, `ipAddress`, `userAgent`, `failureReason varchar(40)` (`BAD_PASSWORD`, `LOCKED`, `INACTIVE`, `UNKNOWN_EMAIL`).
+4. En `security.users`: columna `isPlatformAdmin bit NOT NULL DEFAULT 0` y **índice único filtrado por `email`** (`WHERE isDeleted = 0`), porque el login busca por correo.
+5. En `security.tenantMemberships`: `roleId int FK roles` (lo necesita el JWT para decir qué puede hacer el usuario en el tenant). Si prefieres N roles por membresía, una tabla `membershipRoles`; con uno basta para este sprint.
+
+**Stored procedures (en `[security]`):**
+
+| SP | Entrada | Devuelve | Qué encierra |
+|---|---|---|---|
+| `uspBootstrapPlatformAdmin` | `@email, @firstName, @lastName, @passwordHash` | `userGuid` | Crea el **primer** super admin (`isPlatformAdmin = 1`, `mustChangePassword = 1`). Falla con mensaje claro si ya existe uno: se corre una sola vez por ambiente. |
+| `uspGetUserForLogin` | `@email` | una fila: `userGuid, email, firstName, lastName, isActive, isDeleted, isPlatformAdmin, passwordHash, mustChangePassword, failedAttempts, lockedUntil`; y un segundo result set con sus membresías: `tenantGuid, tenantCode, name, slug, tenantStatusCode, roleCode` | Solo lectura. El back compara el hash; la base no recibe la contraseña. Si el correo no existe, 0 filas (el back responde lo mismo que con contraseña mala, salvo en los textos del diseño que sí distinguen). |
+| `uspRecordLoginResult` | `@userGuid, @succeeded bit, @ipAddress, @userAgent` | `failedAttempts, lockedUntil` | **Aquí vive la política**: si falla, `failedAttempts + 1`; al llegar a **5**, `lockedUntil = SYSDATETIME() + 15 min` y `failedAttempts = 0`; si acierta, `failedAttempts = 0`, `lockedUntil = NULL`, `lastLoginAt = SYSDATETIME()`. Escribe la bitácora. Atómico (UPDLOCK). |
+| `uspSetPassword` | `@userGuid, @passwordHash, @reason varchar(20)` (`FIRST_LOGIN`, `RESET`, `CHANGE`) | `ok` | Guarda el hash, `mustChangePassword = 0`, `passwordChangedAt = now`, `failedAttempts = 0`, `lockedUntil = NULL`. Con `FIRST_LOGIN`/`RESET` además **revoca todas las sesiones** del usuario (`revokedReason = 'PASSWORD_CHANGED'`). Sirve a HU04, HU10 y HU13. |
+| `uspCreateSession` | `@userGuid, @refreshTokenHash, @expiresAt, @ipAddress, @userAgent` | `sessionGuid` | Alta del refresh token (hasheado). |
+| `uspGetSession` | `@refreshTokenHash` | `sessionGuid, userGuid, expiresAt, revokedAt` + los datos de `uspGetUserForLogin` sin el hash | Para renovar el access token. |
+| `uspRevokeSessions` | `@userGuid, @sessionGuid NULL, @reason varchar(40)` | `revoked int` | Una sesión (logout) o todas (HU05 cerrar sesión por un admin, HU08 desactivar). |
+
+Convenciones que ya seguimos con NEX-294/295: GUIDs hacia fuera, enteros solo para relacionar; `THROW 5xxxx` con mensaje claro; `SUSER_SNAME()` en auditoría; `SET ANSI_NULLS ON; SET QUOTED_IDENTIFIER ON;` en el script.
+
+### 6.3 · Lo que NO se le pide (es nuestro)
+
+- Hash de contraseña (argon2id) y verificación: back.
+- Emisión y verificación de JWT (HS256, access de 15 min con `userGuid`, `tenantGuid`, `roleCode`, `isPlatformAdmin`; refresh de 7 días en cookie httpOnly puesta por el BFF del front).
+- Reglas de la contraseña (12 + 4 clases) y el medidor de seguridad: front y back.
+- Textos de las pantallas, contador de 15 minutos, pantalla de cuenta desactivada: front.
+- Correo: no hay. La contraseña temporal del bootstrap se imprime una vez en la consola del back.
+
+### 6.4 · Preguntas para él (solo si cambian el diseño)
+
+1. ¿`dbo.uspRegistrarResultadoLogin` escribe en una tabla que podamos reusar como `loginAttempts`? Si sí, `uspRecordLoginResult` puede llamarla por dentro.
+2. ¿Prefieres las credenciales como columnas de `users` o en tabla aparte? Nosotros la preferimos aparte (una fila de `users` se lee en muchos lados; el hash no debería viajar con ella).
+3. ¿Un tenant `SUSPENDED` deja entrar a sus usuarios? Propuesta: sí entra, pero el JWT lleva el estado y el front bloquea las operaciones; así el admin puede leer. Tú decides.
