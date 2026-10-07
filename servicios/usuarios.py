@@ -7,6 +7,8 @@ como las llaves y los webhooks. El día que existan los SPs, cambia ESTE módulo
 nada más: cada función de aquí es el espejo de un SP, con el mismo contrato.
 
     bootstrap_admin            ↔ security.uspBootstrapPlatformAdmin
+    crear_usuario              ↔ (HU02/HU06: alta de usuario dentro de un tenant)
+    agregar_membresia          ↔ (membresía con rol: security.tenantMemberships)
     para_login                 ↔ security.uspGetUserForLogin
     registrar_resultado_login  ↔ security.uspRecordLoginResult
     fijar_contrasena           ↔ security.uspSetPassword
@@ -97,6 +99,7 @@ def _indice() -> tuple[dict[str, dict], dict[str, str], dict[str, dict]]:
                 "nombre": e.get("nombre", ""),
                 "apellidos": e.get("apellidos", ""),
                 "esAdminPlataforma": bool(e.get("esAdminPlataforma")),
+                "telefono": e.get("telefono"),
                 "hash": e.get("hash"),
                 "debeCambiar": bool(e.get("debeCambiar", True)),
                 "contrasenaCambiadaEn": None,
@@ -130,6 +133,11 @@ def _indice() -> tuple[dict[str, dict], dict[str, str], dict[str, dict]]:
             # LOCKED / INACTIVE / UNKNOWN_EMAIL: bitácora, no cuentan.
         elif tipo == "estado" and u:
             u["activo"] = bool(e.get("activo"))
+        elif tipo == "membresia" and u:
+            tenant = e.get("tenantGuid")
+            if isinstance(tenant, str):
+                u["membresias"] = [m for m in u["membresias"] if m["tenantGuid"] != tenant]
+                u["membresias"].append({"tenantGuid": tenant, "rol": e.get("rol", "ADMIN")})
         elif tipo == "sesion" and u and isinstance(e.get("sesionGuid"), str):
             sesiones.setdefault(
                 e["sesionGuid"],
@@ -170,6 +178,7 @@ def _publico(u: dict) -> dict:
         "email": u["email"],
         "nombre": u["nombre"],
         "apellidos": u["apellidos"],
+        "telefono": u.get("telefono"),
         "esAdminPlataforma": u["esAdminPlataforma"],
         "debeCambiarContrasena": u["debeCambiar"],
         "activo": u["activo"],
@@ -212,6 +221,81 @@ def bootstrap_admin(email: str, nombre: str, apellidos: str, hash_contrasena: st
             },
         )
     return por_guid(guid)
+
+
+def crear_usuario(
+    email: str,
+    nombre: str,
+    apellidos: str,
+    hash_contrasena: str,
+    telefono: str | None = None,
+    tenant_guid: str | None = None,
+    rol: str = "ADMIN",
+) -> dict:
+    """Da de alta un usuario con contraseña temporal (`debeCambiar`) y, si se
+    indica un tenant, su membresía con rol. Levanta `YaExiste` si el correo ya
+    está registrado — el diseño lo dice tal cual bajo el campo."""
+    email = _normalizar_correo(email)
+    if not correo_valido(email):
+        raise ValueError("El correo no es válido.")
+    nombre, apellidos = nombre.strip(), apellidos.strip()
+    if not nombre:
+        raise ValueError("El nombre es obligatorio.")
+    with registro.candado:
+        _, por_correo, _ = _indice()
+        if email in por_correo:
+            raise YaExiste("El correo electrónico ingresado ya se encuentra registrado, por favor intenta nuevamente")
+        guid = str(uuid.uuid4())
+        en = _ahora().isoformat(timespec="seconds")
+        registro.agregar(
+            ARCHIVO,
+            {
+                "evento": "creado",
+                "guid": guid,
+                "email": email,
+                "nombre": nombre,
+                "apellidos": apellidos,
+                "telefono": telefono,
+                "esAdminPlataforma": False,
+                "hash": hash_contrasena,
+                "debeCambiar": True,
+                "en": en,
+            },
+        )
+        if tenant_guid:
+            registro.agregar(
+                ARCHIVO,
+                {"evento": "membresia", "guid": guid, "tenantGuid": tenant_guid, "rol": rol, "en": en},
+            )
+    return por_guid(guid)
+
+
+def agregar_membresia(guid: str, tenant_guid: str, rol: str = "ADMIN") -> dict:
+    with registro.candado:
+        usuarios, _, _ = _indice()
+        if guid not in usuarios:
+            raise NoEncontrado(guid)
+        registro.agregar(
+            ARCHIVO,
+            {
+                "evento": "membresia",
+                "guid": guid,
+                "tenantGuid": tenant_guid,
+                "rol": rol,
+                "en": _ahora().isoformat(timespec="seconds"),
+            },
+        )
+    return por_guid(guid)
+
+
+def de_tenant(tenant_guid: str) -> list[dict]:
+    """Los usuarios de una organización, para su listado."""
+    usuarios, _, _ = _indice()
+    return [
+        _publico(u)
+        for u in usuarios.values()
+        if any(m["tenantGuid"] == tenant_guid for m in u["membresias"])
+    ]
 
 
 # ── uspGetUserForLogin ──────────────────────────────────────────────────────

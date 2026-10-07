@@ -405,6 +405,15 @@ from routers.auth import router as auth_router  # noqa: E402
 
 app.include_router(auth_router, prefix="/auth", tags=["Acceso"], dependencies=[Depends(exigir_llave)])
 
+# Organizaciones (Sprint 1, HU02). Además de la llave de servicio, cada
+# endpoint exige que el Bearer sea de un ADMINISTRADOR DE PLATAFORMA: la llave
+# la tiene el front entero, así que sola no distingue quién pide.
+from routers.organizaciones import router as organizaciones_router  # noqa: E402
+
+app.include_router(
+    organizaciones_router, prefix="/organizaciones", tags=["Organizaciones"], dependencies=[Depends(exigir_llave)]
+)
+
 # El grupo Documentos se registra solo si hay una base configurada.
 #
 # Mientras el DBA no entregue SQL Server, publicar esos endpoints sería publicar

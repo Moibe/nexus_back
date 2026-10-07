@@ -1028,3 +1028,31 @@ front, que pone las cookies httpOnly `nx_acceso` y `nx_refresh`):
 fallidos seguidos → 15 minutos de bloqueo, que se levanta solo; los intentos
 durante el bloqueo no lo alargan. La base nunca ve contraseñas ni tokens: se
 guardan el hash argon2id y el SHA-256 del refresh.
+
+## Organizaciones (Sprint 1 · HU02, desde el 2026-10-07)
+
+`routers/organizaciones.py` + `servicios/tenants_registro.py`. Verificación:
+`verificar_organizaciones.py`.
+
+**Dónde viven.** En el registro provisional `tenants.jsonl`, NO en
+`security.tenants` — que ya existe, con su `uspCreateTenant`. La razón es
+práctica: **dev no tiene base de datos** (`SQLSERVER_HOST` vacío a propósito),
+así que contra SQL esta pantalla no se podría ni probar. El contrato del
+módulo imita al de los SPs; cuando haya base dev, cambia ese archivo y nada
+más.
+
+**Quién puede.** Solo el administrador de plataforma: además de la llave de
+servicio, cada endpoint exige que el Bearer sea de alguien con
+`isPlatformAdmin`. La llave la tiene el front entero, así que sola no
+distingue quién pide.
+
+| Ruta | Qué hace |
+|---|---|
+| `GET /organizaciones/` | listado, con los datos de su administrador |
+| `GET /organizaciones/coincidencias?nombre=` | el aviso del alta: qué organizaciones se llaman igual (`ID encontrado`) y qué slug se asignaría (`ID asignado`) |
+| `POST /organizaciones/` | crea la organización **y la cuenta de su administrador**; devuelve `contrasenaTemporal` UNA vez (no hay correo). 409 `correo_registrado` |
+| `GET /organizaciones/{guid}/usuarios` | sus usuarios |
+
+**Nombre, slug y código.** El nombre se puede repetir; el slug no. Al segundo
+"Seguros Monterrey" le toca `seguros-monterrey-1`, que es el "ID asignado" que
+anuncia el diseño. El código (`NEX-00001`) sigue una secuencia.
