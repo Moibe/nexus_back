@@ -194,3 +194,16 @@ MAX_SUBIDA_BYTES = int(MAX_SUBIDA_MB * 1024 * 1024)
 # Local (Windows):  C:/Moibe/almacen-nexus
 # Server de CSI:    /mnt/nas/nexus/documentos
 ALMACEN_RUTA = os.getenv("ALMACEN_RUTA", "")
+
+# ── Acceso (Sprint 1: login con JWT) ─────────────────────────────────────────
+# El secreto firma los JWT de acceso; el front lo comparte para verificarlos
+# sin llamar aquí en cada petición. Sin él, /auth/* responde 503. Mínimo 32
+# caracteres: `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
+AUTH_JWT_SECRET = os.getenv("AUTH_JWT_SECRET", "").strip()
+# Vida del JWT de acceso (minutos) y del refresh token (días).
+AUTH_ACCESO_MIN = int(_numero("AUTH_ACCESO_MIN", 15))
+AUTH_REFRESH_DIAS = int(_numero("AUTH_REFRESH_DIAS", 7))
+# La política del diseño: 5 intentos fallidos → 15 minutos de bloqueo. Cuando
+# existan los SPs de NEX-319, vivirá en `uspRecordLoginResult` y esto sobra.
+AUTH_MAX_INTENTOS = int(_numero("AUTH_MAX_INTENTOS", 5))
+AUTH_BLOQUEO_MIN = int(_numero("AUTH_BLOQUEO_MIN", 15))

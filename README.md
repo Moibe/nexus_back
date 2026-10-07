@@ -984,3 +984,46 @@ tail -2 /home/mbriseno/webhook-central/logs/deploys.jsonl
   página en Document AI. En la red interna es una decisión defendible, pero es
   una decisión: cualquier miembro de la empresa que alcance el puerto puede
   generar costo.
+
+## Acceso: login con JWT (Sprint 1, desde el 2026-10-07)
+
+HU01 (bootstrap del primer administrador), HU03 (login) y HU04 (cambio de
+contraseña en el primer acceso). Código: `routers/auth.py`, `servicios/auth.py`
+(argon2id, reglas, JWT, refresh) y `servicios/usuarios.py` (registro
+PROVISIONAL `usuarios.jsonl`, espejo de los SPs pedidos en **NEX-319**; cuando
+lleguen, cambia solo ese módulo). Verificación: `verificar_auth.py`.
+
+**Configurar** (los dos procesos, back y front):
+
+```
+AUTH_JWT_SECRET=<mínimo 32 caracteres; python -c "import secrets; print(secrets.token_urlsafe(48))">
+```
+
+El mismo valor en el `.env` de `nexus_back` (firma los JWT) y en el del front
+(los verifica sin llamar aquí). Sin él, `/auth/*` responde 503 y el front no
+deja entrar a nadie.
+
+**Crear al primer administrador** (una vez por ambiente, en el servidor):
+
+```
+.venv/bin/python bootstrap_admin.py --email alguien@grupocsi.com --nombre Nombre --apellidos "Apellidos"
+```
+
+Imprime la contraseña temporal UNA vez (no hay correo en este sprint). Al
+entrar con ella, la app obliga a cambiarla antes de mostrar nada.
+
+**Endpoints** (`/auth/*`, con la llave de servicio; los llama solo el BFF del
+front, que pone las cookies httpOnly `nx_acceso` y `nx_refresh`):
+
+| Ruta | Qué hace |
+|---|---|
+| `POST /auth/login` | correo + contraseña → JWT de acceso (15 min) + refresh (7 días). Errores con `codigo`: `correo_invalido`, `correo_no_existe`, `credenciales` (+ `intentosRestantes`), `bloqueada` (423, + `hastaEn`), `desactivada` (403). |
+| `POST /auth/refresh` | refresh vigente → tokens nuevos; el refresh anterior queda revocado. |
+| `POST /auth/logout` | revoca el refresh. Siempre 204. |
+| `GET /auth/yo` | el usuario del Bearer. |
+| `POST /auth/contrasena` | primer acceso: `nueva` + `confirmacion` (cierra todas las sesiones); después: también `actual`. Reglas: 12 caracteres, mayúscula, minúscula, número, carácter especial. |
+
+**Política** (del diseño; vivirá en `uspRecordLoginResult`): 5 intentos
+fallidos seguidos → 15 minutos de bloqueo, que se levanta solo; los intentos
+durante el bloqueo no lo alargan. La base nunca ve contraseñas ni tokens: se
+guardan el hash argon2id y el SHA-256 del refresh.

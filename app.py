@@ -397,6 +397,14 @@ from routers.webhooks import router as webhooks_router  # noqa: E402
 
 app.include_router(webhooks_router, prefix="/webhooks", dependencies=[Depends(exigir_llave)])
 
+# Acceso (Sprint 1): login, refresh, logout, cambio de contraseña. Lo llama SOLO
+# la capa server del front, con la llave de servicio; el navegador recibe las
+# cookies del front. Queda fuera del dominio público como todo lo que no es
+# /bandeja (ver HOSTS_PUBLICOS).
+from routers.auth import router as auth_router  # noqa: E402
+
+app.include_router(auth_router, prefix="/auth", tags=["Acceso"], dependencies=[Depends(exigir_llave)])
+
 # El grupo Documentos se registra solo si hay una base configurada.
 #
 # Mientras el DBA no entregue SQL Server, publicar esos endpoints sería publicar
