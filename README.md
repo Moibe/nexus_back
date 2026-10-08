@@ -1086,3 +1086,19 @@ organización sin quien la administre).
 
 El JWT lleva ahora `tnt` (su organización) y `rol`, para que el front sepa qué
 ofrecer sin preguntar en cada pantalla.
+
+### Desactivar, reactivar y cerrar sesión (HU05, HU08, HU09 — 2026-10-07)
+
+Dos endpoints más en `/usuarios`, con las mismas reglas de permiso (solo el
+administrador de la organización, solo sobre la suya):
+
+| Ruta | Qué hace |
+|---|---|
+| `POST /usuarios/{guid}/estado` | `{activo, motivo}`. Desactivar cierra TODAS sus sesiones y deja de poder entrar; reactivar le devuelve el acceso con su misma contraseña |
+| `POST /usuarios/{guid}/cerrar-sesion` | `{motivo}`. Invalida sus tokens sin desactivarlo: puede volver a entrar |
+
+El **motivo es obligatorio** en los dos y queda en el registro con quién lo
+hizo: es lo que vuelve auditable que a alguien se le quitó el acceso. Nadie
+puede desactivarse a sí mismo ni cerrar su propia sesión desde aquí (para eso
+está el menú de su cuenta), y desactivar dos veces responde 409 `sin_cambio`
+en vez de fingir que hizo algo.

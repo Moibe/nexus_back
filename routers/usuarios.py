@@ -31,6 +31,15 @@ class NuevoUsuario(BaseModel):
     rol: str = Field(max_length=40)
 
 
+class CambioEstado(BaseModel):
+    activo: bool
+    motivo: str = Field(max_length=500)
+
+
+class CierreSesion(BaseModel):
+    motivo: str = Field(max_length=500)
+
+
 class CambioUsuario(BaseModel):
     nombre: str = Field(max_length=200)
     apellidos: str = Field(default="", max_length=200)
@@ -181,5 +190,83 @@ def actualizar(guid: str, datos: CambioUsuario, authorization: str | None = Head
         return {"usuario": _publico(actualizado, tenant, posicion)}
     except ValueError as exc:
         raise _error(status.HTTP_400_BAD_REQUEST, "datos_invalidos", str(exc)) from exc
+    except ErrorAlmacen as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+def _de_mi_organizacion(guid: str, tenant: str) -> dict:
+    """El usuario, si es de mi organización. Si no, 404: un administrador no
+    tiene por qué enterarse de quién hay en otra."""
+    try:
+        objetivo = usuarios.por_guid(guid)
+    except usuarios.NoEncontrado as exc:
+        raise _error(status.HTTP_404_NOT_FOUND, "no_existe", "Ese usuario no existe.") from exc
+    if not any(m["tenantGuid"] == tenant for m in objetivo["membresias"]):
+        raise _error(status.HTTP_404_NOT_FOUND, "no_existe", "Ese usuario no existe.")
+    return objetivo
+
+
+@router.post(
+    "/{guid}/estado",
+    summary="Desactivar o reactivar un usuario (HU08, HU09)",
+    description=(
+        "Al desactivar se cierran todas sus sesiones y deja de poder entrar; el motivo es "
+        "obligatorio y queda registrado. Reactivar le devuelve el acceso con su misma contraseña."
+    ),
+)
+def cambiar_estado(guid: str, datos: CambioEstado, authorization: str | None = Header(default=None)) -> dict:
+    yo, tenant = _admin_de_organizacion(authorization)
+    motivo = datos.motivo.strip()
+    if not motivo:
+        raise _error(status.HTTP_400_BAD_REQUEST, "motivo_requerido", "Escribe el motivo.")
+    objetivo = _de_mi_organizacion(guid, tenant)
+    if objetivo["guid"] == yo["guid"]:
+        raise _error(
+            status.HTTP_409_CONFLICT,
+            "no_a_ti_mismo",
+            "No puedes desactivar tu propia cuenta.",
+        )
+    if objetivo["activo"] == datos.activo:
+        raise _error(
+            status.HTTP_409_CONFLICT,
+            "sin_cambio",
+            "La cuenta ya estaba " + ("activa." if datos.activo else "desactivada."),
+        )
+    try:
+        actualizado = usuarios.cambiar_estado(guid, datos.activo, motivo, yo["guid"])
+        lista = usuarios.de_tenant(tenant)
+        posicion = next((i + 1 for i, u in enumerate(lista) if u["guid"] == guid), len(lista))
+        logger.info("Usuario %s (guid=%s)", "reactivado" if datos.activo else "desactivado", guid)
+        return {"usuario": _publico(actualizado, tenant, posicion)}
+    except ErrorAlmacen as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@router.post(
+    "/{guid}/cerrar-sesion",
+    summary="Cerrar la sesión de un usuario (HU05)",
+    description=(
+        "Invalida sus tokens: tendrá que entrar de nuevo. NO lo desactiva — su contraseña sigue "
+        "sirviendo. El motivo es obligatorio y queda registrado."
+    ),
+)
+def cerrar_sesion(guid: str, datos: CierreSesion, authorization: str | None = Header(default=None)) -> dict:
+    yo, tenant = _admin_de_organizacion(authorization)
+    motivo = datos.motivo.strip()
+    if not motivo:
+        raise _error(status.HTTP_400_BAD_REQUEST, "motivo_requerido", "Escribe el motivo.")
+    objetivo = _de_mi_organizacion(guid, tenant)
+    if objetivo["guid"] == yo["guid"]:
+        # Para salirse está el menú de la barra; hacerlo desde aquí te echaría
+        # de la pantalla en la que estás trabajando.
+        raise _error(
+            status.HTTP_409_CONFLICT,
+            "no_a_ti_mismo",
+            "Para cerrar tu propia sesión usa el menú de tu cuenta.",
+        )
+    try:
+        cerradas = usuarios.cerrar_sesiones(guid, motivo, yo["guid"])
+        logger.info("Sesiones cerradas por el administrador (guid=%s, cuantas=%s)", guid, cerradas)
+        return {"cerradas": cerradas}
     except ErrorAlmacen as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc

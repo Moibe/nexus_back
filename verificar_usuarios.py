@@ -119,8 +119,14 @@ try:
     rev("correo inválido: 400", c.post("/usuarios/", json={"nombre": "X", "email": "no-es", "rol": "VIEWER"}, headers=bearer_sm).status_code == 400)
 
     titulo("4 · El usuario nuevo entra")
-    nueva = entrar(c, "camila.cg@ejemplo.com", camila["contrasenaTemporal"])
-    rev("entra y le toca cambiar la contraseña", nueva["usuario"]["debeCambiarContrasena"] is True)
+    primera = entrar(c, "camila.cg@ejemplo.com", camila["contrasenaTemporal"])
+    rev("entra y le toca cambiar la contraseña", primera["usuario"]["debeCambiarContrasena"] is True)
+    # Y la cambia: desactivar/reactivar se prueban con una cuenta ya en uso,
+    # que es el caso real.
+    nueva_contrasena = "Camila-Segura-2026!"
+    c.post("/auth/contrasena", json={"nueva": nueva_contrasena, "confirmacion": nueva_contrasena},
+           headers={**srv(), "Authorization": f"Bearer {primera['accessToken']}"})
+    nueva = entrar(c, "camila.cg@ejemplo.com", nueva_contrasena)
     claims = auth.verificar_acceso(nueva["accessToken"])
     rev("su JWT dice su organización y su rol", claims["rol"] == "ANALISTA" and claims["tnt"] == orgs["Seguros Monterrey"]["organizacion"]["guid"])
     suyo = {**srv(), "Authorization": f"Bearer {nueva['accessToken']}"}
@@ -153,6 +159,42 @@ try:
     rev("no puede editar a alguien de otra organización: 404",
         r.status_code == 404 and r.json()["detail"]["codigo"] == "no_existe", r.text[:160])
     rev("un guid inventado: 404", c.post("/usuarios/nadie", json={"nombre": "X", "rol": "VIEWER"}, headers=bearer_sm).status_code == 404)
+    titulo("7 · Desactivar y reactivar (HU08, HU09)")
+    r = c.post(f"/usuarios/{guid}/estado", json={"activo": False, "motivo": "   "}, headers=bearer_sm)
+    rev("sin motivo: 400", r.status_code == 400 and r.json()["detail"]["codigo"] == "motivo_requerido", r.text[:160])
+    r = c.post(f"/usuarios/{yo_guid}/estado", json={"activo": False, "motivo": "x"}, headers=bearer_sm)
+    rev("no puedes desactivarte a ti mismo: 409", r.status_code == 409 and r.json()["detail"]["codigo"] == "no_a_ti_mismo", r.text[:160])
+    r = c.post(f"/usuarios/{guid}/estado", json={"activo": False, "motivo": "Cambios operativos."}, headers=bearer_sm)
+    rev("desactivar: 200 y queda inactivo", r.status_code == 200 and r.json()["usuario"]["activo"] is False, r.text[:160])
+    rev("no puede entrar: 403 desactivada",
+        c.post("/auth/login", json={"email": "camila.cg@ejemplo.com", "password": nueva_contrasena}, headers=srv()).status_code == 403)
+    rev("su refresh quedó revocado",
+        c.post("/auth/refresh", json={"refreshToken": nueva["refreshToken"]}, headers=srv()).status_code == 401)
+    rev("el listado lo muestra inactivo",
+        [u["activo"] for u in c.get("/usuarios/", headers=bearer_sm).json()["usuarios"]] == [True, False])
+    r = c.post(f"/usuarios/{guid}/estado", json={"activo": False, "motivo": "otra vez"}, headers=bearer_sm)
+    rev("desactivar dos veces: 409 sin_cambio", r.status_code == 409 and r.json()["detail"]["codigo"] == "sin_cambio")
+    r = c.post(f"/usuarios/{guid}/estado", json={"activo": True, "motivo": "Regresó al equipo."}, headers=bearer_zs)
+    rev("otra organización no puede reactivarlo: 404", r.status_code == 404)
+    r = c.post(f"/usuarios/{guid}/estado", json={"activo": True, "motivo": "Regresó al equipo."}, headers=bearer_sm)
+    rev("reactivar: 200 y vuelve a estar activo", r.status_code == 200 and r.json()["usuario"]["activo"] is True, r.text[:160])
+    sesion_camila = entrar(c, "camila.cg@ejemplo.com", nueva_contrasena)
+    rev("y vuelve a entrar con su misma contraseña", bool(sesion_camila["accessToken"]))
+    rev("el motivo quedó registrado",
+        "Cambios operativos." in (RAIZ / ".registro" / "usuarios.jsonl").read_text(encoding="utf-8"))
+
+    titulo("8 · Cerrar la sesión de alguien (HU05)")
+    r = c.post(f"/usuarios/{guid}/cerrar-sesion", json={"motivo": ""}, headers=bearer_sm)
+    rev("sin motivo: 400", r.status_code == 400)
+    r = c.post(f"/usuarios/{yo_guid}/cerrar-sesion", json={"motivo": "x"}, headers=bearer_sm)
+    rev("la tuya no, desde aquí: 409", r.status_code == 409 and r.json()["detail"]["codigo"] == "no_a_ti_mismo")
+    r = c.post(f"/usuarios/{guid}/cerrar-sesion", json={"motivo": "Medida preventiva de seguridad."}, headers=bearer_sm)
+    rev("cierra sus sesiones: 200 y dice cuántas", r.status_code == 200 and r.json()["cerradas"] >= 1, r.text[:160])
+    rev("su refresh ya no sirve",
+        c.post("/auth/refresh", json={"refreshToken": sesion_camila["refreshToken"]}, headers=srv()).status_code == 401)
+    rev("pero SIGUE activa: puede volver a entrar",
+        c.post("/auth/login", json={"email": "camila.cg@ejemplo.com", "password": nueva_contrasena}, headers=srv()).status_code == 200)
+
 finally:
     c.close()
     shutil.rmtree(RAIZ, ignore_errors=True)

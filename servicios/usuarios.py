@@ -458,13 +458,43 @@ def revocar_sesiones(guid: str, sesion_guid: str | None, motivo: str) -> int:
 # ── Estado (lo usará HU08/HU09; aquí para poder probar "cuenta desactivada") ─
 
 
-def cambiar_estado(guid: str, activo: bool) -> dict:
+def cambiar_estado(guid: str, activo: bool, motivo: str | None = None, por: str | None = None) -> dict:
+    """Activa o desactiva una cuenta (HU08, HU09). Al desactivar se cierran
+    TODAS sus sesiones: si no, seguiría trabajando con el JWT que ya tiene
+    hasta que venciera. El `motivo` es obligatorio en la pantalla y queda en el
+    registro, que es lo que lo vuelve auditable."""
     with registro.candado:
         usuarios, _, _ = _indice()
         if guid not in usuarios:
             raise NoEncontrado(guid)
         en = _ahora().isoformat(timespec="seconds")
-        registro.agregar(ARCHIVO, {"evento": "estado", "guid": guid, "activo": activo, "en": en})
+        registro.agregar(
+            ARCHIVO,
+            {"evento": "estado", "guid": guid, "activo": activo, "motivo": motivo, "por": por, "en": en},
+        )
         if not activo:
-            registro.agregar(ARCHIVO, {"evento": "sesion_revocada", "guid": guid, "sesionGuid": None, "motivo": "DEACTIVATED", "en": en})
+            registro.agregar(
+                ARCHIVO,
+                {"evento": "sesion_revocada", "guid": guid, "sesionGuid": None, "motivo": "DEACTIVATED", "en": en},
+            )
     return por_guid(guid)
+
+
+def cerrar_sesiones(guid: str, motivo: str, por: str | None = None) -> int:
+    """Cierra todas las sesiones de un usuario SIN desactivarlo (HU05): puede
+    volver a entrar con su contraseña. Devuelve cuántas se cerraron."""
+    with registro.candado:
+        usuarios, _, _ = _indice()
+        if guid not in usuarios:
+            raise NoEncontrado(guid)
+        registro.agregar(
+            ARCHIVO,
+            {
+                "evento": "cierre_forzado",
+                "guid": guid,
+                "motivo": motivo,
+                "por": por,
+                "en": _ahora().isoformat(timespec="seconds"),
+            },
+        )
+    return revocar_sesiones(guid, None, "FORCED_LOGOUT")
