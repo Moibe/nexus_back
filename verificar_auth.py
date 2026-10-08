@@ -159,7 +159,34 @@ try:
     usuarios.cambiar_estado(u["guid"], True)
     rev("reactivada: vuelve a entrar", login(c, "admin@ejemplo.com", "Otra-Segura-456!").status_code == 200)
 
-    titulo("6 · Sin AUTH_JWT_SECRET")
+    titulo("6 · Mi perfil (HU12)")
+    r = login(c, "admin@ejemplo.com", "Otra-Segura-456!")
+    mio = {**srv(), "Authorization": f"Bearer {r.json()['accessToken']}"}
+    rev("sin sesión: 401", c.post("/auth/perfil", json={"nombre": "X"}, headers=srv()).status_code == 401)
+    r = c.post("/auth/perfil", json={"nombre": "   "}, headers=mio)
+    rev("sin nombre: 400", r.status_code == 400 and r.json()["detail"]["codigo"] == "nombre_requerido", r.text[:160])
+    r = c.post("/auth/perfil", json={"nombre": "Ada", "recuperacion": {"email": "no-es-correo"}}, headers=mio)
+    rev("correo de recuperación inválido: 400",
+        r.status_code == 400 and r.json()["detail"]["codigo"] == "correo_recuperacion_invalido", r.text[:160])
+    r = c.post(
+        "/auth/perfil",
+        json={"nombre": "Ada", "apellidoPaterno": "Lovelace", "apellidoMaterno": "Byron",
+              "telefono": "+52 55 1020 3040",
+              "recuperacion": {"email": "respaldo@ejemplo.com", "telefono": "+52 55 1478 8523"}},
+        headers=mio,
+    )
+    u = r.json().get("usuario", {})
+    rev("200 con los apellidos separados", r.status_code == 200 and u.get("apellidoPaterno") == "Lovelace" and u.get("apellidoMaterno") == "Byron", r.text[:200])
+    rev("y `apellidos` compuesto, para quien ya lo usaba", u.get("apellidos") == "Lovelace Byron")
+    rev("con su teléfono y su recuperación",
+        u.get("telefono") == "+52 55 1020 3040" and u.get("recuperacion", {}).get("email") == "respaldo@ejemplo.com")
+    r = c.get("/auth/yo", headers=mio)
+    rev("se lee de vuelta en /auth/yo", r.json()["usuario"]["apellidoPaterno"] == "Lovelace", r.text[:200])
+    rev("el correo con el que entra NO cambia", r.json()["usuario"]["email"] == "admin@ejemplo.com")
+    rev("la recuperación se puede vaciar",
+        c.post("/auth/perfil", json={"nombre": "Ada", "apellidoPaterno": "Lovelace"}, headers=mio).json()["usuario"]["recuperacion"] == {})
+
+    titulo("7 · Sin AUTH_JWT_SECRET")
     guardado = config.AUTH_JWT_SECRET
     config.AUTH_JWT_SECRET = ""
     rev("login: 503 sin_configurar", login(c, "admin@ejemplo.com", "Otra-Segura-456!").status_code == 503)

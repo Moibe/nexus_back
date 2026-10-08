@@ -8,6 +8,7 @@ nada más: cada función de aquí es el espejo de un SP, con el mismo contrato.
 
     bootstrap_admin            ↔ security.uspBootstrapPlatformAdmin
     crear_usuario              ↔ (HU02/HU06: alta de usuario dentro de un tenant)
+    actualizar_perfil          ↔ (HU12: sus propios datos y los de recuperación)
     agregar_membresia          ↔ (membresía con rol: security.tenantMemberships)
     para_login                 ↔ security.uspGetUserForLogin
     registrar_resultado_login  ↔ security.uspRecordLoginResult
@@ -98,6 +99,13 @@ def _indice() -> tuple[dict[str, dict], dict[str, str], dict[str, dict]]:
                 "email": e.get("email", ""),
                 "nombre": e.get("nombre", ""),
                 "apellidos": e.get("apellidos", ""),
+                # El diseño del perfil (HU12) pide los apellidos por separado,
+                # igual que `security.users` (lastName, secondLastName). Los
+                # usuarios creados antes solo tienen `apellidos`: se parte por
+                # el primer espacio, que es lo más cercano a la verdad.
+                "apellidoPaterno": e.get("apellidoPaterno") or (e.get("apellidos", "").split(" ", 1) + [""])[0],
+                "apellidoMaterno": e.get("apellidoMaterno") or (e.get("apellidos", "").split(" ", 1) + [""])[1],
+                "recuperacion": e.get("recuperacion") or {},
                 "esAdminPlataforma": bool(e.get("esAdminPlataforma")),
                 "telefono": e.get("telefono"),
                 "hash": e.get("hash"),
@@ -137,6 +145,14 @@ def _indice() -> tuple[dict[str, dict], dict[str, str], dict[str, dict]]:
             u["nombre"] = e.get("nombre", u["nombre"])
             u["apellidos"] = e.get("apellidos", u["apellidos"])
             u["telefono"] = e.get("telefono", u.get("telefono"))
+            if "apellidoPaterno" in e:
+                u["apellidoPaterno"] = e.get("apellidoPaterno") or ""
+                u["apellidoMaterno"] = e.get("apellidoMaterno") or ""
+            elif "apellidos" in e:
+                partes = (e.get("apellidos", "").split(" ", 1) + [""])
+                u["apellidoPaterno"], u["apellidoMaterno"] = partes[0], partes[1]
+            if "recuperacion" in e:
+                u["recuperacion"] = e.get("recuperacion") or {}
         elif tipo == "membresia" and u:
             tenant = e.get("tenantGuid")
             if isinstance(tenant, str):
@@ -182,7 +198,10 @@ def _publico(u: dict) -> dict:
         "email": u["email"],
         "nombre": u["nombre"],
         "apellidos": u["apellidos"],
+        "apellidoPaterno": u.get("apellidoPaterno", ""),
+        "apellidoMaterno": u.get("apellidoMaterno", ""),
         "telefono": u.get("telefono"),
+        "recuperacion": u.get("recuperacion") or {},
         "esAdminPlataforma": u["esAdminPlataforma"],
         "debeCambiarContrasena": u["debeCambiar"],
         "activo": u["activo"],
@@ -311,6 +330,41 @@ def actualizar_datos(guid: str, nombre: str, apellidos: str = "", telefono: str 
                 "nombre": nombre,
                 "apellidos": apellidos,
                 "telefono": telefono,
+                "en": _ahora().isoformat(timespec="seconds"),
+            },
+        )
+    return por_guid(guid)
+
+
+def actualizar_perfil(
+    guid: str,
+    nombre: str,
+    apellido_paterno: str,
+    apellido_materno: str,
+    telefono: str | None,
+    recuperacion: dict | None,
+) -> dict:
+    """HU12: los datos que una persona cambia de SÍ MISMA. El correo con el que
+    entra y su rol no están aquí: esos los mueve quien administra."""
+    nombre = nombre.strip()
+    if not nombre:
+        raise ValueError("El nombre es obligatorio.")
+    paterno, materno = apellido_paterno.strip(), apellido_materno.strip()
+    with registro.candado:
+        usuarios, _, _ = _indice()
+        if guid not in usuarios:
+            raise NoEncontrado(guid)
+        registro.agregar(
+            ARCHIVO,
+            {
+                "evento": "datos",
+                "guid": guid,
+                "nombre": nombre,
+                "apellidos": " ".join(x for x in (paterno, materno) if x),
+                "apellidoPaterno": paterno,
+                "apellidoMaterno": materno,
+                "telefono": telefono,
+                "recuperacion": recuperacion or {},
                 "en": _ahora().isoformat(timespec="seconds"),
             },
         )

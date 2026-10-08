@@ -1102,3 +1102,20 @@ hizo: es lo que vuelve auditable que a alguien se le quitó el acceso. Nadie
 puede desactivarse a sí mismo ni cerrar su propia sesión desde aquí (para eso
 está el menú de su cuenta), y desactivar dos veces responde 409 `sin_cambio`
 en vez de fingir que hizo algo.
+
+### Mi perfil (HU12, HU13 — 2026-10-07)
+
+`POST /auth/perfil` actualiza los datos de QUIEN LLAMA: nombre, apellido
+paterno y materno, teléfono y los datos de recuperación (correo y teléfono).
+`GET /auth/yo` los devuelve todos.
+
+Lo que **no** se toca ahí: el correo con el que inicia sesión (es su identidad)
+y su rol (lo mueve quien administra su organización). El cambio de contraseña
+desde la sesión es `POST /auth/contrasena` con `actual`, que ya existía: con
+motivo `CHANGE` **no** cierra las demás sesiones, porque es un cambio
+voluntario y no un restablecimiento.
+
+Los apellidos se guardan **separados** (`apellidoPaterno`, `apellidoMaterno`),
+como los pide el diseño y como los tiene `security.users` (lastName,
+secondLastName). Los usuarios creados antes solo tienen `apellidos`: se parten
+por el primer espacio, que es lo más cercano a la verdad sin inventar.

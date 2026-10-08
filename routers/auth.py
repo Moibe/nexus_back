@@ -55,6 +55,19 @@ class Logout(BaseModel):
     refreshToken: str | None = Field(default=None, max_length=128)
 
 
+class RecuperacionPerfil(BaseModel):
+    email: str | None = Field(default=None, max_length=254)
+    telefono: str | None = Field(default=None, max_length=25)
+
+
+class Perfil(BaseModel):
+    nombre: str = Field(max_length=200)
+    apellidoPaterno: str = Field(default="", max_length=200)
+    apellidoMaterno: str = Field(default="", max_length=200)
+    telefono: str | None = Field(default=None, max_length=25)
+    recuperacion: RecuperacionPerfil | None = None
+
+
 class CambioContrasena(BaseModel):
     actual: str | None = Field(default=None, max_length=256)
     nueva: str = Field(max_length=256)
@@ -200,6 +213,38 @@ def _usuario_del_bearer(authorization: str | None) -> tuple[dict, dict]:
 def yo(authorization: str | None = Header(default=None)) -> dict:
     _, u = _usuario_del_bearer(authorization)
     return {"usuario": u}
+
+
+@router.post(
+    "/perfil",
+    summary="Actualizar mi perfil (HU12)",
+    description=(
+        "Nombre, apellidos, teléfono y datos de recuperación de QUIEN LLAMA. El correo con el "
+        "que inicia sesión y su rol no se tocan aquí: esos los mueve quien administra."
+    ),
+)
+def actualizar_perfil(datos: Perfil, authorization: str | None = Header(default=None)) -> dict:
+    _, u = _usuario_del_bearer(authorization)
+    if not datos.nombre.strip():
+        raise _error(status.HTTP_400_BAD_REQUEST, "nombre_requerido", "El nombre es obligatorio.")
+    recuperacion = datos.recuperacion.model_dump() if datos.recuperacion else {}
+    correo_rec = (recuperacion.get("email") or "").strip()
+    if correo_rec and not usuarios.correo_valido(correo_rec):
+        raise _error(
+            status.HTTP_400_BAD_REQUEST,
+            "correo_recuperacion_invalido",
+            "El correo de recuperación no es válido.",
+        )
+    try:
+        actualizado = usuarios.actualizar_perfil(
+            u["guid"], datos.nombre, datos.apellidoPaterno, datos.apellidoMaterno, datos.telefono, recuperacion
+        )
+        logger.info("Perfil actualizado (guid=%s)", u["guid"])
+        return {"usuario": actualizado}
+    except ValueError as exc:
+        raise _error(status.HTTP_400_BAD_REQUEST, "datos_invalidos", str(exc)) from exc
+    except ErrorAlmacen as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
 
 @router.post(
