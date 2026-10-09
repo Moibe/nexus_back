@@ -161,7 +161,10 @@ def crear(nombre: str, admin_guid: str, recuperacion: dict | None = None) -> dic
 
 def listar() -> list[dict]:
     """Todas, de la más nueva a la más vieja (el listado las muestra así)."""
-    return sorted(_indice().values(), key=lambda t: t["creadaEn"] or "", reverse=True)
+    # El registro guarda la hora al segundo: dos altas en el mismo segundo
+    # empatan, y entonces manda el orden en que se escribieron.
+    orden = list(_indice().values())
+    return [t for _, t in sorted(enumerate(orden), key=lambda x: (x[1]["creadaEn"] or "", x[0]), reverse=True)]
 
 
 def por_guid(guid: str) -> dict:
