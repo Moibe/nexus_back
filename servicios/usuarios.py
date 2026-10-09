@@ -215,8 +215,9 @@ def _publico(u: dict) -> dict:
 
 
 def bootstrap_admin(email: str, nombre: str, apellidos: str, hash_contrasena: str) -> dict:
-    """Crea el PRIMER administrador de plataforma, con contraseña temporal
-    (`debeCambiar`). Levanta `YaExiste` si ya hay uno: se corre una vez."""
+    """Crea un administrador de plataforma con contraseña temporal
+    (`debeCambiar`). Puede haber varios (decisión del 2026-10-09): cada corrida
+    crea otro. Solo levanta `YaExiste` si el correo ya está registrado."""
     email = _normalizar_correo(email)
     if not correo_valido(email):
         raise ValueError("El correo no es válido.")
@@ -225,8 +226,6 @@ def bootstrap_admin(email: str, nombre: str, apellidos: str, hash_contrasena: st
         raise ValueError("Nombre y apellidos son obligatorios.")
     with registro.candado:
         usuarios, por_correo, _ = _indice()
-        if any(u["esAdminPlataforma"] for u in usuarios.values()):
-            raise YaExiste("Ya existe un administrador de plataforma.")
         if email in por_correo:
             raise YaExiste("Ya existe un usuario con ese correo.")
         guid = str(uuid.uuid4())

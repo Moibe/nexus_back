@@ -1,14 +1,14 @@
-"""HU01 — Bootstrap del primer administrador de plataforma.
+"""HU01 — Alta de administradores de plataforma.
 
     .venv/Scripts/python bootstrap_admin.py --email alguien@grupocsi.com --nombre Moisés --apellidos "Briseño Estrello"
 
-Crea al PRIMER super admin con una contraseña temporal que cumple las reglas y
+Crea un super admin con una contraseña temporal que cumple las reglas y
 la imprime UNA vez en la consola. No hay correo en este sprint (decisión del
 2026-10-07): el correo de bienvenida del diseño se sustituye por esta salida,
 que quien corre el comando le pasa al usuario por el canal que sea.
 
-Se corre una vez por ambiente; si ya hay un administrador, no hace nada y lo
-dice. Al entrar con la contraseña temporal, la app obliga a cambiarla (HU04).
+Puede haber varios super admins (decisión del 2026-10-09): cada corrida con
+otro correo crea otro; con un correo ya registrado no hace nada y lo dice. Al entrar con la contraseña temporal, la app obliga a cambiarla (HU04).
 
 Lee el mismo `.env` que la API (`ALMACEN_RUTA`): escribe en el registro
 `usuarios.jsonl` del NAS, que es donde la API lo va a buscar.

@@ -1003,7 +1003,7 @@ El mismo valor en el `.env` de `nexus_back` (firma los JWT) y en el del front
 (los verifica sin llamar aquí). Sin él, `/auth/*` responde 503 y el front no
 deja entrar a nadie.
 
-**Crear al primer administrador** (una vez por ambiente, en el servidor; ahí el virtualenv es `venv/`, sin punto — en la laptop es `.venv/`):
+**Crear un administrador de plataforma** (puede haber varios: cada corrida con otro correo crea otro; en el servidor; ahí el virtualenv es `venv/`, sin punto — en la laptop es `.venv/`):
 
 ```
 cd /home/mbriseno/code/nexus_back-dev   # o nexus_back en prod

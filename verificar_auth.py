@@ -63,11 +63,13 @@ try:
     rev("la contraseña temporal cumple las reglas", auth.reglas_incumplidas(temporal) == [])
     u = usuarios.bootstrap_admin("Admin@Ejemplo.com", "Ada", "Lovelace", auth.hash_de(temporal))
     rev("crea al admin con el correo en minúsculas y debeCambiar", u["email"] == "admin@ejemplo.com" and u["esAdminPlataforma"] and u["debeCambiarContrasena"])
+    otro = usuarios.bootstrap_admin("otro@ejemplo.com", "B", "C", auth.hash_de(temporal))
+    rev("un segundo bootstrap con otro correo crea otro super admin", otro["esAdminPlataforma"] and otro["guid"] != u["guid"])
     try:
-        usuarios.bootstrap_admin("otro@ejemplo.com", "B", "C", auth.hash_de(temporal))
-        rev("un segundo bootstrap se rechaza", False)
+        usuarios.bootstrap_admin("ADMIN@ejemplo.com", "B", "C", auth.hash_de(temporal))
+        rev("con un correo ya registrado se rechaza", False)
     except usuarios.YaExiste:
-        rev("un segundo bootstrap se rechaza", True)
+        rev("con un correo ya registrado se rechaza", True)
     registro = (RAIZ / ".registro" / "usuarios.jsonl").read_text(encoding="utf-8")
     rev("la contraseña temporal NO está en el registro; el hash es argon2id", temporal not in registro and "$argon2id$" in registro)
 
