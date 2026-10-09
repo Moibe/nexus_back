@@ -26,7 +26,13 @@ from servicios.almacen import ErrorAlmacen  # noqa: E402
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Crea el primer administrador de plataforma.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Crea un administrador de plataforma con contraseña temporal. "
+            "Puede correrse varias veces: cada corrida con otro correo crea otro. "
+            "Un correo ya registrado se rechaza y no crea nada."
+        )
+    )
     parser.add_argument("--email", required=True)
     parser.add_argument("--nombre", required=True)
     parser.add_argument("--apellidos", required=True)
