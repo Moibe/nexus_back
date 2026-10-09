@@ -53,8 +53,11 @@ def srv() -> dict:
     return {"x-api-key": SERVICIO}
 
 
-def login(c: TestClient, email: str, password: str):
-    return c.post("/auth/login", json={"email": email, "password": password, "ip": "127.0.0.1", "userAgent": "verificar"}, headers=srv())
+def login(c: TestClient, email: str, password: str, origen: str | None = None):
+    cuerpo = {"email": email, "password": password, "ip": "127.0.0.1", "userAgent": "verificar"}
+    if origen:
+        cuerpo["origen"] = origen
+    return c.post("/auth/login", json=cuerpo, headers=srv())
 
 
 c = TestClient(app)
@@ -106,6 +109,24 @@ try:
     ruta.write_text("\n".join(nuevas) + "\n", encoding="utf-8")
     r = login(c, "admin@ejemplo.com", "mala")
     rev("pasados los 15 min se puede intentar de nuevo, y el contador arrancó en cero", r.status_code == 401 and r.json()["detail"]["intentosRestantes"] == 4, r.text)
+
+    titulo("2b · Los cinco intentos son de correo O de contraseña, por navegador")
+    NAV_A, NAV_B = "navegador-prueba-a", "navegador-prueba-b"
+    restantes = []
+    for i in range(4):
+        r = login(c, f"nadie{i}@ejemplo.com", "x", NAV_A)
+        restantes.append(r.json()["detail"].get("intentosRestantes"))
+    rev("4 correos inexistentes ya gastan intentos: 4,3,2,1", restantes == [4, 3, 2, 1], str(restantes))
+    r = login(c, "admin@ejemplo.com", "mala", NAV_A)
+    rev("la quinta, ya con contraseña mala, bloquea ese navegador 15 min",
+        r.status_code == 423 and 14 * 60 < r.json()["detail"]["segundosRestantes"] <= 15 * 60, r.text)
+    r = login(c, "admin@ejemplo.com", temporal, NAV_A)
+    rev("el navegador bloqueado no entra ni con la contraseña correcta", r.status_code == 423, r.text[:160])
+    r = login(c, "otro-que-no-existe@ejemplo.com", "x", NAV_B)
+    rev("otro navegador conserva sus propios 5 intentos",
+        r.status_code == 401 and r.json()["detail"]["intentosRestantes"] == 4, r.text)
+    rev("y la cuenta sigue sin bloquearse: el contador del navegador es aparte",
+        usuarios.para_login("admin@ejemplo.com")["bloqueadoHasta"] is None)
 
     titulo("3 · Primer acceso: entra, pero debe cambiar la contraseña")
     r = login(c, "admin@ejemplo.com", temporal)

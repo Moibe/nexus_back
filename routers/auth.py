@@ -38,11 +38,26 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _bloqueada(hasta_en: str) -> HTTPException:
+    """La única pantalla de bloqueo del diseño, la dispare la cuenta o el
+    navegador: para quien la ve es el mismo contador de cinco intentos."""
+    return _error(
+        status.HTTP_423_LOCKED,
+        "bloqueada",
+        "Tu cuenta ha sido bloqueada temporalmente por exceder el número máximo de intentos permitidos.",
+        hastaEn=hasta_en,
+        segundosRestantes=_segundos_hasta(hasta_en),
+    )
+
+
 class Login(BaseModel):
     email: str = Field(max_length=254)
     password: str = Field(max_length=256)
     ip: str | None = Field(default=None, max_length=45)
     userAgent: str | None = Field(default=None, max_length=500)
+    #: Identificador anónimo del navegador (cookie `nx_navegador` del front).
+    #: Contra él se cuentan los intentos fallidos de correo Y de contraseña.
+    origen: str | None = Field(default=None, max_length=64)
 
 
 class Refresh(BaseModel):
@@ -116,35 +131,46 @@ def login(datos: Login, response: Response) -> dict:
     email = datos.email.strip().lower()
     if not usuarios.correo_valido(email):
         raise _error(status.HTTP_400_BAD_REQUEST, "correo_invalido", "Por favor, ingresa un correo electrónico válido.")
+    origen = (datos.origen or "").strip() or None
     try:
+        # El navegador bloqueado no pasa, teclee el correo que teclee: si no, se
+        # saldría del bloqueo probando otro correo.
+        _, bloqueo_navegador = usuarios.estado_origen(origen)
+        if bloqueo_navegador:
+            usuarios.registrar_resultado_login(None, email, False, "LOCKED", datos.ip, datos.userAgent, origen)
+            raise _bloqueada(bloqueo_navegador)
+
         u = usuarios.para_login(email)
         if u is None:
-            usuarios.registrar_resultado_login(None, email, False, "UNKNOWN_EMAIL", datos.ip, datos.userAgent)
-            raise _error(status.HTTP_401_UNAUTHORIZED, "correo_no_existe", "El correo electrónico no existe; por favor ingresa un correo electrónico válido.")
-        if u["bloqueadoHasta"]:
-            usuarios.registrar_resultado_login(u["guid"], email, False, "LOCKED", datos.ip, datos.userAgent)
+            usuarios.registrar_resultado_login(None, email, False, "UNKNOWN_EMAIL", datos.ip, datos.userAgent, origen)
+            fallidos_nav, bloqueo_navegador = usuarios.estado_origen(origen)
+            if bloqueo_navegador:
+                raise _bloqueada(bloqueo_navegador)
             raise _error(
-                status.HTTP_423_LOCKED, "bloqueada",
-                "Tu cuenta ha sido bloqueada temporalmente por exceder el número máximo de intentos permitidos.",
-                hastaEn=u["bloqueadoHasta"], segundosRestantes=_segundos_hasta(u["bloqueadoHasta"]),
+                status.HTTP_401_UNAUTHORIZED, "correo_no_existe",
+                "El correo electrónico no existe; por favor ingresa un correo electrónico válido.",
+                intentosRestantes=config.AUTH_MAX_INTENTOS - fallidos_nav,
             )
+        if u["bloqueadoHasta"]:
+            usuarios.registrar_resultado_login(u["guid"], email, False, "LOCKED", datos.ip, datos.userAgent, origen)
+            raise _bloqueada(u["bloqueadoHasta"])
         if not u["activo"]:
-            usuarios.registrar_resultado_login(u["guid"], email, False, "INACTIVE", datos.ip, datos.userAgent)
+            usuarios.registrar_resultado_login(u["guid"], email, False, "INACTIVE", datos.ip, datos.userAgent, origen)
             raise _error(status.HTTP_403_FORBIDDEN, "desactivada", "La cuenta con la que intentas ingresar ha sido desactivada.")
         if not auth.verificar_contrasena(u["hash"], datos.password):
-            fallidos, bloqueado_hasta = usuarios.registrar_resultado_login(u["guid"], email, False, "BAD_PASSWORD", datos.ip, datos.userAgent)
-            if bloqueado_hasta:
-                raise _error(
-                    status.HTTP_423_LOCKED, "bloqueada",
-                    "Tu cuenta ha sido bloqueada temporalmente por exceder el número máximo de intentos permitidos.",
-                    hastaEn=bloqueado_hasta, segundosRestantes=_segundos_hasta(bloqueado_hasta),
-                )
+            fallidos, bloqueado_hasta = usuarios.registrar_resultado_login(
+                u["guid"], email, False, "BAD_PASSWORD", datos.ip, datos.userAgent, origen
+            )
+            fallidos_nav, bloqueo_navegador = usuarios.estado_origen(origen)
+            if bloqueado_hasta or bloqueo_navegador:
+                raise _bloqueada(bloqueado_hasta or bloqueo_navegador)
+            # El aviso dice la verdad: manda el contador que esté más cerca.
             raise _error(
                 status.HTTP_401_UNAUTHORIZED, "credenciales",
                 "La contraseña es incorrecta; por favor intenta de nuevo.",
-                intentosRestantes=config.AUTH_MAX_INTENTOS - fallidos,
+                intentosRestantes=config.AUTH_MAX_INTENTOS - max(fallidos, fallidos_nav),
             )
-        usuarios.registrar_resultado_login(u["guid"], email, True, None, datos.ip, datos.userAgent)
+        usuarios.registrar_resultado_login(u["guid"], email, True, None, datos.ip, datos.userAgent, origen)
         publico = {k: v for k, v in u.items() if k not in ("hash", "fallidos", "bloqueadoHasta")}
         publico["ultimoLoginEn"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         logger.info("Login correcto (guid=%s)", u["guid"])

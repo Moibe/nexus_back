@@ -409,10 +409,18 @@ def por_guid(guid: str) -> dict:
 
 
 def registrar_resultado_login(
-    guid: str | None, email: str, exitoso: bool, motivo: str | None, ip: str | None, user_agent: str | None
+    guid: str | None,
+    email: str,
+    exitoso: bool,
+    motivo: str | None,
+    ip: str | None,
+    user_agent: str | None,
+    origen: str | None = None,
 ) -> tuple[int, str | None]:
-    """Anota el intento y aplica la política. Devuelve (fallidos, bloqueadoHasta)
-    tal como quedan. `motivo`: BAD_PASSWORD | LOCKED | INACTIVE | UNKNOWN_EMAIL."""
+    """Anota el intento y aplica la política de la CUENTA. Devuelve
+    (fallidos, bloqueadoHasta) tal como quedan. `motivo`: BAD_PASSWORD | LOCKED
+    | INACTIVE | UNKNOWN_EMAIL. `origen` identifica al navegador y es lo que
+    lee `estado_origen`; aquí solo se guarda."""
     with registro.candado:
         registro.agregar(
             ARCHIVO,
@@ -424,6 +432,7 @@ def registrar_resultado_login(
                 "motivo": None if exitoso else motivo,
                 "ip": ip,
                 "userAgent": (user_agent or "")[:500] or None,
+                "origen": origen,
                 "en": _ahora().isoformat(timespec="seconds"),
             },
         )
@@ -435,6 +444,48 @@ def registrar_resultado_login(
             return 0, None
         bloqueo = _bloqueo_vigente(u)
         return u["fallidos"], bloqueo.isoformat() if bloqueo else None
+
+
+# ── uspGetOriginLockout ─────────────────────────────────────────────────────
+#
+# El contador de la cuenta solo puede crecer con la contraseña mala: un correo
+# que no existe no tiene cuenta donde anotar el intento. Para que los cinco
+# intentos sean "de uno o de otro" (decisión de Moibe, 2026-10-09) se lleva un
+# SEGUNDO contador por navegador, con el identificador anónimo que el front
+# guarda en una cookie y manda como `origen`.
+#
+# Por navegador y no por IP: en la oficina todos salen por la misma IP, así que
+# cinco errores de cualquiera bloquearían a todos los demás. El contador de la
+# cuenta se queda como está: es el que sobrevive a cambiar de navegador.
+
+#: Lo que hace avanzar al contador del navegador. `LOCKED` no cuenta —si no, los
+#: intentos durante el bloqueo lo alargarían— ni `INACTIVE`, que no es un error
+#: de credenciales.
+MOTIVOS_QUE_CUENTAN = {"BAD_PASSWORD", "UNKNOWN_EMAIL"}
+
+
+def estado_origen(origen: str | None) -> tuple[int, str | None]:
+    """(fallidos seguidos, bloqueadoHasta) de ese navegador. Sin `origen`
+    —un cliente que no manda cookie— devuelve el estado vacío: el contador de
+    la cuenta sigue aplicando igual."""
+    if not origen:
+        return 0, None
+    fallidos = 0
+    hasta: datetime | None = None
+    for e in registro.eventos(ARCHIVO):
+        if e.get("evento") != "intento" or e.get("origen") != origen:
+            continue
+        if e.get("exitoso"):
+            fallidos, hasta = 0, None
+        elif e.get("motivo") in MOTIVOS_QUE_CUENTAN:
+            fallidos += 1
+            if fallidos >= config.AUTH_MAX_INTENTOS:
+                desde = _fecha(e.get("en")) or _ahora()
+                hasta = desde + timedelta(minutes=config.AUTH_BLOQUEO_MIN)
+                fallidos = 0
+    if hasta and hasta <= _ahora():
+        hasta = None
+    return fallidos, hasta.isoformat() if hasta else None
 
 
 # ── uspSetPassword ──────────────────────────────────────────────────────────
