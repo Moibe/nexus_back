@@ -235,9 +235,6 @@ def actualizar_perfil(datos: Perfil, authorization: str | None = Header(default=
             "correo_recuperacion_invalido",
             "El correo de recuperación no es válido.",
         )
-    repetido = usuarios.recuperacion_repetida(recuperacion, u["email"], datos.telefono)
-    if repetido:
-        raise _error(status.HTTP_400_BAD_REQUEST, "recuperacion_repetida", repetido)
     try:
         actualizado = usuarios.actualizar_perfil(
             u["guid"], datos.nombre, datos.apellidoPaterno, datos.apellidoMaterno, datos.telefono, recuperacion

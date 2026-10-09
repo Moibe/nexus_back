@@ -144,11 +144,6 @@ def crear(datos: NuevaOrganizacion, response: Response, authorization: str | Non
         raise _error(status.HTTP_400_BAD_REQUEST, "nombre_requerido", "El nombre de la organización es obligatorio.")
     if not usuarios.correo_valido(datos.adminEmail.strip().lower()):
         raise _error(status.HTTP_400_BAD_REQUEST, "correo_invalido", "Por favor, ingresa un correo electrónico válido.")
-    repetido = usuarios.recuperacion_repetida(
-        datos.recuperacion.model_dump() if datos.recuperacion else None, datos.adminEmail, datos.adminTelefono
-    )
-    if repetido:
-        raise _error(status.HTTP_400_BAD_REQUEST, "recuperacion_repetida", repetido)
     try:
         temporal = auth.contrasena_temporal()
         # Primero el usuario: si el correo ya existe, no se crea la organización
