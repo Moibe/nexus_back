@@ -112,6 +112,10 @@ try:
     despues = c.get("/organizaciones/", headers=bearer).json()["organizaciones"]
     rev("y NO se creó la organización a medias", len(despues) == antes, f"{antes} -> {len(despues)}")
     rev("correo inválido: 400", c.post("/organizaciones/", json={**cuerpo, "nombre": "X", "adminEmail": "no-es"}, headers=bearer).status_code == 400)
+    r = c.post("/organizaciones/", json={**cuerpo, "nombre": "Y", "adminEmail": "y@ejemplo.com",
+                                        "recuperacion": {"email": "pepito", "telefono": None}}, headers=bearer)
+    rev("correo de RECUPERACIÓN inválido: 400 y no crea nada",
+        r.status_code == 400 and r.json()["detail"]["codigo"] == "correo_recuperacion_invalido", r.text[:200])
     rev("nombre vacío: 400", c.post("/organizaciones/", json={**cuerpo, "nombre": "   ", "adminEmail": "z@ejemplo.com"}, headers=bearer).status_code == 400)
 
     titulo("5 · Listado")
@@ -121,6 +125,10 @@ try:
     rev("sus usuarios: por ahora solo su administrador",
         r.status_code == 200 and [u["email"] for u in r.json()["usuarios"]] == ["benjamin.lg@ejemplo.com"], r.text[:200])
     rev("una organización que no existe: 404", c.get("/organizaciones/no-existe/usuarios", headers=bearer).status_code == 404)
+    r = c.post("/organizaciones/", json={**cuerpo, "nombre": "Z", "adminEmail": "z2@ejemplo.com",
+                                        "recuperacion": {"email": "  Respaldo@Ejemplo.COM  ", "telefono": None}}, headers=bearer)
+    rev("y uno con espacios y mayúsculas queda normalizado",
+        r.status_code == 201 and r.json()["organizacion"]["recuperacion"]["email"] == "respaldo@ejemplo.com", r.text[:250])
 
     titulo("6 · El administrador nuevo entra, pero no puede crear organizaciones")
     r = c.post("/auth/login", json={"email": "benjamin.lg@ejemplo.com", "password": primera["contrasenaTemporal"]}, headers=srv())

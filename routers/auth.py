@@ -253,14 +253,12 @@ def actualizar_perfil(datos: Perfil, authorization: str | None = Header(default=
     _, u = _usuario_del_bearer(authorization)
     if not datos.nombre.strip():
         raise _error(status.HTTP_400_BAD_REQUEST, "nombre_requerido", "El nombre es obligatorio.")
-    recuperacion = datos.recuperacion.model_dump() if datos.recuperacion else {}
-    correo_rec = (recuperacion.get("email") or "").strip()
-    if correo_rec and not usuarios.correo_valido(correo_rec):
-        raise _error(
-            status.HTTP_400_BAD_REQUEST,
-            "correo_recuperacion_invalido",
-            "El correo de recuperación no es válido.",
+    try:
+        recuperacion = usuarios.normalizar_recuperacion(
+            datos.recuperacion.model_dump() if datos.recuperacion else {}
         )
+    except ValueError as exc:
+        raise _error(status.HTTP_400_BAD_REQUEST, "correo_recuperacion_invalido", str(exc)) from exc
     try:
         actualizado = usuarios.actualizar_perfil(
             u["guid"], datos.nombre, datos.apellidoPaterno, datos.apellidoMaterno, datos.telefono, recuperacion

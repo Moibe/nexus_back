@@ -145,6 +145,12 @@ def crear(datos: NuevaOrganizacion, response: Response, authorization: str | Non
     if not usuarios.correo_valido(datos.adminEmail.strip().lower()):
         raise _error(status.HTTP_400_BAD_REQUEST, "correo_invalido", "Por favor, ingresa un correo electrónico válido.")
     try:
+        recuperacion = usuarios.normalizar_recuperacion(
+            datos.recuperacion.model_dump() if datos.recuperacion else {}
+        )
+    except ValueError as exc:
+        raise _error(status.HTTP_400_BAD_REQUEST, "correo_recuperacion_invalido", str(exc)) from exc
+    try:
         temporal = auth.contrasena_temporal()
         # Primero el usuario: si el correo ya existe, no se crea la organización
         # a medias. (En la base será una transacción; aquí, el orden.)
@@ -158,7 +164,7 @@ def crear(datos: NuevaOrganizacion, response: Response, authorization: str | Non
         organizacion = tenants_registro.crear(
             nombre,
             admin_guid=admin["guid"],
-            recuperacion=datos.recuperacion.model_dump() if datos.recuperacion else {},
+            recuperacion=recuperacion,
         )
         usuarios.agregar_membresia(admin["guid"], organizacion["guid"], "ADMIN")
         logger.info("Organización creada (slug=%s, admin=%s)", organizacion["slug"], admin["guid"])

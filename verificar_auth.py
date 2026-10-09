@@ -207,6 +207,13 @@ try:
     r = c.get("/auth/yo", headers=mio)
     rev("se lee de vuelta en /auth/yo", r.json()["usuario"]["apellidoPaterno"] == "Lovelace", r.text[:200])
     rev("el correo con el que entra NO cambia", r.json()["usuario"]["email"] == "admin@ejemplo.com")
+    r = c.post("/auth/perfil", json={"nombre": "Ada", "apellidoPaterno": "Lovelace",
+                                     "recuperacion": {"email": "pepito", "telefono": None}}, headers=mio)
+    rev("un correo de recuperación sin forma de correo: 400", r.status_code == 400 and r.json()["detail"]["codigo"] == "correo_recuperacion_invalido", r.text[:200])
+    r = c.post("/auth/perfil", json={"nombre": "Ada", "apellidoPaterno": "Lovelace",
+                                     "recuperacion": {"email": "  Respaldo@Ejemplo.COM  ", "telefono": None}}, headers=mio)
+    rev("y uno con espacios y mayúsculas se guarda normalizado",
+        r.json()["usuario"]["recuperacion"]["email"] == "respaldo@ejemplo.com", r.text[:200])
     rev("la recuperación se puede vaciar",
         c.post("/auth/perfil", json={"nombre": "Ada", "apellidoPaterno": "Lovelace"}, headers=mio).json()["usuario"]["recuperacion"] == {})
 

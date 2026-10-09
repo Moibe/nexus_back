@@ -336,6 +336,34 @@ def actualizar_datos(guid: str, nombre: str, apellidos: str = "", telefono: str 
     return por_guid(guid)
 
 
+def normalizar_recuperacion(recuperacion: dict | None) -> dict:
+    """Deja los datos de recuperación como se van a guardar: el correo sin
+    espacios y en minúsculas, igual que cualquier otro correo del sistema.
+    Levanta `ValueError` si trae algo que no es un correo. Vacío es válido: el
+    campo es opcional.
+
+    Existe para que los dos sitios que reciben recuperación —el alta de
+    organización y Mi perfil— apliquen la MISMA regla. Hasta el 2026-10-09 el
+    alta de organización no miraba nada y guardaba "pepito" tal cual, y Mi
+    perfil validaba sobre una copia pero guardaba el texto crudo, con sus
+    espacios y mayúsculas."""
+    rec = dict(recuperacion or {})
+    # Sin datos, se devuelve el dict vacío tal cual: vaciar la recuperación deja
+    # `{}`, no `{"email": None, "telefono": None}`, que es lo que ya esperan el
+    # registro y el front.
+    if not rec:
+        return {}
+    correo = (rec.get("email") or "").strip().lower()
+    if correo and not correo_valido(correo):
+        raise ValueError("El correo de recuperación no es válido.")
+    if "email" in rec:
+        rec["email"] = correo or None
+    if "telefono" in rec:
+        telefono = (rec.get("telefono") or "").strip()
+        rec["telefono"] = telefono or None
+    return rec
+
+
 def actualizar_perfil(
     guid: str,
     nombre: str,
