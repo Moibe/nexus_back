@@ -551,3 +551,18 @@ def cerrar_sesiones(guid: str, motivo: str, por: str | None = None) -> int:
             },
         )
     return revocar_sesiones(guid, None, "FORCED_LOGOUT")
+
+
+def recuperacion_repetida(recuperacion: dict | None, email: str | None, telefono: str | None) -> str | None:
+    """Los datos de recuperación no pueden repetir el correo ni el teléfono
+    principales: si se pierde ese dato, repetirlo no recupera nada. Devuelve
+    el mensaje del error, o None si todo está bien."""
+    rec = recuperacion or {}
+    digitos = lambda v: "".join(ch for ch in (v or "") if ch.isdigit())
+    correo_rec = (rec.get("email") or "").strip().lower()
+    if correo_rec and correo_rec == (email or "").strip().lower():
+        return "El correo de recuperación debe ser distinto al correo principal."
+    tel_rec = digitos(rec.get("telefono"))
+    if tel_rec and tel_rec == digitos(telefono):
+        return "El teléfono de recuperación debe ser distinto al teléfono principal."
+    return None
