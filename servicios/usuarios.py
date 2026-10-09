@@ -55,7 +55,8 @@ _RE_CORREO = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class YaExiste(Exception):
-    """Ya hay un administrador de plataforma (el bootstrap se corre una vez)."""
+    """El correo ya está registrado. (Varios administradores de plataforma sí se
+    permiten; lo que no se repite es el correo.)"""
 
 
 class NoEncontrado(Exception):

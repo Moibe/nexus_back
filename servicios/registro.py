@@ -1,10 +1,11 @@
 """Registros de SOLO AGREGAR dentro del almacén.
 
-Los usan la bandeja de entrada (`servicios/bandeja.py`) y las llaves de
-cliente (`servicios/llaves_cliente.py`). Son PROVISIONALES los dos: hacen el
-trabajo de tablas que todavía no existen en SQL Server, para no depender del
-calendario del DBA. El día que existan, lo que cambia son esos dos módulos;
-este se queda sin usuarios.
+Los usan la bandeja de entrada (`servicios/bandeja.py`), las llaves de
+cliente (`servicios/llaves_cliente.py`), los usuarios (`servicios/usuarios.py`)
+y las organizaciones (`servicios/tenants_registro.py`). Son PROVISIONALES los
+cuatro: hacen el trabajo de tablas que todavía no existen en SQL Server, para
+no depender del calendario del DBA. El día que existan, lo que cambia son esos
+módulos; este se queda sin usuarios.
 
 ## Cómo se guarda
 

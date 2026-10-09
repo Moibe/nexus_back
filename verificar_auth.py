@@ -5,7 +5,8 @@
 OFFLINE y sin tocar nada tuyo, como `verificar_webhooks.py`: la app contra un
 `ALMACEN_RUTA` temporal, con llave de servicio y secreto JWT inventados.
 
-Lo que importa: que el bootstrap se corra UNA vez y la contraseña temporal no
+Lo que importa: que el bootstrap pueda correrse varias veces con correos
+distintos, que rechace el correo repetido y que la contraseña temporal no
 quede escrita en claro; que el login distinga correo inexistente, contraseña
 mala (con la cuenta de intentos), cuenta bloqueada (5 intentos → 15 min, y que
 los intentos durante el bloqueo no lo alarguen) y cuenta desactivada; que en el
