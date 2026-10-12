@@ -34,8 +34,15 @@ ARCHIVO = "auditoria.jsonl"
 
 PASSWORD_RESET_REQUESTED = "PASSWORD_RESET_REQUESTED"
 PASSWORD_RESET_COMPLETED = "PASSWORD_RESET_COMPLETED"
+# HU05 (cerrar sesión). Hasta el 2026-10-12 estos dos no tenían nombre propio:
+# el cierre voluntario solo dejaba un `sesion_revocada` en `usuarios.jsonl` y el
+# forzado un `cierre_forzado`. Los datos siempre se guardaron; faltaba el
+# evento con el nombre que pide el criterio, que además es el que se mudará a la
+# tabla de auditoría cuando exista.
+LOGOUT = "LOGOUT"
+FORCED_LOGOUT = "FORCED_LOGOUT"
 
-ACCIONES = frozenset({PASSWORD_RESET_REQUESTED, PASSWORD_RESET_COMPLETED})
+ACCIONES = frozenset({PASSWORD_RESET_REQUESTED, PASSWORD_RESET_COMPLETED, LOGOUT, FORCED_LOGOUT})
 
 
 def _ahora() -> datetime:

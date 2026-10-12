@@ -12,6 +12,7 @@ cambiarla; que el rol se pueda cambiar y viaje en su JWT; y que un
 administrador no pueda quitarse a sí mismo el rol y quedar sin quien administre.
 """
 
+import json
 import os
 import shutil
 import tempfile
@@ -194,6 +195,30 @@ try:
         c.post("/auth/refresh", json={"refreshToken": sesion_camila["refreshToken"]}, headers=srv()).status_code == 401)
     rev("pero SIGUE activa: puede volver a entrar",
         c.post("/auth/login", json={"email": "camila.cg@ejemplo.com", "password": nueva_contrasena}, headers=srv()).status_code == 200)
+
+    titulo("8b · El cierre forzado deja su evento, y no cualquiera puede hacerlo (HU05 CA-4, CA-5)")
+    registro_usuarios = RAIZ / ".registro" / "usuarios.jsonl"
+    ruta_auditoria = RAIZ / ".registro" / "auditoria.jsonl"
+    forzados = [json.loads(x) for x in ruta_auditoria.read_text(encoding="utf-8").splitlines() if '"FORCED_LOGOUT"' in x]
+    rev("quedó UN evento FORCED_LOGOUT (los intentos rechazados —sin motivo, a sí mismo— no dejan nada)", len(forzados) == 1, str(len(forzados)))
+    f = forzados[0]
+    rev("con el usuario afectado, quien lo ordenó, el motivo, la organización y la hora",
+        f["usuarioGuid"] == guid and f["por"] == yo_guid and f["motivo"] == "Medida preventiva de seguridad."
+        and bool(f.get("tenantGuid")) and bool(f["en"]), str(f))
+    cierre_forzado = [json.loads(x) for x in registro_usuarios.read_text(encoding="utf-8").splitlines() if '"cierre_forzado"' in x]
+    rev("y `cierre_forzado` guarda lo mismo en el registro de usuarios",
+        len(cierre_forzado) == 1 and cierre_forzado[0]["guid"] == guid and cierre_forzado[0]["por"] == yo_guid
+        and cierre_forzado[0]["motivo"] == "Medida preventiva de seguridad.", str(cierre_forzado))
+    bearer_camila = {**srv(), "Authorization": f"Bearer {entrar(c, 'camila.cg@ejemplo.com', nueva_contrasena)['accessToken']}"}
+    r = c.post(f"/usuarios/{yo_guid}/cerrar-sesion", json={"motivo": "Intento sin ser administradora."}, headers=bearer_camila)
+    rev("un usuario sin rol de administrador no puede: 403", r.status_code == 403, r.text[:140])
+    r = c.post(f"/usuarios/{guid}/cerrar-sesion", json={"motivo": "Intento de otra organización."}, headers=bearer_zs)
+    rev("el administrador de OTRA organización no puede: 404 (ni se entera de que existe)", r.status_code == 404, r.text[:140])
+    r = c.post(f"/usuarios/{guid}/cerrar-sesion", json={"motivo": "Intento del Super Admin."}, headers=bearer_super)
+    rev("el Super Admin tampoco puede HOY: 403 sin_organizacion (el criterio dice 'o Super Admin': decisión de producto pendiente)",
+        r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_organizacion", r.text[:140])
+    forzados = [x for x in ruta_auditoria.read_text(encoding="utf-8").splitlines() if '"FORCED_LOGOUT"' in x]
+    rev("ninguno de los tres intentos rechazados dejó evento", len(forzados) == 1, str(len(forzados)))
 
 finally:
     c.close()

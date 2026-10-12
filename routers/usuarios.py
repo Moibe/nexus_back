@@ -16,7 +16,7 @@ import logging
 from fastapi import APIRouter, Header, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
-from servicios import auth, roles, tenants_registro, usuarios
+from servicios import auditoria, auth, roles, tenants_registro, usuarios
 from servicios.almacen import ErrorAlmacen
 
 logger = logging.getLogger(__name__)
@@ -246,8 +246,11 @@ def cambiar_estado(guid: str, datos: CambioEstado, authorization: str | None = H
     "/{guid}/cerrar-sesion",
     summary="Cerrar la sesión de un usuario (HU05)",
     description=(
-        "Invalida sus tokens: tendrá que entrar de nuevo. NO lo desactiva — su contraseña sigue "
-        "sirviendo. El motivo es obligatorio y queda registrado."
+        "Revoca TODAS sus sesiones (refresh tokens): no podrá renovarlas y tendrá que entrar de nuevo. NO lo "
+        "desactiva — su contraseña sigue sirviendo. **Su JWT de acceso ya emitido sigue valiendo hasta que "
+        "venza** (15 minutos por defecto): ni este back ni el guard del front consultan si la sesión de su `sid` "
+        "sigue viva. El motivo es obligatorio y queda registrado como `FORCED_LOGOUT`. Hoy solo lo puede ejecutar "
+        "el administrador de una organización, sobre usuarios de la suya."
     ),
 )
 def cerrar_sesion(guid: str, datos: CierreSesion, authorization: str | None = Header(default=None)) -> dict:
@@ -265,6 +268,18 @@ def cerrar_sesion(guid: str, datos: CierreSesion, authorization: str | None = He
             "Para cerrar tu propia sesión usa el menú de tu cuenta.",
         )
     try:
+        # El rastro va ANTES de cerrar, a propósito: si no se puede escribir
+        # (503), no se cierra nada. Es el modo de falla correcto para una
+        # auditoría: peor es un cierre sin saber quién lo ordenó ni por qué que
+        # un aviso de más. Es el evento con el nombre del criterio de HU05
+        # (CA-4, CA-5); `cerrar_sesiones` deja además su propio `cierre_forzado`.
+        auditoria.registrar(
+            auditoria.FORCED_LOGOUT,
+            usuario_guid=objetivo["guid"],
+            por=yo["guid"],
+            motivo=motivo,
+            tenantGuid=tenant,
+        )
         cerradas = usuarios.cerrar_sesiones(guid, motivo, yo["guid"])
         logger.info("Sesiones cerradas por el administrador (guid=%s, cuantas=%s)", guid, cerradas)
         return {"cerradas": cerradas}

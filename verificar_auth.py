@@ -15,6 +15,7 @@ reglas y cierre todas las sesiones; que el refresh rote y el viejo muera; y que
 el logout revoque.
 """
 
+import json
 import os
 import shutil
 import tempfile
@@ -43,6 +44,21 @@ def rev(descripcion: str, ok: bool, extra: str = "") -> None:
     print(f"  {'OK   ' if ok else 'FALLA'} {descripcion}{'  -> ' + extra if extra and not ok else ''}")
     if not ok:
         fallos += 1
+
+
+def nota(texto: str) -> None:
+    """Una observación que NO cuenta como falla: describe lo que hoy pasa en algo
+    que está pendiente de decisión. Cuando se resuelva, la nota cambia sola de
+    redacción y es la señal para convertirla en una comprobación."""
+    print(f"  NOTA  {texto}")
+
+
+def eventos_de_auditoria(accion: str) -> list[dict]:
+    ruta = RAIZ / ".registro" / "auditoria.jsonl"
+    if not ruta.exists():
+        return []
+    lineas = [json.loads(x) for x in ruta.read_text(encoding="utf-8").splitlines() if x.strip()]
+    return [e for e in lineas if e.get("accion") == accion]
 
 
 def titulo(t: str) -> None:
@@ -171,6 +187,45 @@ try:
     rev("logout: 204", c.post("/auth/logout", json={"refreshToken": s4["refreshToken"]}, headers=srv()).status_code == 204)
     rev("tras logout el refresh no sirve", c.post("/auth/refresh", json={"refreshToken": s4["refreshToken"]}, headers=srv()).status_code == 401)
     rev("logout sin token: 204 igual", c.post("/auth/logout", json={}, headers=srv()).status_code == 204)
+
+    titulo("4b · HU05: cerrar sesión en un dispositivo NO cierra las otras, y deja su evento")
+    d1 = login(c, "admin@ejemplo.com", "Otra-Segura-456!").json()
+    d2 = login(c, "admin@ejemplo.com", "Otra-Segura-456!").json()
+    d3 = login(c, "admin@ejemplo.com", "Otra-Segura-456!").json()
+    rev("tres dispositivos con sesión, cada uno con su refresh", len({d1["refreshToken"], d2["refreshToken"], d3["refreshToken"]}) == 3)
+    # La sección 4 ya cerró una sesión y dejó su evento: se cuenta a partir de aquí.
+    antes = len(eventos_de_auditoria("LOGOUT"))
+    rev("cerrar el primero: 204",
+        c.post("/auth/logout", json={"refreshToken": d1["refreshToken"], "ip": "10.1.1.1", "userAgent": "navegador-1"}, headers=srv()).status_code == 204)
+    rev("el refresh del primero ya no sirve", c.post("/auth/refresh", json={"refreshToken": d1["refreshToken"]}, headers=srv()).status_code == 401)
+    r2 = c.post("/auth/refresh", json={"refreshToken": d2["refreshToken"]}, headers=srv())
+    r3 = c.post("/auth/refresh", json={"refreshToken": d3["refreshToken"]}, headers=srv())
+    rev("CA-3: los otros dos SIGUEN renovando", r2.status_code == 200 and r3.status_code == 200, f"{r2.status_code} {r3.status_code}")
+    sid_cerrada = auth.verificar_acceso(d1["accessToken"])["sid"]
+    cierres = [e for e in eventos_de_auditoria("LOGOUT") if e["sesionGuid"] == sid_cerrada]
+    rev("CA-1: quedó UN evento LOGOUT de esa sesión en la bitácora de auditoría",
+        len(cierres) == 1 and len(eventos_de_auditoria("LOGOUT")) == antes + 1, str(len(cierres)))
+    rev("con la persona, la sesión que se cerró, la IP, el navegador y la hora",
+        cierres[0]["usuarioGuid"] == u["guid"] and cierres[0]["ip"] == "10.1.1.1"
+        and cierres[0]["userAgent"] == "navegador-1" and bool(cierres[0]["en"]), str(cierres[0]))
+    rev("cerrar la MISMA sesión otra vez: 204 y NO duplica el evento",
+        c.post("/auth/logout", json={"refreshToken": d1["refreshToken"]}, headers=srv()).status_code == 204
+        and len(eventos_de_auditoria("LOGOUT")) == antes + 1)
+    rev("un token que no existe: 204 y sin evento",
+        c.post("/auth/logout", json={"refreshToken": "inventado-" + "x" * 40}, headers=srv()).status_code == 204
+        and len(eventos_de_auditoria("LOGOUT")) == antes + 1)
+    rev("un cliente que no manda IP ni navegador cierra igual, y el evento lo dice",
+        # Con el refresh VIGENTE del tercero: el que traía de origen ya se rotó arriba al renovar.
+        c.post("/auth/logout", json={"refreshToken": r3.json()["refreshToken"]}, headers=srv()).status_code == 204
+        and len(eventos_de_auditoria("LOGOUT")) == antes + 2 and eventos_de_auditoria("LOGOUT")[-1]["ip"] is None)
+    # Lo que NO se cumple del CA-1/CA-2 de HU05 y está pendiente de decisión
+    # (la misma limitación de HU03 CA-8 y HU10 CA-7): se MIDE y se deja dicho.
+    r = c.get("/auth/yo", headers={**srv(), "Authorization": f"Bearer {d1['accessToken']}"})
+    nota(
+        "LIMITACIÓN CONOCIDA, pendiente de decisión (HU03 CA-8, HU05 CA-1/2/4/6, HU10 CA-7): el JWT de acceso de la "
+        + ("sesión YA CERRADA todavía se acepta hasta que venza (el refresh sí murió)." if r.status_code == 200
+           else "sesión cerrada YA se rechaza: está resuelta, convierte esta nota en una comprobación.")
+    )
 
     titulo("5 · Cuenta desactivada")
     r = login(c, "admin@ejemplo.com", "Otra-Segura-456!")

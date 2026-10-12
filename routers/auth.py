@@ -70,6 +70,10 @@ class Refresh(BaseModel):
 
 class Logout(BaseModel):
     refreshToken: str | None = Field(default=None, max_length=128)
+    #: Los del navegador que cierra, para el rastro. Opcionales: un cliente que
+    #: no los mande cierra igual.
+    ip: str | None = Field(default=None, max_length=45)
+    userAgent: str | None = Field(default=None, max_length=500)
 
 
 class RecuperacionPerfil(BaseModel):
@@ -316,7 +320,18 @@ def refresh(datos: Refresh, response: Response) -> dict:
         raise _sin_configurar() from exc
 
 
-@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, summary="Cerrar sesión")
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Cerrar sesión",
+    description=(
+        "Revoca la sesión de ESE refresh token y solo esa: las de otros dispositivos siguen. Responde 204 aunque "
+        "el token no exista o ya estuviera revocado (503 solo si el almacén no responde) y deja un evento `LOGOUT` "
+        "en la bitácora de auditoría. **No invalida el JWT de acceso ya emitido**: vale hasta que venza "
+        "(`AUTH_ACCESO_MIN`, 15 minutos), porque ni este back ni el guard del front consultan si la sesión de su "
+        "`sid` sigue viva. Es una limitación conocida, pendiente de decisión."
+    ),
+)
 def logout(datos: Logout) -> Response:
     """Revoca la sesión del refresh token. Sin token, o con uno que ya no
     existe, responde 204 igual: cerrar sesión nunca falla hacia el usuario."""
@@ -324,10 +339,30 @@ def logout(datos: Logout) -> Response:
         try:
             s = usuarios.sesion_por_hash(auth.hash_refresh(datos.refreshToken))
             if s and not s["revocadaEn"]:
-                usuarios.revocar_sesiones(s["guid"], s["sesionGuid"], "LOGOUT")
+                cerradas = usuarios.revocar_sesiones(s["guid"], s["sesionGuid"], "LOGOUT")
+                if cerradas:
+                    _auditar_cierre(s["guid"], s["sesionGuid"], datos.ip, datos.userAgent)
         except ErrorAlmacen as exc:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def _auditar_cierre(usuario_guid: str, sesion_guid: str, ip: str | None, user_agent: str | None) -> None:
+    """Deja el evento `LOGOUT`. Va DESPUÉS de revocar y sin poder romper el
+    cierre: la sesión ya murió y el dato está también en `sesion_revocada`, así
+    que si el registro de auditoría falla se avisa en el log y se sigue.
+    (El cierre FORZADO hace lo contrario, a propósito: ahí el rastro es lo que
+    dice quién lo ordenó y por qué, y sin él no debe cerrarse nada.)"""
+    try:
+        auditoria.registrar(
+            auditoria.LOGOUT,
+            usuario_guid=usuario_guid,
+            sesionGuid=sesion_guid,
+            ip=(ip or "").strip() or None,
+            userAgent=(user_agent or "")[:500] or None,
+        )
+    except (ErrorAlmacen, OSError) as exc:
+        logger.warning("No se pudo registrar el LOGOUT en la bitácora de auditoría: %s", exc)
 
 
 def _usuario_del_bearer(authorization: str | None) -> tuple[dict, dict]:

@@ -1020,7 +1020,7 @@ front, que pone las cookies httpOnly `nx_acceso` y `nx_refresh`):
 |---|---|
 | `POST /auth/login` | correo + contraseña → JWT de acceso (15 min) + refresh (7 días). Errores con `codigo`: `correo_invalido`, `correo_no_existe`, `credenciales` (+ `intentosRestantes`), `bloqueada` (423, + `hastaEn`), `desactivada` (403). |
 | `POST /auth/refresh` | refresh vigente → tokens nuevos; el refresh anterior queda revocado. |
-| `POST /auth/logout` | revoca el refresh. Siempre 204. |
+| `POST /auth/logout` | revoca la sesión de ESE refresh token y solo esa (las de otros dispositivos siguen). 204 aunque el token no exista o ya esté revocado; 503 solo si el almacén no responde. Deja un evento `LOGOUT` en la bitácora de auditoría. **No invalida el JWT de acceso ya emitido**: vale hasta que venza (ver *Limitación conocida* abajo). |
 | `GET /auth/yo` | el usuario del Bearer. |
 | `POST /auth/contrasena` | primer acceso: `nueva` + `confirmacion` (cierra todas las sesiones); después: también `actual`. Reglas: 12 caracteres, mayúscula, minúscula, número, carácter especial. |
 
@@ -1070,7 +1070,8 @@ las conozca; NEX-241):
    los refresh tokens, así que nadie puede renovar. Pero el JWT de acceso que
    alguien ya tenga sigue valiendo hasta que venza (15 minutos): ni el front ni
    el back consultan si la sesión fue revocada. Es la misma limitación que
-   CA-8 de HU03. Para una cuenta comprometida son, como máximo, 15 minutos.
+   CA-8 de HU03 (ver *Limitación conocida* más abajo). Para una cuenta
+   comprometida son, como máximo, 15 minutos.
 
 4. **Restablecer levanta el bloqueo del NAVEGADOR**, no solo el de la cuenta.
    Quien agotó sus cinco intentos y por eso vino aquí no debe toparse con
@@ -1104,6 +1105,30 @@ nadie recibe el enlace**: la HU está completa pero el correo se lee del disco.
 `FRONT_URL` tiene que apuntar al front real de cada ambiente (en dev de CSI es
 `http://172.10.30.15:3401`, no el 3400 del default), porque de ahí sale el
 enlace. Los `.eml` no se limpian solos.
+
+### Limitación conocida: el JWT de acceso sobrevive al cierre de sesión
+
+**Pendiente de decisión.** Cerrar una sesión —voluntaria (HU05 CA-1), forzada
+(HU05 CA-4), por restablecer la contraseña (HU10 CA-7) o por desactivar la cuenta—
+revoca los **refresh tokens**: nadie puede renovar. Pero el **JWT de acceso** ya
+emitido sigue valiendo hasta que venza (`AUTH_ACCESO_MIN`, 15 minutos). Medido el
+2026-10-12: 897 de 900 segundos, también para ESCRIBIR y para páginas de
+administrador. Ni este back (`verificar_acceso` solo comprueba firma, emisor y
+vencimiento; el `sid` se emite y nunca se consulta) ni el guard del front (que
+verifica con `jose` sin llamar aquí) preguntan si la sesión de ese `sid` sigue viva.
+
+Lo que lo agrava: con el JWT de un administrador al que se le forzó el cierre se
+puede crear un usuario, hacerlo administrador, y ese usuario tiene una sesión de
+7 días que sobrevive al cierre. Quien sí queda cortado es la cuenta
+**desactivada**, porque los guards del back releen `activo` en cada petición.
+
+Una sola corrección cierra HU03 CA-8, HU05 CA-1/2/4/6 y HU10 CA-7. Opciones: que
+los guards consulten el `sid` (en el back es una función chica; en el front rompe
+el principio de verificar el JWT sin llamar aquí, y cualquier caché deja una
+ventana), acortar la vida del JWT, o pedírselo al DBA en el SP de sesión. Se
+mide en `verificar_auth.py` (la `NOTA` de la sección 4b cambia sola de redacción
+cuando se resuelva). Ojo: consultar la sesión en cada petición contra el registro
+provisional es caro, porque cada consulta relee `usuarios.jsonl` completo.
 
 ## Organizaciones (Sprint 1 · HU02, desde el 2026-10-07)
 
@@ -1171,7 +1196,7 @@ administrador de la organización, solo sobre la suya):
 | Ruta | Qué hace |
 |---|---|
 | `POST /usuarios/{guid}/estado` | `{activo, motivo}`. Desactivar cierra TODAS sus sesiones y deja de poder entrar; reactivar le devuelve el acceso con su misma contraseña |
-| `POST /usuarios/{guid}/cerrar-sesion` | `{motivo}`. Invalida sus tokens sin desactivarlo: puede volver a entrar |
+| `POST /usuarios/{guid}/cerrar-sesion` | `{motivo}`. Revoca TODAS sus sesiones (no podrá renovar) sin desactivarlo: puede volver a entrar. Deja un evento `FORCED_LOGOUT` ANTES de cerrar (si no se puede escribir, no se cierra nada). Solo el administrador de una organización, sobre usuarios de la suya: el Super Admin recibe 403. Su JWT de acceso vigente sigue valiendo hasta que venza. |
 
 El **motivo es obligatorio** en los dos y queda en el registro con quién lo
 hizo: es lo que vuelve auditable que a alguien se le quitó el acceso. Nadie
