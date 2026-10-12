@@ -207,3 +207,38 @@ AUTH_REFRESH_DIAS = int(_numero("AUTH_REFRESH_DIAS", 7))
 # existan los SPs de NEX-319, vivirá en `uspRecordLoginResult` y esto sobra.
 AUTH_MAX_INTENTOS = int(_numero("AUTH_MAX_INTENTOS", 5))
 AUTH_BLOQUEO_MIN = int(_numero("AUTH_BLOQUEO_MIN", 15))
+
+# ── Correo (Sprint 1: activación y recuperación de contraseña) ───────────────
+# El canal real depende de Soporte TI (qué relay, qué remitente, si la red deja
+# salir el puerto). Para no quedarnos parados, el envío tiene modos:
+#
+#   archivo   (default) deja el correo en `<ALMACEN_RUTA>/correos/`; no toca la
+#             red. Es con lo que se desarrolla y lo que leen las pruebas.
+#   smtp      lo manda de verdad. Necesita al menos CORREO_SMTP_HOST y
+#             CORREO_REMITENTE.
+#   silencio  lo descarta.
+#
+# El día que TI conteste, esto es lo único que cambia.
+CORREO_MODO = (os.getenv("CORREO_MODO") or "archivo").strip().lower()
+CORREO_REMITENTE = (os.getenv("CORREO_REMITENTE") or "").strip()
+CORREO_SMTP_HOST = (os.getenv("CORREO_SMTP_HOST") or "").strip()
+CORREO_SMTP_PUERTO = int(_numero("CORREO_SMTP_PUERTO", 587))
+CORREO_SMTP_USUARIO = (os.getenv("CORREO_SMTP_USUARIO") or "").strip()
+CORREO_SMTP_CONTRASENA = os.getenv("CORREO_SMTP_CONTRASENA") or ""
+# STARTTLS sobre el puerto normal (587) o SSL directo (465). No los dos.
+CORREO_SMTP_TLS = (os.getenv("CORREO_SMTP_TLS") or "1").strip().lower() in {"1", "true", "si", "sí", "yes"}
+CORREO_SMTP_SSL = (os.getenv("CORREO_SMTP_SSL") or "").strip().lower() in {"1", "true", "si", "sí", "yes"}
+CORREO_TIMEOUT = int(_numero("CORREO_TIMEOUT", 20))
+
+# La URL pública del FRONT, para armar los enlaces que van en los correos. Sin
+# esto no se puede mandar un enlace que alguien pueda abrir.
+#   local: http://localhost:3400 · dev CSI: http://172.10.30.15:3401
+FRONT_URL = (os.getenv("FRONT_URL") or "http://localhost:3400").strip().rstrip("/")
+
+# Vigencia de los enlaces de un solo uso, en horas. Las dos salen del diseño:
+# 48 h para activar una cuenta nueva (HU06) y 1 h para recuperar la contraseña
+# (HU10), que es más corta a propósito porque abre la puerta de una cuenta que
+# ya existe.
+TOKEN_ACTIVACION_HORAS = int(_numero("TOKEN_ACTIVACION_HORAS", 48))
+TOKEN_RECUPERACION_HORAS = int(_numero("TOKEN_RECUPERACION_HORAS", 1))
+
