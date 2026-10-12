@@ -1,0 +1,91 @@
+"""Bitácora de auditoría — registro PROVISIONAL.
+
+Los criterios de aceptación de varias historias piden "registrar el evento X
+en el audit trail" (`PASSWORD_RESET_REQUESTED`, `PASSWORD_RESET_COMPLETED`, y
+los de HU01, HU06...). Esa tabla no existe todavía: está pedida en
+`docs/solicitudes-dba.md` (`audit_event`). Mientras tanto, los eventos caen
+aquí, en un registro de solo agregar como los demás, con la misma forma que
+tendrá el renglón de la tabla:
+
+    registrar         ↔ security.uspWriteAuditEvent(@action, @userGuid, @dataJson)
+    conteo_reciente   ↔ (consulta sobre esa misma tabla, por acción y ventana)
+
+No sustituye al audit trail: es lo que hay para no dejar el criterio sin nada
+y para tener los datos listos el día que la tabla exista.
+
+## Dos usos
+
+1. **Rastro**: quién pidió qué y cuándo. Nunca se guarda un token en claro ni
+   una contraseña: a lo más el `guid` del token, que no sirve para nada solo.
+2. **Freno al abuso**: `conteo_reciente` cuenta eventos en una ventana de
+   tiempo. Lo usa la recuperación de contraseña para limitar cuántos correos se
+   pueden provocar. Cuenta TODAS las solicitudes, existan o no las cuentas, y
+   eso es a propósito: si solo contara las de cuentas reales, el límite sería
+   un oráculo que delata cuáles existen.
+"""
+
+from datetime import datetime, timedelta, timezone
+
+from servicios import registro
+
+ARCHIVO = "auditoria.jsonl"
+
+PASSWORD_RESET_REQUESTED = "PASSWORD_RESET_REQUESTED"
+PASSWORD_RESET_COMPLETED = "PASSWORD_RESET_COMPLETED"
+
+ACCIONES = frozenset({PASSWORD_RESET_REQUESTED, PASSWORD_RESET_COMPLETED})
+
+
+def _ahora() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def registrar(accion: str, usuario_guid: str | None = None, **datos) -> None:
+    """Anota un evento. `datos` va tal cual al renglón: quien llama es
+    responsable de no meter secretos."""
+    if accion not in ACCIONES:
+        raise ValueError(f"Acción de auditoría desconocida: {accion}")
+    registro.agregar(
+        ARCHIVO,
+        {
+            "evento": "auditoria",
+            "accion": accion,
+            "usuarioGuid": usuario_guid,
+            "en": _ahora().isoformat(timespec="seconds"),
+            **datos,
+        },
+    )
+
+
+def cuando(evento: dict) -> datetime | None:
+    """La hora del evento, o `None` si no se puede leer."""
+    try:
+        return datetime.fromisoformat(evento.get("en", ""))
+    except (TypeError, ValueError):
+        return None
+
+
+def recientes(accion: str, segundos: int = 3600) -> list[tuple[datetime, dict]]:
+    """Los eventos de esa acción de los últimos `segundos`, con su hora.
+
+    Se lee el registro UNA vez: quien necesita varios conteos (la recuperación
+    de contraseña calcula cinco límites) los saca de esta lista en memoria en
+    vez de repasar el archivo cinco veces. La unidad es SEGUNDOS, la misma que
+    usan las variables de configuración: mezclar minutos y segundos fue justo
+    el error que el plan de esta pieza traía."""
+    desde = _ahora() - timedelta(seconds=segundos)
+    salida = []
+    for e in registro.eventos(ARCHIVO):
+        if e.get("accion") != accion:
+            continue
+        hora = cuando(e)
+        if hora is not None and hora >= desde:
+            salida.append((hora, e))
+    return salida
+
+
+def conteo_reciente(accion: str, campo: str | None = None, valor: str | None = None, segundos: int = 3600) -> int:
+    """Cuántos eventos de esa acción hubo en los últimos `segundos`. Con
+    `campo` y `valor` cuenta solo los que lo traen igual (por ejemplo
+    `campo="email"`); sin ellos, los de toda la plataforma."""
+    return sum(1 for _, e in recientes(accion, segundos) if campo is None or e.get(campo) == valor)

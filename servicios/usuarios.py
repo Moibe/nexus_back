@@ -501,7 +501,12 @@ def estado_origen(origen: str | None) -> tuple[int, str | None]:
     fallidos = 0
     hasta: datetime | None = None
     for e in registro.eventos(ARCHIVO):
-        if e.get("evento") != "intento" or e.get("origen") != origen:
+        if e.get("origen") != origen or e.get("evento") not in ("intento", "origen_reiniciado"):
+            continue
+        # Restablecer la contraseña desde este navegador levanta SU bloqueo
+        # (ver `reiniciar_intentos_de_origen`).
+        if e.get("evento") == "origen_reiniciado":
+            fallidos, hasta = 0, None
             continue
         if e.get("exitoso"):
             fallidos, hasta = 0, None
@@ -514,6 +519,27 @@ def estado_origen(origen: str | None) -> tuple[int, str | None]:
     if hasta and hasta <= _ahora():
         hasta = None
     return fallidos, hasta.isoformat() if hasta else None
+
+
+def reiniciar_intentos_de_origen(origen: str | None) -> None:
+    """Pone en cero el contador y el bloqueo de ESE navegador.
+
+    Lo llama el restablecimiento de contraseña (HU10). Sin esto, quien agotó
+    sus cinco intentos, pidió el enlace y puso su contraseña nueva se topaba
+    con "cuenta bloqueada" al intentar entrar: restablecer levantaba el bloqueo
+    de la CUENTA (el evento `contrasena` pone `fallidos` y `bloqueadoHasta` en
+    cero) pero no el del navegador, y el del navegador se revisa primero.
+
+    Solo levanta el del navegador que completó el restablecimiento. Quien abrió
+    el enlace en otro aparato sigue con el suyo hasta que venza: es lo
+    prudente, porque el enlace solo lo tiene quien controla el correo, y un
+    bloqueo ajeno no debería poder borrarse desde ahí."""
+    if not origen:
+        return
+    registro.agregar(
+        ARCHIVO,
+        {"evento": "origen_reiniciado", "origen": origen, "en": _ahora().isoformat(timespec="seconds")},
+    )
 
 
 # ── uspSetPassword ──────────────────────────────────────────────────────────

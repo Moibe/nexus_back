@@ -242,3 +242,25 @@ FRONT_URL = (os.getenv("FRONT_URL") or "http://localhost:3400").strip().rstrip("
 TOKEN_ACTIVACION_HORAS = int(_numero("TOKEN_ACTIVACION_HORAS", 48))
 TOKEN_RECUPERACION_HORAS = int(_numero("TOKEN_RECUPERACION_HORAS", 1))
 
+# Freno a "Olvidé mi contraseña" (HU10). Esa pantalla la abre cualquiera, sin
+# sesión, y cada solicitud puede mandar un correo: sin límite sería una forma de
+# llenarle el buzón a una persona o de gastar el relay de CSI. Los límites
+# cuentan TODAS las solicitudes, existan o no las cuentas (si no, delatarían
+# cuáles existen), y se aplican ANTES de mirar si la cuenta existe. Todo en
+# SEGUNDOS menos lo que dice "por hora".
+RECUPERACION_ESPERA_SEG = int(_numero("RECUPERACION_ESPERA_SEG", 60))          # entre dos solicitudes del MISMO correo
+RECUPERACION_MAX_POR_CORREO_HORA = int(_numero("RECUPERACION_MAX_POR_CORREO_HORA", 5))
+RECUPERACION_MAX_POR_ORIGEN_HORA = int(_numero("RECUPERACION_MAX_POR_ORIGEN_HORA", 5))   # por navegador (cookie)
+# Por IP y global NO dependen de nada que el cliente controle: la cookie del
+# navegador se puede no mandar, la IP del BFF y el total no. La IP va holgada
+# porque detrás del proxy de TI puede ser la de todos.
+RECUPERACION_MAX_POR_IP_HORA = int(_numero("RECUPERACION_MAX_POR_IP_HORA", 30))
+RECUPERACION_MAX_GLOBAL_HORA = int(_numero("RECUPERACION_MAX_GLOBAL_HORA", 200))
+
+# Contacto de soporte que se imprime al pie de los correos. Vacío = no se
+# imprime el bloque: el diseño trae un correo y un teléfono de ejemplo que NO
+# son nuestros, y mandar datos de contacto falsos en un correo real es peor
+# que no mandarlos.
+CORREO_SOPORTE = (os.getenv("CORREO_SOPORTE") or "").strip()
+CORREO_SOPORTE_TELEFONO = (os.getenv("CORREO_SOPORTE_TELEFONO") or "").strip()
+

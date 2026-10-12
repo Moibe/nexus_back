@@ -987,8 +987,8 @@ tail -2 /home/mbriseno/webhook-central/logs/deploys.jsonl
 
 ## Acceso: login con JWT (Sprint 1, desde el 2026-10-07)
 
-HU01 (bootstrap del primer administrador), HU03 (login) y HU04 (cambio de
-contraseña en el primer acceso). Código: `routers/auth.py`, `servicios/auth.py`
+HU01 (alta de administradores), HU03 (login), HU04 (cambio de contraseña en el
+primer acceso) y HU10 (recuperar la contraseña, más abajo). Código: `routers/auth.py`, `servicios/auth.py`
 (argon2id, reglas, JWT, refresh) y `servicios/usuarios.py` (registro
 PROVISIONAL `usuarios.jsonl`, espejo de los SPs pedidos en **NEX-319**; cuando
 lleguen, cambia solo ese módulo). Verificación: `verificar_auth.py`.
@@ -1028,6 +1028,81 @@ front, que pone las cookies httpOnly `nx_acceso` y `nx_refresh`):
 fallidos seguidos → 15 minutos de bloqueo, que se levanta solo; los intentos
 durante el bloqueo no lo alargan. La base nunca ve contraseñas ni tokens: se
 guardan el hash argon2id y el SHA-256 del refresh.
+
+### Recuperar la contraseña (HU10)
+
+Tres pasos, los tres SIN sesión, porque quien los usa no puede entrar:
+
+| Ruta | Qué hace |
+|---|---|
+| `POST /auth/recuperacion/solicitar` | "olvidé mi contraseña": manda el enlace al correo de la cuenta. Responde SIEMPRE lo mismo si el correo tiene forma de correo (`correo_invalido` 400 si no; `demasiados_intentos` 429 si rebasa un límite). |
+| `POST /auth/recuperacion/revisar` | ¿el enlace todavía sirve? Lo pregunta la pantalla antes de pintar el formulario. Sin gastarlo. 410 `enlace_invalido` / `enlace_usado` / `enlace_vencido` (el mismo mensaje para los tres). No devuelve de quién es. |
+| `POST /auth/recuperacion/confirmar` | contraseña nueva + confirmación + token. Valida la contraseña ANTES de gastar el enlace (un typo no lo quema), lo gasta, cambia la contraseña y **cierra todas las sesiones**. |
+
+Código: `routers/auth.py` (los tres endpoints), `servicios/tokens.py` (enlaces de
+un solo uso), `servicios/correo.py` (envío), `servicios/plantillas_correo.py`
+(los textos), `servicios/auditoria.py` (bitácora y límites). Verificación:
+`verificar_recuperacion.py` (una sección por criterio de aceptación).
+
+**Decisiones, escritas como decisiones y no como omisiones** (conviene que Cesar
+las conozca; NEX-241):
+
+1. **CA-2 gana sobre CA-3 y sobre el Figma.** CA-2 dice que nunca se revele si
+   una cuenta existe; CA-3 pide ofrecer a quien escribe un correo elegir entre
+   el principal y el de recuperación, ambos enmascarados. No caben juntos: una
+   pantalla de elección ES la prueba de que la cuenta existe. El enlace va al
+   correo **principal** y la respuesta es siempre la misma. Por la misma razón
+   no se dibuja el estado "El correo electrónico no existe" del Figma ni se dice
+   "te enviamos un enlace a X" (ambos afirman o niegan que la cuenta existe).
+   El teléfono de recuperación no se usa: no hay canal SMS.
+
+   *Ojo:* el login (HU03) sí distingue "el correo no existe" de "contraseña
+   incorrecta", porque así lo dibujó UX. Mientras eso siga, este endurecimiento
+   no cierra del todo la enumeración. Es una decisión de producto para las dos
+   pantallas juntas.
+
+2. **CA-9 se resuelve en el servidor.** Una cuenta que nunca ha entrado no recibe
+   enlace de recuperación, pero la pantalla le responde lo mismo que a todos; lo
+   que cambia es el correo, que le dice que termine su primer acceso. Además es
+   lo único correcto: restablecer apagaría en silencio `debeCambiar`.
+
+3. **CA-7 cierra las sesiones, no los JWT ya emitidos.** Restablecer revoca todos
+   los refresh tokens, así que nadie puede renovar. Pero el JWT de acceso que
+   alguien ya tenga sigue valiendo hasta que venza (15 minutos): ni el front ni
+   el back consultan si la sesión fue revocada. Es la misma limitación que
+   CA-8 de HU03. Para una cuenta comprometida son, como máximo, 15 minutos.
+
+4. **Restablecer levanta el bloqueo del NAVEGADOR**, no solo el de la cuenta.
+   Quien agotó sus cinco intentos y por eso vino aquí no debe toparse con
+   "cuenta bloqueada" al entrar con la contraseña nueva. Solo el del navegador
+   que completó el restablecimiento.
+
+5. **El correo se manda después de responder** (`BackgroundTasks`), para que el
+   tiempo de envío no delate si la cuenta existe, y un fallo de envío no cambia
+   lo que ve la persona. Queda una diferencia de milisegundos (con cuenta se
+   crea un token y se escribe un renglón más) que no se pretende eliminar.
+
+**Límites contra abuso** (`RECUPERACION_*` en `config.py`, en segundos salvo lo que
+dice "por hora"). Esa pantalla la abre cualquiera y cada solicitud puede mandar un
+correo: sin límite sería una forma de llenarle el buzón a alguien o de gastar el
+relay de CSI. Cuentan TODAS las solicitudes, existan o no las cuentas (si no,
+delatarían cuáles existen) y se aplican antes de mirar si la cuenta existe: 60 s
+entre dos del mismo correo, 5 por hora por correo, 5 por hora por navegador, 30
+por hora por IP y 200 por hora en total. Los de IP y total no dependen de nada que
+el cliente controle (la cookie del navegador se puede no mandar).
+
+**Auditoría.** `PASSWORD_RESET_REQUESTED` (una por solicitud válida, exista o no
+la cuenta) y `PASSWORD_RESET_COMPLETED` caen hoy en `auditoria.jsonl`: es un
+registro PROVISIONAL, como los demás, pendiente de la tabla de auditoría de
+`docs/solicitudes-dba.md`. Nunca llevan el token ni la contraseña.
+
+**El correo.** `CORREO_MODO=archivo` (el default) deja cada correo como `.eml` en
+`<ALMACEN_RUTA>/correos/` y no toca la red; con `smtp` sale de verdad (necesita
+`CORREO_SMTP_HOST` y `CORREO_REMITENTE`). **Mientras en dev siga en `archivo`,
+nadie recibe el enlace**: la HU está completa pero el correo se lee del disco.
+`FRONT_URL` tiene que apuntar al front real de cada ambiente (en dev de CSI es
+`http://172.10.30.15:3401`, no el 3400 del default), porque de ahí sale el
+enlace. Los `.eml` no se limpian solos.
 
 ## Organizaciones (Sprint 1 · HU02, desde el 2026-10-07)
 
