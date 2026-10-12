@@ -58,11 +58,13 @@ def _exigir_admin_plataforma(authorization: str | None) -> dict:
     if not claims:
         raise _error(status.HTTP_401_UNAUTHORIZED, "sesion_invalida", "El token de acceso no es válido o venció.")
     try:
-        u = usuarios.por_guid(claims["sub"])
+        u, viva = usuarios.por_guid_y_sesion(claims["sub"], claims["sid"])
     except usuarios.NoEncontrado as exc:
         raise _error(status.HTTP_401_UNAUTHORIZED, "sesion_invalida", "El usuario ya no existe.") from exc
     if not u["activo"]:
         raise _error(status.HTTP_403_FORBIDDEN, "desactivada", "La cuenta está desactivada.")
+    if not viva:
+        raise _error(status.HTTP_401_UNAUTHORIZED, "sesion_cerrada", "La sesión ya no es válida. Inicia sesión de nuevo.")
     if not u["esAdminPlataforma"]:
         raise _error(status.HTTP_403_FORBIDDEN, "sin_permiso", "Solo un administrador de plataforma puede hacer esto.")
     return u

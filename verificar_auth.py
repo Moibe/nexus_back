@@ -218,13 +218,43 @@ try:
         # Con el refresh VIGENTE del tercero: el que traía de origen ya se rotó arriba al renovar.
         c.post("/auth/logout", json={"refreshToken": r3.json()["refreshToken"]}, headers=srv()).status_code == 204
         and len(eventos_de_auditoria("LOGOUT")) == antes + 2 and eventos_de_auditoria("LOGOUT")[-1]["ip"] is None)
-    # Lo que NO se cumple del CA-1/CA-2 de HU05 y está pendiente de decisión
-    # (la misma limitación de HU03 CA-8 y HU10 CA-7): se MIDE y se deja dicho.
-    r = c.get("/auth/yo", headers={**srv(), "Authorization": f"Bearer {d1['accessToken']}"})
+
+    titulo("4c · HU05 CA-2: el JWT de una sesión cerrada se RECHAZA, no solo su refresh")
+    def con(token: str) -> dict:
+        return {**srv(), "Authorization": f"Bearer {token}"}
+
+    r = c.get("/auth/yo", headers=con(d1["accessToken"]))
+    rev("el JWT de la sesión cerrada: 401 sesion_cerrada (todavía no vence, pero su sesión sí murió)",
+        r.status_code == 401 and r.json()["detail"]["codigo"] == "sesion_cerrada", r.text[:160])
+    r = c.post("/auth/perfil", json={"nombre": "Intruso"}, headers=con(d1["accessToken"]))
+    rev("y con él ya no se puede ESCRIBIR (antes un POST /auth/perfil pasaba)", r.status_code == 401, r.text[:160])
+    rev("CA-3: el JWT del otro dispositivo, ya renovado, SIGUE funcionando",
+        c.get("/auth/yo", headers=con(r2.json()["accessToken"])).status_code == 200)
+    # Regla elegida: una sesión rotada también está muerta. Al renovar se emite una
+    # sesión nueva con su propio JWT, y el front solo renueva cuando el anterior ya
+    # venció. Si algún día el front renovara por anticipado, esta comprobación
+    # fallaría y obligaría a decidirlo a propósito en vez de romper peticiones a medias.
+    rev("el JWT ANTERIOR a la renovación de un dispositivo (su sesión quedó ROTATED) ya no vale",
+        c.get("/auth/yo", headers=con(d2["accessToken"])).status_code == 401)
+
+    titulo("4d · Un JWT con la firma buena pero una sesión que no es suya o no existe, se rechaza")
+    inventada, _ = auth.emitir_acceso(usuarios.por_guid(u["guid"]), "sesion-que-no-existe")
+    r = c.get("/auth/yo", headers=con(inventada))
+    rev("sesión que no existe en el registro: 401 sesion_cerrada (ante la duda, se rechaza)",
+        r.status_code == 401 and r.json()["detail"]["codigo"] == "sesion_cerrada", r.text[:160])
+    otra = usuarios.bootstrap_admin("otra@ejemplo.com", "Otra", "Persona", auth.hash_de("Cualquiera-Larga-123!"))
+    usuarios.fijar_contrasena(otra["guid"], auth.hash_de("Otra-Contrasena-123!"), "FIRST_LOGIN")
+    sesion_de_otra = login(c, "otra@ejemplo.com", "Otra-Contrasena-123!").json()
+    sid_de_otra = auth.verificar_acceso(sesion_de_otra["accessToken"])["sid"]
+    prestada, _ = auth.emitir_acceso(usuarios.por_guid(u["guid"]), sid_de_otra)
+    rev("el sid de la sesión de OTRA persona, aunque esté viva: 401",
+        c.get("/auth/yo", headers=con(prestada)).status_code == 401)
+    rev("y la sesión de esa otra persona sigue funcionando (no se tocó)",
+        c.get("/auth/yo", headers=con(sesion_de_otra["accessToken"])).status_code == 200)
     nota(
-        "LIMITACIÓN CONOCIDA, pendiente de decisión (HU03 CA-8, HU05 CA-1/2/4/6, HU10 CA-7): el JWT de acceso de la "
-        + ("sesión YA CERRADA todavía se acepta hasta que venza (el refresh sí murió)." if r.status_code == 200
-           else "sesión cerrada YA se rechaza: está resuelta, convierte esta nota en una comprobación.")
+        "PENDIENTE, 2ª etapa: lo que valida el back ya rechaza el JWT de una sesión cerrada, pero las rutas que decide "
+        "SOLO el front (bandeja, llaves, webhooks, archivos, procesadores) lo verifican con jose sin llamar aquí y lo "
+        "aceptan hasta que venza. Se cierra con la consulta de sesión que se le pida al DBA. Ver README, 'Limitación conocida'."
     )
 
     titulo("5 · Cuenta desactivada")

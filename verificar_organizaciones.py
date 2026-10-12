@@ -142,6 +142,21 @@ try:
         r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_permiso", r.text[:200])
     rev("ni crearlas", c.post("/organizaciones/", json={**cuerpo, "nombre": "Nova", "adminEmail": "n@ejemplo.com"}, headers=suyo).status_code == 403)
 
+    titulo("6b · Un super admin que cierra sesión: su JWT ya no sirve para administrar (HU05)")
+    # Con una SEGUNDA sesión, para no tocar la que usa la sección 7.
+    segunda = c.post("/auth/login", json={"email": "super@ejemplo.com", "password": temporal_admin}, headers=srv()).json()
+    bearer_segunda = {**srv(), "Authorization": f"Bearer {segunda['accessToken']}"}
+    rev("(antes) con la segunda sesión entra", c.get("/organizaciones/", headers=bearer_segunda).status_code == 200)
+    rev("cierra esa sesión: 204",
+        c.post("/auth/logout", json={"refreshToken": segunda["refreshToken"]}, headers=srv()).status_code == 204)
+    r = c.get("/organizaciones/", headers=bearer_segunda)
+    rev("su JWT, que todavía no vence: 401 sesion_cerrada",
+        r.status_code == 401 and r.json()["detail"]["codigo"] == "sesion_cerrada", r.text[:160])
+    rev("y con él no puede crear organizaciones",
+        c.post("/organizaciones/", json={**cuerpo, "nombre": "Colada", "adminEmail": "colada@ejemplo.com"}, headers=bearer_segunda).status_code == 401)
+    rev("pero la OTRA sesión del super admin, que no se cerró, sigue funcionando",
+        c.get("/organizaciones/", headers=bearer).status_code == 200)
+
     titulo("7 · Un super admin desactivado deja de poder")
     usuarios.cambiar_estado(usuarios.para_login("super@ejemplo.com")["guid"], False)
     rev("403 desactivada", c.get("/organizaciones/", headers=bearer).status_code == 403)

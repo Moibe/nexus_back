@@ -63,11 +63,16 @@ def _admin_de_organizacion(authorization: str | None) -> tuple[dict, str]:
     if not claims:
         raise _error(status.HTTP_401_UNAUTHORIZED, "sesion_invalida", "El token de acceso no es válido o venció.")
     try:
-        u = usuarios.por_guid(claims["sub"])
+        u, viva = usuarios.por_guid_y_sesion(claims["sub"], claims["sid"])
     except usuarios.NoEncontrado as exc:
         raise _error(status.HTTP_401_UNAUTHORIZED, "sesion_invalida", "El usuario ya no existe.") from exc
     if not u["activo"]:
         raise _error(status.HTTP_403_FORBIDDEN, "desactivada", "La cuenta está desactivada.")
+    if not viva:
+        # Un JWT cuya sesión ya se cerró no administra a nadie. Es lo que evita que
+        # un administrador al que se le forzó el cierre siga creando usuarios y
+        # ascendiéndolos durante los minutos que le quedan al token (HU05 CA-4).
+        raise _error(status.HTTP_401_UNAUTHORIZED, "sesion_cerrada", "La sesión ya no es válida. Inicia sesión de nuevo.")
     propia = next((m for m in u["membresias"] if m["rol"] == roles.ADMIN), None)
     if propia is None:
         raise _error(
@@ -247,10 +252,10 @@ def cambiar_estado(guid: str, datos: CambioEstado, authorization: str | None = H
     summary="Cerrar la sesión de un usuario (HU05)",
     description=(
         "Revoca TODAS sus sesiones (refresh tokens): no podrá renovarlas y tendrá que entrar de nuevo. NO lo "
-        "desactiva — su contraseña sigue sirviendo. **Su JWT de acceso ya emitido sigue valiendo hasta que "
-        "venza** (15 minutos por defecto): ni este back ni el guard del front consultan si la sesión de su `sid` "
-        "sigue viva. El motivo es obligatorio y queda registrado como `FORCED_LOGOUT`. Hoy solo lo puede ejecutar "
-        "el administrador de una organización, sobre usuarios de la suya."
+        "desactiva — su contraseña sigue sirviendo. Su JWT deja de valer en este back al instante (401 "
+        "`sesion_cerrada`); lo que decide solo el front (bandeja, llaves, webhooks) lo acepta hasta que venza "
+        "(15 minutos por defecto, 2ª etapa pendiente). El motivo es obligatorio y queda registrado como "
+        "`FORCED_LOGOUT`. Hoy solo lo puede ejecutar el administrador de una organización, sobre usuarios de la suya."
     ),
 )
 def cerrar_sesion(guid: str, datos: CierreSesion, authorization: str | None = Header(default=None)) -> dict:

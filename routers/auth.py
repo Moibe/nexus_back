@@ -327,9 +327,10 @@ def refresh(datos: Refresh, response: Response) -> dict:
     description=(
         "Revoca la sesión de ESE refresh token y solo esa: las de otros dispositivos siguen. Responde 204 aunque "
         "el token no exista o ya estuviera revocado (503 solo si el almacén no responde) y deja un evento `LOGOUT` "
-        "en la bitácora de auditoría. **No invalida el JWT de acceso ya emitido**: vale hasta que venza "
-        "(`AUTH_ACCESO_MIN`, 15 minutos), porque ni este back ni el guard del front consultan si la sesión de su "
-        "`sid` sigue viva. Es una limitación conocida, pendiente de decisión."
+        "en la bitácora de auditoría. El JWT de esa sesión deja de valer EN ESTE BACK al instante (401 "
+        "`sesion_cerrada`): los guards que validan un Bearer comprueban que la sesión de su `sid` siga viva. "
+        "Lo que sigue pendiente (2ª etapa) son las rutas que decide solo el front, que verifica el JWT con `jose` "
+        "sin llamar aquí y lo aceptan hasta que venza (`AUTH_ACCESO_MIN`, 15 minutos)."
     ),
 )
 def logout(datos: Logout) -> Response:
@@ -376,11 +377,15 @@ def _usuario_del_bearer(authorization: str | None) -> tuple[dict, dict]:
     if not claims:
         raise _error(status.HTTP_401_UNAUTHORIZED, "sesion_invalida", "El token de acceso no es válido o venció.")
     try:
-        u = usuarios.por_guid(claims["sub"])
+        u, viva = usuarios.por_guid_y_sesion(claims["sub"], claims["sid"])
     except usuarios.NoEncontrado as exc:
         raise _error(status.HTTP_401_UNAUTHORIZED, "sesion_invalida", "El usuario ya no existe.") from exc
     if not u["activo"]:
         raise _error(status.HTTP_403_FORBIDDEN, "desactivada", "La cuenta con la que intentas ingresar ha sido desactivada.")
+    if not viva:
+        # El JWT es válido (firma y vigencia) pero su SESIÓN se cerró: voluntaria,
+        # forzada, por restablecer la contraseña... (HU05 CA-2 y CA-6).
+        raise _error(status.HTTP_401_UNAUTHORIZED, "sesion_cerrada", "La sesión ya no es válida. Inicia sesión de nuevo.")
     return claims, u
 
 
@@ -485,11 +490,12 @@ def cambiar_contrasena(datos: CambioContrasena, authorization: str | None = Head
 #    su primer acceso. Además es lo único correcto: restablecer una contraseña
 #    apagaría en silencio `debeCambiar`.
 #
-# 3. **CA-7 cierra las sesiones, no los JWT ya emitidos.** `fijar_contrasena`
-#    con motivo RESET revoca todos los refresh tokens: nadie puede renovar. Pero
-#    el JWT de acceso que alguien ya tenga sigue valiendo hasta que venza (15
-#    minutos): ni el front ni este router consultan si la sesión fue revocada.
-#    Es la misma limitación que CA-8 de HU03 y conviene decirla tal cual.
+# 3. **CA-7 cierra las sesiones, y desde HU05 también el JWT en este back.**
+#    `fijar_contrasena` con motivo RESET revoca todas las sesiones: nadie puede
+#    renovar y los guards que validan un Bearer rechazan ya el JWT de esas
+#    sesiones (`sesion_cerrada`). Queda pendiente (2ª etapa) lo que decide solo
+#    el front (bandeja, llaves, webhooks...), que lo acepta hasta que venza: ver
+#    README, "Limitación conocida".
 #
 # 4. **El correo se manda DESPUÉS de responder** (`BackgroundTasks`), para que
 #    el tiempo de envío no delate si la cuenta existe. Queda una diferencia

@@ -433,6 +433,36 @@ def por_guid(guid: str) -> dict:
     return _publico(u)
 
 
+def por_guid_y_sesion(guid: str, sesion_guid: str) -> tuple[dict, bool]:
+    """`(usuario, sesion_viva)`: lo mismo que `por_guid` y, EN LA MISMA lectura
+    del registro, si la sesión del JWT (su `sid`) sigue viva.
+
+    Es lo que usan los guards que validan un Bearer. Antes solo comprobaban
+    firma y vencimiento, así que un JWT ya emitido seguía valiendo hasta
+    vencer (15 minutos) aunque su sesión se hubiera cerrado: voluntariamente,
+    por un administrador, al restablecer la contraseña o al desactivar la
+    cuenta. Revocar los refresh tokens evitaba que se RENOVARA, pero no que el
+    JWT en curso hiciera cosas —incluso crear usuarios y ascenderlos a
+    administrador—.
+
+    Una sesión está viva si existe, es de ESE usuario y no está revocada, sea
+    cual sea el motivo. Eso incluye `ROTATED`: al renovar se emite una sesión
+    nueva con su propio JWT, y el anterior ya venció (el front solo renueva
+    cuando el JWT venció). Una sesión que no existe en el registro (un JWT de un
+    almacén que se vació, o inventado con la firma correcta) tampoco está viva:
+    ante la duda, se rechaza.
+
+    No levanta nada por una sesión muerta: quien llama decide el código. Sí
+    levanta `NoEncontrado` si el usuario no existe."""
+    usuarios, _, sesiones = _indice()
+    u = usuarios.get(guid)
+    if not u:
+        raise NoEncontrado(guid)
+    s = sesiones.get(sesion_guid)
+    viva = s is not None and s["guid"] == guid and not s["revocadaEn"]
+    return _publico(u), viva
+
+
 # ── uspRecordLoginResult ────────────────────────────────────────────────────
 
 
@@ -619,13 +649,13 @@ def revocar_sesiones(guid: str, sesion_guid: str | None, motivo: str) -> int:
 
 def cambiar_estado(guid: str, activo: bool, motivo: str | None = None, por: str | None = None) -> dict:
     """Activa o desactiva una cuenta (HU08, HU09). Al desactivar se cierran
-    TODAS sus sesiones, o sea que no puede RENOVAR. Lo que corta el JWT de
-    acceso que ya tiene es otra cosa: los guards del back releen `activo` en
-    cada petición y lo rechazan (y por eso el front, que solo verifica la firma,
-    sí lo deja pasar a lo que no llama al back, hasta que el JWT venza). Cerrar
-    sesiones por sí solo NO invalida un JWT ya emitido: ver HU05. El `motivo`
-    es obligatorio en la pantalla y queda en el registro, que es lo que lo
-    vuelve auditable."""
+    TODAS sus sesiones, o sea que no puede RENOVAR, y los guards del back
+    rechazan su JWT al instante por dos vías: `activo` (403) y, desde HU05, la
+    sesión revocada (401 `sesion_cerrada`). Lo que decide solo el front
+    (bandeja, llaves, webhooks), que solo verifica la firma, lo deja pasar hasta
+    que el JWT venza: ver README, "Limitación conocida". El `motivo` es
+    obligatorio en la pantalla y queda en el registro, que es lo que lo vuelve
+    auditable."""
     with registro.candado:
         usuarios, _, _ = _indice()
         if guid not in usuarios:
@@ -647,9 +677,10 @@ def cerrar_sesiones(guid: str, motivo: str, por: str | None = None) -> int:
     """Cierra todas las sesiones de un usuario SIN desactivarlo (HU05): puede
     volver a entrar con su contraseña. Devuelve cuántas se cerraron.
 
-    Revoca los refresh tokens: no podrá RENOVAR. Su JWT de acceso vigente sigue
-    valiendo hasta que venza (15 minutos por defecto), porque nadie consulta si
-    la sesión de su `sid` sigue viva. Limitación conocida, pendiente de decisión.
+    Revoca las sesiones: no podrá RENOVAR, y su JWT deja de valer en los guards
+    del back al instante (401 `sesion_cerrada`, ver `por_guid_y_sesion`). Lo que
+    decide solo el front (bandeja, llaves, webhooks) lo acepta hasta que el JWT
+    venza (15 minutos por defecto): 2ª etapa, pendiente.
 
     El rastro (`cierre_forzado`) se escribe ANTES de revocar, a propósito: si no
     se puede escribir, no se cierra nada."""

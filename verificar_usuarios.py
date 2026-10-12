@@ -220,6 +220,31 @@ try:
     forzados = [x for x in ruta_auditoria.read_text(encoding="utf-8").splitlines() if '"FORCED_LOGOUT"' in x]
     rev("ninguno de los tres intentos rechazados dejó evento", len(forzados) == 1, str(len(forzados)))
 
+    titulo("8c · Al administrador al que se le fuerza el cierre, su JWT ya no le sirve para administrar (HU05 CA-4)")
+    # El escenario que la revisión de HU05 midió como el más grave: con el JWT de un
+    # administrador cerrado a la fuerza se podía crear un usuario, ascenderlo a
+    # administrador y que tuviera una sesión de 7 días que sobrevivía al cierre.
+    r = c.post(f"/usuarios/{guid}", json={"nombre": "Camila", "apellidos": "CG", "rol": "ADMIN"}, headers=bearer_sm)
+    rev("(montaje) el administrador asciende a Camila a ADMIN, para que pueda forzarle el cierre a él",
+        r.status_code == 200, r.text[:140])
+    camila_admin = entrar(c, "camila.cg@ejemplo.com", nueva_contrasena)
+    bearer_camila_admin = {**srv(), "Authorization": f"Bearer {camila_admin['accessToken']}"}
+    rev("(antes) el JWT del administrador original funciona", c.get("/usuarios/", headers=bearer_sm).status_code == 200)
+    r = c.post(f"/usuarios/{yo_guid}/cerrar-sesion", json={"motivo": "Cuenta comprometida."}, headers=bearer_camila_admin)
+    rev("Camila le fuerza el cierre al administrador original: 200", r.status_code == 200 and r.json()["cerradas"] >= 1, r.text[:140])
+    # Con el JWT que el administrador original TODAVÍA TIENE en la mano (no ha vencido):
+    r = c.get("/usuarios/", headers=bearer_sm)
+    rev("listar usuarios: 401 sesion_cerrada", r.status_code == 401 and r.json()["detail"]["codigo"] == "sesion_cerrada", r.text[:140])
+    r = c.post("/usuarios/", json={"nombre": "Puerta", "apellidos": "Trasera", "email": "puerta.trasera@ejemplo.com", "rol": "ANALISTA"}, headers=bearer_sm)
+    rev("crear un usuario: 401 (antes de HU05 pasaba)", r.status_code == 401, r.text[:140])
+    r = c.post(f"/usuarios/{guid}", json={"nombre": "Camila", "apellidos": "CG", "rol": "SUPERVISOR"}, headers=bearer_sm)
+    rev("cambiarle el rol a alguien: 401", r.status_code == 401, r.text[:140])
+    rev("y no se coló ningún usuario a escondidas", usuarios.para_login("puerta.trasera@ejemplo.com") is None)
+    # No lo desactivaron: puede volver a entrar y administrar.
+    de_nuevo = entrar(c, "admin.sm@ejemplo.com", orgs["Seguros Monterrey"]["contrasenaTemporal"])
+    rev("pero puede volver a entrar con su contraseña, y con la sesión nueva sí administra",
+        c.get("/usuarios/", headers={**srv(), "Authorization": f"Bearer {de_nuevo['accessToken']}"}).status_code == 200)
+
 finally:
     c.close()
     shutil.rmtree(RAIZ, ignore_errors=True)
