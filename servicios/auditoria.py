@@ -2,8 +2,10 @@
 
 Los criterios de aceptación de varias historias piden "registrar el evento X
 en el audit trail" (`PASSWORD_RESET_REQUESTED`, `PASSWORD_RESET_COMPLETED`, y
-los de HU01, HU06...). Esa tabla no existe todavía: está pedida en
-`docs/solicitudes-dba.md` (`audit_event`). Mientras tanto, los eventos caen
+los de HU01, HU06...). Esa tabla no existe todavía: está en el
+diccionario de datos (`audit_event`, sección 6.1, de solo agregar), pero ni
+existe en la base (verificado el 2026-10-12 contra el catálogo de IA_Nexus) ni
+se le ha pedido a Charlie. Mientras tanto, los eventos caen
 aquí, en un registro de solo agregar como los demás, con la misma forma que
 tendrá el renglón de la tabla:
 

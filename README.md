@@ -1093,8 +1093,9 @@ el cliente controle (la cookie del navegador se puede no mandar).
 
 **Auditoría.** `PASSWORD_RESET_REQUESTED` (una por solicitud válida, exista o no
 la cuenta) y `PASSWORD_RESET_COMPLETED` caen hoy en `auditoria.jsonl`: es un
-registro PROVISIONAL, como los demás, pendiente de la tabla de auditoría de
-`docs/solicitudes-dba.md`. Nunca llevan el token ni la contraseña.
+registro PROVISIONAL, como los demás. La tabla `audit_event` está en el
+diccionario de datos pero todavía no existe en la base ni se le ha pedido al
+DBA. Nunca llevan el token ni la contraseña.
 
 **El correo.** `CORREO_MODO=archivo` (el default) deja cada correo como `.eml` en
 `<ALMACEN_RUTA>/correos/` y no toca la red; con `smtp` sale de verdad (necesita
