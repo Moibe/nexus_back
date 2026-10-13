@@ -1149,7 +1149,10 @@ Broker y se comparten), la **vigencia del token**, los **límites de envío**, l
 
 `python verificar_correo.py` prueba todo esto contra un servidor FALSO en localhost y
 no toca el servicio real. La única prueba real que cabe es UN correo al propio
-buzón de quien la corra, a mano y nunca en bucle.
+buzón de quien la corra, a mano y nunca en bucle: `python probar_correo.py
+tu.correo@grupocsi.com` (en el servidor, o donde estén puestas las variables). Dice
+si salió y por dónde, o por qué no, sin imprimir nunca el usuario, la contraseña ni
+el token.
 
 ### El JWT de acceso y la sesión cerrada (HU05)
 
