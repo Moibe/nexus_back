@@ -119,6 +119,12 @@ def esta_configurado() -> bool:
     return bool(config.CORREO_SMTP_HOST and config.CORREO_REMITENTE)
 
 
+def canal_real() -> bool:
+    """¿El correo sale de verdad a una bandeja ajena? Solo en `smtp` y `api`. En `archivo` y `silencio` no:
+    quien llama no debe decirle a una persona "te lo mandamos" cuando el correo se quedó en un archivo."""
+    return modo() in (MODO_SMTP, MODO_API)
+
+
 def _remitente() -> str:
     return config.CORREO_REMITENTE or "nexusdoc@localhost"
 
@@ -160,15 +166,16 @@ def _enviar_a_archivo(mensaje: EmailMessage, destino: str, asunto: str) -> str:
     return str(ruta)
 
 
-def _enviar_por_smtp(mensaje: EmailMessage) -> str:
+def _enviar_por_smtp(mensaje: EmailMessage, timeout: float | None = None) -> str:
     host, puerto = config.CORREO_SMTP_HOST, config.CORREO_SMTP_PUERTO
+    espera = timeout or config.CORREO_TIMEOUT
     if not host:
         raise ErrorCorreo("Falta CORREO_SMTP_HOST.")
     try:
         if config.CORREO_SMTP_SSL:
-            cliente = smtplib.SMTP_SSL(host, puerto, timeout=config.CORREO_TIMEOUT)
+            cliente = smtplib.SMTP_SSL(host, puerto, timeout=espera)
         else:
-            cliente = smtplib.SMTP(host, puerto, timeout=config.CORREO_TIMEOUT)
+            cliente = smtplib.SMTP(host, puerto, timeout=espera)
         with cliente:
             if config.CORREO_SMTP_TLS and not config.CORREO_SMTP_SSL:
                 cliente.starttls()
@@ -261,7 +268,7 @@ def _texto_como_html(texto: str) -> str:
     return "<p>" + _escapar_html(texto).replace(chr(10), "<br>") + "</p>"
 
 
-def _enviar_por_api(destino: str, asunto: str, texto: str, html: str | None) -> str:
+def _enviar_por_api(destino: str, asunto: str, texto: str, html: str | None, timeout: float | None = None) -> str:
     if any(c in destino for c in NO_PERMITIDO_EN_DESTINATARIO) or any(c.isspace() for c in destino):
         raise ErrorCorreo(f"Destinatario inválido para la API de correo: {destino!r}")
     base = _base_de_la_api()
@@ -274,7 +281,7 @@ def _enviar_por_api(destino: str, asunto: str, texto: str, html: str | None) -> 
         "mailBody": html or _texto_como_html(texto),
     }
     try:
-        with httpx.Client(timeout=config.CORREO_TIMEOUT, follow_redirects=False) as cliente:
+        with httpx.Client(timeout=timeout or config.CORREO_TIMEOUT, follow_redirects=False) as cliente:
             for intento in (1, 2):
                 token = _obtener_token(cliente, base, forzar=intento == 2)
                 respuesta = cliente.post(base + RUTA_ENVIO, json=carga, headers={"Authorization": f"Bearer {token}"})
@@ -293,9 +300,10 @@ def _enviar_por_api(destino: str, asunto: str, texto: str, html: str | None) -> 
     return f"api://{host}"
 
 
-def enviar(destino: str, asunto: str, texto: str, html: str | None = None) -> str:
+def enviar(destino: str, asunto: str, texto: str, html: str | None = None, timeout: float | None = None) -> str:
     """Manda el correo y devuelve a dónde fue a parar (ruta del archivo o el
-    servidor usado), que es lo que las pruebas revisan.
+    servidor usado), que es lo que las pruebas revisan. `timeout` (segundos) acorta la espera de ESTA
+    llamada respecto de `CORREO_TIMEOUT`: lo usa quien tiene a una persona esperando en pantalla.
 
     Levanta `ErrorCorreo` si no se pudo. Quien llama decide qué hacer: en la
     recuperación de contraseña, por ejemplo, el mensaje al usuario es el mismo
@@ -308,10 +316,10 @@ def enviar(destino: str, asunto: str, texto: str, html: str | None = None) -> st
         return "silencio"
     if actual == MODO_API:
         # La API toma UN cuerpo HTML: se manda el HTML (o el texto, escapado, si no hay).
-        donde = _enviar_por_api(destino, asunto, texto, html)
+        donde = _enviar_por_api(destino, asunto, texto, html, timeout)
     else:
         mensaje = _armar(destino, asunto, texto, html)
-        donde = _enviar_por_smtp(mensaje) if actual == MODO_SMTP else _enviar_a_archivo(mensaje, destino, asunto)
+        donde = _enviar_por_smtp(mensaje, timeout) if actual == MODO_SMTP else _enviar_a_archivo(mensaje, destino, asunto)
     # Nunca el cuerpo: ahí van el token y la contraseña temporal.
     logger.info("Correo enviado a %s · %s · %s", destino, asunto, donde)
     return donde

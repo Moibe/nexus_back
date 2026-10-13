@@ -10,9 +10,11 @@ de cada una y puede CERRARLES LA SESIÓN (HU05 CA-4): la misma acción que tiene
 administrador de la organización, pero sobre cualquiera de ellas.
 
 Al crear una organización se crea TAMBIÉN a su administrador, como pide el
-diseño (el modal captura sus datos). Sin correo en este sprint, la contraseña
-temporal se devuelve UNA vez y la pantalla se la muestra al super admin para
-que la entregue por donde pueda. Por eso la respuesta va con `no-store`.
+diseño (el modal captura sus datos), y se le manda por correo la bienvenida con
+sus accesos temporales (`servicios/invitaciones.py`). Si el correo salió, la
+contraseña NO se devuelve; si no salió (este ambiente no manda correo, o el
+servicio falló), se devuelve UNA vez y la pantalla se la muestra al super admin
+para que la entregue por donde pueda. Por eso la respuesta va con `no-store`.
 
 Lo que vive en `servicios/tenants_registro.py` (y mañana en los SPs): el nombre
 puede repetirse y el **slug** no. Ahí está el aviso de coincidencias del
@@ -24,7 +26,7 @@ import logging
 from fastapi import APIRouter, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 
-from servicios import auth, tenants_registro, usuarios
+from servicios import auth, invitaciones, tenants_registro, usuarios
 from servicios.almacen import ErrorAlmacen
 
 logger = logging.getLogger(__name__)
@@ -194,13 +196,14 @@ def cerrar_sesion_de(
     status_code=status.HTTP_201_CREATED,
     summary="Crear una organización con su administrador",
     description=(
-        "Crea la organización y la cuenta de su administrador, con contraseña temporal. "
-        "La contraseña se devuelve UNA vez (`contrasenaTemporal`): no hay correo en este sprint. "
+        "Crea la organización y la cuenta de su administrador, con contraseña temporal, y le manda por "
+        "correo su bienvenida con los accesos (`correoEnviado`). La contraseña se devuelve UNA vez "
+        "(`contrasenaTemporal`) SOLO si el correo no salió (`correoMotivo`: `sin_canal` o `fallo`). "
         "409 `correo_registrado` si el correo del administrador ya existe."
     ),
 )
 def crear(datos: NuevaOrganizacion, response: Response, authorization: str | None = Header(default=None)) -> dict:
-    _exigir_admin_plataforma(authorization)
+    yo = _exigir_admin_plataforma(authorization)
     response.headers["Cache-Control"] = "no-store"
     nombre = " ".join(datos.nombre.split())
     if not nombre:
@@ -231,10 +234,14 @@ def crear(datos: NuevaOrganizacion, response: Response, authorization: str | Non
         )
         usuarios.agregar_membresia(admin["guid"], organizacion["guid"], "ADMIN")
         logger.info("Organización creada (slug=%s, admin=%s)", organizacion["slug"], admin["guid"])
+        resultado = invitaciones.enviar_bienvenida(
+            admin["email"], admin["nombre"], temporal, "admin_organizacion", organizacion["nombre"]
+        )
+        invitaciones.auditar_alta(yo["guid"], admin["guid"], "ADMIN", organizacion["guid"], resultado)
         return {
             "organizacion": _con_admin(organizacion),
             "admin": admin,
-            "contrasenaTemporal": temporal,
+            **invitaciones.para_respuesta(resultado, temporal),
         }
     except usuarios.YaExiste as exc:
         raise _error(status.HTTP_409_CONFLICT, "correo_registrado", str(exc)) from exc

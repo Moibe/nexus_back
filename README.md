@@ -1010,8 +1010,10 @@ cd /home/mbriseno/code/nexus_back-dev   # o nexus_back en prod
 venv/bin/python bootstrap_admin.py --email alguien@grupocsi.com --nombre Nombre --apellidos "Apellidos"
 ```
 
-Imprime la contraseña temporal UNA vez (no hay correo en este sprint). Al
-entrar con ella, la app obliga a cambiarla antes de mostrar nada.
+Imprime la contraseña temporal UNA vez y, si este ambiente manda correo de
+verdad, también le manda a la persona su bienvenida con los accesos (ver «La
+bienvenida con los accesos temporales»; `--sin-correo` lo evita). Al entrar con
+ella, la app obliga a cambiarla antes de mostrar nada.
 
 **Endpoints** (`/auth/*`, con la llave de servicio; los llama solo el BFF del
 front, que pone las cookies httpOnly `nx_acceso` y `nx_refresh`):
@@ -1153,6 +1155,39 @@ buzón de quien la corra, a mano y nunca en bucle: `python probar_correo.py
 tu.correo@grupocsi.com` (en el servidor, o donde estén puestas las variables). Dice
 si salió y por dónde, o por qué no, sin imprimir nunca el usuario, la contraseña ni
 el token.
+
+#### La bienvenida con los accesos temporales (HU01, HU02, HU06 CA-1; desde el 2026-10-13)
+
+Al dar de alta a alguien —`bootstrap_admin.py` (superadmin), `POST /organizaciones/` (el
+administrador de la organización) y `POST /usuarios/` (un usuario)— se le manda el correo de
+bienvenida del diseño: su usuario, su contraseña temporal y el enlace a la pantalla de inicio de
+sesión (`FRONT_URL`). Los textos son LITERALES del Figma, con tres presentaciones (Super
+Administrador, administrador de una organización y usuario): `servicios/plantillas_correo.py`.
+Lo manda `servicios/invitaciones.py`, EN LÍNEA (hace falta saber si salió) y con la espera acotada
+a 10 s por llamada. Contesta una de tres cosas:
+
+- **`enviado`**: salió de verdad (`CORREO_MODO` `api` o `smtp`). La contraseña NO se devuelve: la
+  persona la tiene en su bandeja, y quien la dio de alta no tiene por qué verla.
+- **`sin_canal`**: este ambiente no manda correo (`archivo`, `silencio`). Todo como antes: la
+  contraseña se devuelve UNA vez y la pantalla la muestra. No se escribe un `.eml` con ella, porque
+  en un servidor sería una contraseña en claro, guardada, en el NAS.
+- **`fallo`**: había canal y no se pudo (el servicio no contestó, rechazó el envío). Igual que
+  `sin_canal`, y la pantalla avisa en rojo que el correo no salió.
+
+La respuesta del alta lleva `correoEnviado` y `correoMotivo`; `contrasenaTemporal` solo viene si el
+correo NO salió. El alta deja el evento `USER_CREATED` en la bitácora (HU06 CA-1 y CA-7: el usuario
+creado, su rol, quién lo dio de alta y qué pasó con su correo; nunca la contraseña). El script de
+bootstrap imprime la contraseña SIEMPRE, salga o no el correo: es el respaldo de quien lo corre.
+
+**La contraseña viaja por correo, como dibuja el diseño** (y, con `api`, por el servicio de ART).
+Por eso el cuerpo jamás se registra, y por eso la cuenta nace obligada a cambiarla en el primer
+acceso. **Falta de HU06:** que el acceso CADUQUE a las 48 horas (CA-5, con su pantalla «Tu enlace de
+activación ha caducado»; `TOKEN_ACTIVACION_HORAS` ya existe) y el reenvío de la invitación (CA-6, que
+genera una contraseña nueva e invalida la anterior). Mientras no estén, una contraseña temporal que
+nadie usó sigue sirviendo.
+
+Se prueba en `verificar_invitaciones.py` (la plantilla, el servicio, las altas por HTTP con un canal
+simulado, y el script de bootstrap) y, en el navegador, con `probar-correo-bienvenida.mjs`.
 
 ### El JWT de acceso y la sesión cerrada (HU05)
 
@@ -1303,7 +1338,7 @@ distingue quién pide.
 |---|---|
 | `GET /organizaciones/` | listado, con los datos de su administrador |
 | `GET /organizaciones/coincidencias?nombre=` | el aviso del alta: qué organizaciones se llaman igual (`ID encontrado`) y qué slug se asignaría (`ID asignado`) |
-| `POST /organizaciones/` | crea la organización **y la cuenta de su administrador**; devuelve `contrasenaTemporal` UNA vez (no hay correo). 409 `correo_registrado` |
+| `POST /organizaciones/` | crea la organización **y la cuenta de su administrador** y le manda su bienvenida por correo (`correoEnviado`); devuelve `contrasenaTemporal` UNA vez SOLO si el correo no salió (`correoMotivo`). 409 `correo_registrado` |
 | `GET /organizaciones/{guid}/usuarios` | sus usuarios, con la misma forma que el listado de su administrador (`GET /usuarios/`): número de orden, nombre, rol EN esa organización, estado y fecha de alta |
 | `POST /organizaciones/{guid}/usuarios/{usuario}/cerrar-sesion` | HU05 CA-4: el administrador de plataforma le cierra TODAS las sesiones a un usuario de esa organización. Ver «Desactivar, reactivar y cerrar sesión» |
 
@@ -1324,7 +1359,7 @@ tenant por parámetro, para que nadie toque la de al lado cambiando un id.
 |---|---|
 | `GET /usuarios/` | los de mi organización, numerados (001, 002…) y con el nombre del rol resuelto |
 | `GET /usuarios/roles` | el catálogo que se puede asignar |
-| `POST /usuarios/` | alta con rol; devuelve `contrasenaTemporal` UNA vez (no hay correo). 409 `correo_registrado` |
+| `POST /usuarios/` | alta con rol y bienvenida por correo (`correoEnviado`); devuelve `contrasenaTemporal` UNA vez SOLO si el correo no salió (`correoMotivo`). 409 `correo_registrado` |
 | `POST /usuarios/{guid}` | HU07: cambia datos y rol. El correo no se toca |
 
 **Los roles salen del DISEÑO, no de la base**: Supervisor, Analista, Operador,

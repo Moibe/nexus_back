@@ -1,4 +1,5 @@
-"""Los textos de los correos de la recuperación de contraseña (HU10).
+"""Los textos de los correos: la recuperación de contraseña (HU10) y la bienvenida con accesos temporales
+(HU01, HU02 y HU06; ver `bienvenida` al final).
 
 `servicios/correo.py` solo transporta; aquí viven los textos, porque cada
 correo trae su propio asunto, su destinatario y sus datos.
@@ -28,6 +29,7 @@ import config
 
 ASUNTO_RECUPERACION = "Restablece tu contraseña"
 ASUNTO_PRIMER_ACCESO = "Tu primer acceso a NexusDoc sigue pendiente"
+ASUNTO_BIENVENIDA = "Bienvenido a NexusDoc"
 
 _ENCABEZADO = "En NexusDoc nos preocupamos por tu seguridad y por brindarte la mejor experiencia en todo momento."
 _CIERRE = (
@@ -53,28 +55,31 @@ def _soporte() -> list[str]:
     return lineas
 
 
-def _html(titulo: str, parrafos: list[str], enlace: str | None, boton: str | None, cierre: list[str]) -> str:
-    """Una plantilla sencilla, con estilos en línea: los clientes de correo no
-    respetan hojas de estilo externas ni casi nada de CSS moderno."""
-    partes = [
-        '<div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;color:#1f2937;line-height:1.5">',
-        f'<h1 style="font-size:24px;margin:24px 0 8px">{escape(titulo)}</h1>',
-        f'<p style="color:#6b7280;margin:0 0 24px">{escape(_ENCABEZADO)}</p>',
-    ]
-    for p in parrafos:
-        partes.append(f'<p style="margin:0 0 16px">{escape(p)}</p>')
-    if enlace and boton:
-        partes.append(
-            f'<p style="margin:24px 0"><a href="{escape(enlace, quote=True)}" '
-            'style="background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 24px;'
-            f'border-radius:8px;display:inline-block;font-weight:bold">{escape(boton)}</a></p>'
-        )
-        partes.append(
-            '<p style="font-size:12px;color:#6b7280;margin:0 0 16px">Si el botón no abre, copia y pega '
-            f'este enlace en tu navegador:<br><span style="word-break:break-all">{escape(enlace)}</span></p>'
-        )
-    for p in cierre:
-        partes.append(f'<p style="margin:0 0 16px">{escape(p)}</p>')
+def _abrir_html(titulo: str, subtitulo: str) -> str:
+    return (
+        '<div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;color:#1f2937;line-height:1.5">'
+        f'<h1 style="font-size:24px;margin:24px 0 8px">{escape(titulo)}</h1>'
+        f'<p style="color:#6b7280;margin:0 0 24px">{escape(subtitulo)}</p>'
+    )
+
+
+def _parrafo_html(texto: str) -> str:
+    return f'<p style="margin:0 0 16px">{escape(texto)}</p>'
+
+
+def _boton_html(enlace: str, boton: str) -> str:
+    return (
+        f'<p style="margin:24px 0"><a href="{escape(enlace, quote=True)}" '
+        'style="background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 24px;'
+        f'border-radius:8px;display:inline-block;font-weight:bold">{escape(boton)}</a></p>'
+        '<p style="font-size:12px;color:#6b7280;margin:0 0 16px">Si el botón no abre, copia y pega '
+        f'este enlace en tu navegador:<br><span style="word-break:break-all">{escape(enlace)}</span></p>'
+    )
+
+
+def _pie_html() -> str:
+    """Soporte (si hay), firma, aviso de seguridad y pie. Cierra el `div` que abre `_abrir_html`."""
+    partes = []
     soporte = _soporte()
     if soporte:
         partes.append('<p style="margin:0 0 16px">' + "<br>".join(escape(s) for s in soporte) + "</p>")
@@ -86,6 +91,18 @@ def _html(titulo: str, parrafos: list[str], enlace: str | None, boton: str | Non
         f'<p style="font-size:12px;color:#6b7280;margin:0">{escape(_DERECHOS)}</p>'
     )
     partes.append("</div>")
+    return "".join(partes)
+
+
+def _html(titulo: str, parrafos: list[str], enlace: str | None, boton: str | None, cierre: list[str]) -> str:
+    """Una plantilla sencilla, con estilos en línea: los clientes de correo no
+    respetan hojas de estilo externas ni casi nada de CSS moderno."""
+    partes = [_abrir_html(titulo, _ENCABEZADO)]
+    partes.extend(_parrafo_html(p) for p in parrafos)
+    if enlace and boton:
+        partes.append(_boton_html(enlace, boton))
+    partes.extend(_parrafo_html(p) for p in cierre)
+    partes.append(_pie_html())
     return "".join(partes)
 
 
@@ -151,3 +168,105 @@ def primer_acceso_pendiente(nombre: str) -> tuple[str, str, str]:
         _texto(ASUNTO_PRIMER_ACCESO, parrafos, None, None, []),
         _html(ASUNTO_PRIMER_ACCESO, parrafos, None, None, []),
     )
+
+
+# ── Bienvenida con accesos temporales (HU01, HU02, HU06) ─────────────────────
+#
+# Texto LITERAL del diseño (Figma, plantilla `Mail | Ne | P1` de las secciones HU001, HU002 y HU006): el
+# mismo correo con tres presentaciones, según quién recibe la cuenta. Desviaciones conscientes:
+#
+# 1. **El enlace es el real.** El mockup trae una URL de ejemplo con parámetros inventados (`session_id`,
+#    `ts`...). Aquí la línea visible y el botón llevan la misma dirección: la pantalla de inicio de sesión.
+# 2. **El bloque de soporte es opcional**, como en la recuperación (`CORREO_SOPORTE`).
+# 3. **La contraseña va en el cuerpo, como dibuja el diseño.** Por eso el cuerpo jamás se registra
+#    (`servicios/correo.py`) y por eso la cuenta nace obligada a cambiarla en el primer acceso.
+
+_SUBTITULO_BIENVENIDA = (
+    "Nos complace darte la bienvenida a la plataforma inteligente diseñada para centralizar, validar, gestionar "
+    "y automatizar de forma eficiente expedientes digitales."
+)
+_PORTAL = "Te damos la bienvenida al Portal Administrativo NexusDoc."
+_PRESENTACION_SUPER_ADMIN = (
+    f"{_PORTAL} Como Super Administrador, ahora cuentas con acceso al entorno de administración principal para "
+    "supervisar operaciones, usuarios y flujos documentales de forma segura y eficiente."
+)
+_PRESENTACION_USUARIO = (
+    f"{_PORTAL} Tu cuenta ha sido creada exitosamente por el administrador de tu organización y ya cuentas con "
+    "acceso a la plataforma. A partir de este momento podrás ingresar y utilizar las funcionalidades disponibles "
+    "de acuerdo con los permisos y responsabilidades asignados a tu perfil."
+)
+PERFILES_BIENVENIDA = ("super_admin", "admin_organizacion", "usuario")
+
+
+def _presentacion(perfil: str, organizacion: str | None) -> str:
+    if perfil == "super_admin":
+        return _PRESENTACION_SUPER_ADMIN
+    if perfil == "admin_organizacion":
+        return (
+            f"{_PORTAL} Tu cuenta como administrador de {organizacion or 'tu organización'} ha sido creada "
+            "correctamente y ya cuentas con acceso a las herramientas necesarias para la gestión, revisión y "
+            "seguimiento de expedientes dentro de la plataforma."
+        )
+    if perfil == "usuario":
+        return _PRESENTACION_USUARIO
+    raise ValueError(f"Perfil de bienvenida desconocido: {perfil!r}")
+
+
+def bienvenida(
+    nombre: str, usuario: str, contrasena: str, enlace: str, perfil: str, organizacion: str | None = None
+) -> tuple[str, str, str]:
+    """El correo de bienvenida con los accesos temporales. Devuelve `(asunto, texto, html)`.
+
+    `perfil` es uno de `PERFILES_BIENVENIDA`; `organizacion` solo cambia el texto del administrador de una
+    organización. `contrasena` viaja SOLO en el cuerpo de este correo. Todo lo que escribió una persona
+    (nombre, organización, correo) se escapa en el HTML; la contraseña también, porque su alfabeto incluye
+    `&`."""
+    presentacion = _presentacion(perfil, organizacion)
+    saludo = f"Hola, {nombre}."
+    pide = "A continuación, encontrarás tus datos de acceso:"
+    recomienda = "Por seguridad, te recomendamos cambiar tu contraseña después de iniciar sesión por primera vez."
+    enlace_intro = "Puedes iniciar sesión en el siguiente enlace:"
+    apoyo = "Si requieres apoyo adicional, nuestro equipo estará disponible para acompañarte en cualquier paso que des."
+    boton = "Ir a portal Administrador"
+    subtitulo_accesos = "Tus accesos temporales"
+
+    caja = (
+        '<div style="background:#f3f4f6;border-radius:8px;padding:16px;margin:0 0 16px">'
+        f'<p style="margin:0 0 8px">Usuario: <strong>{escape(usuario)}</strong></p>'
+        '<p style="margin:0">Contraseña temporal: <strong style="font-family:Consolas,Menlo,monospace;'
+        f'font-size:16px;letter-spacing:.5px">{escape(contrasena)}</strong></p></div>'
+    )
+    html = "".join(
+        [
+            _abrir_html(ASUNTO_BIENVENIDA, _SUBTITULO_BIENVENIDA),
+            _parrafo_html(saludo),
+            _parrafo_html(presentacion),
+            f'<h2 style="font-size:18px;margin:24px 0 8px">{escape(subtitulo_accesos)}</h2>',
+            _parrafo_html(pide),
+            caja,
+            _parrafo_html(recomienda),
+            _parrafo_html(enlace_intro),
+            _boton_html(enlace, boton),
+            _parrafo_html(apoyo),
+            _parrafo_html(_CIERRE),
+            _pie_html(),
+        ]
+    )
+    bloques = [
+        ASUNTO_BIENVENIDA,
+        _SUBTITULO_BIENVENIDA,
+        saludo,
+        presentacion,
+        subtitulo_accesos,
+        pide,
+        f"Usuario: {usuario}\nContraseña temporal: {contrasena}",
+        recomienda,
+        f"{enlace_intro}\n{enlace}",
+        apoyo,
+        _CIERRE,
+    ]
+    soporte = _soporte()
+    if soporte:
+        bloques.append("\n".join(soporte))
+    bloques.extend(["\n".join(_FIRMA), "\n".join(_SEGURIDAD), _AUTOMATICO, _DERECHOS])
+    return ASUNTO_BIENVENIDA, "\n\n".join(bloques) + "\n", html

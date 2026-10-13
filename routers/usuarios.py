@@ -5,10 +5,11 @@ Quién puede: el **administrador de la organización** (membresía con rol
 por parámetro, justamente para que nadie pueda tocar la de al lado cambiando un
 id en la petición.
 
-Sin correo en este sprint: al crear un usuario se devuelve su contraseña
-temporal UNA vez y la pantalla se la muestra al administrador. El correo de
-bienvenida del diseño, y su enlace que caduca a las 48 horas, quedan para
-cuando haya envío de correo.
+Al crear un usuario se le manda por correo la bienvenida del diseño, con su usuario y su
+contraseña temporal (`servicios/invitaciones.py`). Si el correo salió, la contraseña NO se devuelve: la
+persona la tiene en su bandeja. Si no salió (este ambiente no manda correo, o el servicio falló), se devuelve
+UNA vez y la pantalla se la muestra al administrador, como antes. Falta lo que caduca a las 48 horas
+(HU06 CA-5) y el reenvío de la invitación (CA-6).
 """
 
 import logging
@@ -16,7 +17,7 @@ import logging
 from fastapi import APIRouter, Header, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
-from servicios import auth, roles, tenants_registro, usuarios
+from servicios import auth, invitaciones, roles, tenants_registro, usuarios
 from servicios.almacen import ErrorAlmacen
 
 logger = logging.getLogger(__name__)
@@ -110,12 +111,14 @@ def listar(authorization: str | None = Header(default=None)) -> dict:
     status_code=status.HTTP_201_CREATED,
     summary="Crear un usuario en mi organización",
     description=(
-        "Lo crea con contraseña temporal, que se devuelve UNA vez (`contrasenaTemporal`): no hay "
-        "correo en este sprint. 409 `correo_registrado` si el correo ya existe."
+        "Lo crea con contraseña temporal y le manda por correo su bienvenida con los accesos "
+        "(`correoEnviado`). La contraseña se devuelve UNA vez (`contrasenaTemporal`) SOLO si el correo no "
+        "salió (`correoMotivo`: `sin_canal` si este ambiente no manda correo, `fallo` si el servicio no "
+        "pudo). 409 `correo_registrado` si el correo ya existe."
     ),
 )
 def crear(datos: NuevoUsuario, response: Response, authorization: str | None = Header(default=None)) -> dict:
-    _, tenant = _admin_de_organizacion(authorization)
+    yo, tenant = _admin_de_organizacion(authorization)
     response.headers["Cache-Control"] = "no-store"
     if datos.rol not in roles.ASIGNABLES:
         raise _error(status.HTTP_400_BAD_REQUEST, "rol_invalido", "Elige un rol de la lista.")
@@ -135,7 +138,9 @@ def crear(datos: NuevoUsuario, response: Response, authorization: str | None = H
         logger.info("Usuario creado (guid=%s, tenant=%s, rol=%s)", creado["guid"], tenant, datos.rol)
         lista = usuarios.de_tenant(tenant)
         posicion = next((i + 1 for i, u in enumerate(lista) if u["guid"] == creado["guid"]), len(lista))
-        return {"usuario": usuarios.para_listado(creado, tenant, posicion), "contrasenaTemporal": temporal}
+        resultado = invitaciones.enviar_bienvenida(creado["email"], creado["nombre"], temporal, "usuario")
+        invitaciones.auditar_alta(yo["guid"], creado["guid"], datos.rol, tenant, resultado)
+        return {"usuario": usuarios.para_listado(creado, tenant, posicion), **invitaciones.para_respuesta(resultado, temporal)}
     except usuarios.YaExiste as exc:
         raise _error(status.HTTP_409_CONFLICT, "correo_registrado", str(exc)) from exc
     except ValueError as exc:
