@@ -1101,11 +1101,55 @@ DBA. Nunca llevan el token ni la contraseña.
 
 **El correo.** `CORREO_MODO=archivo` (el default) deja cada correo como `.eml` en
 `<ALMACEN_RUTA>/correos/` y no toca la red; con `smtp` sale de verdad (necesita
-`CORREO_SMTP_HOST` y `CORREO_REMITENTE`). **Mientras en dev siga en `archivo`,
-nadie recibe el enlace**: la HU está completa pero el correo se lee del disco.
+`CORREO_SMTP_HOST` y `CORREO_REMITENTE`); con `api` sale por el servicio HTTP de
+ART Broker (la subsección de abajo). **Mientras en dev siga en `archivo`, nadie
+recibe el enlace**: la HU está completa pero el correo se lee del disco.
 `FRONT_URL` tiene que apuntar al front real de cada ambiente (en dev de CSI es
 `http://172.10.30.15:3401`, no el 3400 del default), porque de ahí sale el
 enlace. Los `.eml` no se limpian solos.
+
+#### Salir por el servicio de ART Broker (`CORREO_MODO=api`, desde el 2026-10-13)
+
+TI todavía no entrega el relay SMTP, pero ART Broker ya tiene un servicio HTTP que
+manda correo (Ray y Brandon, 2026-10-13). El modo `api` lo usa: pide un token con
+`POST /OAuth/AuthToken` (`{usr, psd}`) y manda con
+`POST /II_1_General_Notifications/Emailsending` (`mailRecipients`, `mailCc`,
+`mailBcc`, `mailSubject` y `mailBody` en HTML) llevando ese token como `Bearer`.
+Se enciende con cuatro variables del `.env` DEL SERVIDOR (nunca del repo, nunca de
+un chat):
+
+    CORREO_MODO=api
+    CORREO_API_URL=https://<host del servicio>   # sin ruta; solo https (http solo a localhost)
+    CORREO_API_USUARIO=<el usuario que dé ART>
+    CORREO_API_CONTRASENA=<su contraseña>
+
+Lo que hace el código, y por qué:
+
+- **Un token para todos.** Se guarda en memoria hasta un minuto antes de su `exp` (si
+  no es un JWT legible, cinco minutos); varios hilos con el token en frío piden UNO.
+  Un 401 o 403 al enviar lo renueva UNA vez y reintenta.
+- **No reintenta lo que pudo haber salido.** Un timeout o un 5xx no se repiten: el
+  servicio pudo haber aceptado el correo y se duplicaría. Quien llama ya decide qué
+  hacer con el `ErrorCorreo` (la recuperación contesta lo mismo exista o no la cuenta).
+- **200 no es éxito por sí solo.** Un HTTP 200 con `error: true`, o con algo que no
+  es JSON (una página de login de un proxy), es una falla.
+- **Un solo destinatario.** `mailRecipients` es una cadena y el servicio podría
+  partirla: no se admiten `;`, `,`, `<`, `>`, comillas ni espacios.
+- **Nada de secretos afuera.** No sigue redirecciones, y ni el log ni el mensaje de
+  error llevan el cuerpo del correo, sus enlaces, el token ni las credenciales,
+  aunque el servicio los repita en su respuesta.
+- **Sin adjuntos.** El envío con adjuntos del servicio recibe rutas de red del servidor
+  de ART; aquí no se usa.
+
+Lo que NO controlamos, y hay que pedirles a Ray y a Brandon: el **remitente** (lo
+decide el servicio; sin uno propio de NexusDoc, un "restablece tu contraseña" de otra
+marca parece phishing), **credenciales dedicadas** (las que nos pasaron son de ART
+Broker y se comparten), la **vigencia del token**, los **límites de envío**, la
+**forma de sus errores** y la **URL de producción**.
+
+`python verificar_correo.py` prueba todo esto contra un servidor FALSO en localhost y
+no toca el servicio real. La única prueba real que cabe es UN correo al propio
+buzón de quien la corra, a mano y nunca en bucle.
 
 ### El JWT de acceso y la sesión cerrada (HU05)
 

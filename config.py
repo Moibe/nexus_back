@@ -218,6 +218,10 @@ AUTH_BLOQUEO_MIN = int(_numero("AUTH_BLOQUEO_MIN", 15))
 #   smtp      lo manda de verdad. Necesita al menos CORREO_SMTP_HOST y
 #             CORREO_REMITENTE.
 #   silencio  lo descarta.
+#   api       lo manda por el servicio HTTP de notificaciones de ART Broker (pide
+#             un token y manda el correo). Necesita CORREO_API_URL (solo el host,
+#             en https), CORREO_API_USUARIO y CORREO_API_CONTRASENA. El remitente
+#             lo decide ESE servicio, no CORREO_REMITENTE.
 #
 # El día que TI conteste, esto es lo único que cambia.
 CORREO_MODO = (os.getenv("CORREO_MODO") or "archivo").strip().lower()
@@ -230,6 +234,12 @@ CORREO_SMTP_CONTRASENA = os.getenv("CORREO_SMTP_CONTRASENA") or ""
 CORREO_SMTP_TLS = (os.getenv("CORREO_SMTP_TLS") or "1").strip().lower() in {"1", "true", "si", "sí", "yes"}
 CORREO_SMTP_SSL = (os.getenv("CORREO_SMTP_SSL") or "").strip().lower() in {"1", "true", "si", "sí", "yes"}
 CORREO_TIMEOUT = int(_numero("CORREO_TIMEOUT", 20))
+# Servicio HTTP de notificaciones (modo `api`). Las rutas van fijas en
+# `servicios/correo.py`: entre ambientes solo cambia el host. Credenciales: SOLO
+# en el .env del servidor, nunca en el repo, la documentación ni el log.
+CORREO_API_URL = (os.getenv("CORREO_API_URL") or "").strip().rstrip("/")
+CORREO_API_USUARIO = (os.getenv("CORREO_API_USUARIO") or "").strip()
+CORREO_API_CONTRASENA = os.getenv("CORREO_API_CONTRASENA") or ""
 
 # La URL pública del FRONT, para armar los enlaces que van en los correos. Sin
 # esto no se puede mandar un enlace que alguien pueda abrir.
