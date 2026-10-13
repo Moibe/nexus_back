@@ -126,8 +126,9 @@ try:
             e["en"] = hace
         nuevas.append(_json.dumps(e, ensure_ascii=False))
     ruta.write_text("\n".join(nuevas) + "\n", encoding="utf-8")
-    # Una reescritura EN SITIO del mismo tamaño no cambia la firma del archivo (el registro es de
-    # solo agregar y esto lo contradice a propósito): se le avisa a la caché.
+    # Una reescritura EN SITIO del mismo tamaño solo se nota por la fecha de modificación (el registro
+    # es de solo agregar y esto lo contradice a propósito); si cae en el mismo tick de esa fecha la firma
+    # no cambia, así que se le avisa a la caché para que la prueba no dependa del reloj del sistema.
     usuarios._cache_indice = None
     r = login(c, "admin@ejemplo.com", "mala")
     rev("pasados los 15 min se puede intentar de nuevo, y el contador arrancó en cero", r.status_code == 401 and r.json()["detail"]["intentosRestantes"] == 4, r.text)
@@ -483,9 +484,10 @@ try:
         _, h_actual, v_actual = auth.nuevo_refresh()
         usuarios.crear_sesion(u["guid"], h_actual, v_actual, None, None)
         estado_rot = {"hash": h_actual}
+        parar_rotacion = threading.Event()
 
         def rotar_en_ciclo():
-            while True:
+            while not parar_rotacion.is_set():
                 _, nuevo_hash, vence = auth.nuevo_refresh()
                 try:
                     usuarios.rotar_sesion(estado_rot["hash"], nuevo_hash, vence, None, None)
@@ -493,12 +495,15 @@ try:
                     return
                 estado_rot["hash"] = nuevo_hash
 
-        hilo = threading.Thread(target=rotar_en_ciclo)
+        hilo = threading.Thread(target=rotar_en_ciclo, daemon=True)
         hilo.start()
         time.sleep((ronda % 5) / 1000)
         usuarios.cerrar_sesiones(u["guid"], "cierre forzado de la prueba 4h")
-        hilo.join(timeout=10)
-        if hilo.is_alive() or vivas_de(u["guid"]):
+        hilo.join(timeout=3)
+        sigue_rotando = hilo.is_alive()
+        parar_rotacion.set()  # si el cierre no lo paró, se para aquí: la ronda cuenta como sucia y la prueba termina
+        hilo.join(timeout=3)
+        if sigue_rotando or vivas_de(u["guid"]):
             sucias += 1
     rev("30 cierres forzados contra un refresh que rota sin parar: terminado el cierre NO queda ninguna sesión viva", sucias == 0, f"{sucias} de 30")
 
@@ -538,6 +543,276 @@ try:
         rev("uno que nunca existió tampoco (invalida)", False)
     except usuarios.SesionNoCanjeable as e:
         rev("uno que nunca existió tampoco (invalida)", e.motivo == "invalida")
+
+    titulo("4i · El cableado POR HTTP: login, refresh y cambio de contraseña ante carreras (4h solo probaba el servicio)")
+    from servicios.almacen import ErrorAlmacen
+
+    def usuario_4i(correo: str, contrasena: str) -> dict:
+        nuevo = usuarios.bootstrap_admin(correo, "Prueba", "Cuatro-i", auth.hash_de("Temporal-Larga-123!"))
+        usuarios.fijar_contrasena(nuevo["guid"], auth.hash_de(contrasena), "FIRST_LOGIN")
+        return nuevo
+
+    def ahora_iso() -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    def con_efecto_tras_verificar(efecto):
+        """Envuelve `auth.verificar_contrasena`: la primera vez que ACIERTA corre `efecto` (alguien más
+        toca la cuenta justo ahora, con la petición a media camino). Devuelve el original para restaurarlo."""
+        original = auth.verificar_contrasena
+        corrido = {"n": 0}
+
+        def envuelta(hash_guardado, password):
+            ok = original(hash_guardado, password)
+            if ok and not corrido["n"]:
+                corrido["n"] = 1
+                efecto()
+            return ok
+
+        auth.verificar_contrasena = envuelta
+        return original
+
+    # (a) Un login con un RESTABLECIMIENTO a media petición: no abre sesión, y no queda como acierto.
+    ana4 = usuario_4i("cuatro-i-ana@ejemplo.com", "Cuatro-I-Vieja-123!")
+    original_verificar = con_efecto_tras_verificar(
+        lambda: usuarios.fijar_contrasena(ana4["guid"], auth.hash_de("Cuatro-I-Nueva-456!"), "RESET")
+    )
+    try:
+        r = login(c, "cuatro-i-ana@ejemplo.com", "Cuatro-I-Vieja-123!")
+    finally:
+        auth.verificar_contrasena = original_verificar
+    detalle = r.json().get("detail", {}) if r.headers.get("content-type", "").startswith("application/json") else {}
+    rev("login con un RESET a media petición: 401 credenciales CON los intentos que quedan",
+        r.status_code == 401 and detalle.get("codigo") == "credenciales" and detalle.get("intentosRestantes") == config.AUTH_MAX_INTENTOS - 1, r.text[:200])
+    rev("...y NO queda ninguna sesión viva", not vivas_de(ana4["guid"]))
+    reg4 = usuarios.para_login("cuatro-i-ana@ejemplo.com")
+    rev("...ni se anotó como acierto: sin último ingreso y con UN intento fallido", reg4["ultimoLoginEn"] is None and reg4["fallidos"] == 1, f"{reg4['ultimoLoginEn']} {reg4['fallidos']}")
+    rev("la dueña entra con la contraseña del restablecimiento", login(c, "cuatro-i-ana@ejemplo.com", "Cuatro-I-Nueva-456!").status_code == 200)
+
+    # (b) Lo mismo con la cuenta DESACTIVADA a media petición.
+    beto4 = usuario_4i("cuatro-i-beto@ejemplo.com", "Cuatro-I-Beto-123!")
+    original_verificar = con_efecto_tras_verificar(lambda: usuarios.cambiar_estado(beto4["guid"], False, "prueba 4i"))
+    try:
+        r = login(c, "cuatro-i-beto@ejemplo.com", "Cuatro-I-Beto-123!")
+    finally:
+        auth.verificar_contrasena = original_verificar
+    detalle = r.json().get("detail", {}) if r.headers.get("content-type", "").startswith("application/json") else {}
+    rev("login con la cuenta desactivada a media petición: 403 desactivada", r.status_code == 403 and detalle.get("codigo") == "desactivada", r.text[:200])
+    rev("...sin sesión viva", not vivas_de(beto4["guid"]))
+    intentos_beto = [e for e in usuarios.registro.eventos(usuarios.ARCHIVO) if e.get("evento") == "intento" and e.get("guid") == beto4["guid"]]
+    rev("...y el intento quedó como INACTIVE, no como acierto", bool(intentos_beto) and intentos_beto[-1]["exitoso"] is False and intentos_beto[-1]["motivo"] == "INACTIVE", str(intentos_beto[-1:]))
+
+    # (c) POST /auth/refresh: ocho peticiones a la vez con el MISMO refresh (el cableado del router, no solo `rotar_sesion`).
+    cleo4 = usuario_4i("cuatro-i-cleo@ejemplo.com", "Cuatro-I-Cleo-123!")
+    rondas_mal = 0
+    for _ in range(10):
+        usuarios.cerrar_sesiones(cleo4["guid"], "limpiar 4i")
+        refresh0, hash0, vence0 = auth.nuevo_refresh()
+        usuarios.crear_sesion(cleo4["guid"], hash0, vence0, None, None)
+        codigos: list[int] = []
+        barrera = threading.Barrier(8)
+
+        def pedir_refresh(refresh_token=refresh0, codigos=codigos, barrera=barrera):
+            cliente = TestClient(app)
+            barrera.wait()
+            codigos.append(cliente.post("/auth/refresh", json={"refreshToken": refresh_token}, headers=srv()).status_code)
+
+        hilos = [threading.Thread(target=pedir_refresh) for _ in range(8)]
+        [h.start() for h in hilos]
+        [h.join() for h in hilos]
+        if codigos.count(200) != 1 or codigos.count(401) != 7 or len(vivas_de(cleo4["guid"])) != 1:
+            rondas_mal += 1
+    rev("POST /auth/refresh, ocho peticiones a la vez con el mismo refresh, 10 rondas: UNA da 200, siete 401 y queda UNA sesión viva",
+        rondas_mal == 0, f"{rondas_mal} rondas mal")
+
+    # (d) Cambiar la contraseña con un RESTABLECIMIENTO a media petición: la sesión ya cerrada no pisa la contraseña del dueño.
+    dora4 = usuario_4i("cuatro-i-dora@ejemplo.com", "Cuatro-I-Dora-123!")
+    bearer_dora = {**srv(), "Authorization": f"Bearer {login(c, 'cuatro-i-dora@ejemplo.com', 'Cuatro-I-Dora-123!').json()['accessToken']}"}
+    cambio = {"actual": "Cuatro-I-Dora-123!", "nueva": "Cuatro-I-Ladron-456!", "confirmacion": "Cuatro-I-Ladron-456!"}
+    original_verificar = con_efecto_tras_verificar(
+        lambda: usuarios.fijar_contrasena(dora4["guid"], auth.hash_de("Cuatro-I-Duena-789!"), "RESET")
+    )
+    try:
+        r = c.post("/auth/contrasena", json=cambio, headers=bearer_dora)
+    finally:
+        auth.verificar_contrasena = original_verificar
+    detalle = r.json().get("detail", {}) if r.headers.get("content-type", "").startswith("application/json") else {}
+    rev("cambiar la contraseña con un RESET a media petición: 401 sesion_cerrada", r.status_code == 401 and detalle.get("codigo") == "sesion_cerrada", r.text[:200])
+    rev("la contraseña del restablecimiento sigue vigente: la dueña entra", login(c, "cuatro-i-dora@ejemplo.com", "Cuatro-I-Duena-789!").status_code == 200)
+    rev("y la de quien tenía la sesión robada NO sirve", login(c, "cuatro-i-dora@ejemplo.com", "Cuatro-I-Ladron-456!").status_code == 401)
+
+    # (e) Y si la cambió OTRO dispositivo mientras tanto, la "actual" que se verificó ya no lo es.
+    emi4 = usuario_4i("cuatro-i-emi@ejemplo.com", "Cuatro-I-Emi-1234!")
+    bearer_emi = {**srv(), "Authorization": f"Bearer {login(c, 'cuatro-i-emi@ejemplo.com', 'Cuatro-I-Emi-1234!').json()['accessToken']}"}
+    cambio = {"actual": "Cuatro-I-Emi-1234!", "nueva": "Cuatro-I-Emi-Otra-567!", "confirmacion": "Cuatro-I-Emi-Otra-567!"}
+    original_verificar = con_efecto_tras_verificar(
+        lambda: usuarios.fijar_contrasena(emi4["guid"], auth.hash_de("Cuatro-I-Emi-Movil-890!"), "CHANGE")
+    )
+    try:
+        r = c.post("/auth/contrasena", json=cambio, headers=bearer_emi)
+    finally:
+        auth.verificar_contrasena = original_verificar
+    detalle = r.json().get("detail", {}) if r.headers.get("content-type", "").startswith("application/json") else {}
+    rev("cambiarla mientras otro dispositivo ya la cambió: 401 actual_incorrecta", r.status_code == 401 and detalle.get("codigo") == "actual_incorrecta", r.text[:200])
+    rev("la que puso el otro dispositivo sigue vigente", login(c, "cuatro-i-emi@ejemplo.com", "Cuatro-I-Emi-Movil-890!").status_code == 200)
+    rev("y el cambio normal, sin carreras, sigue funcionando (200 CHANGE)",
+        c.post("/auth/contrasena", json={"actual": "Cuatro-I-Emi-Movil-890!", "nueva": "Cuatro-I-Emi-Final-321!", "confirmacion": "Cuatro-I-Emi-Final-321!"},
+               headers={**srv(), "Authorization": f"Bearer {login(c, 'cuatro-i-emi@ejemplo.com', 'Cuatro-I-Emi-Movil-890!').json()['accessToken']}"}).json().get("motivo") == "CHANGE")
+
+    # (f) `fijar_contrasena` revalida bajo el candado (la prueba directa de lo que (d) y (e) ejercitan por HTTP).
+    fede4 = usuario_4i("cuatro-i-fede@ejemplo.com", "Cuatro-I-Fede-123!")
+    _, h_f, v_f = auth.nuevo_refresh()
+    sid_f = usuarios.crear_sesion(fede4["guid"], h_f, v_f, None, None)
+    hash_vigente = usuarios.para_login("cuatro-i-fede@ejemplo.com")["hash"]
+    usuarios.fijar_contrasena(fede4["guid"], auth.hash_de("Cuatro-I-Fede-Nueva-1!"), "CHANGE", sesion_guid=sid_f, hash_verificado=hash_vigente)
+    rev("con la sesión viva y la contraseña vigente, el cambio se hace", usuarios.para_login("cuatro-i-fede@ejemplo.com")["hash"] != hash_vigente)
+
+    def intento_de_cambio(**kwargs) -> str:
+        """Lo que pasa al cambiar con esas condiciones: el motivo del rechazo, o 'ok'. Y si se rechazó, la contraseña NO cambió."""
+        antes_hash = usuarios.para_login("cuatro-i-fede@ejemplo.com")["hash"]
+        try:
+            usuarios.fijar_contrasena(fede4["guid"], auth.hash_de("Cuatro-I-Fede-Otra-9!"), "CHANGE", **kwargs)
+            return "ok"
+        except usuarios.SesionNoCanjeable as e:
+            return e.motivo if usuarios.para_login("cuatro-i-fede@ejemplo.com")["hash"] == antes_hash else "ESCRIBIÓ A PESAR DE RECHAZAR"
+
+    rev("con una contraseña verificada que ya no es la vigente: motivo contrasena, y no escribe nada",
+        intento_de_cambio(sesion_guid=sid_f, hash_verificado=hash_vigente) == "contrasena")
+    hash_ahora = usuarios.para_login("cuatro-i-fede@ejemplo.com")["hash"]
+    rev("con una sesión que no existe: motivo cerrada", intento_de_cambio(sesion_guid="no-existe", hash_verificado=hash_ahora) == "cerrada")
+    rev("con la sesión de OTRA persona: motivo cerrada", intento_de_cambio(sesion_guid=vivas_de(ana4["guid"])[0]["sesionGuid"], hash_verificado=hash_ahora) == "cerrada")
+    usuarios.revocar_sesiones(fede4["guid"], sid_f, "LOGOUT")
+    rev("con la sesión ya revocada: motivo cerrada, y no escribe nada", intento_de_cambio(sesion_guid=sid_f, hash_verificado=hash_ahora) == "cerrada")
+    rev("sin pedir revalidación (la recuperación por enlace), el cambio sigue siendo incondicional", intento_de_cambio() == "ok")
+
+    # (g) Lo que 4h no miraba del canje.
+    gaby4 = usuario_4i("cuatro-i-gaby@ejemplo.com", "Cuatro-I-Gaby-123!")
+    _, h_g, v_g = auth.nuevo_refresh()
+    sid_g = usuarios.crear_sesion(gaby4["guid"], h_g, v_g, None, None)
+    refresh_g2, h_g2, v_g2 = auth.nuevo_refresh()
+    sid_g2, _ = usuarios.rotar_sesion(h_g, h_g2, v_g2, None, None)
+    _, _, ses_g = usuarios._indice()
+    rev("rotar deja la sesión vieja revocada por ROTATED y la nueva viva", ses_g[sid_g]["revocadaPor"] == "ROTATED" and not ses_g[sid_g2]["revocadaEn"], str(ses_g[sid_g]["revocadaPor"]))
+    usuarios.registro.agregar(usuarios.ARCHIVO, {"evento": "estado", "guid": gaby4["guid"], "activo": False, "motivo": "a mano (4i)", "en": ahora_iso()})
+    r = c.post("/auth/refresh", json={"refreshToken": refresh_g2}, headers=srv())
+    rev("renovar una sesión VIVA de una cuenta desactivada (sin revocarla): 401 sesion_invalida", r.status_code == 401 and r.json()["detail"]["codigo"] == "sesion_invalida", r.text[:160])
+    usuarios.registro.agregar(usuarios.ARCHIVO, {"evento": "estado", "guid": gaby4["guid"], "activo": True, "motivo": "a mano (4i)", "en": ahora_iso()})
+    refresh_v, h_v, _ = auth.nuevo_refresh()
+    usuarios.crear_sesion(gaby4["guid"], h_v, datetime.now(timezone.utc) - timedelta(minutes=1), None, None)
+    r = c.post("/auth/refresh", json={"refreshToken": refresh_v}, headers=srv())
+    rev("renovar un refresh vencido: 401 sesion_vencida", r.status_code == 401 and r.json()["detail"]["codigo"] == "sesion_vencida", r.text[:160])
+
+    # (h) El canje son DOS escrituras (revocar la vieja, crear la nueva): si falla alguna, nunca quedan dos sesiones.
+    hugo4 = usuario_4i("cuatro-i-hugo@ejemplo.com", "Cuatro-I-Hugo-123!")
+    agregar_original = usuarios.registro.agregar
+    for cual, vivas_esperadas, que in ((1, 1, "la primera: no cambió nada, la sesión sigue viva"), (2, 0, "la segunda: queda CERRADA (debe volver a entrar), nunca con dos")):
+        usuarios.cerrar_sesiones(hugo4["guid"], "limpiar 4i")
+        refresh_h, h_h, v_h = auth.nuevo_refresh()
+        usuarios.crear_sesion(hugo4["guid"], h_h, v_h, None, None)
+        cuenta = {"n": 0}
+
+        def agregar_que_falla(nombre, evento, cuenta=cuenta, cual=cual):
+            cuenta["n"] += 1
+            if cuenta["n"] == cual:
+                raise ErrorAlmacen("disco lleno (prueba 4i)")
+            return agregar_original(nombre, evento)
+
+        usuarios.registro.agregar = agregar_que_falla
+        try:
+            r = c.post("/auth/refresh", json={"refreshToken": refresh_h}, headers=srv())
+        finally:
+            usuarios.registro.agregar = agregar_original
+        rev(f"si falla la escritura {cual} del canje: 503, y {que}", r.status_code == 503 and len(vivas_de(hugo4["guid"])) == vivas_esperadas, f"{r.status_code} vivas={len(vivas_de(hugo4['guid']))}")
+
+    # (i) y (j) El candado, de forma DETERMINISTA: un competidor que llega JUSTO antes de escribir debe esperar a que termine
+    # quien ya está dentro. (Con hilos al azar la carrera solo se ve a veces; aquí se fuerza el entrelazado.)
+    def con_competidor_antes_de_escribir(cuando, competidor):
+        """Parchea `registro.agregar`: antes de escribir el primer evento que cumpla `cuando`, lanza `competidor` en otro hilo y le da
+        0.5 s. Con el candado, el competidor se queda esperando y termina DESPUÉS de esa escritura; sin él, termina antes."""
+        original = usuarios.registro.agregar
+        hecho = {"hilo": None}
+
+        def agregar(nombre, evento):
+            if hecho["hilo"] is None and cuando(evento):
+                hecho["hilo"] = threading.Thread(target=competidor)
+                hecho["hilo"].start()
+                hecho["hilo"].join(timeout=0.5)
+            return original(nombre, evento)
+
+        usuarios.registro.agregar = agregar
+        return original, hecho
+
+    nora4 = usuario_4i("cuatro-i-nora@ejemplo.com", "Cuatro-I-Nora-123!")
+    hash_nora = usuarios.para_login("cuatro-i-nora@ejemplo.com")["hash"]
+    original_agregar, hecho = con_competidor_antes_de_escribir(
+        lambda e: e.get("evento") == "sesion" and e.get("guid") == nora4["guid"],
+        lambda: usuarios.fijar_contrasena(nora4["guid"], auth.hash_de("Cuatro-I-Nora-Nueva-9!"), "RESET"),
+    )
+    try:
+        _, h_n, v_n = auth.nuevo_refresh()
+        usuarios.crear_sesion(nora4["guid"], h_n, v_n, None, None, hash_verificado=hash_nora)
+    finally:
+        usuarios.registro.agregar = original_agregar
+    if hecho["hilo"]:
+        hecho["hilo"].join(timeout=10)
+    rev("un RESET que llega justo antes de escribir la sesión espera su turno y la revoca después: no sobrevive ninguna", not vivas_de(nora4["guid"]), str(len(vivas_de(nora4["guid"]))))
+
+    omar4 = usuario_4i("cuatro-i-omar@ejemplo.com", "Cuatro-I-Omar-123!")
+    _, h_o, v_o = auth.nuevo_refresh()
+    sid_o = usuarios.crear_sesion(omar4["guid"], h_o, v_o, None, None)
+    hash_omar = usuarios.para_login("cuatro-i-omar@ejemplo.com")["hash"]
+    hash_reset_omar = auth.hash_de("Cuatro-I-Omar-Reset-9!")
+    original_agregar, hecho = con_competidor_antes_de_escribir(
+        lambda e: e.get("evento") == "contrasena" and e.get("motivo") == "CHANGE" and e.get("guid") == omar4["guid"],
+        lambda: usuarios.fijar_contrasena(omar4["guid"], hash_reset_omar, "RESET"),
+    )
+    try:
+        usuarios.fijar_contrasena(omar4["guid"], auth.hash_de("Cuatro-I-Omar-Ladron-9!"), "CHANGE", sesion_guid=sid_o, hash_verificado=hash_omar)
+    finally:
+        usuarios.registro.agregar = original_agregar
+    if hecho["hilo"]:
+        hecho["hilo"].join(timeout=10)
+    rev("un RESET que llega justo antes de escribir el CAMBIO espera su turno: la contraseña final es la del restablecimiento",
+        usuarios.para_login("cuatro-i-omar@ejemplo.com")["hash"] == hash_reset_omar)
+
+    titulo("4j · Lo que el README promete del índice: el aviso de las reconstrucciones lentas y lo que se devuelve no se comparte")
+    import logging as _logging
+
+    class Recogedor(_logging.Handler):
+        def __init__(self) -> None:
+            super().__init__(_logging.WARNING)
+            self.mensajes: list[str] = []
+
+        def emit(self, registro_log) -> None:
+            self.mensajes.append(registro_log.getMessage())
+
+    recogedor = Recogedor()
+    usuarios.logger.addHandler(recogedor)
+    umbral_original = usuarios.UMBRAL_RECONSTRUCCION_S
+    try:
+        usuarios.UMBRAL_RECONSTRUCCION_S = 3600.0
+        usuarios._cache_indice = None
+        usuarios._indice()
+        rev("una reconstrucción dentro del umbral NO avisa", not recogedor.mensajes, str(recogedor.mensajes))
+        usuarios.UMBRAL_RECONSTRUCCION_S = 0.0
+        usuarios._cache_indice = None
+        usuarios._indice()
+        rev("una que pasa del umbral avisa en el log (el registro provisional ya es grande)",
+            any("Reconstruir el índice de usuarios" in m for m in recogedor.mensajes), str(recogedor.mensajes))
+    finally:
+        usuarios.UMBRAL_RECONSTRUCCION_S = umbral_original
+        usuarios.logger.removeHandler(recogedor)
+
+    luna4 = usuario_4i("cuatro-i-luna@ejemplo.com", "Cuatro-I-Luna-123!")
+    usuarios.agregar_membresia(luna4["guid"], "tenant-4i", "ADMIN")
+    usuarios.actualizar_perfil(luna4["guid"], "Luna", "Prueba", "Cuatro", None, {"email": "luna.recupera@ejemplo.com"})
+    copia = usuarios.por_guid(luna4["guid"])
+    copia["membresias"].append({"tenantGuid": "intruso", "rol": "ADMIN"})
+    copia["membresias"][0]["rol"] = "VIEWER"
+    copia["recuperacion"]["email"] = "intruso@ejemplo.com"
+    limpia = usuarios.por_guid(luna4["guid"])
+    rev("lo que devuelve por_guid se puede modificar sin tocar el índice (membresías y recuperación son copias)",
+        limpia["membresias"] == [{"tenantGuid": "tenant-4i", "rol": "ADMIN"}] and limpia["recuperacion"] == {"email": "luna.recupera@ejemplo.com"},
+        f"{limpia['membresias']} {limpia['recuperacion']}")
 
     titulo("5 · Cuenta desactivada")
     r = login(c, "admin@ejemplo.com", "Otra-Segura-456!")

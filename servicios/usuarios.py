@@ -4,7 +4,8 @@ Lo definitivo son las tablas y los SPs pedidos al DBA en **NEX-319**
 (`docs/solicitudes-dba.md`, sección 6). Mientras llegan, todo vive en un
 registro de solo agregar en el NAS, `usuarios.jsonl` (ver `servicios/registro.py`),
 como las llaves y los webhooks. El día que existan los SPs, cambia ESTE módulo y
-nada más: cada función de aquí es el espejo de un SP, con el mismo contrato.
+nada más: cada función de aquí es el espejo de un SP, con el mismo contrato (salvo
+las tres que se listan debajo de esta tabla).
 
     bootstrap_admin            ↔ security.uspBootstrapPlatformAdmin
     crear_usuario              ↔ (HU02/HU06: alta de usuario dentro de un tenant)
@@ -16,6 +17,19 @@ nada más: cada función de aquí es el espejo de un SP, con el mismo contrato.
     crear_sesion               ↔ security.uspCreateSession
     sesion_por_hash            ↔ security.uspGetSession
     revocar_sesiones           ↔ security.uspRevokeSessions
+
+Tres cosas de aquí NO son el espejo de un SP, porque garantizan algo que un SP suelto
+no da. Hoy lo dan con el candado del registro (`registro.candado`, que vale para UN solo
+proceso); con la base no bastará con llamar a los SPs de arriba uno tras otro: cada una
+tiene que ir en UNA transacción o ser un SP propio (`docs/solicitudes-dba.md`, 6.2):
+
+    rotar_sesion                    comprueba que el refresh siga vivo, lo revoca y crea la
+                                    sucesora, en un paso (un refresh es de UN solo uso)
+    crear_sesion(hash_verificado)   solo abre la sesión si la contraseña que se verificó
+                                    sigue siendo la vigente y la cuenta sigue activa
+    fijar_contrasena(sesion_guid, hash_verificado)
+                                    solo cambia la contraseña si la sesión que lo pide
+                                    sigue viva y la que se verificó sigue siendo la vigente
 
 ## Qué se guarda, y qué NUNCA
 
@@ -678,13 +692,36 @@ def reiniciar_intentos_de_origen(origen: str | None) -> None:
 # ── uspSetPassword ──────────────────────────────────────────────────────────
 
 
-def fijar_contrasena(guid: str, hash_contrasena: str, motivo: str) -> dict:
+def fijar_contrasena(
+    guid: str,
+    hash_contrasena: str,
+    motivo: str,
+    *,
+    sesion_guid: str | None = None,
+    hash_verificado: str | None = None,
+) -> dict:
+    """Pone una contraseña nueva. Con `sesion_guid` y `hash_verificado` (lo usa el cambio
+    desde una sesión, no la recuperación por enlace) comprueba, BAJO el candado, que esa
+    sesión siga viva y que la contraseña contra la que se verificó siga siendo la vigente;
+    si no, levanta `SesionNoCanjeable` (`cerrada` o `contrasena`) y no escribe nada.
+
+    El cambio verifica con argon2 la contraseña actual y la nueva (decenas de ms cada una)
+    FUERA del candado. Sin esta revisión, si en esa ventana el dueño restablecía la
+    contraseña —lo que cierra TODAS las sesiones—, el cambio de la sesión ya cerrada la
+    pisaba: quien tuviera una sesión robada recuperaba la cuenta él solo. Es la misma
+    carrera que `crear_sesion(hash_verificado=...)` cierra en el login."""
     if motivo not in MOTIVOS_CONTRASENA:
         raise ValueError(f"Motivo inválido: {motivo}")
     with registro.candado:
-        usuarios, _, _ = _indice()
+        usuarios, _, sesiones = _indice()
         if guid not in usuarios:
             raise NoEncontrado(guid)
+        if sesion_guid is not None:
+            s = sesiones.get(sesion_guid)
+            if s is None or s["guid"] != guid or s["revocadaEn"]:
+                raise SesionNoCanjeable("cerrada")
+        if hash_verificado is not None and usuarios[guid]["hash"] != hash_verificado:
+            raise SesionNoCanjeable("contrasena")
         en = _ahora().isoformat(timespec="seconds")
         registro.agregar(ARCHIVO, {"evento": "contrasena", "guid": guid, "hash": hash_contrasena, "motivo": motivo, "en": en})
         if motivo in MOTIVOS_QUE_CIERRAN_SESIONES:
@@ -696,10 +733,17 @@ def fijar_contrasena(guid: str, hash_contrasena: str, motivo: str) -> dict:
 
 
 class SesionNoCanjeable(Exception):
-    """No se puede abrir la sesión que se pidió. `motivo`: `invalida` (el refresh no
-    existe, ya se canjeó o se cerró, la cuenta está desactivada, o la contraseña con la
-    que se entró dejó de ser la vigente), `vencida`, o `desactivada` (solo al crear la
-    sesión de un login: la cuenta se desactivó mientras se verificaba la contraseña)."""
+    """No se puede abrir (ni usar) la sesión que se pidió. `motivo`:
+
+      · `invalida`    el refresh no existe, ya se canjeó o se cerró, la cuenta está
+                      desactivada, o la contraseña con la que se entró dejó de ser la vigente;
+      · `vencida`     el refresh venció;
+      · `desactivada` solo al crear la sesión de un login: la cuenta se desactivó mientras
+                      se verificaba la contraseña;
+      · `cerrada`     solo al cambiar la contraseña: la sesión que lo pide se cerró mientras
+                      se verificaban las contraseñas;
+      · `contrasena`  solo al cambiar la contraseña: la que se verificó dejó de ser la
+                      vigente (otro dispositivo la cambió)."""
 
     def __init__(self, motivo: str):
         super().__init__(motivo)
@@ -718,9 +762,11 @@ def crear_sesion(
     que la contraseña que se verificó siga siendo la vigente y la cuenta siga activa.
 
     Verificar una contraseña con argon2 tarda decenas de milisegundos y se hace FUERA del
-    candado. Sin esta revisión, un restablecimiento de contraseña, un cierre forzado o una
-    desactivación que ocurrieran en esa ventana dejaban pasar un login con la credencial
-    vieja y su sesión nacía DESPUÉS de las revocaciones: viva y renovable por 7 días."""
+    candado. Sin esta revisión, un restablecimiento de contraseña o una desactivación que
+    ocurrieran en esa ventana dejaban pasar un login con la credencial vieja y su sesión
+    nacía DESPUÉS de las revocaciones: viva y renovable por 7 días. (Un cierre forzado NO
+    entra aquí: no cambia la contraseña ni desactiva la cuenta, y la persona puede volver
+    a entrar —README, HU05—.)"""
     sesion_guid = str(uuid.uuid4())
     with registro.candado:
         usuarios, _, _ = _indice()

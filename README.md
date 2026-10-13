@@ -1206,20 +1206,24 @@ contestan 401 `sesion_cerrada` (o 403 `desactivada`). Lo que hay que saber:
   rutas, a cambio de no preguntar en cada petición (como mucho una vez cada 3 s por
   sesión; la bandeja sola consulta cada 10 s). Si no se pudo saber, se recuerda 1.5 s,
   para que un back colgado no haga esperar su tope a cada petición. La clave es persona
-  + sesión, y un JWT sin `sid` no se acepta (el back tampoco).
+  + sesión, y un JWT sin `sid` no se acepta (el back tampoco). Quien llega con el
+  refresh viejo dentro de la gracia de la renovación (ver abajo) también pasa por esta
+  pregunta, con el JWT nuevo: un cierre no se cuela por ahí.
 - **Para que preguntar tan seguido fuera viable hubo que arreglar el registro
   provisional.** `usuarios._indice()` releía y repasaba `usuarios.jsonl` completo en
   CADA llamada. Ahora se guarda mientras el archivo no cambie (su "firma": ruta, inodo,
   tamaño y fecha; el registro es de solo agregar, y lo que agrega otro proceso, como
   `bootstrap_admin.py`, también se nota por el tamaño; una edición EN SITIO del mismo
-  tamaño no se nota, y contradice el contrato del registro), y el repaso es lineal:
+  tamaño solo se nota por la fecha de modificación, y si cae en el mismo tick del reloj
+  ni así: contradice el contrato del registro), y el repaso es lineal:
   antes cada revocación recorría todas las sesiones (20 mil eventos con 10 mil
-  sesiones: de 1.4 a 2.2 s; ahora, de 12 a 60 ms). Lo que devuelve es compartido y no
-  se modifica. **Lo que NO resuelve:** tras CADA escritura (login, renovación, cierre)
+  sesiones: de 1.4 a 2.2 s; ahora, de 12 a 60 ms). El índice se comparte entre quienes
+  lo consultan y no se modifica; lo que sale hacia afuera (`_publico`) son copias.
+  **Lo que NO resuelve:** tras CADA escritura (login, renovación, cierre)
   la siguiente consulta reconstruye todo, bajo el candado global del registro. Medido
   por los revisores: 78 ms con 10 mil renglones, 0.4 s con 100 mil y 3.6 s con 500 mil.
   Pasado ~2 s el guard deja pasar sin comprobar, y el back avisa en el log cuando una
-  reconstrucción tarda más de 0.5 s. Con unas 50 personas activas son unos 3 mil
+  reconstrucción tarda más de 0.5 s (`verificar_auth.py` 4j). Con unas 50 personas activas son unos 3 mil
   renglones al día: es cuestión de meses. La salida es la base, no más caché.
 - **Hoy `GET /auth/sesion` contesta `usuarios.por_guid_y_sesion` sobre ese registro, y
   con la base NO bastará con cambiar ese módulo.** `security.uspGetSession` (NEX-319)
@@ -1233,20 +1237,46 @@ contestan 401 `sesion_cerrada` (o 403 `desactivada`). Lo que hay que saber:
   mismo refresh renovaban cada una por su cuenta: un refresh es de un solo uso, así que
   el back rechazaba a las demás y esos rechazos tiraban las cookies recién emitidas.
   Ahora comparten UNA renovación (`renovarSesion`, con una gracia de 5 s para las que
-  salieron con el refresh viejo) y solo un rechazo EXPLÍCITO del back (401
-  `sesion_invalida` o `sesion_vencida`) tira las cookies: un 5xx, un timeout o el back
-  caído las conservan y contestan 503. (2) En el back, `/auth/refresh` comprobaba,
-  revocaba y creaba la sucesora en tres pasos sueltos: de un refresh podían salir varias
-  sesiones vivas (siete de ocho en la prueba) y un cierre forzado a medias dejaba una
-  sucesora viva. Ahora es un solo paso atómico (`usuarios.rotar_sesion`), y el login
+  salieron con el refresh viejo, contada desde que el back CONTESTA: con un back lento
+  de 6 s la gracia no se gasta esperando, y mientras la llamada está en curso nadie la
+  reemplaza) y solo un rechazo EXPLÍCITO del back (401 `sesion_invalida` o
+  `sesion_vencida`) tira las cookies: un 5xx, un timeout o el back caído las conservan y
+  contestan 503. Si el front se rinde (30 s) justo después de que el back canjeó el
+  refresh, la persona tiene que volver a entrar: su sesión nueva queda huérfana y vence
+  sola. (2) En el back, `/auth/refresh` comprobaba, revocaba y creaba la sucesora en
+  tres pasos sueltos: de un refresh podían salir varias sesiones vivas (de ocho
+  peticiones a la vez, entre cinco y ocho según la ronda) y un cierre forzado a medias
+  dejaba una sucesora viva. Ahora es un solo paso atómico (`usuarios.rotar_sesion`), y el login
   revalida, bajo el mismo candado, que la contraseña verificada siga siendo la vigente
   y la cuenta siga activa (`crear_sesion(hash_verificado=...)`).
+- **El cambio de contraseña revalida igual (2ª revisión, 2026-10-13).** Las dos
+  verificaciones con argon2 del cambio se hacen fuera del candado. Si en esa ventana el
+  dueño restablecía la contraseña (lo que cierra TODAS las sesiones), el cambio de la
+  sesión ya cerrada la pisaba: quien tuviera una sesión robada recuperaba la cuenta él
+  solo (reproducido por HTTP). Ahora `fijar_contrasena(..., sesion_guid=...,
+  hash_verificado=...)` comprueba, bajo el candado, que esa sesión siga viva y que la
+  contraseña verificada siga siendo la vigente: si no, 401 `sesion_cerrada` o 401
+  `actual_incorrecta` (otro dispositivo la cambió mientras tanto) y no escribe nada. Y un
+  login que se rechaza en la revalidación ya no queda anotado como acierto: cuenta como
+  contraseña mala (con sus `intentosRestantes`) o como cuenta desactivada.
+- **Lo que queda abierto.** (a) `POST /auth/logout` lee la sesión por su refresh y la
+  revoca después, en dos pasos: si una renovación canjea ESE refresh en medio, la sesión
+  sucesora sigue abierta (no se guarda de quién viene). Con el front compartiendo la
+  renovación, la ventana es de milisegundos. (b) El canje son dos escrituras: si falla
+  la segunda (el disco, el NAS), la sesión queda cerrada y la persona debe entrar de
+  nuevo; nunca quedan dos vivas. (c) `rotar_sesion`, `crear_sesion(hash_verificado)` y
+  `fijar_contrasena(sesion_guid, hash_verificado)` valen por el candado de UN proceso:
+  con la base cada una debe ir en una transacción o ser un SP propio
+  (`docs/solicitudes-dba.md`, 6.2).
 
 Se prueba en `verificar_auth.py` (4e el endpoint, 4f la caché, 4g el repaso lineal
-contra el cuadrático de antes con 300 registros al azar, 4h el canje atómico),
-`verificar_usuarios.py` (8c, el escenario del administrador cerrado a la fuerza),
-`verificar_organizaciones.py` (6b) y, en el navegador, con `probar-sesion-cerrada-front.mjs`
-y `probar-renovacion.mjs`.
+contra el cuadrático de antes con 300 registros al azar, 4h el canje atómico, 4i el
+cableado POR HTTP —login, refresh y cambio de contraseña ante carreras—, 4j el aviso de
+las reconstrucciones lentas), `verificar_usuarios.py` (8c, el escenario del
+administrador cerrado a la fuerza), `verificar_organizaciones.py` (6b) y, en el
+navegador, con `probar-sesion-cerrada-front.mjs` y `probar-renovacion.mjs` (en la
+suite) y `probar-guard-renovacion.mjs` y `probar-sesion-sin-back.mjs` (a mano, con el
+build de producción).
 
 **Lo que NO cubre.** Los claims del JWT (`rol`, `tnt`) se leen al emitirlo: cambiar el
 rol de alguien (HU07) o moverlo de organización se nota hasta que renueva (15 minutos

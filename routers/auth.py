@@ -28,6 +28,7 @@ Lo que el diseño pide y aquí se cumple:
 import logging
 import re
 from datetime import datetime, timezone
+from typing import NoReturn
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Response, status
 from pydantic import BaseModel, Field
@@ -121,6 +122,23 @@ def _error(status_code: int, codigo: str, detail: str, **extra) -> HTTPException
 
 def _sin_configurar() -> HTTPException:
     return _error(status.HTTP_503_SERVICE_UNAVAILABLE, "sin_configurar", "El acceso no está configurado en el servidor (AUTH_JWT_SECRET).")
+
+
+def _contrasena_incorrecta(u: dict, email: str, datos: "Login", origen: str | None) -> NoReturn:
+    """Anota la contraseña mala y responde: 423 si con esta se llegó al tope de intentos, o 401
+    con los que quedan. No devuelve nunca."""
+    fallidos, bloqueado_hasta = usuarios.registrar_resultado_login(
+        u["guid"], email, False, "BAD_PASSWORD", datos.ip, datos.userAgent, origen
+    )
+    fallidos_nav, bloqueo_navegador = usuarios.estado_origen(origen)
+    if bloqueado_hasta or bloqueo_navegador:
+        raise _bloqueada(bloqueado_hasta or bloqueo_navegador)
+    # El aviso dice la verdad: manda el contador que esté más cerca.
+    raise _error(
+        status.HTTP_401_UNAUTHORIZED, "credenciales",
+        "La contraseña es incorrecta; por favor intenta de nuevo.",
+        intentosRestantes=config.AUTH_MAX_INTENTOS - max(fallidos, fallidos_nav),
+    )
 
 
 def _sesion_nueva(usuario: dict, ip: str | None, user_agent: str | None, hash_verificado: str | None = None) -> dict:
@@ -280,31 +298,25 @@ def login(datos: Login, response: Response) -> dict:
             usuarios.registrar_resultado_login(u["guid"], email, False, "INACTIVE", datos.ip, datos.userAgent, origen)
             raise _error(status.HTTP_403_FORBIDDEN, "desactivada", "La cuenta con la que intentas ingresar ha sido desactivada.")
         if not auth.verificar_contrasena(u["hash"], datos.password):
-            fallidos, bloqueado_hasta = usuarios.registrar_resultado_login(
-                u["guid"], email, False, "BAD_PASSWORD", datos.ip, datos.userAgent, origen
-            )
-            fallidos_nav, bloqueo_navegador = usuarios.estado_origen(origen)
-            if bloqueado_hasta or bloqueo_navegador:
-                raise _bloqueada(bloqueado_hasta or bloqueo_navegador)
-            # El aviso dice la verdad: manda el contador que esté más cerca.
-            raise _error(
-                status.HTTP_401_UNAUTHORIZED, "credenciales",
-                "La contraseña es incorrecta; por favor intenta de nuevo.",
-                intentosRestantes=config.AUTH_MAX_INTENTOS - max(fallidos, fallidos_nav),
-            )
-        usuarios.registrar_resultado_login(u["guid"], email, True, None, datos.ip, datos.userAgent, origen)
+            _contrasena_incorrecta(u, email, datos, origen)
         publico = {k: v for k, v in u.items() if k not in ("hash", "fallidos", "bloqueadoHasta")}
         publico["ultimoLoginEn"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        try:
+            # `hash_verificado`: la contraseña se comprobó fuera del candado; si mientras tanto
+            # se restableció o la cuenta se desactivó, la sesión no debe nacer. El acierto se
+            # anota DESPUÉS de abrirla: un login que se rechaza aquí no puede quedar como exitoso
+            # (reiniciaría los intentos fallidos y fijaría `ultimoLoginEn`).
+            sesion = _sesion_nueva(publico, datos.ip, datos.userAgent, hash_verificado=u["hash"])
+        except usuarios.SesionNoCanjeable as exc:
+            if exc.motivo == "desactivada":
+                usuarios.registrar_resultado_login(u["guid"], email, False, "INACTIVE", datos.ip, datos.userAgent, origen)
+                raise _error(status.HTTP_403_FORBIDDEN, "desactivada", "La cuenta con la que intentas ingresar ha sido desactivada.") from exc
+            # La contraseña que se verificó ya no es la vigente (se restableció a media petición):
+            # para efectos del login es una contraseña mala, y se cuenta como tal.
+            _contrasena_incorrecta(u, email, datos, origen)
+        usuarios.registrar_resultado_login(u["guid"], email, True, None, datos.ip, datos.userAgent, origen)
         logger.info("Login correcto (guid=%s)", u["guid"])
-        # `hash_verificado`: la contraseña se comprobó fuera del candado; si mientras tanto
-        # se restableció o la cuenta se desactivó, la sesión no debe nacer.
-        return _sesion_nueva(publico, datos.ip, datos.userAgent, hash_verificado=u["hash"])
-    except usuarios.SesionNoCanjeable as exc:
-        if exc.motivo == "desactivada":
-            raise _error(status.HTTP_403_FORBIDDEN, "desactivada", "La cuenta con la que intentas ingresar ha sido desactivada.") from exc
-        raise _error(
-            status.HTTP_401_UNAUTHORIZED, "credenciales", "La contraseña es incorrecta; por favor intenta de nuevo."
-        ) from exc
+        return sesion
     except ErrorAlmacen as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except auth.SinConfigurar as exc:
@@ -353,6 +365,10 @@ def logout(datos: Logout) -> Response:
     existe, responde 204 igual: cerrar sesión nunca falla hacia el usuario."""
     if datos.refreshToken:
         try:
+            # Límite conocido: si una renovación canjea ESTE refresh justo entre la lectura y
+            # la revocación, `revocar_sesiones` no encuentra nada vivo y la sesión sucesora sigue
+            # abierta (aquí no hay forma de saber cuál es: no se guarda de quién viene). El front
+            # comparte una sola renovación por refresh, y la ventana es de milisegundos.
             s = usuarios.sesion_por_hash(auth.hash_refresh(datos.refreshToken))
             if s and not s["revocadaEn"]:
                 cerradas = usuarios.revocar_sesiones(s["guid"], s["sesionGuid"], "LOGOUT")
@@ -490,7 +506,7 @@ def actualizar_perfil(datos: Perfil, authorization: str | None = Header(default=
     ),
 )
 def cambiar_contrasena(datos: CambioContrasena, authorization: str | None = Header(default=None)) -> dict:
-    _, u = _usuario_del_bearer(authorization)
+    claims, u = _usuario_del_bearer(authorization)
     if datos.nueva != datos.confirmacion:
         raise _error(status.HTTP_400_BAD_REQUEST, "no_coincide", "La contraseña no coincide; por favor intenta de nuevo.")
     faltan = auth.reglas_incumplidas(datos.nueva)
@@ -508,9 +524,20 @@ def cambiar_contrasena(datos: CambioContrasena, authorization: str | None = Head
             motivo = "CHANGE"
         if auth.verificar_contrasena(completo["hash"], datos.nueva):
             raise _error(status.HTTP_400_BAD_REQUEST, "misma", "La nueva contraseña no puede ser igual a la anterior.")
-        actualizado = usuarios.fijar_contrasena(u["guid"], auth.hash_de(datos.nueva), motivo)
+        # Las verificaciones de arriba tardaron y se hicieron fuera del candado: `fijar_contrasena`
+        # comprueba otra vez, bajo él, que la sesión siga viva y que la contraseña verificada siga siendo
+        # la vigente. Sin eso, un restablecimiento a media petición (que cierra TODAS las sesiones) no
+        # impedía que la sesión ya cerrada pusiera su contraseña encima de la del dueño.
+        actualizado = usuarios.fijar_contrasena(
+            u["guid"], auth.hash_de(datos.nueva), motivo, sesion_guid=claims["sid"], hash_verificado=completo["hash"]
+        )
         logger.info("Contraseña cambiada (guid=%s, motivo=%s)", u["guid"], motivo)
         return {"ok": True, "motivo": motivo, "sesionesCerradas": motivo in usuarios.MOTIVOS_QUE_CIERRAN_SESIONES, "usuario": actualizado}
+    except usuarios.SesionNoCanjeable as exc:
+        if exc.motivo == "cerrada":
+            raise _error(status.HTTP_401_UNAUTHORIZED, "sesion_cerrada", "La sesión ya no es válida. Inicia sesión de nuevo.") from exc
+        # `contrasena`: otro dispositivo la cambió mientras tanto, y la "actual" que se verificó ya no lo es.
+        raise _error(status.HTTP_401_UNAUTHORIZED, "actual_incorrecta", "La contraseña actual es incorrecta.") from exc
     except ErrorAlmacen as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
