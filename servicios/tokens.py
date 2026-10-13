@@ -83,7 +83,7 @@ def hash_de(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def horas_de(tipo: str) -> int:
+def horas_de(tipo: str) -> float:
     """La vigencia que el diseño le da a cada tipo, configurable por ambiente."""
     if tipo == ACTIVACION:
         return config.TOKEN_ACTIVACION_HORAS

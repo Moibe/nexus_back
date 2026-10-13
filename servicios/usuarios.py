@@ -81,6 +81,10 @@ class NoEncontrado(Exception):
     pass
 
 
+class NoPendiente(Exception):
+    """La cuenta ya hizo su primer acceso: no tiene contraseña temporal que reemitir."""
+
+
 def _ahora() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -139,6 +143,9 @@ def _construir_indice(eventos: list[dict]) -> tuple[dict[str, dict], dict[str, s
                 "ultimoLoginEn": None,
                 "activo": True,
                 "creadoEn": e.get("en"),
+                # Cuándo se emitió la contraseña temporal vigente: el alta, o la última reemisión. De aquí
+                # cuenta la vigencia del primer acceso (`acceso_vencido`).
+                "temporalEmitidaEn": e.get("en"),
                 "membresias": [],
             }
             por_correo.setdefault(_normalizar_correo(usuarios[guid]["email"]), guid)
@@ -148,6 +155,14 @@ def _construir_indice(eventos: list[dict]) -> tuple[dict[str, dict], dict[str, s
             u["hash"] = e.get("hash")
             u["debeCambiar"] = False
             u["contrasenaCambiadaEn"] = e.get("en")
+            u["fallidos"] = 0
+            u["bloqueadoHasta"] = None
+        elif tipo == "invitacion" and u:
+            # Una contraseña temporal NUEVA para una cuenta que sigue en su primer acceso: la anterior deja de
+            # servir y la vigencia empieza otra vez (`emitir_temporal`).
+            u["hash"] = e.get("hash")
+            u["debeCambiar"] = True
+            u["temporalEmitidaEn"] = e.get("en")
             u["fallidos"] = 0
             u["bloqueadoHasta"] = None
         elif tipo == "intento" and u:
@@ -161,7 +176,7 @@ def _construir_indice(eventos: list[dict]) -> tuple[dict[str, dict], dict[str, s
                     hasta = _fecha(e.get("en")) or _ahora()
                     u["bloqueadoHasta"] = (hasta + timedelta(minutes=config.AUTH_BLOQUEO_MIN)).isoformat()
                     u["fallidos"] = 0
-            # LOCKED / INACTIVE / UNKNOWN_EMAIL: bitácora, no cuentan.
+            # LOCKED / INACTIVE / UNKNOWN_EMAIL / EXPIRED: bitácora, no cuentan.
         elif tipo == "estado" and u:
             u["activo"] = bool(e.get("activo"))
         elif tipo == "datos" and u:
@@ -517,7 +532,13 @@ def para_login(email: str) -> dict | None:
         return None
     u = usuarios[guid]
     bloqueo = _bloqueo_vigente(u)
-    return {**_publico(u), "hash": u["hash"], "fallidos": u["fallidos"], "bloqueadoHasta": bloqueo.isoformat() if bloqueo else None}
+    return {
+        **_publico(u),
+        "hash": u["hash"],
+        "fallidos": u["fallidos"],
+        "bloqueadoHasta": bloqueo.isoformat() if bloqueo else None,
+        "temporalEmitidaEn": u.get("temporalEmitidaEn"),
+    }
 
 
 def por_guid(guid: str) -> dict:
@@ -594,7 +615,7 @@ def registrar_resultado_login(
 ) -> tuple[int, str | None]:
     """Anota el intento y aplica la política de la CUENTA. Devuelve
     (fallidos, bloqueadoHasta) tal como quedan. `motivo`: BAD_PASSWORD | LOCKED
-    | INACTIVE | UNKNOWN_EMAIL. `origen` identifica al navegador y es lo que
+    | INACTIVE | UNKNOWN_EMAIL | EXPIRED (la contraseña temporal era la correcta pero ya caducó). `origen` identifica al navegador y es lo que
     lee `estado_origen`; aquí solo se guarda."""
     with registro.candado:
         registro.agregar(
@@ -726,6 +747,46 @@ def fijar_contrasena(
         registro.agregar(ARCHIVO, {"evento": "contrasena", "guid": guid, "hash": hash_contrasena, "motivo": motivo, "en": en})
         if motivo in MOTIVOS_QUE_CIERRAN_SESIONES:
             registro.agregar(ARCHIVO, {"evento": "sesion_revocada", "guid": guid, "sesionGuid": None, "motivo": "PASSWORD_CHANGED", "en": en})
+    return por_guid(guid)
+
+
+# ── La contraseña temporal caduca (HU06 CA-5) ──────────────────────────────
+
+
+def acceso_vencido(u: dict, ahora: datetime | None = None) -> bool:
+    """¿Ya caducó la contraseña temporal de esta cuenta? Recibe lo que devuelve `para_login`.
+
+    El correo de bienvenida trae una contraseña temporal y el diseño dice que los enlaces de primer acceso
+    "son válidos únicamente durante 48 horas a partir de su envío" (`TOKEN_ACTIVACION_HORAS`). Solo cuenta para
+    una cuenta que SIGUE en su primer acceso; quien ya puso su contraseña no tiene nada que caducar.
+
+    Los administradores de PLATAFORMA quedan fuera: su alta es por línea de comandos, el criterio es de HU06 (un
+    administrador da de alta a alguien) y, si caducara, no habría quien les generara un acceso nuevo desde
+    pantalla. `TOKEN_ACTIVACION_HORAS=0` apaga la caducidad. Sin fecha legible no se inventa un vencimiento."""
+    if config.TOKEN_ACTIVACION_HORAS <= 0:
+        return False
+    if not u.get("debeCambiarContrasena") or u.get("esAdminPlataforma"):
+        return False
+    emitida = _fecha(u.get("temporalEmitidaEn"))
+    if emitida is None:
+        return False
+    return (ahora or _ahora()) - emitida > timedelta(hours=config.TOKEN_ACTIVACION_HORAS)
+
+
+def emitir_temporal(guid: str, hash_contrasena: str) -> dict:
+    """Le pone una contraseña temporal NUEVA a una cuenta que sigue en su primer acceso (la caducada, o la que
+    se perdió): la anterior deja de servir, las 48 horas empiezan otra vez, se levantan los bloqueos y se
+    cierran las sesiones que se hubieran abierto con la anterior. Levanta `NoEncontrado` si la cuenta no existe
+    y `NoPendiente` si ya hizo su primer acceso (para eso está "Olvidé mi contraseña")."""
+    with registro.candado:
+        usuarios, _, _ = _indice()
+        if guid not in usuarios:
+            raise NoEncontrado(guid)
+        if not usuarios[guid]["debeCambiar"]:
+            raise NoPendiente(guid)
+        en = _ahora().isoformat(timespec="seconds")
+        registro.agregar(ARCHIVO, {"evento": "invitacion", "guid": guid, "hash": hash_contrasena, "en": en})
+        registro.agregar(ARCHIVO, {"evento": "sesion_revocada", "guid": guid, "sesionGuid": None, "motivo": "REINVITED", "en": en})
     return por_guid(guid)
 
 

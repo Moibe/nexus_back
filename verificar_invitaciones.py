@@ -278,6 +278,179 @@ try:
     rev("en un ambiente sin canal real: imprime la contraseña y avisa que no se mandó",
         rc == 0 and "Contraseña temporal:" in texto_salida and "NO se mandó" in texto_salida, texto_salida[:300])
 
+    titulo("5 · La contraseña temporal caduca a las 48 horas (HU06 CA-5)")
+    from datetime import datetime, timedelta, timezone
+
+    reloj_real = usuarios._ahora
+
+    def viajar(horas: float) -> None:
+        """El reloj del registro de usuarios marca `horas` más tarde (el del JWT, el de `auth`, no se mueve)."""
+        usuarios._ahora = lambda: reloj_real() + timedelta(hours=horas)
+
+    def volver() -> None:
+        usuarios._ahora = reloj_real
+
+    def entrar(correo: str, contrasena: str):
+        return c.post("/auth/login", json={"email": correo, "password": contrasena}, headers=srv())
+
+    def sesiones_vivas(guid: str) -> int:
+        _, _, ses = usuarios._indice()
+        return sum(1 for x in ses.values() if x["guid"] == guid and not x["revocadaEn"])
+
+    # La regla sola, con fechas exactas.
+    ahora_fijo = datetime(2026, 10, 13, 12, 0, tzinfo=timezone.utc)
+    base = {"debeCambiarContrasena": True, "esAdminPlataforma": False}
+
+    def con(horas_atras: float, **extra) -> dict:
+        return {**base, **extra, "temporalEmitidaEn": (ahora_fijo - timedelta(hours=horas_atras)).isoformat()}
+
+    rev("a las 47 h 59 min todavía sirve", not usuarios.acceso_vencido(con(47.99), ahora_fijo))
+    rev("a las 48 h 01 min ya caducó", usuarios.acceso_vencido(con(48.02), ahora_fijo))
+    rev("quien ya hizo su primer acceso no tiene nada que caducar", not usuarios.acceso_vencido(con(900, debeCambiarContrasena=False), ahora_fijo))
+    rev("el administrador de PLATAFORMA no caduca (no habría quien le generara otro desde pantalla)", not usuarios.acceso_vencido(con(900, esAdminPlataforma=True), ahora_fijo))
+    rev("una fecha ilegible no inventa un vencimiento", not usuarios.acceso_vencido({**base, "temporalEmitidaEn": "no-es-fecha"}, ahora_fijo))
+    config.TOKEN_ACTIVACION_HORAS = 0
+    rev("TOKEN_ACTIVACION_HORAS=0 apaga la caducidad", not usuarios.acceso_vencido(con(900), ahora_fijo))
+    config.TOKEN_ACTIVACION_HORAS = 0.5
+    rev("y la vigencia puede ser fraccionaria (media hora): 29 min sirve, 31 min no",
+        not usuarios.acceso_vencido(con(29 / 60), ahora_fijo) and usuarios.acceso_vencido(con(31 / 60), ahora_fijo))
+    config.TOKEN_ACTIVACION_HORAS = 48
+
+    # Por HTTP, con un usuario que el administrador de la organización acaba de dar de alta.
+    sin_canal()
+    r = c.post("/usuarios/", json={"nombre": "Gael", "email": "gael@ejemplo.com", "rol": "VIEWER"}, headers=bearer_admin)
+    pwd_gael = r.json()["contrasenaTemporal"]
+    guid_gael = r.json()["usuario"]["guid"]
+    viajar(47)
+    r = entrar("gael@ejemplo.com", pwd_gael)
+    rev("a las 47 horas entra (y se le obliga a cambiarla), sin que la respuesta suelte la fecha de emisión",
+        r.status_code == 200 and r.json()["usuario"]["debeCambiarContrasena"] is True and "temporalEmitidaEn" not in r.json()["usuario"], r.text[:160])
+    token_gael = {**srv(), "Authorization": f"Bearer {r.json()['accessToken']}"}
+    viajar(49)
+    r = entrar("gael@ejemplo.com", pwd_gael)
+    detalle = r.json().get("detail", {})
+    rev("a las 49 horas, con la contraseña CORRECTA: 403 activacion_vencida con el texto del diseño",
+        r.status_code == 403 and detalle.get("codigo") == "activacion_vencida" and "48 horas" in detalle.get("mensaje", ""), r.text[:200])
+    r = entrar("gael@ejemplo.com", "Una-Contrasena-Equivocada-1!")
+    rev("con una contraseña EQUIVOCADA sigue siendo 401 credenciales (no se le cuenta a quien no la tiene)",
+        r.status_code == 401 and r.json()["detail"]["codigo"] == "credenciales", r.text[:160])
+    fallidos_antes = usuarios.para_login("gael@ejemplo.com")["fallidos"]
+    codigos = [entrar("gael@ejemplo.com", pwd_gael).status_code for _ in range(6)]
+    rev("seis intentos más con la correcta: siempre 403, nunca 423 (caducar no cuenta como intento fallido)", codigos == [403] * 6, str(codigos))
+    rev("y la cuenta no acumuló intentos fallidos", usuarios.para_login("gael@ejemplo.com")["fallidos"] == fallidos_antes)
+    ultimo = [e for e in usuarios.registro.eventos(usuarios.ARCHIVO) if e.get("evento") == "intento" and e.get("guid") == guid_gael][-1]
+    rev("el intento quedó en la bitácora como EXPIRED", ultimo["exitoso"] is False and ultimo["motivo"] == "EXPIRED", str(ultimo))
+    r = c.post("/auth/contrasena", json={"nueva": "Nueva-Contrasena-456!", "confirmacion": "Nueva-Contrasena-456!"}, headers=token_gael)
+    rev("quien entró a tiempo pero NO terminó tampoco puede completar el primer acceso después: 403",
+        r.status_code == 403 and r.json()["detail"]["codigo"] == "activacion_vencida", r.text[:160])
+    rev("y sus sesiones quedaron cerradas", sesiones_vivas(guid_gael) == 0)
+    volver()
+    # Los demás perfiles.
+    sin_canal()
+    r = c.post("/organizaciones/", json={"nombre": "Caduca SA", "adminNombre": "Cata", "adminApellidos": "Caduca", "adminEmail": "cata@ejemplo.com"}, headers=bearer_super)
+    pwd_cata = r.json()["contrasenaTemporal"]
+    viajar(49)
+    rev("el administrador de una ORGANIZACIÓN (HU02) también caduca",
+        entrar("cata@ejemplo.com", pwd_cata).status_code == 403)
+    viajar(400)
+    rev("el superadmin creado por línea de comandos NO caduca, ni a las 400 horas",
+        entrar("nuevo.super@ejemplo.com", pwd_impresa).status_code == 200)
+    volver()
+    r = c.post("/usuarios/", json={"nombre": "Hana", "email": "hana@ejemplo.com", "rol": "VIEWER"}, headers=bearer_admin)
+    pwd_hana = r.json()["contrasenaTemporal"]
+    h = entrar("hana@ejemplo.com", pwd_hana).json()
+    c.post("/auth/contrasena", json={"nueva": "Hana-Definitiva-123!", "confirmacion": "Hana-Definitiva-123!"}, headers={**srv(), "Authorization": f"Bearer {h['accessToken']}"})
+    viajar(400)
+    rev("quien YA hizo su primer acceso entra normal a las 400 horas", entrar("hana@ejemplo.com", "Hana-Definitiva-123!").status_code == 200)
+    volver()
+    config.TOKEN_ACTIVACION_HORAS = 0.5
+    r = c.post("/usuarios/", json={"nombre": "Ivo", "email": "ivo@ejemplo.com", "rol": "VIEWER"}, headers=bearer_admin)
+    pwd_ivo = r.json()["contrasenaTemporal"]
+    viajar(0.4)
+    ok_antes = entrar("ivo@ejemplo.com", pwd_ivo).status_code
+    viajar(0.6)
+    rev("con TOKEN_ACTIVACION_HORAS=0.5: a los 24 min entra y a los 36 min ya no (así se prueba sin esperar dos días)",
+        ok_antes == 200 and entrar("ivo@ejemplo.com", pwd_ivo).status_code == 403)
+    volver()
+    config.TOKEN_ACTIVACION_HORAS = 48
+
+    titulo("6 · Reemitir la contraseña a quien no entró a tiempo (reenviar_invitacion.py)")
+    # Gael lleva 49 horas sin poder entrar: se le genera una contraseña NUEVA.
+    canal_real()
+    viajar(49)
+    resultado, nueva_pwd = invitaciones.reenviar(guid_gael, actor_guid=s["usuario"]["guid"])
+    rev("reenviar: el correo salió, con la contraseña NUEVA y el texto de HU06",
+        resultado == invitaciones.ENVIADO and len(enviados) == 1 and enviados[0]["destino"] == "gael@ejemplo.com"
+        and contrasena_del_correo(enviados[0]) == nueva_pwd and nueva_pwd != pwd_gael
+        and "creada exitosamente por el administrador de tu organización" in enviados[0]["texto"])
+    rev("la contraseña ANTERIOR ya no sirve", entrar("gael@ejemplo.com", pwd_gael).status_code == 401)
+    r = entrar("gael@ejemplo.com", nueva_pwd)
+    rev("la nueva sirve, y las horas empezaron otra vez (a las 49 h del reloj ya no está caducada)",
+        r.status_code == 200 and r.json()["usuario"]["debeCambiarContrasena"] is True, r.text[:160])
+    viajar(49 + 47)
+    rev("a las 47 horas de la reemisión todavía sirve", entrar("gael@ejemplo.com", nueva_pwd).status_code == 200)
+    viajar(49 + 49)
+    rev("y a las 49 horas de la reemisión vuelve a caducar", entrar("gael@ejemplo.com", nueva_pwd).status_code == 403)
+    alta = [e for e in eventos("INVITATION_REISSUED") if e.get("usuarioGuid") == guid_gael]
+    rev("quedó el evento INVITATION_REISSUED con quién la pidió y qué pasó con el correo, sin la contraseña",
+        len(alta) == 1 and alta[0]["actor"] == s["usuario"]["guid"] and alta[0]["correo"] == "enviado"
+        and nueva_pwd not in (RAIZ / ".registro" / "auditoria.jsonl").read_text(encoding="utf-8"), str(alta))
+    volver()
+
+    # Las sesiones abiertas con la contraseña anterior mueren.
+    sin_canal()
+    r = c.post("/usuarios/", json={"nombre": "Jana", "email": "jana@ejemplo.com", "rol": "VIEWER"}, headers=bearer_admin)
+    guid_jana, pwd_jana = r.json()["usuario"]["guid"], r.json()["contrasenaTemporal"]
+    entrar("jana@ejemplo.com", pwd_jana)
+    rev("Jana tiene una sesión abierta con su contraseña temporal", sesiones_vivas(guid_jana) == 1)
+    invitaciones.reenviar(guid_jana, actor_guid=None)
+    rev("al reemitirle la contraseña esa sesión se cierra", sesiones_vivas(guid_jana) == 0)
+    rev("y se levantan los bloqueos: no queda bloqueada ni con intentos", usuarios.para_login("jana@ejemplo.com")["bloqueadoHasta"] is None)
+
+    # A quién NO se le puede reemitir.
+    try:
+        invitaciones.reenviar(cuerpo["admin"]["guid"], actor_guid=None)  # beto, que ya puso su contraseña
+        rev("a quien ya hizo su primer acceso NO se le reemite (NoPendiente)", False)
+    except usuarios.NoPendiente:
+        rev("a quien ya hizo su primer acceso NO se le reemite (NoPendiente)", True)
+    try:
+        invitaciones.reenviar("no-existe", actor_guid=None)
+        rev("a una cuenta que no existe, tampoco (NoEncontrado)", False)
+    except usuarios.NoEncontrado:
+        rev("a una cuenta que no existe, tampoco (NoEncontrado)", True)
+
+    # El script.
+    import reenviar_invitacion
+
+    def correr_reenvio(*argumentos: str) -> tuple[int, str, str]:
+        previos_argv = sys.argv
+        sys.argv = ["reenviar_invitacion.py", *argumentos]
+        salida, errores = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(salida), contextlib.redirect_stderr(errores):
+                rc = reenviar_invitacion.main()
+        finally:
+            sys.argv = previos_argv
+        return rc, salida.getvalue(), errores.getvalue()
+
+    canal_real()
+    viajar(60)
+    rc, out, err = correr_reenvio("--email", "cata@ejemplo.com")
+    pwd_script = (re.search(r"Contraseña temporal: (\S+)", out) or [None, ""])[1]
+    rev("el script: imprime la contraseña nueva y dice que mandó el correo (al administrador de la organización)",
+        rc == 0 and pwd_script and "enviado a cata@ejemplo.com" in out and len(enviados) == 1
+        and "administrador de Caduca SA" in enviados[0]["texto"] and contrasena_del_correo(enviados[0]) == pwd_script, out[:300])
+    rev("y con ella la administradora vuelve a poder entrar", entrar("cata@ejemplo.com", pwd_script).status_code == 200)
+    rc, out, err = correr_reenvio("--email", "hana@ejemplo.com")
+    rev("el script se niega con quien ya hizo su primer acceso, sin imprimir contraseña",
+        rc == 2 and "ya hizo su primer acceso" in err and "Contraseña temporal" not in out)
+    rc, out, err = correr_reenvio("--email", "nadie@ejemplo.com")
+    rev("y con un correo que no existe", rc == 2 and "No existe" in err)
+    volver()
+    sin_canal()
+    todo_el_log = " ".join(recolector.lineas)
+    rev("ninguna contraseña nueva llegó al log", not any(p and p in todo_el_log for p in (nueva_pwd, pwd_script, pwd_gael, pwd_cata)))
+
 finally:
     sin_canal()
     raiz_log.removeHandler(recolector)

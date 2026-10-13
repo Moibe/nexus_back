@@ -18,7 +18,7 @@ contraseña. Para que una caída del servicio no deje a nadie esperando medio mi
 import logging
 
 import config
-from servicios import auditoria, correo, plantillas_correo
+from servicios import auditoria, auth, correo, plantillas_correo, roles, tenants_registro, usuarios
 from servicios.almacen import ErrorAlmacen
 
 logger = logging.getLogger(__name__)
@@ -77,3 +77,36 @@ def para_respuesta(resultado: str, contrasena: str) -> dict:
     if not salio:
         cuerpo["contrasenaTemporal"] = contrasena
     return cuerpo
+
+
+def perfil_de(u: dict) -> tuple[str, str | None]:
+    """El perfil de bienvenida que le toca a una cuenta (`plantillas_correo.PERFILES_BIENVENIDA`) y, si es el
+    administrador de una organización, el nombre de esa organización."""
+    if u["esAdminPlataforma"]:
+        return "super_admin", None
+    propia = next((m for m in u["membresias"] if m["rol"] == roles.ADMIN), None)
+    if propia is None:
+        return "usuario", None
+    try:
+        return "admin_organizacion", tenants_registro.por_guid(propia["tenantGuid"])["nombre"]
+    except tenants_registro.NoEncontrado:
+        return "admin_organizacion", None
+
+
+def reenviar(guid: str, actor_guid: str | None) -> tuple[str, str]:
+    """Le genera a una cuenta que sigue en su primer acceso una contraseña temporal NUEVA, invalida la anterior
+    (y las sesiones que se hubieran abierto con ella), empieza otra vez las horas de vigencia y le manda la
+    bienvenida. Devuelve `(resultado, contrasena)`: el resultado es el de `enviar_bienvenida`, y la contraseña
+    la usa quien llama para entregarla a mano si el correo no salió.
+
+    Es lo que hace falta cuando la contraseña caducó (HU06 CA-5) o se perdió, y el núcleo del reenvío de la
+    invitación (CA-6). Levanta `usuarios.NoEncontrado` o `usuarios.NoPendiente` (ya hizo su primer acceso)."""
+    temporal = auth.contrasena_temporal()
+    nueva = usuarios.emitir_temporal(guid, auth.hash_de(temporal))
+    perfil, organizacion = perfil_de(nueva)
+    resultado = enviar_bienvenida(nueva["email"], nueva["nombre"], temporal, perfil, organizacion)
+    try:
+        auditoria.registrar(auditoria.INVITATION_REISSUED, usuario_guid=guid, actor=actor_guid, correo=resultado)
+    except (ErrorAlmacen, OSError) as exc:
+        logger.warning("No se pudo registrar INVITATION_REISSUED en la bitácora de auditoría: %s", exc)
+    return resultado, temporal

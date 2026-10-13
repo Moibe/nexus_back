@@ -45,8 +45,11 @@ FORCED_LOGOUT = "FORCED_LOGOUT"
 # HU06 CA-1 y CA-7: el alta de un usuario (también la del administrador de una organización, HU02). Lleva el
 # usuario creado, su rol, quién lo dio de alta y qué pasó con su correo de bienvenida; nunca la contraseña.
 USER_CREATED = "USER_CREATED"
+# HU06 CA-5/CA-6: a una cuenta que sigue en su primer acceso se le generó una contraseña temporal NUEVA (la
+# anterior dejó de servir y las 48 horas empiezan otra vez). Quién la pidió y qué pasó con su correo; nunca la contraseña.
+INVITATION_REISSUED = "INVITATION_REISSUED"
 
-ACCIONES = frozenset({PASSWORD_RESET_REQUESTED, PASSWORD_RESET_COMPLETED, LOGOUT, FORCED_LOGOUT, USER_CREATED})
+ACCIONES = frozenset({PASSWORD_RESET_REQUESTED, PASSWORD_RESET_COMPLETED, LOGOUT, FORCED_LOGOUT, USER_CREATED, INVITATION_REISSUED})
 
 
 def _ahora() -> datetime:

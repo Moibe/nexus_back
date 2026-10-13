@@ -124,6 +124,17 @@ def _sin_configurar() -> HTTPException:
     return _error(status.HTTP_503_SERVICE_UNAVAILABLE, "sin_configurar", "El acceso no está configurado en el servidor (AUTH_JWT_SECRET).")
 
 
+def _activacion_vencida() -> HTTPException:
+    """La contraseña temporal caducó (HU06 CA-5). El texto es el de la pantalla del diseño; la pantalla lleva el suyo."""
+    return _error(
+        status.HTTP_403_FORBIDDEN,
+        "activacion_vencida",
+        "El enlace utilizado para acceder a la plataforma ha vencido. Los enlaces de primer acceso son válidos "
+        "únicamente durante 48 horas a partir de su envío. Contacta al administrador de tu organización para "
+        "generar un nuevo acceso.",
+    )
+
+
 def _contrasena_incorrecta(u: dict, email: str, datos: "Login", origen: str | None) -> NoReturn:
     """Anota la contraseña mala y responde: 423 si con esta se llegó al tope de intentos, o 401
     con los que quedan. No devuelve nunca."""
@@ -261,7 +272,8 @@ def _segundos_hasta(iso: str) -> int:
     description=(
         "Correo y contraseña → JWT de acceso + refresh token. Errores con `codigo`: "
         "`correo_invalido` (400), `correo_no_existe` y `credenciales` (401, con `intentosRestantes`), "
-        "`bloqueada` (423, con `hastaEn` y `segundosRestantes`), `desactivada` (403)."
+        "`bloqueada` (423, con `hastaEn` y `segundosRestantes`), `desactivada` (403), `activacion_vencida` (403: la "
+        "contraseña temporal era la correcta pero ya pasaron las horas de `TOKEN_ACTIVACION_HORAS`)."
     ),
 )
 def login(datos: Login, response: Response) -> dict:
@@ -299,7 +311,12 @@ def login(datos: Login, response: Response) -> dict:
             raise _error(status.HTTP_403_FORBIDDEN, "desactivada", "La cuenta con la que intentas ingresar ha sido desactivada.")
         if not auth.verificar_contrasena(u["hash"], datos.password):
             _contrasena_incorrecta(u, email, datos, origen)
-        publico = {k: v for k, v in u.items() if k not in ("hash", "fallidos", "bloqueadoHasta")}
+        if usuarios.acceso_vencido(u):
+            # La contraseña era la correcta pero caducó: no cuenta como intento fallido (no es un error de quien
+            # escribe) y se dice DESPUÉS de verificarla, para no contarle esto a quien no la tiene.
+            usuarios.registrar_resultado_login(u["guid"], email, False, "EXPIRED", datos.ip, datos.userAgent, origen)
+            raise _activacion_vencida()
+        publico = {k: v for k, v in u.items() if k not in ("hash", "fallidos", "bloqueadoHasta", "temporalEmitidaEn")}
         publico["ultimoLoginEn"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         try:
             # `hash_verificado`: la contraseña se comprobó fuera del candado; si mientras tanto
@@ -517,6 +534,10 @@ def cambiar_contrasena(datos: CambioContrasena, authorization: str | None = Head
         if completo is None:
             raise _error(status.HTTP_401_UNAUTHORIZED, "sesion_invalida", "El usuario ya no existe.")
         if u["debeCambiarContrasena"]:
+            if usuarios.acceso_vencido(completo):
+                # Entró antes de que caducara y se quedó sin terminar: el primer acceso ya no se puede completar.
+                usuarios.revocar_sesiones(u["guid"], None, "ACTIVATION_EXPIRED")
+                raise _activacion_vencida()
             motivo = "FIRST_LOGIN"
         else:
             if not datos.actual or not auth.verificar_contrasena(completo["hash"], datos.actual):

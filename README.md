@@ -1181,13 +1181,32 @@ bootstrap imprime la contraseña SIEMPRE, salga o no el correo: es el respaldo d
 
 **La contraseña viaja por correo, como dibuja el diseño** (y, con `api`, por el servicio de ART).
 Por eso el cuerpo jamás se registra, y por eso la cuenta nace obligada a cambiarla en el primer
-acceso. **Falta de HU06:** que el acceso CADUQUE a las 48 horas (CA-5, con su pantalla «Tu enlace de
-activación ha caducado»; `TOKEN_ACTIVACION_HORAS` ya existe) y el reenvío de la invitación (CA-6, que
-genera una contraseña nueva e invalida la anterior). Mientras no estén, una contraseña temporal que
-nadie usó sigue sirviendo.
+acceso. **Falta de HU06:** que el el botón «Reenviar invitación» de la pantalla de usuarios (CA-6): el
+núcleo ya está (`invitaciones.reenviar`, ver abajo) y solo falta el endpoint y la pantalla.
+
+**La contraseña temporal CADUCA (HU06 CA-5, desde el 2026-10-13).** Sirve `TOKEN_ACTIVACION_HORAS`
+(48 por default; admite fracciones —`0.01` es menos de un minuto, para probar sin esperar dos
+días— y `0` apaga la caducidad) a partir del alta o de la última reemisión. Pasado ese tiempo,
+entrar con ella —aunque sea la correcta— da **403 `activacion_vencida`** (el front lleva a «Tu enlace
+de activación ha caducado»), no cuenta como intento fallido ni bloquea (queda `EXPIRED` en la bitácora
+de intentos) y se dice DESPUÉS de verificar la contraseña: a una equivocada se le sigue diciendo
+`credenciales`. Quien entró a tiempo y no terminó tampoco puede completar el primer acceso
+(`POST /auth/contrasena` da el mismo 403 y le cierra las sesiones). Aplica a todos los que dan de alta
+en pantalla, el administrador de una organización incluido; **NO** a los administradores de
+plataforma (su alta es por línea de comandos y no habría quien les generara un acceso nuevo desde
+pantalla) ni a quien ya puso su contraseña. Ojo al desplegar: las cuentas que ya estaban pendientes
+y tengan más de 48 horas caducan en cuanto se despliega.
+
+**Reemitir la contraseña** (`reenviar_invitacion.py --email x@y.com`, o `invitaciones.reenviar`): a una
+cuenta que SIGUE en su primer acceso le genera una contraseña temporal NUEVA, invalida la anterior y
+las sesiones que se hubieran abierto con ella, levanta los bloqueos, empieza otra vez las horas de
+vigencia y le manda la bienvenida. Imprime la contraseña siempre. Deja el evento `INVITATION_REISSUED`
+en la bitácora. A quien ya hizo su primer acceso se le niega: para eso está «Olvidé mi contraseña».
+Es lo que hay hoy para quien dejó caducar su acceso, hasta que exista la pantalla.
 
 Se prueba en `verificar_invitaciones.py` (la plantilla, el servicio, las altas por HTTP con un canal
-simulado, y el script de bootstrap) y, en el navegador, con `probar-correo-bienvenida.mjs`.
+simulado, el script de bootstrap, la caducidad con el reloj movido y la reemisión) y, en el navegador,
+con `probar-correo-bienvenida.mjs` y `probar-activacion-caducada.mjs`.
 
 ### El JWT de acceso y la sesión cerrada (HU05)
 

@@ -250,7 +250,10 @@ FRONT_URL = (os.getenv("FRONT_URL") or "http://localhost:3400").strip().rstrip("
 # 48 h para activar una cuenta nueva (HU06) y 1 h para recuperar la contraseña
 # (HU10), que es más corta a propósito porque abre la puerta de una cuenta que
 # ya existe.
-TOKEN_ACTIVACION_HORAS = int(_numero("TOKEN_ACTIVACION_HORAS", 48))
+# Cuánto sirve la contraseña temporal del primer acceso (HU06 CA-5), y cuánto dura un enlace de activación. Puede
+# ser fraccionaria (0.01 = menos de un minuto: para probar la caducidad sin esperar dos días); 0 apaga la
+# caducidad del primer acceso.
+TOKEN_ACTIVACION_HORAS = _numero("TOKEN_ACTIVACION_HORAS", 48)
 TOKEN_RECUPERACION_HORAS = int(_numero("TOKEN_RECUPERACION_HORAS", 1))
 
 # Freno a "Olvidé mi contraseña" (HU10). Esa pantalla la abre cualquiera, sin
