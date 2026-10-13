@@ -1167,7 +1167,8 @@ distingue quién pide.
 | `GET /organizaciones/` | listado, con los datos de su administrador |
 | `GET /organizaciones/coincidencias?nombre=` | el aviso del alta: qué organizaciones se llaman igual (`ID encontrado`) y qué slug se asignaría (`ID asignado`) |
 | `POST /organizaciones/` | crea la organización **y la cuenta de su administrador**; devuelve `contrasenaTemporal` UNA vez (no hay correo). 409 `correo_registrado` |
-| `GET /organizaciones/{guid}/usuarios` | sus usuarios |
+| `GET /organizaciones/{guid}/usuarios` | sus usuarios, con la misma forma que el listado de su administrador (`GET /usuarios/`): número de orden, nombre, rol EN esa organización, estado y fecha de alta |
+| `POST /organizaciones/{guid}/usuarios/{usuario}/cerrar-sesion` | HU05 CA-4: el administrador de plataforma le cierra TODAS las sesiones a un usuario de esa organización. Ver «Desactivar, reactivar y cerrar sesión» |
 
 **Nombre, slug y código.** El nombre se puede repetir; el slug no. Al segundo
 "Seguros Monterrey" le toca `seguros-monterrey-1`, que es el "ID asignado" que
@@ -1211,13 +1212,27 @@ administrador de la organización, solo sobre la suya):
 | Ruta | Qué hace |
 |---|---|
 | `POST /usuarios/{guid}/estado` | `{activo, motivo}`. Desactivar cierra TODAS sus sesiones y deja de poder entrar; reactivar le devuelve el acceso con su misma contraseña |
-| `POST /usuarios/{guid}/cerrar-sesion` | `{motivo}`. Revoca TODAS sus sesiones (no podrá renovar) sin desactivarlo: puede volver a entrar. Deja un evento `FORCED_LOGOUT` ANTES de cerrar (si no se puede escribir, no se cierra nada). Solo el administrador de una organización, sobre usuarios de la suya: el Super Admin recibe 403. Su JWT deja de valer en este back al instante (401 `sesion_cerrada`). |
+| `POST /usuarios/{guid}/cerrar-sesion` | `{motivo}`. Revoca TODAS sus sesiones (no podrá renovar) sin desactivarlo: puede volver a entrar. Deja un evento `FORCED_LOGOUT` ANTES de cerrar (si no se puede escribir, no se cierra nada). Esta ruta es la del administrador de una organización, sobre usuarios de la suya; el Super Admin recibe 403 aquí porque no tiene organización (la suya cuelga de `/organizaciones`, abajo). Su JWT deja de valer en este back al instante (401 `sesion_cerrada`). |
 
 El **motivo es obligatorio** en los dos y queda en el registro con quién lo
 hizo: es lo que vuelve auditable que a alguien se le quitó el acceso. Nadie
 puede desactivarse a sí mismo ni cerrar su propia sesión desde aquí (para eso
 está el menú de su cuenta), y desactivar dos veces responde 409 `sin_cambio`
 en vez de fingir que hizo algo.
+
+**El administrador de plataforma también puede cerrar sesiones** (2026-10-12;
+el criterio CA-4 dice «Admin de organización o Super Admin»):
+`POST /organizaciones/{guid}/usuarios/{usuario}/cerrar-sesion`, con el mismo
+cuerpo `{motivo}` y las mismas reglas —motivo obligatorio, `FORCED_LOGOUT`
+escrito ANTES de cerrar, no a sí mismo—, y una más: el usuario tiene que ser
+MIEMBRO de la organización de la URL (404 si no, y 404 si la organización no
+existe). Las dos rutas llaman a `usuarios.forzar_cierre`, así que dejan
+exactamente el mismo rastro; el evento lleva `actor`: `ADMIN_PLATAFORMA` o
+`ADMIN_ORGANIZACION`. El administrador de una organización recibe 403
+`sin_permiso` en la ruta de plataforma. **Desactivar** sigue siendo solo del
+administrador de la organización. Lo que NO existe: cerrarle la sesión a OTRO
+administrador de plataforma (no pertenece a ninguna organización donde
+listarlo).
 
 ### Mi perfil (HU12, HU13 — 2026-10-07)
 

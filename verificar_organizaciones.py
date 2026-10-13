@@ -13,6 +13,7 @@ distinto (`-1`), que es lo que anuncia el aviso de coincidencias; y que el
 administrador nuevo pueda entrar y le toque cambiar su contraseña.
 """
 
+import json
 import os
 import shutil
 import tempfile
@@ -124,6 +125,10 @@ try:
     r = c.get(f"/organizaciones/{primera['organizacion']['guid']}/usuarios", headers=bearer)
     rev("sus usuarios: por ahora solo su administrador",
         r.status_code == 200 and [u["email"] for u in r.json()["usuarios"]] == ["benjamin.lg@ejemplo.com"], r.text[:200])
+    u0 = r.json()["usuarios"][0]
+    rev("con la forma del listado de su administrador (número, rol EN esa organización) y nada interno",
+        set(u0) == {"guid", "numero", "nombre", "email", "telefono", "rol", "rolNombre", "activo", "creadoEn", "debeCambiarContrasena"}
+        and u0["numero"] == "001" and u0["rol"] == "ADMIN" and u0["activo"] is True, str(u0))
     rev("una organización que no existe: 404", c.get("/organizaciones/no-existe/usuarios", headers=bearer).status_code == 404)
     r = c.post("/organizaciones/", json={**cuerpo, "nombre": "Z", "adminEmail": "z2@ejemplo.com",
                                         "recuperacion": {"email": "  Respaldo@Ejemplo.COM  ", "telefono": None}}, headers=bearer)
@@ -144,11 +149,11 @@ try:
 
     titulo("6b · Un super admin que cierra sesión: su JWT ya no sirve para administrar (HU05)")
     # Con una SEGUNDA sesión, para no tocar la que usa la sección 7.
-    segunda = c.post("/auth/login", json={"email": "super@ejemplo.com", "password": temporal_admin}, headers=srv()).json()
-    bearer_segunda = {**srv(), "Authorization": f"Bearer {segunda['accessToken']}"}
+    otra_sesion = c.post("/auth/login", json={"email": "super@ejemplo.com", "password": temporal_admin}, headers=srv()).json()
+    bearer_segunda = {**srv(), "Authorization": f"Bearer {otra_sesion['accessToken']}"}
     rev("(antes) con la segunda sesión entra", c.get("/organizaciones/", headers=bearer_segunda).status_code == 200)
     rev("cierra esa sesión: 204",
-        c.post("/auth/logout", json={"refreshToken": segunda["refreshToken"]}, headers=srv()).status_code == 204)
+        c.post("/auth/logout", json={"refreshToken": otra_sesion["refreshToken"]}, headers=srv()).status_code == 204)
     r = c.get("/organizaciones/", headers=bearer_segunda)
     rev("su JWT, que todavía no vence: 401 sesion_cerrada",
         r.status_code == 401 and r.json()["detail"]["codigo"] == "sesion_cerrada", r.text[:160])
@@ -156,6 +161,74 @@ try:
         c.post("/organizaciones/", json={**cuerpo, "nombre": "Colada", "adminEmail": "colada@ejemplo.com"}, headers=bearer_segunda).status_code == 401)
     rev("pero la OTRA sesión del super admin, que no se cerró, sigue funcionando",
         c.get("/organizaciones/", headers=bearer).status_code == 200)
+
+    titulo("6c · El administrador de plataforma cierra la sesión de un usuario de una organización (HU05 CA-4)")
+    org = primera["organizacion"]["guid"]
+    benjamin = primera["admin"]["guid"]
+    ruta = f"/organizaciones/{org}/usuarios/{benjamin}/cerrar-sesion"
+    ruta_auditoria = RAIZ / ".registro" / "auditoria.jsonl"
+
+    def forzados() -> list[dict]:
+        if not ruta_auditoria.exists():
+            return []
+        return [json.loads(x) for x in ruta_auditoria.read_text(encoding="utf-8").splitlines() if '"FORCED_LOGOUT"' in x]
+
+    def cerrar(ruta_: str, motivo: str = "Equipo extraviado", cabeceras: dict | None = None):
+        return c.post(ruta_, json={"motivo": motivo}, headers=cabeceras or bearer)
+
+    # Benjamin llega con tres sesiones vivas: la de la sección 6 y dos más.
+    sesiones = [
+        c.post("/auth/login", json={"email": "benjamin.lg@ejemplo.com", "password": primera["contrasenaTemporal"]}, headers=srv()).json()
+        for _ in range(2)
+    ]
+    suyo_a = {**srv(), "Authorization": f"Bearer {sesiones[0]['accessToken']}"}
+    # Y el administrador de la OTRA organización, para comprobar que no se entera.
+    ajeno = c.post("/auth/login", json={"email": "otro@ejemplo.com", "password": segunda["contrasenaTemporal"]}, headers=srv()).json()
+    bearer_ajeno = {**srv(), "Authorization": f"Bearer {ajeno['accessToken']}"}
+    rev("(antes) sus sesiones funcionan: con su JWT administra su organización",
+        c.get("/usuarios/", headers=suyo).status_code == 200 and c.get("/usuarios/", headers=suyo_a).status_code == 200)
+
+    r = cerrar(ruta, motivo="   ")
+    rev("sin motivo: 400 motivo_requerido",
+        r.status_code == 400 and r.json()["detail"]["codigo"] == "motivo_requerido", r.text[:160])
+    r = cerrar(f"/organizaciones/no-existe/usuarios/{benjamin}/cerrar-sesion")
+    rev("una organización que no existe: 404", r.status_code == 404 and "organización" in r.json()["detail"]["mensaje"], r.text[:160])
+    r = cerrar(f"/organizaciones/{org}/usuarios/{segunda['admin']['guid']}/cerrar-sesion")
+    rev("un usuario de OTRA organización, por la ruta de ésta: 404 (la ruta nombra la organización: no se cuela uno ajeno)",
+        r.status_code == 404 and "usuario" in r.json()["detail"]["mensaje"], r.text[:160])
+    r = cerrar(f"/organizaciones/{org}/usuarios/no-existe/cerrar-sesion")
+    rev("un usuario que no existe: 404", r.status_code == 404, r.text[:160])
+    r = cerrar(ruta, cabeceras=suyo)
+    rev("el administrador de la organización NO usa esta ruta: 403 sin_permiso",
+        r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_permiso", r.text[:160])
+    rev("sin sesión: 401", c.post(ruta, json={"motivo": "x"}, headers=srv()).status_code == 401)
+    # El super admin casi nunca es miembro de una organización; si lo fuera, cerrarse
+    # a sí mismo desde la lista lo echaría de la pantalla en la que está.
+    super_guid = usuarios.para_login("super@ejemplo.com")["guid"]
+    usuarios.agregar_membresia(super_guid, org, "ANALISTA")
+    r = cerrar(f"/organizaciones/{org}/usuarios/{super_guid}/cerrar-sesion")
+    rev("a sí mismo no (si además es miembro de la organización): 409 no_a_ti_mismo",
+        r.status_code == 409 and r.json()["detail"]["codigo"] == "no_a_ti_mismo", r.text[:160])
+    rev("ninguno de esos intentos rechazados dejó evento ni cerró nada",
+        forzados() == [] and c.get("/usuarios/", headers=suyo_a).status_code == 200, str(forzados()))
+
+    r = cerrar(ruta, motivo="  Equipo extraviado  ")
+    rev("cierra sus sesiones: 200 y cuántas eran (3)", r.status_code == 200 and r.json() == {"cerradas": 3}, r.text[:160])
+    rev("ninguna de sus sesiones puede renovarse: 401",
+        all(c.post("/auth/refresh", json={"refreshToken": s["refreshToken"]}, headers=srv()).status_code == 401 for s in sesiones))
+    r = c.get("/usuarios/", headers=suyo_a)
+    rev("su JWT, que todavía no vence, ya no administra: 401 sesion_cerrada",
+        r.status_code == 401 and r.json()["detail"]["codigo"] == "sesion_cerrada", r.text[:160])
+    rev("la sesión de la sección 6 tampoco", c.get("/usuarios/", headers=suyo).status_code == 401)
+    rev("los usuarios de OTRA organización no se enteran: su administrador sigue con sesión",
+        c.get("/usuarios/", headers=bearer_ajeno).status_code == 200)
+    rev("NO lo desactivó: su contraseña sigue sirviendo",
+        c.post("/auth/login", json={"email": "benjamin.lg@ejemplo.com", "password": primera["contrasenaTemporal"]}, headers=srv()).status_code == 200)
+    eventos = forzados()
+    rev("quedó UN evento FORCED_LOGOUT con el motivo limpio, la organización y al administrador de plataforma como actor",
+        len(eventos) == 1 and eventos[0]["usuarioGuid"] == benjamin and eventos[0]["por"] == super_guid
+        and eventos[0]["motivo"] == "Equipo extraviado" and eventos[0]["tenantGuid"] == org
+        and eventos[0]["actor"] == "ADMIN_PLATAFORMA" and bool(eventos[0]["en"]), str(eventos))
 
     titulo("7 · Un super admin desactivado deja de poder")
     usuarios.cambiar_estado(usuarios.para_login("super@ejemplo.com")["guid"], False)

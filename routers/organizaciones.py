@@ -5,6 +5,10 @@ primera ruta con permiso por ROL, no solo por llave de servicio: la llave la
 tiene el front entero, así que sin esto cualquier usuario con sesión podría
 crear organizaciones.
 
+Además de crear organizaciones, el administrador de plataforma ve los usuarios
+de cada una y puede CERRARLES LA SESIÓN (HU05 CA-4): la misma acción que tiene el
+administrador de la organización, pero sobre cualquiera de ellas.
+
 Al crear una organización se crea TAMBIÉN a su administrador, como pide el
 diseño (el modal captura sus datos). Sin correo en este sprint, la contraseña
 temporal se devuelve UNA vez y la pantalla se la muestra al super admin para
@@ -30,6 +34,10 @@ router = APIRouter()
 class Recuperacion(BaseModel):
     telefono: str | None = Field(default=None, max_length=25)
     email: str | None = Field(default=None, max_length=254)
+
+
+class CierreSesion(BaseModel):
+    motivo: str = Field(max_length=500)
 
 
 class NuevaOrganizacion(BaseModel):
@@ -116,16 +124,69 @@ def buscar_coincidencias(nombre: str = Query(max_length=200), authorization: str
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
 
-@router.get("/{guid}/usuarios", summary="Los usuarios de una organización")
+@router.get(
+    "/{guid}/usuarios",
+    summary="Los usuarios de una organización",
+    description=(
+        "Con la misma forma que el listado que ve su administrador (`GET /usuarios`): número de orden, nombre, "
+        "rol EN esa organización, estado y fecha de alta."
+    ),
+)
 def usuarios_de(guid: str, authorization: str | None = Header(default=None)) -> dict:
     _exigir_admin_plataforma(authorization)
     try:
         tenants_registro.por_guid(guid)
-        return {"usuarios": usuarios.de_tenant(guid)}
+        lista = usuarios.de_tenant(guid)
     except tenants_registro.NoEncontrado as exc:
         raise _error(status.HTTP_404_NOT_FOUND, "no_existe", "Esa organización no existe.") from exc
     except ErrorAlmacen as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    return {"usuarios": [usuarios.para_listado(u, guid, i + 1) for i, u in enumerate(lista)]}
+
+
+@router.post(
+    "/{guid}/usuarios/{usuario}/cerrar-sesion",
+    summary="Cerrar la sesión de un usuario de cualquier organización (HU05)",
+    description=(
+        "Lo mismo que `POST /usuarios/{guid}/cerrar-sesion`, pero ejecutado por el administrador de plataforma "
+        "sobre un usuario de la organización `guid`: revoca TODAS sus sesiones, sin desactivarlo. Motivo "
+        "obligatorio; queda como `FORCED_LOGOUT` con `actor: ADMIN_PLATAFORMA`. 404 si la organización no "
+        "existe o el usuario no es de ella. Un administrador de plataforma no puede cerrarse la sesión a sí mismo."
+    ),
+)
+def cerrar_sesion_de(
+    guid: str, usuario: str, datos: CierreSesion, authorization: str | None = Header(default=None)
+) -> dict:
+    yo = _exigir_admin_plataforma(authorization)
+    motivo = datos.motivo.strip()
+    if not motivo:
+        raise _error(status.HTTP_400_BAD_REQUEST, "motivo_requerido", "Escribe el motivo.")
+    try:
+        tenants_registro.por_guid(guid)
+        objetivo = usuarios.por_guid(usuario)
+    except tenants_registro.NoEncontrado as exc:
+        raise _error(status.HTTP_404_NOT_FOUND, "no_existe", "Esa organización no existe.") from exc
+    except usuarios.NoEncontrado as exc:
+        raise _error(status.HTTP_404_NOT_FOUND, "no_existe", "Ese usuario no existe.") from exc
+    except ErrorAlmacen as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    # Se cierra la sesión de un MIEMBRO de esa organización, no de cualquiera que
+    # se nombre en la URL: la ruta cuelga de la organización justamente para que el
+    # permiso y el listado que se ve en pantalla digan lo mismo que lo que se ejecuta.
+    if not any(m["tenantGuid"] == guid for m in objetivo["membresias"]):
+        raise _error(status.HTTP_404_NOT_FOUND, "no_existe", "Ese usuario no existe.")
+    if objetivo["guid"] == yo["guid"]:
+        raise _error(
+            status.HTTP_409_CONFLICT,
+            "no_a_ti_mismo",
+            "Para cerrar tu propia sesión usa el menú de tu cuenta.",
+        )
+    try:
+        cerradas = usuarios.forzar_cierre(usuario, motivo, yo["guid"], guid, usuarios.ACTOR_ADMIN_PLATAFORMA)
+    except ErrorAlmacen as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    logger.info("Sesiones cerradas por el administrador de plataforma (guid=%s, cuantas=%s)", usuario, cerradas)
+    return {"cerradas": cerradas}
 
 
 @router.post(

@@ -42,7 +42,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import config
-from servicios import registro
+from servicios import auditoria, registro, roles
 
 ARCHIVO = "usuarios.jsonl"
 
@@ -433,6 +433,28 @@ def por_guid(guid: str) -> dict:
     return _publico(u)
 
 
+def para_listado(u: dict, tenant_guid: str, posicion: int) -> dict:
+    """El usuario como lo pinta un listado de la organización `tenant_guid`: su
+    rol EN ESA organización, el número de orden que el diseño muestra como ID, y
+    el nombre del rol ya resuelto (el front no debería traducir códigos).
+
+    Lo usan los dos listados —el del administrador de la organización y el del
+    administrador de plataforma— para que la pantalla reciba la misma forma."""
+    rol = next((m["rol"] for m in u["membresias"] if m["tenantGuid"] == tenant_guid), None)
+    return {
+        "guid": u["guid"],
+        "numero": f"{posicion:03d}",
+        "nombre": f"{u['nombre']} {u['apellidos']}".strip(),
+        "email": u["email"],
+        "telefono": u.get("telefono"),
+        "rol": rol,
+        "rolNombre": roles.nombre_de(rol) if rol else "—",
+        "activo": u["activo"],
+        "creadoEn": u["creadoEn"],
+        "debeCambiarContrasena": u["debeCambiarContrasena"],
+    }
+
+
 def por_guid_y_sesion(guid: str, sesion_guid: str) -> tuple[dict, bool]:
     """`(usuario, sesion_viva)`: lo mismo que `por_guid` y, EN LA MISMA lectura
     del registro, si la sesión del JWT (su `sid`) sigue viva.
@@ -671,6 +693,32 @@ def cambiar_estado(guid: str, activo: bool, motivo: str | None = None, por: str 
                 {"evento": "sesion_revocada", "guid": guid, "sesionGuid": None, "motivo": "DEACTIVATED", "en": en},
             )
     return por_guid(guid)
+
+
+#: Quién ordenó un cierre forzado. Va en el evento de auditoría.
+ACTOR_ADMIN_ORGANIZACION = "ADMIN_ORGANIZACION"
+ACTOR_ADMIN_PLATAFORMA = "ADMIN_PLATAFORMA"
+
+
+def forzar_cierre(objetivo_guid: str, motivo: str, por_guid: str, tenant_guid: str | None, actor: str) -> int:
+    """El cierre forzado COMPLETO (HU05 CA-4 y CA-5): deja el evento
+    `FORCED_LOGOUT` en la bitácora de auditoría y cierra todas las sesiones.
+    Devuelve cuántas cerró.
+
+    Es UNA sola función para que el administrador de una organización y el de
+    plataforma dejen exactamente el mismo rastro; solo cambia `actor`. El
+    evento se escribe ANTES de cerrar, a propósito: si no se puede escribir
+    (503), no se cierra nada. Es el modo de falla correcto para una auditoría,
+    donde es peor un cierre sin saber quién lo ordenó que un aviso de más."""
+    auditoria.registrar(
+        auditoria.FORCED_LOGOUT,
+        usuario_guid=objetivo_guid,
+        por=por_guid,
+        motivo=motivo,
+        tenantGuid=tenant_guid,
+        actor=actor,
+    )
+    return cerrar_sesiones(objetivo_guid, motivo, por_guid)
 
 
 def cerrar_sesiones(guid: str, motivo: str, por: str | None = None) -> int:

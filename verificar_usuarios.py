@@ -202,9 +202,9 @@ try:
     forzados = [json.loads(x) for x in ruta_auditoria.read_text(encoding="utf-8").splitlines() if '"FORCED_LOGOUT"' in x]
     rev("quedó UN evento FORCED_LOGOUT (los intentos rechazados —sin motivo, a sí mismo— no dejan nada)", len(forzados) == 1, str(len(forzados)))
     f = forzados[0]
-    rev("con el usuario afectado, quien lo ordenó, el motivo, la organización y la hora",
+    rev("con el usuario afectado, quien lo ordenó (y en qué calidad), el motivo, la organización y la hora",
         f["usuarioGuid"] == guid and f["por"] == yo_guid and f["motivo"] == "Medida preventiva de seguridad."
-        and bool(f.get("tenantGuid")) and bool(f["en"]), str(f))
+        and f["actor"] == "ADMIN_ORGANIZACION" and bool(f.get("tenantGuid")) and bool(f["en"]), str(f))
     cierre_forzado = [json.loads(x) for x in registro_usuarios.read_text(encoding="utf-8").splitlines() if '"cierre_forzado"' in x]
     rev("y `cierre_forzado` guarda lo mismo en el registro de usuarios",
         len(cierre_forzado) == 1 and cierre_forzado[0]["guid"] == guid and cierre_forzado[0]["por"] == yo_guid
@@ -215,7 +215,8 @@ try:
     r = c.post(f"/usuarios/{guid}/cerrar-sesion", json={"motivo": "Intento de otra organización."}, headers=bearer_zs)
     rev("el administrador de OTRA organización no puede: 404 (ni se entera de que existe)", r.status_code == 404, r.text[:140])
     r = c.post(f"/usuarios/{guid}/cerrar-sesion", json={"motivo": "Intento del Super Admin."}, headers=bearer_super)
-    rev("el Super Admin tampoco puede HOY: 403 sin_organizacion (el criterio dice 'o Super Admin': decisión de producto pendiente)",
+    rev("el Super Admin no usa ESTA ruta (opera sobre 'mi organización' y él no tiene una): 403 sin_organizacion; la suya "
+        "cuelga de /organizaciones y se prueba en verificar_organizaciones.py (6c)",
         r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_organizacion", r.text[:140])
     forzados = [x for x in ruta_auditoria.read_text(encoding="utf-8").splitlines() if '"FORCED_LOGOUT"' in x]
     rev("ninguno de los tres intentos rechazados dejó evento", len(forzados) == 1, str(len(forzados)))
