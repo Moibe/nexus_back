@@ -81,6 +81,15 @@ class NoEncontrado(Exception):
     pass
 
 
+class NoSePuedeEliminar(Exception):
+    """El borrado lógico se negó. `motivo`: `ultimo_superadmin` (dejaría a la plataforma sin quien la administre) o
+    `admin_de_organizacion` (la organización se quedaría sin administrador; se permite con `forzar=True`)."""
+
+    def __init__(self, motivo: str, detalle: str = ""):
+        super().__init__(detalle or motivo)
+        self.motivo = motivo
+
+
 class NoPendiente(Exception):
     """La cuenta ya hizo su primer acceso: no tiene contraseña temporal que reemitir."""
 
@@ -157,6 +166,13 @@ def _construir_indice(eventos: list[dict]) -> tuple[dict[str, dict], dict[str, s
             u["contrasenaCambiadaEn"] = e.get("en")
             u["fallidos"] = 0
             u["bloqueadoHasta"] = None
+        elif tipo == "eliminado" and u:
+            # Borrado LÓGICO: la cuenta deja de existir para todo (login, listados, sesiones) y su correo queda libre
+            # para darse de alta otra vez. Sus renglones se quedan en el registro, que es de solo agregar.
+            correo = _normalizar_correo(u["email"])
+            if por_correo.get(correo) == guid:
+                del por_correo[correo]
+            del usuarios[guid]
         elif tipo == "invitacion" and u:
             # Una contraseña temporal NUEVA para una cuenta que sigue en su primer acceso: la anterior deja de
             # servir y la vigencia empieza otra vez (`emitir_temporal`).
@@ -771,6 +787,55 @@ def acceso_vencido(u: dict, ahora: datetime | None = None) -> bool:
     if emitida is None:
         return False
     return (ahora or _ahora()) - emitida > timedelta(hours=config.TOKEN_ACTIVACION_HORAS)
+
+
+def _negativa_de_eliminar(usuarios: dict, guid: str, forzar: bool) -> NoSePuedeEliminar | None:
+    """Por qué NO se puede retirar a esta cuenta, o `None` si se puede."""
+    u = usuarios[guid]
+    if u["esAdminPlataforma"] and not any(o["esAdminPlataforma"] and o["activo"] for g, o in usuarios.items() if g != guid):
+        return NoSePuedeEliminar(
+            "ultimo_superadmin", "es el último administrador de plataforma activo: la plataforma se quedaría sin quien la administre"
+        )
+    if not forzar and any(m["rol"] == roles.ADMIN for m in u["membresias"]):
+        return NoSePuedeEliminar("admin_de_organizacion", "es el administrador de una organización, que se quedaría sin administrador")
+    return None
+
+
+def puede_eliminar(guid: str, forzar: bool = False) -> None:
+    """Levanta `NoEncontrado` o `NoSePuedeEliminar` si `eliminar_usuario` se negaría; si no, no hace nada. Es la
+    simulación de `retirar_cuenta.py`."""
+    usuarios, _, _ = _indice()
+    if guid not in usuarios:
+        raise NoEncontrado(guid)
+    negativa = _negativa_de_eliminar(usuarios, guid, forzar)
+    if negativa is not None:
+        raise negativa
+
+
+def eliminar_usuario(guid: str, motivo: str, por: str | None = None, forzar: bool = False) -> dict:
+    """BORRADO LÓGICO (`retirar_cuenta.py`): la cuenta deja de existir para el sistema y su correo queda libre.
+
+    Se cierran todas sus sesiones y después se anota el evento `eliminado`; el índice la quita de todos lados
+    (login, listados, JWT: un token suyo recibe "el usuario ya no existe"). Nada se borra del registro: es de solo
+    agregar, y el rastro de lo que esa cuenta hizo se queda. Devuelve cómo era (sin el hash de su contraseña).
+
+    Se niega (`NoSePuedeEliminar`) a retirar al ÚLTIMO administrador de plataforma, y al administrador de una
+    organización salvo con `forzar` (la organización queda sin administrador). `motivo` es obligatorio."""
+    motivo = (motivo or "").strip()
+    if not motivo:
+        raise ValueError("El motivo es obligatorio.")
+    with registro.candado:
+        usuarios, _, _ = _indice()
+        if guid not in usuarios:
+            raise NoEncontrado(guid)
+        negativa = _negativa_de_eliminar(usuarios, guid, forzar)
+        if negativa is not None:
+            raise negativa
+        resumen = _publico(usuarios[guid])
+        en = _ahora().isoformat(timespec="seconds")
+        registro.agregar(ARCHIVO, {"evento": "sesion_revocada", "guid": guid, "sesionGuid": None, "motivo": "DELETED", "en": en})
+        registro.agregar(ARCHIVO, {"evento": "eliminado", "guid": guid, "motivo": motivo, "por": por, "en": en})
+    return resumen
 
 
 def emitir_temporal(guid: str, hash_contrasena: str) -> dict:

@@ -48,8 +48,10 @@ USER_CREATED = "USER_CREATED"
 # HU06 CA-5/CA-6: a una cuenta que sigue en su primer acceso se le generó una contraseña temporal NUEVA (la
 # anterior dejó de servir y las 48 horas empiezan otra vez). Quién la pidió y qué pasó con su correo; nunca la contraseña.
 INVITATION_REISSUED = "INVITATION_REISSUED"
+# Una cuenta se RETIRÓ (borrado lógico: `retirar_cuenta.py`). Lleva el correo, el motivo y quién lo hizo; nunca la contraseña.
+USER_DELETED = "USER_DELETED"
 
-ACCIONES = frozenset({PASSWORD_RESET_REQUESTED, PASSWORD_RESET_COMPLETED, LOGOUT, FORCED_LOGOUT, USER_CREATED, INVITATION_REISSUED})
+ACCIONES = frozenset({PASSWORD_RESET_REQUESTED, PASSWORD_RESET_COMPLETED, LOGOUT, FORCED_LOGOUT, USER_CREATED, INVITATION_REISSUED, USER_DELETED})
 
 
 def _ahora() -> datetime:

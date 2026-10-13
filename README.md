@@ -1425,6 +1425,29 @@ administrador de la organización. Lo que NO existe: cerrarle la sesión a OTRO
 administrador de plataforma (no pertenece a ninguna organización donde
 listarlo).
 
+### Retirar una cuenta: borrado lógico (2026-10-13)
+
+No hay pantalla ni endpoint para borrar usuarios: ninguna historia de Sprint 1 lo pide, y desactivar (HU08) deja el correo
+ocupado. Lo que hay es un script para quien administra el servidor:
+
+```
+venv/bin/python retirar_cuenta.py --email a@b.com --email c@d.com --motivo "Cuentas de prueba"             # simula
+venv/bin/python retirar_cuenta.py --email a@b.com --email c@d.com --motivo "Cuentas de prueba" --confirmar  # lo hace
+```
+
+Sin `--confirmar` NO toca nada: dice qué cuenta es (administrador de plataforma, rol y organización, si ya hizo su primer
+acceso) y si se negaría. Con él, a cada cuenta: se le cierran las sesiones, se apagan sus enlaces pendientes, deja de
+existir para el login, los listados y los JWT (un token suyo que todavía no vence recibe «el usuario ya no existe»), **su
+correo queda libre para darse de alta otra vez** (como una cuenta NUEVA, con otro guid) y queda el evento `USER_DELETED`
+con el correo, el motivo y quién lo hizo. Es LÓGICO: el registro es de solo agregar y no se borra ningún renglón, así que el
+rastro de lo que esa cuenta hizo se queda. No se puede deshacer desde aquí.
+
+Se niega a retirar al **último administrador de plataforma activo**, y al **administrador de una organización** salvo con
+`--forzar` (la organización queda sin administrador; el listado de organizaciones lo tolera y muestra la tarjeta sin
+administrador). En la base esto será `security.users.isDeleted` (ya existe en el diccionario, con el índice único de correo
+que lo ignora), y ese día este script cambia por el SP; todavía no se le ha pedido a Charlie. Se prueba en
+`verificar_retiro.py`.
+
 ### Mi perfil (HU12, HU13 — 2026-10-07)
 
 `POST /auth/perfil` actualiza los datos de QUIEN LLAMA: nombre, apellido
