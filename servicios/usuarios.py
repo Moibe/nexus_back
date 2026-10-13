@@ -37,12 +37,16 @@ Igual que en las llaves: el registro trae hechos (`creado`, `contrasena`,
 orden. `fallidos` y `bloqueadoHasta` salen de repasar los intentos.
 """
 
+import logging
 import re
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import config
 from servicios import auditoria, registro, roles
+
+logger = logging.getLogger(__name__)
 
 ARCHIVO = "usuarios.jsonl"
 
@@ -84,12 +88,16 @@ def _normalizar_correo(correo: str) -> str:
     return correo.strip().lower()
 
 
-def _indice() -> tuple[dict[str, dict], dict[str, str], dict[str, dict]]:
-    """(usuarios por guid, guid por correo, sesiones por guid de sesión)."""
+def _construir_indice(eventos: list[dict]) -> tuple[dict[str, dict], dict[str, str], dict[str, dict]]:
+    """(usuarios por guid, guid por correo, sesiones por guid de sesión), repasando
+    los eventos en el orden en que se escribieron. Es LINEAL en el número de
+    eventos: hasta el 2026-10-12 cada revocación recorría todas las sesiones, y con
+    miles de ellas el repaso tardaba segundos."""
     usuarios: dict[str, dict] = {}
     por_correo: dict[str, str] = {}
     sesiones: dict[str, dict] = {}
-    for e in registro.eventos(ARCHIVO):
+    de_usuario: dict[str, list[dict]] = {}  # las sesiones de cada persona, para "cerrar todas"
+    for e in eventos:
         tipo = e.get("evento")
         guid = e.get("guid")
         if tipo == "creado" and isinstance(guid, str):
@@ -160,9 +168,8 @@ def _indice() -> tuple[dict[str, dict], dict[str, str], dict[str, dict]]:
                 u["membresias"] = [m for m in u["membresias"] if m["tenantGuid"] != tenant]
                 u["membresias"].append({"tenantGuid": tenant, "rol": e.get("rol", "ADMIN")})
         elif tipo == "sesion" and u and isinstance(e.get("sesionGuid"), str):
-            sesiones.setdefault(
-                e["sesionGuid"],
-                {
+            if e["sesionGuid"] not in sesiones:  # gana la primera, como con los usuarios
+                nueva = {
                     "sesionGuid": e["sesionGuid"],
                     "guid": guid,
                     "refreshHash": e.get("refreshHash"),
@@ -172,17 +179,91 @@ def _indice() -> tuple[dict[str, dict], dict[str, str], dict[str, dict]]:
                     "userAgent": e.get("userAgent"),
                     "revocadaEn": None,
                     "revocadaPor": None,
-                },
-            )
+                }
+                sesiones[e["sesionGuid"]] = nueva
+                de_usuario.setdefault(guid, []).append(nueva)
         elif tipo == "sesion_revocada":
+            # Una sesión concreta (logout, rotación) o, sin `sesionGuid`, TODAS las
+            # que esa persona tenía hasta este punto del registro.
             objetivo = e.get("sesionGuid")
-            for s in sesiones.values():
-                if s["revocadaEn"]:
-                    continue
-                if (objetivo and s["sesionGuid"] == objetivo) or (not objetivo and s["guid"] == guid):
+            if objetivo:
+                # `isinstance`: una línea a mano con una lista o un diccionario en vez del
+                # guid no es hashable y haría tronar TODO el repaso; antes simplemente no
+                # coincidía con ninguna sesión.
+                afectadas = [sesiones[objetivo]] if isinstance(objetivo, str) and objetivo in sesiones else []
+            else:
+                afectadas = de_usuario.get(guid, []) if isinstance(guid, str) else []
+            for s in afectadas:
+                if not s["revocadaEn"]:
                     s["revocadaEn"] = e.get("en")
                     s["revocadaPor"] = e.get("motivo")
     return usuarios, por_correo, sesiones
+
+
+# ── Caché del índice ────────────────────────────────────────────────────────
+#
+# Hasta el 2026-10-12 `_indice()` repasaba el registro ENTERO en cada llamada, y
+# estaba bien: lo llamaban las acciones de una persona. Desde la 2ª etapa de HU05
+# lo llama también el guard del front (`GET /auth/sesion`, una vez cada pocos
+# segundos por sesión), y con un registro que solo crece eso ya no es aceptable.
+# Medido el 2026-10-13: repasar 20 mil eventos con 10 mil sesiones tardaba de 1.4 a
+# 2.2 s (ahora, de 12 a 60 ms), y a eso hay que sumarle leer y decodificar el archivo.
+#
+# El registro es de SOLO AGREGAR (`registro.agregar`; `bootstrap_admin.py` es otro
+# proceso que también agrega), así que cada escritura cambia su tamaño y, mientras
+# tamaño y fecha no cambien, el índice es el mismo: se guarda junto con la "firma"
+# del archivo de la que salió, y se vuelve a construir solo cuando cambia. La firma
+# y los eventos se toman bajo el mismo candado que las escrituras, para que nunca
+# queden de instantes distintos.
+#
+# Lo que NO se nota: una edición EN SITIO que deje el mismo tamaño y la misma
+# fecha (dos modificaciones dentro del mismo tick del reloj). Contradice el
+# contrato del registro ("nunca se reescribe una línea"); solo la hace a propósito
+# `verificar_auth.py`, que después pone `_cache_indice = None`.
+#
+# Lo que devuelve es COMPARTIDO: quien lo recibe no debe modificarlo. Ninguna
+# función de este módulo lo hace (el estado cambia agregando eventos, no editando
+# el índice), y `_publico` entrega copias de lo anidado.
+_cache_indice: tuple[tuple, tuple] | None = None
+
+#: Reconstruir el índice más lento que esto se avisa en el log (ver `_indice`).
+UMBRAL_RECONSTRUCCION_S = 0.5
+
+
+def _firma_del_registro() -> tuple | None:
+    """Lo que identifica el estado del archivo: cuál es, qué tan grande y desde
+    cuándo. `None` si no existe o no se puede leer (entonces no se usa la caché)."""
+    ruta = registro.ruta(ARCHIVO)
+    try:
+        st = ruta.stat()
+    except OSError:
+        return None
+    return str(ruta), st.st_ino, st.st_size, st.st_mtime_ns
+
+
+def _indice() -> tuple[dict[str, dict], dict[str, str], dict[str, dict]]:
+    """(usuarios por guid, guid por correo, sesiones por guid de sesión)."""
+    global _cache_indice
+    with registro.candado:
+        firma = _firma_del_registro()
+        guardado = _cache_indice
+        if firma is not None and guardado is not None and guardado[0] == firma:
+            return guardado[1]
+        inicio = time.perf_counter()
+        indice = _construir_indice(registro.eventos(ARCHIVO))
+        duracion = time.perf_counter() - inicio
+        if duracion > UMBRAL_RECONSTRUCCION_S:
+            # El guard del front espera esto como mucho 2 s y, pasado ese tope, deja pasar
+            # sin comprobar la sesión. Es la señal de que el registro provisional ya creció
+            # más de lo que debe: hay que cambiarlo por la base.
+            logger.warning(
+                "Reconstruir el índice de usuarios tardó %.2f s (%s bytes): el registro provisional ya es grande",
+                duracion,
+                firma[2] if firma else "?",
+            )
+        if firma is not None:
+            _cache_indice = (firma, indice)
+        return indice
 
 
 def _bloqueo_vigente(usuario: dict) -> datetime | None:
@@ -202,13 +283,13 @@ def _publico(u: dict) -> dict:
         "apellidoPaterno": u.get("apellidoPaterno", ""),
         "apellidoMaterno": u.get("apellidoMaterno", ""),
         "telefono": u.get("telefono"),
-        "recuperacion": u.get("recuperacion") or {},
+        "recuperacion": dict(u.get("recuperacion") or {}),
         "esAdminPlataforma": u["esAdminPlataforma"],
         "debeCambiarContrasena": u["debeCambiar"],
         "activo": u["activo"],
         "ultimoLoginEn": u["ultimoLoginEn"],
         "creadoEn": u["creadoEn"],
-        "membresias": list(u["membresias"]),
+        "membresias": [dict(m) for m in u["membresias"]],
     }
 
 
@@ -614,12 +695,42 @@ def fijar_contrasena(guid: str, hash_contrasena: str, motivo: str) -> dict:
 # ── Sesiones (uspCreateSession / uspGetSession / uspRevokeSessions) ────────
 
 
-def crear_sesion(guid: str, refresh_hash: str, expira: datetime, ip: str | None, user_agent: str | None) -> str:
+class SesionNoCanjeable(Exception):
+    """No se puede abrir la sesión que se pidió. `motivo`: `invalida` (el refresh no
+    existe, ya se canjeó o se cerró, la cuenta está desactivada, o la contraseña con la
+    que se entró dejó de ser la vigente), `vencida`, o `desactivada` (solo al crear la
+    sesión de un login: la cuenta se desactivó mientras se verificaba la contraseña)."""
+
+    def __init__(self, motivo: str):
+        super().__init__(motivo)
+        self.motivo = motivo
+
+
+def crear_sesion(
+    guid: str,
+    refresh_hash: str,
+    expira: datetime,
+    ip: str | None,
+    user_agent: str | None,
+    hash_verificado: str | None = None,
+) -> str:
+    """Abre una sesión. Con `hash_verificado` (lo usa el login) comprueba, BAJO el candado,
+    que la contraseña que se verificó siga siendo la vigente y la cuenta siga activa.
+
+    Verificar una contraseña con argon2 tarda decenas de milisegundos y se hace FUERA del
+    candado. Sin esta revisión, un restablecimiento de contraseña, un cierre forzado o una
+    desactivación que ocurrieran en esa ventana dejaban pasar un login con la credencial
+    vieja y su sesión nacía DESPUÉS de las revocaciones: viva y renovable por 7 días."""
     sesion_guid = str(uuid.uuid4())
     with registro.candado:
         usuarios, _, _ = _indice()
         if guid not in usuarios:
             raise NoEncontrado(guid)
+        if hash_verificado is not None:
+            if not usuarios[guid]["activo"]:
+                raise SesionNoCanjeable("desactivada")
+            if usuarios[guid]["hash"] != hash_verificado:
+                raise SesionNoCanjeable("invalida")
         registro.agregar(
             ARCHIVO,
             {
@@ -634,6 +745,53 @@ def crear_sesion(guid: str, refresh_hash: str, expira: datetime, ip: str | None,
             },
         )
     return sesion_guid
+
+
+def rotar_sesion(
+    refresh_hash: str,
+    nuevo_refresh_hash: str,
+    expira: datetime,
+    ip: str | None,
+    user_agent: str | None,
+) -> tuple[str, dict]:
+    """Canjea un refresh token por una sesión nueva, de forma ATÓMICA: devuelve
+    `(guid de la sesión nueva, usuario)`, o levanta `SesionNoCanjeable`.
+
+    Comprobar la sesión, revocarla y crear la sucesora se hace bajo UN solo candado. Antes
+    eran tres llamadas sueltas, y entre ellas cabía todo:
+      · dos peticiones con el mismo refresh (un refresh es de UN solo uso) lo canjeaban las
+        dos, y de un token salían varias sesiones vivas (medido: siete de ocho);
+      · un cierre forzado o un restablecimiento de contraseña que llegara a la mitad
+        revocaba las sesiones que existían entonces, y la sucesora nacía después, viva.
+    Es lo mismo que ya hace `tokens.consumir` con los enlaces de un solo uso."""
+    with registro.candado:
+        usuarios, _, sesiones = _indice()
+        s = next((x for x in sesiones.values() if x["refreshHash"] == refresh_hash), None)
+        u = usuarios.get(s["guid"]) if s else None
+        if s is None or s["revocadaEn"] or u is None or not u["activo"]:
+            raise SesionNoCanjeable("invalida")
+        if (_fecha(s["expira"]) or _ahora()) <= _ahora():
+            raise SesionNoCanjeable("vencida")
+        en = _ahora().isoformat(timespec="seconds")
+        registro.agregar(
+            ARCHIVO,
+            {"evento": "sesion_revocada", "guid": s["guid"], "sesionGuid": s["sesionGuid"], "motivo": "ROTATED", "en": en},
+        )
+        sesion_guid = str(uuid.uuid4())
+        registro.agregar(
+            ARCHIVO,
+            {
+                "evento": "sesion",
+                "sesionGuid": sesion_guid,
+                "guid": s["guid"],
+                "refreshHash": nuevo_refresh_hash,
+                "expira": expira.isoformat(timespec="seconds"),
+                "ip": ip,
+                "userAgent": (user_agent or "")[:500] or None,
+                "en": en,
+            },
+        )
+        return sesion_guid, _publico(u)
 
 
 def sesion_por_hash(refresh_hash: str) -> dict | None:
@@ -674,8 +832,9 @@ def cambiar_estado(guid: str, activo: bool, motivo: str | None = None, por: str 
     TODAS sus sesiones, o sea que no puede RENOVAR, y los guards del back
     rechazan su JWT al instante por dos vías: `activo` (403) y, desde HU05, la
     sesión revocada (401 `sesion_cerrada`). Lo que decide solo el front
-    (bandeja, llaves, webhooks), que solo verifica la firma, lo deja pasar hasta
-    que el JWT venza: ver README, "Limitación conocida". El `motivo` es
+    (bandeja, llaves, webhooks) lo rechaza el guard del front, que pregunta por
+    `GET /auth/sesion` (`desactivada`): ver README, "El JWT de acceso y la
+    sesión cerrada". El `motivo` es
     obligatorio en la pantalla y queda en el registro, que es lo que lo vuelve
     auditable."""
     with registro.candado:
@@ -727,8 +886,8 @@ def cerrar_sesiones(guid: str, motivo: str, por: str | None = None) -> int:
 
     Revoca las sesiones: no podrá RENOVAR, y su JWT deja de valer en los guards
     del back al instante (401 `sesion_cerrada`, ver `por_guid_y_sesion`). Lo que
-    decide solo el front (bandeja, llaves, webhooks) lo acepta hasta que el JWT
-    venza (15 minutos por defecto): 2ª etapa, pendiente.
+    decide solo el front (bandeja, llaves, webhooks) lo rechaza su guard en unos
+    segundos: pregunta por `GET /auth/sesion` (ver README).
 
     El rastro (`cierre_forzado`) se escribe ANTES de revocar, a propósito: si no
     se puede escribir, no se cierra nada."""

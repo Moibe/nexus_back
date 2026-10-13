@@ -123,9 +123,13 @@ def _sin_configurar() -> HTTPException:
     return _error(status.HTTP_503_SERVICE_UNAVAILABLE, "sin_configurar", "El acceso no está configurado en el servidor (AUTH_JWT_SECRET).")
 
 
-def _sesion_nueva(usuario: dict, ip: str | None, user_agent: str | None) -> dict:
+def _sesion_nueva(usuario: dict, ip: str | None, user_agent: str | None, hash_verificado: str | None = None) -> dict:
     refresh, refresh_hash, vence_refresh = auth.nuevo_refresh()
-    sesion_guid = usuarios.crear_sesion(usuario["guid"], refresh_hash, vence_refresh, ip, user_agent)
+    sesion_guid = usuarios.crear_sesion(usuario["guid"], refresh_hash, vence_refresh, ip, user_agent, hash_verificado)
+    return _respuesta_de_sesion(usuario, sesion_guid, refresh, vence_refresh)
+
+
+def _respuesta_de_sesion(usuario: dict, sesion_guid: str, refresh: str, vence_refresh: datetime) -> dict:
     acceso, vence_acceso = auth.emitir_acceso(usuario, sesion_guid)
     return {
         "accessToken": acceso,
@@ -292,7 +296,15 @@ def login(datos: Login, response: Response) -> dict:
         publico = {k: v for k, v in u.items() if k not in ("hash", "fallidos", "bloqueadoHasta")}
         publico["ultimoLoginEn"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         logger.info("Login correcto (guid=%s)", u["guid"])
-        return _sesion_nueva(publico, datos.ip, datos.userAgent)
+        # `hash_verificado`: la contraseña se comprobó fuera del candado; si mientras tanto
+        # se restableció o la cuenta se desactivó, la sesión no debe nacer.
+        return _sesion_nueva(publico, datos.ip, datos.userAgent, hash_verificado=u["hash"])
+    except usuarios.SesionNoCanjeable as exc:
+        if exc.motivo == "desactivada":
+            raise _error(status.HTTP_403_FORBIDDEN, "desactivada", "La cuenta con la que intentas ingresar ha sido desactivada.") from exc
+        raise _error(
+            status.HTTP_401_UNAUTHORIZED, "credenciales", "La contraseña es incorrecta; por favor intenta de nuevo."
+        ) from exc
     except ErrorAlmacen as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except auth.SinConfigurar as exc:
@@ -307,13 +319,17 @@ def login(datos: Login, response: Response) -> dict:
 def refresh(datos: Refresh, response: Response) -> dict:
     response.headers["Cache-Control"] = "no-store"
     try:
-        s = usuarios.sesion_por_hash(auth.hash_refresh(datos.refreshToken))
-        if s is None or s["revocadaEn"] or not s["usuario"] or not s["usuario"]["activo"]:
-            raise _error(status.HTTP_401_UNAUTHORIZED, "sesion_invalida", "La sesión ya no es válida. Inicia sesión de nuevo.")
-        if datetime.fromisoformat(s["expira"]) <= datetime.now(timezone.utc):
-            raise _error(status.HTTP_401_UNAUTHORIZED, "sesion_vencida", "La sesión venció. Inicia sesión de nuevo.")
-        usuarios.revocar_sesiones(s["guid"], s["sesionGuid"], "ROTATED")
-        return _sesion_nueva(s["usuario"], datos.ip, datos.userAgent)
+        nuevo_refresh, nuevo_hash, vence_refresh = auth.nuevo_refresh()
+        # Comprobar la sesión, revocarla y crear la sucesora, en UN paso: un refresh es de
+        # un solo uso y un cierre forzado no puede dejar una sucesora viva a medias.
+        sesion_guid, usuario = usuarios.rotar_sesion(
+            auth.hash_refresh(datos.refreshToken), nuevo_hash, vence_refresh, datos.ip, datos.userAgent
+        )
+        return _respuesta_de_sesion(usuario, sesion_guid, nuevo_refresh, vence_refresh)
+    except usuarios.SesionNoCanjeable as exc:
+        if exc.motivo == "vencida":
+            raise _error(status.HTTP_401_UNAUTHORIZED, "sesion_vencida", "La sesión venció. Inicia sesión de nuevo.") from exc
+        raise _error(status.HTTP_401_UNAUTHORIZED, "sesion_invalida", "La sesión ya no es válida. Inicia sesión de nuevo.") from exc
     except ErrorAlmacen as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except auth.SinConfigurar as exc:
@@ -329,8 +345,7 @@ def refresh(datos: Refresh, response: Response) -> dict:
         "el token no exista o ya estuviera revocado (503 solo si el almacén no responde) y deja un evento `LOGOUT` "
         "en la bitácora de auditoría. El JWT de esa sesión deja de valer EN ESTE BACK al instante (401 "
         "`sesion_cerrada`): los guards que validan un Bearer comprueban que la sesión de su `sid` siga viva. "
-        "Lo que sigue pendiente (2ª etapa) son las rutas que decide solo el front, que verifica el JWT con `jose` "
-        "sin llamar aquí y lo aceptan hasta que venza (`AUTH_ACCESO_MIN`, 15 minutos)."
+        "Las rutas que decide solo el front lo comprueban con `GET /auth/sesion`."
     ),
 )
 def logout(datos: Logout) -> Response:
@@ -366,8 +381,8 @@ def _auditar_cierre(usuario_guid: str, sesion_guid: str, ip: str | None, user_ag
         logger.warning("No se pudo registrar el LOGOUT en la bitácora de auditoría: %s", exc)
 
 
-def _usuario_del_bearer(authorization: str | None) -> tuple[dict, dict]:
-    """(claims, usuario) del JWT de acceso, o 401."""
+def _claims_del_bearer(authorization: str | None) -> dict:
+    """Los claims del JWT de acceso (firma y vigencia comprobadas), o 401."""
     if not authorization or not authorization.lower().startswith("bearer "):
         raise _error(status.HTTP_401_UNAUTHORIZED, "sin_sesion", "Falta el token de acceso.")
     try:
@@ -376,6 +391,12 @@ def _usuario_del_bearer(authorization: str | None) -> tuple[dict, dict]:
         raise _sin_configurar() from exc
     if not claims:
         raise _error(status.HTTP_401_UNAUTHORIZED, "sesion_invalida", "El token de acceso no es válido o venció.")
+    return claims
+
+
+def _usuario_del_bearer(authorization: str | None) -> tuple[dict, dict]:
+    """(claims, usuario) del JWT de acceso, o 401."""
+    claims = _claims_del_bearer(authorization)
     try:
         u, viva = usuarios.por_guid_y_sesion(claims["sub"], claims["sid"])
     except usuarios.NoEncontrado as exc:
@@ -393,6 +414,40 @@ def _usuario_del_bearer(authorization: str | None) -> tuple[dict, dict]:
 def yo(authorization: str | None = Header(default=None)) -> dict:
     _, u = _usuario_del_bearer(authorization)
     return {"usuario": u}
+
+
+@router.get(
+    "/sesion",
+    summary="¿Sigue viva la sesión de este JWT? (HU05, 2ª etapa)",
+    description=(
+        "Lo consulta el guard del front (una vez cada pocos segundos por sesión). Un JWT firmado y vigente NO prueba que su sesión siga "
+        "abierta: se pudo cerrar (la persona, un administrador, un restablecimiento de contraseña) o la cuenta "
+        "desactivarse, y el JWT vale hasta que venza. Las rutas que valida este back ya lo rechazan solas "
+        "(`sesion_cerrada`); las que decide SOLO el front (bandeja, llaves, webhooks, archivos, procesadores) no "
+        "pasan por aquí, y para ellas existe esta pregunta. "
+        "Responde 200 con `estado`: `viva`, `cerrada` (la sesión se cerró, o no existe: ante la duda se rechaza), "
+        "`desactivada` o `inexistente` (la persona ya no existe). Las respuestas definitivas son 200 a propósito: "
+        "es una CONSULTA, no un intento de acceso. Un 401 (`sin_sesion`, `sesion_invalida`) o un 503 quieren decir "
+        "que NO se pudo contestar (también un 503 si el almacén no está disponible), y quien pregunta no debe "
+        "tomarlo como que la sesión murió. Hoy contesta `usuarios.por_guid_y_sesion` sobre el registro provisional; "
+        "con la base hará falta una consulta por `sessionGuid` que NO está en lo pedido al DBA (ver "
+        "docs/solicitudes-dba.md): `uspGetSession` busca por el hash del refresh, no por el `sid` del JWT."
+    ),
+)
+def estado_de_sesion(response: Response, authorization: str | None = Header(default=None)) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    claims = _claims_del_bearer(authorization)
+    try:
+        u, viva = usuarios.por_guid_y_sesion(claims["sub"], claims["sid"])
+    except usuarios.NoEncontrado:
+        return {"estado": "inexistente"}
+    except ErrorAlmacen as exc:
+        # El montaje caído NO es una sesión muerta: 503, para que quien pregunta lo trate
+        # como "no se pudo contestar" (y el log diga por qué, en vez de un 500 anónimo).
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    if not u["activo"]:
+        return {"estado": "desactivada"}
+    return {"estado": "viva" if viva else "cerrada"}
 
 
 @router.post(
@@ -493,9 +548,9 @@ def cambiar_contrasena(datos: CambioContrasena, authorization: str | None = Head
 # 3. **CA-7 cierra las sesiones, y desde HU05 también el JWT en este back.**
 #    `fijar_contrasena` con motivo RESET revoca todas las sesiones: nadie puede
 #    renovar y los guards que validan un Bearer rechazan ya el JWT de esas
-#    sesiones (`sesion_cerrada`). Queda pendiente (2ª etapa) lo que decide solo
-#    el front (bandeja, llaves, webhooks...), que lo acepta hasta que venza: ver
-#    README, "Limitación conocida".
+#    sesiones (`sesion_cerrada`). Lo que decide solo el front (bandeja, llaves,
+#    webhooks...) lo rechaza el guard del front, que pregunta por `GET
+#    /auth/sesion`: ver README, "El JWT de acceso y la sesión cerrada".
 #
 # 4. **El correo se manda DESPUÉS de responder** (`BackgroundTasks`), para que
 #    el tiempo de envío no delate si la cuenta existe. Queda una diferencia

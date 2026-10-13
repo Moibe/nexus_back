@@ -17,8 +17,11 @@ el logout revoque.
 
 import json
 import os
+import random
 import shutil
 import tempfile
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -123,6 +126,9 @@ try:
             e["en"] = hace
         nuevas.append(_json.dumps(e, ensure_ascii=False))
     ruta.write_text("\n".join(nuevas) + "\n", encoding="utf-8")
+    # Una reescritura EN SITIO del mismo tamaño no cambia la firma del archivo (el registro es de
+    # solo agregar y esto lo contradice a propósito): se le avisa a la caché.
+    usuarios._cache_indice = None
     r = login(c, "admin@ejemplo.com", "mala")
     rev("pasados los 15 min se puede intentar de nuevo, y el contador arrancó en cero", r.status_code == 401 and r.json()["detail"]["intentosRestantes"] == 4, r.text)
 
@@ -252,10 +258,286 @@ try:
     rev("y la sesión de esa otra persona sigue funcionando (no se tocó)",
         c.get("/auth/yo", headers=con(sesion_de_otra["accessToken"])).status_code == 200)
     nota(
-        "PENDIENTE, 2ª etapa: lo que valida el back ya rechaza el JWT de una sesión cerrada, pero las rutas que decide "
-        "SOLO el front (bandeja, llaves, webhooks, archivos, procesadores) lo verifican con jose sin llamar aquí y lo "
-        "aceptan hasta que venza. Se cierra con la consulta de sesión que se le pida al DBA. Ver README, 'Limitación conocida'."
+        "2ª etapa (2026-10-13): las rutas que decide SOLO el front (bandeja, llaves, webhooks, archivos, procesadores) "
+        "las guarda hooks.server.ts, que ahora le pregunta a GET /auth/sesion (4e) una vez cada pocos segundos por sesión. Eso se mide en "
+        "el navegador: probar-sesion-cerrada-front.mjs."
     )
+
+    titulo("4e · GET /auth/sesion: ¿sigue viva? (HU05, 2ª etapa; lo consulta el guard del front cada pocos segundos por sesión)")
+
+    def estado(token: str | None):
+        """(HTTP, estado) si contestó, o (HTTP, codigo del error) si no pudo."""
+        cab = con(token) if token else srv()
+        r = c.get("/auth/sesion", headers=cab)
+        return r.status_code, (r.json().get("estado") if r.status_code == 200 else r.json()["detail"]["codigo"])
+
+    vivo = login(c, "admin@ejemplo.com", "Otra-Segura-456!").json()
+    rev("una sesión abierta: 200 viva", estado(vivo["accessToken"]) == (200, "viva"), str(estado(vivo["accessToken"])))
+    rev("la respuesta no se guarda en ningún caché (no-store)",
+        c.get("/auth/sesion", headers=con(vivo["accessToken"])).headers.get("cache-control") == "no-store")
+    c.post("/auth/logout", json={"refreshToken": vivo["refreshToken"]}, headers=srv())
+    rev("tras cerrar la sesión (logout): 200 cerrada", estado(vivo["accessToken"]) == (200, "cerrada"))
+    rev("el JWT de la sesión que se cerró en 4b: cerrada", estado(d1["accessToken"]) == (200, "cerrada"))
+    rev("el JWT anterior a una renovación (su sesión quedó ROTATED): cerrada", estado(d2["accessToken"]) == (200, "cerrada"))
+    rev("el JWT del dispositivo que SÍ renovó: viva", estado(r2.json()["accessToken"]) == (200, "viva"))
+    forzada = login(c, "admin@ejemplo.com", "Otra-Segura-456!").json()
+    otro_disp = login(c, "admin@ejemplo.com", "Otra-Segura-456!").json()
+    usuarios.cerrar_sesiones(u["guid"], "prueba de 4e")
+    rev("cerrada a la fuerza (cierre forzado): cerrada, en TODOS sus dispositivos",
+        estado(forzada["accessToken"]) == (200, "cerrada") and estado(otro_disp["accessToken"]) == (200, "cerrada"))
+    rev("sesión que no existe en el registro (JWT inventado con la firma buena): cerrada, ante la duda se rechaza",
+        estado(inventada) == (200, "cerrada"))
+    rev("el sid de la sesión de OTRA persona: cerrada", estado(prestada) == (200, "cerrada"))
+    rev("y la sesión de esa otra persona, que sigue abierta: viva", estado(sesion_de_otra["accessToken"]) == (200, "viva"))
+    cuarta = usuarios.bootstrap_admin("cuarta@ejemplo.com", "Cuarta", "Persona", auth.hash_de("Cualquiera-Larga-123!"))
+    usuarios.fijar_contrasena(cuarta["guid"], auth.hash_de("Cuarta-Contrasena-123!"), "FIRST_LOGIN")
+    de_cuarta = login(c, "cuarta@ejemplo.com", "Cuarta-Contrasena-123!").json()
+    rev("(antes) la de la cuarta persona está viva", estado(de_cuarta["accessToken"]) == (200, "viva"))
+    usuarios.cambiar_estado(cuarta["guid"], False)
+    rev("desactivada: 200 desactivada (se mira antes que la sesión: quien está desactivado no debe ver 'cerrada')",
+        estado(de_cuarta["accessToken"]) == (200, "desactivada"))
+    usuarios.cambiar_estado(cuarta["guid"], True)
+    rev("reactivada: su sesión de antes sigue cerrada (reactivar no la resucita)",
+        estado(de_cuarta["accessToken"]) == (200, "cerrada"))
+    fantasma, _ = auth.emitir_acceso({**usuarios.por_guid(u["guid"]), "guid": "persona-que-no-existe"}, "sesion-x")
+    rev("una persona que ya no existe: 200 inexistente", estado(fantasma) == (200, "inexistente"))
+    rev("sin Bearer: 401 sin_sesion (no se pudo contestar; no quiere decir que la sesión murió)", estado(None) == (401, "sin_sesion"))
+    rev("un Bearer que no es un JWT: 401 sesion_invalida", estado("basura") == (401, "sesion_invalida"))
+    rev("sin llave de servicio: 401", c.get("/auth/sesion", headers={"Authorization": f"Bearer {de_cuarta['accessToken']}"}).status_code == 401)
+    # Un montaje del almacén caído NO es una sesión muerta: se contesta 503 ("no se pudo contestar"), no un 500 anónimo.
+    centinela = RAIZ / ".nexus-almacen"
+    centinela.unlink()
+    try:
+        r = c.get("/auth/sesion", headers=con(de_cuarta["accessToken"]))
+        rev("con el almacén sin montar: 503, no un 500 anónimo", r.status_code == 503, f"{r.status_code} {r.text[:80]}")
+    finally:
+        centinela.touch()
+    rev("al volver el almacén, contesta de nuevo", estado(de_cuarta["accessToken"])[0] == 200)
+
+    titulo("4f · El índice de usuarios se guarda mientras el registro no cambie (la consulta de sesión corre cada pocos segundos por cada sesión abierta)")
+    contadas = {"n": 0}
+    leer_original = usuarios.registro.eventos
+
+    def leer_contando(nombre):
+        contadas["n"] += 1
+        return leer_original(nombre)
+
+    usuarios.registro.eventos = leer_contando
+    try:
+        s4f = login(c, "admin@ejemplo.com", "Otra-Segura-456!").json()
+        claims_4f = auth.verificar_acceso(s4f["accessToken"])
+        usuarios.por_guid_y_sesion(claims_4f["sub"], claims_4f["sid"])  # deja la caché al día tras el login
+        contadas["n"] = 0
+        for _ in range(50):
+            usuarios.por_guid_y_sesion(claims_4f["sub"], claims_4f["sid"])
+        rev("50 consultas sin que nadie escriba: el registro NO se vuelve a leer", contadas["n"] == 0, str(contadas["n"]))
+        for _ in range(5):
+            c.get("/auth/sesion", headers=con(s4f["accessToken"]))
+        rev("ni por el endpoint (5 consultas más)", contadas["n"] == 0, str(contadas["n"]))
+        usuarios.crear_sesion(u["guid"], "hash-4f", datetime.now(timezone.utc) + timedelta(days=1), None, None)
+        contadas["n"] = 0
+        usuarios.por_guid(u["guid"])
+        rev("tras una escritura, la siguiente consulta lee UNA vez", contadas["n"] == 1, str(contadas["n"]))
+        usuarios.por_guid(u["guid"])
+        rev("y la que sigue ya no", contadas["n"] == 1, str(contadas["n"]))
+        # Un cambio hecho por FUERA de este proceso (un script, otro proceso) también debe verse.
+        ruta_usuarios = RAIZ / ".registro" / "usuarios.jsonl"
+        with open(ruta_usuarios, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"evento": "estado", "guid": u["guid"], "activo": False, "motivo": "otro proceso", "en": "2026-10-12T00:00:00+00:00"}) + chr(10))
+        rev("un cambio hecho por FUERA del proceso se ve, sin reiniciar nada", usuarios.por_guid(u["guid"])["activo"] is False)
+        with open(ruta_usuarios, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"evento": "estado", "guid": u["guid"], "activo": True, "motivo": "otro proceso", "en": "2026-10-12T00:00:01+00:00"}) + chr(10))
+        rev("y el siguiente también", usuarios.por_guid(u["guid"])["activo"] is True)
+    finally:
+        usuarios.registro.eventos = leer_original
+
+    titulo("4g · El repaso del registro es LINEAL y sigue las mismas reglas que el cuadrático de antes (prueba diferencial)")
+
+    def repaso_viejo(eventos: list[dict]) -> dict:
+        """Las sesiones tal como las calculaba `_indice()` hasta el 2026-10-12: cada revocación recorría TODAS."""
+        personas: set[str] = set()
+        sesiones_: dict[str, dict] = {}
+        for e in eventos:
+            tipo, guid = e.get("evento"), e.get("guid")
+            if tipo == "creado" and isinstance(guid, str):
+                personas.add(guid)
+                continue
+            existe = isinstance(guid, str) and guid in personas
+            if tipo == "sesion" and existe and isinstance(e.get("sesionGuid"), str):
+                sesiones_.setdefault(e["sesionGuid"], {"guid": guid, "revocadaEn": None, "revocadaPor": None})
+            elif tipo == "sesion_revocada":
+                objetivo = e.get("sesionGuid")
+                for sid_, s in sesiones_.items():
+                    if s["revocadaEn"]:
+                        continue
+                    if (objetivo and sid_ == objetivo) or (not objetivo and s["guid"] == guid):
+                        s["revocadaEn"], s["revocadaPor"] = e.get("en"), e.get("motivo")
+        return {k: (v["guid"], v["revocadaEn"], v["revocadaPor"]) for k, v in sesiones_.items()}
+
+    def repaso_nuevo(eventos: list[dict]) -> dict:
+        _, _, ses = usuarios._construir_indice(eventos)
+        return {k: (v["guid"], v["revocadaEn"], v["revocadaPor"]) for k, v in ses.items()}
+
+    azar = random.Random(20261012)
+    personas_g = ["p0", "p1", "p2", "p3", "fantasma"]  # "fantasma" nunca se crea
+    distintos = 0
+    for ronda in range(300):
+        eventos_g: list[dict] = []
+        vistas: list[str] = []
+        for i in range(azar.randint(5, 80)):
+            en = f"2026-10-12T{i // 60:02d}:{i % 60:02d}:00+00:00"
+            persona = azar.choice(personas_g)
+            clase = azar.choice(["creado", "sesion", "sesion", "sesion", "revoca_una", "revoca_una", "revoca_todas",
+                                 "sesion_repetida", "revoca_inventada", "revoca_sin_guid", "revoca_rara", "sesion_guid_raro"])
+            if clase == "creado" and persona != "fantasma":
+                eventos_g.append({"evento": "creado", "guid": persona, "email": f"{persona}@x.com", "nombre": persona, "hash": "h", "en": en})
+            elif clase == "sesion":
+                sid_g = f"s{ronda}-{i}"
+                vistas.append(sid_g)
+                eventos_g.append({"evento": "sesion", "sesionGuid": sid_g, "guid": persona, "refreshHash": "r", "en": en})
+            elif clase == "sesion_repetida" and vistas:
+                eventos_g.append({"evento": "sesion", "sesionGuid": azar.choice(vistas), "guid": persona, "refreshHash": "r2", "en": en})
+            elif clase == "revoca_una" and vistas:
+                eventos_g.append({"evento": "sesion_revocada", "sesionGuid": azar.choice(vistas), "guid": persona, "motivo": "UNA", "en": en})
+            elif clase == "revoca_todas":
+                eventos_g.append({"evento": "sesion_revocada", "sesionGuid": None, "guid": persona, "motivo": "TODAS", "en": en})
+            elif clase == "revoca_inventada":
+                eventos_g.append({"evento": "sesion_revocada", "sesionGuid": "no-existe", "guid": persona, "motivo": "NADA", "en": en})
+            elif clase == "revoca_sin_guid":
+                eventos_g.append({"evento": "sesion_revocada", "sesionGuid": None, "motivo": "SIN-GUID", "en": en})
+            elif clase == "revoca_rara":
+                # La app solo escribe texto o None, pero una línea editada a mano puede traer cualquier cosa
+                # (una lista no es hashable): el repaso no debe tronar, y debe coincidir con el de antes.
+                eventos_g.append({"evento": "sesion_revocada", "sesionGuid": azar.choice([["x"], {"a": 1}, 7, True, 1.5, ""]),
+                                  "guid": persona, "motivo": "RARA", "en": en})
+            elif clase == "sesion_guid_raro":
+                eventos_g.append({"evento": "sesion", "sesionGuid": f"r{ronda}-{i}", "guid": azar.choice([None, 7, ["p0"]]),
+                                  "refreshHash": "r", "en": en})
+        if repaso_viejo(eventos_g) != repaso_nuevo(eventos_g):
+            distintos += 1
+    rev("300 registros al azar (creaciones, sesiones repetidas, revocaciones de una, de todas, de la nada): "
+        "el repaso nuevo da EXACTAMENTE lo mismo que el viejo", distintos == 0, f"{distintos} distintos")
+
+    def sesiones_grandes(n: int) -> list[dict]:
+        ev: list[dict] = [{"evento": "creado", "guid": f"g{i}", "email": f"g{i}@x.com", "nombre": "g", "hash": "h", "en": "2026-10-12T00:00:00+00:00"} for i in range(50)]
+        anterior: dict[str, str] = {}
+        for i in range(n):  # cada sesión "renueva" a la anterior de su persona (ROTATED)
+            g = f"g{i % 50}"
+            ev.append({"evento": "sesion", "sesionGuid": f"big-{i}", "guid": g, "refreshHash": "r", "en": "2026-10-12T00:00:00+00:00"})
+            if g in anterior:
+                ev.append({"evento": "sesion_revocada", "sesionGuid": anterior[g], "guid": g, "motivo": "ROTATED", "en": "2026-10-12T00:00:00+00:00"})
+            anterior[g] = f"big-{i}"
+        return ev
+
+    def tarda(ev: list[dict]) -> float:
+        mejor = float("inf")
+        for _ in range(3):  # el mejor de tres: lo que cuenta es el costo, no un tropiezo del sistema
+            t0 = time.perf_counter()
+            usuarios._construir_indice(ev)
+            mejor = min(mejor, time.perf_counter() - t0)
+        return mejor
+
+    t_n, t_4n = tarda(sesiones_grandes(10_000)), tarda(sesiones_grandes(40_000))
+    # Cuatro veces más sesiones: lineal tarda ~4x; el cuadrático de antes, ~16x. El umbral (8x) cae en
+    # medio, así el ruido de la máquina no lo mueve. Y no se usa un tiempo absoluto: en una máquina
+    # rápida el algoritmo viejo también lo pasaría.
+    rev(f"el repaso es LINEAL: cuatro veces más sesiones tarda ~cuatro veces más ({t_4n / t_n:.1f}x), no dieciséis", t_4n / t_n < 8,
+        f"{t_n * 1000:.0f} ms -> {t_4n * 1000:.0f} ms")
+    rev(f"y 80 mil eventos se repasan en menos de 1 s ({t_4n * 1000:.0f} ms)", t_4n < 1.0)
+
+    titulo("4h · El canje del refresh es ATÓMICO (un refresh es de un solo uso) y el login no abre sesión con la credencial vieja")
+
+    def vivas_de(guid: str) -> list[dict]:
+        _, _, ses = usuarios._indice()
+        return [s for s in ses.values() if s["guid"] == guid and not s["revocadaEn"]]
+
+    # (a) Ocho hilos canjean a la vez el MISMO refresh, varias rondas: antes salían varias sesiones.
+    rondas_mal = 0
+    for _ in range(25):
+        usuarios.cerrar_sesiones(u["guid"], "limpiar 4h")
+        _, hash0, vence0 = auth.nuevo_refresh()
+        usuarios.crear_sesion(u["guid"], hash0, vence0, None, None)
+        resultados: list[str] = []
+        barrera = threading.Barrier(8)
+
+        def canjear():
+            _, nuevo_hash, vence = auth.nuevo_refresh()
+            barrera.wait()
+            try:
+                usuarios.rotar_sesion(hash0, nuevo_hash, vence, None, None)
+                resultados.append("ok")
+            except usuarios.SesionNoCanjeable:
+                resultados.append("no")
+
+        hilos = [threading.Thread(target=canjear) for _ in range(8)]
+        [h.start() for h in hilos]
+        [h.join() for h in hilos]
+        if resultados.count("ok") != 1 or len(vivas_de(u["guid"])) != 1:
+            rondas_mal += 1
+    rev("ocho hilos con el mismo refresh, 25 rondas: lo canjea UNO solo y queda UNA sesión viva", rondas_mal == 0, f"{rondas_mal} rondas mal")
+
+    # (b) Un cierre forzado contra un refresh que rota en ciclo: al terminar el cierre no sobrevive nadie.
+    sucias = 0
+    for ronda in range(30):
+        usuarios.cerrar_sesiones(u["guid"], "limpiar 4h")
+        _, h_actual, v_actual = auth.nuevo_refresh()
+        usuarios.crear_sesion(u["guid"], h_actual, v_actual, None, None)
+        estado_rot = {"hash": h_actual}
+
+        def rotar_en_ciclo():
+            while True:
+                _, nuevo_hash, vence = auth.nuevo_refresh()
+                try:
+                    usuarios.rotar_sesion(estado_rot["hash"], nuevo_hash, vence, None, None)
+                except usuarios.SesionNoCanjeable:
+                    return
+                estado_rot["hash"] = nuevo_hash
+
+        hilo = threading.Thread(target=rotar_en_ciclo)
+        hilo.start()
+        time.sleep((ronda % 5) / 1000)
+        usuarios.cerrar_sesiones(u["guid"], "cierre forzado de la prueba 4h")
+        hilo.join(timeout=10)
+        if hilo.is_alive() or vivas_de(u["guid"]):
+            sucias += 1
+    rev("30 cierres forzados contra un refresh que rota sin parar: terminado el cierre NO queda ninguna sesión viva", sucias == 0, f"{sucias} de 30")
+
+    # (c) La contraseña se verifica fuera del candado: si cambia antes de abrir la sesión, la sesión no nace.
+    quinta = usuarios.bootstrap_admin("quinta@ejemplo.com", "Quinta", "Persona", auth.hash_de("Cualquiera-Larga-123!"))
+    usuarios.fijar_contrasena(quinta["guid"], auth.hash_de("Quinta-Contrasena-123!"), "FIRST_LOGIN")
+    hash_verificado = usuarios.para_login("quinta@ejemplo.com")["hash"]
+    _, h5, v5 = auth.nuevo_refresh()
+    usuarios.crear_sesion(quinta["guid"], h5, v5, None, None, hash_verificado=hash_verificado)
+    rev("con la contraseña vigente y la cuenta activa, la sesión nace", len(vivas_de(quinta["guid"])) == 1)
+    usuarios.fijar_contrasena(quinta["guid"], auth.hash_de("Quinta-Otra-Contrasena-123!"), "RESET")
+    _, h6, v6 = auth.nuevo_refresh()
+    try:
+        usuarios.crear_sesion(quinta["guid"], h6, v6, None, None, hash_verificado=hash_verificado)
+        rev("tras un RESET, un login que verificó la contraseña de antes NO abre sesión", False)
+    except usuarios.SesionNoCanjeable as e:
+        rev("tras un RESET, un login que verificó la contraseña de antes NO abre sesión", e.motivo == "invalida" and not vivas_de(quinta["guid"]))
+    hash_nuevo = usuarios.para_login("quinta@ejemplo.com")["hash"]
+    usuarios.cambiar_estado(quinta["guid"], False)
+    try:
+        usuarios.crear_sesion(quinta["guid"], h6, v6, None, None, hash_verificado=hash_nuevo)
+        rev("si la cuenta se desactiva mientras se verifica la contraseña, tampoco", False)
+    except usuarios.SesionNoCanjeable as e:
+        rev("si la cuenta se desactiva mientras se verifica la contraseña, tampoco", e.motivo == "desactivada" and not vivas_de(quinta["guid"]))
+
+    # (d) Un refresh vencido o desconocido no se canjea, con su motivo.
+    usuarios.cambiar_estado(quinta["guid"], True)
+    _, h7, _v = auth.nuevo_refresh()
+    usuarios.crear_sesion(quinta["guid"], h7, datetime.now(timezone.utc) - timedelta(minutes=1), None, None)
+    try:
+        usuarios.rotar_sesion(h7, "x" * 64, datetime.now(timezone.utc) + timedelta(days=1), None, None)
+        rev("un refresh vencido no se canjea (vencida)", False)
+    except usuarios.SesionNoCanjeable as e:
+        rev("un refresh vencido no se canjea (vencida)", e.motivo == "vencida")
+    try:
+        usuarios.rotar_sesion("no-existe" + "0" * 55, "x" * 64, datetime.now(timezone.utc) + timedelta(days=1), None, None)
+        rev("uno que nunca existió tampoco (invalida)", False)
+    except usuarios.SesionNoCanjeable as e:
+        rev("uno que nunca existió tampoco (invalida)", e.motivo == "invalida")
 
     titulo("5 · Cuenta desactivada")
     r = login(c, "admin@ejemplo.com", "Otra-Segura-456!")

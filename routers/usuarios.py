@@ -233,9 +233,9 @@ def cambiar_estado(guid: str, datos: CambioEstado, authorization: str | None = H
     summary="Cerrar la sesión de un usuario (HU05)",
     description=(
         "Revoca TODAS sus sesiones (refresh tokens): no podrá renovarlas y tendrá que entrar de nuevo. NO lo "
-        "desactiva — su contraseña sigue sirviendo. Su JWT deja de valer en este back al instante (401 "
-        "`sesion_cerrada`); lo que decide solo el front (bandeja, llaves, webhooks) lo acepta hasta que venza "
-        "(15 minutos por defecto, 2ª etapa pendiente). El motivo es obligatorio y queda registrado como "
+        "desactiva — su contraseña sigue sirviendo. Su JWT deja de valer al instante en este back (401 "
+        "`sesion_cerrada`) y, en pocos segundos, en lo que decide solo el front (bandeja, llaves, webhooks), que lo "
+        "consulta en `GET /auth/sesion`. El motivo es obligatorio y queda registrado como "
         "`FORCED_LOGOUT`. Esta ruta es la del administrador de una organización, sobre usuarios de la suya; el "
         "administrador de plataforma tiene la suya en `/organizaciones/{guid}/usuarios/{usuario}/cerrar-sesion`."
     ),

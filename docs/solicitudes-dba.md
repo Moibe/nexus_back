@@ -1084,6 +1084,7 @@ Principio: **la base nunca ve una contraseña ni un token**. El back calcula el 
 | `uspCreateSession` | `@userGuid, @refreshTokenHash, @expiresAt, @ipAddress, @userAgent` | `sessionGuid` | Alta del refresh token (hasheado). |
 | `uspGetSession` | `@refreshTokenHash` | `sessionGuid, userGuid, expiresAt, revokedAt` + los datos de `uspGetUserForLogin` sin el hash | Para renovar el access token. |
 | `uspRevokeSessions` | `@userGuid, @sessionGuid NULL, @reason varchar(40)` | `revoked int` | Una sesión (logout) o todas (HU05 cerrar sesión por un admin, HU08 desactivar). |
+| `uspGetSessionStatus` (nombre propuesto; **falta pedirlo**) | `@userGuid, @sessionGuid` | una fila `sessionGuid, userGuid, expiresAt, revokedAt, isActive` (esta última, de la cuenta), o ninguna si la sesión no existe o no es de esa persona | HU05, 2ª etapa (2026-10-13): lo que contesta `GET /auth/sesion`, que el guard del front consulta una vez cada pocos segundos por sesión abierta con el `sid` del JWT. `uspGetSession` NO sirve: busca por el hash del refresh y el JWT no lo trae. Tiene que ser barata (índice por `sessionGuid`), porque con la base se acaba el registro provisional que hoy se guarda en memoria. |
 
 Convenciones que ya seguimos con NEX-294/295: GUIDs hacia fuera, enteros solo para relacionar; `THROW 5xxxx` con mensaje claro; `SUSER_SNAME()` en auditoría; `SET ANSI_NULLS ON; SET QUOTED_IDENTIFIER ON;` en el script.
 

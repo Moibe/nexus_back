@@ -197,7 +197,8 @@ ALMACEN_RUTA = os.getenv("ALMACEN_RUTA", "")
 
 # ── Acceso (Sprint 1: login con JWT) ─────────────────────────────────────────
 # El secreto firma los JWT de acceso; el front lo comparte para verificarlos
-# sin llamar aquí en cada petición. Sin él, /auth/* responde 503. Mínimo 32
+# (y pregunta aparte, en GET /auth/sesion, si la sesión sigue viva). Sin él,
+# /auth/* responde 503. Mínimo 32
 # caracteres: `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
 AUTH_JWT_SECRET = os.getenv("AUTH_JWT_SECRET", "").strip()
 # Vida del JWT de acceso (minutos) y del refresh token (días).

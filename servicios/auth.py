@@ -12,7 +12,7 @@ que sí decide este módulo:
   pinta como chips; aquí se vuelven a comprobar, porque el front no es de fiar.
 - **JWT de acceso HS256**, de vida corta (`AUTH_ACCESO_MIN`), firmado con
   `AUTH_JWT_SECRET`. El front (su capa server) lo verifica con el mismo secreto
-  sin llamar aquí en cada petición.
+  y, además, pregunta aquí (`GET /auth/sesion`) si su sesión sigue viva.
 - **Refresh token**: 32 bytes aleatorios en base64url. Se entrega una vez; lo
   que se guarda es su SHA-256 (`servicios/usuarios.crear_sesion`).
 """

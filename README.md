@@ -1000,7 +1000,7 @@ AUTH_JWT_SECRET=<mínimo 32 caracteres; python -c "import secrets; print(secrets
 ```
 
 El mismo valor en el `.env` de `nexus_back` (firma los JWT) y en el del front
-(los verifica sin llamar aquí). Sin él, `/auth/*` responde 503 y el front no
+(los verifica con `jose`, y además le pregunta a `GET /auth/sesion` si la sesión sigue viva). Sin él, `/auth/*` responde 503 y el front no
 deja entrar a nadie.
 
 **Crear un administrador de plataforma** (puede haber varios: cada corrida con otro correo crea otro; en el servidor; ahí el virtualenv es `venv/`, sin punto — en la laptop es `.venv/`):
@@ -1020,8 +1020,9 @@ front, que pone las cookies httpOnly `nx_acceso` y `nx_refresh`):
 |---|---|
 | `POST /auth/login` | correo + contraseña → JWT de acceso (15 min) + refresh (7 días). Errores con `codigo`: `correo_invalido`, `correo_no_existe`, `credenciales` (+ `intentosRestantes`), `bloqueada` (423, + `hastaEn`), `desactivada` (403). |
 | `POST /auth/refresh` | refresh vigente → tokens nuevos; el refresh anterior queda revocado. |
-| `POST /auth/logout` | revoca la sesión de ESE refresh token y solo esa (las de otros dispositivos siguen). 204 aunque el token no exista o ya esté revocado; 503 solo si el almacén no responde. Deja un evento `LOGOUT` en la bitácora de auditoría. Su JWT deja de valer en este back al instante (401 `sesion_cerrada`); ver *Limitación conocida* abajo. |
+| `POST /auth/logout` | revoca la sesión de ESE refresh token y solo esa (las de otros dispositivos siguen). 204 aunque el token no exista o ya esté revocado; 503 solo si el almacén no responde. Deja un evento `LOGOUT` en la bitácora de auditoría. Su JWT deja de valer en este back al instante (401 `sesion_cerrada`) y en el front en unos segundos; ver *El JWT de acceso y la sesión cerrada* abajo. |
 | `GET /auth/yo` | el usuario del Bearer. |
+| `GET /auth/sesion` | ¿sigue viva la sesión de este JWT? (HU05, 2ª etapa). 200 con `estado`: `viva`, `cerrada` (se cerró o nunca existió), `desactivada` o `inexistente`; un 401 o 503 quiere decir que NO se pudo contestar. Lo consulta el guard del front, una vez cada pocos segundos por sesión abierta. |
 | `POST /auth/contrasena` | primer acceso: `nueva` + `confirmacion` (cierra todas las sesiones); después: también `actual`. Reglas: 12 caracteres, mayúscula, minúscula, número, carácter especial. |
 
 **Política** (del diseño; vivirá en `uspRecordLoginResult`): 5 intentos
@@ -1066,12 +1067,12 @@ las conozca; NEX-241):
    que cambia es el correo, que le dice que termine su primer acceso. Además es
    lo único correcto: restablecer apagaría en silencio `debeCambiar`.
 
-3. **CA-7 cierra las sesiones y, desde HU05, también el JWT en este back.**
+3. **CA-7 cierra las sesiones y, desde HU05, también el JWT.**
    Restablecer revoca todas las sesiones: nadie puede renovar y los guards que
    validan un Bearer (`/auth/*`, `/usuarios/*`, `/organizaciones/*`) rechazan
-   ya el JWT de esas sesiones (401 `sesion_cerrada`). Queda pendiente, como
-   2ª etapa, lo que decide solo el front (bandeja, llaves, webhooks...), que lo
-   acepta hasta que venza (ver *Limitación conocida* más abajo).
+   ya el JWT de esas sesiones (401 `sesion_cerrada`). Lo que decide solo el
+   front (bandeja, llaves, webhooks...) lo rechaza su guard, que lo consulta en
+   `GET /auth/sesion` (ver *El JWT de acceso y la sesión cerrada* más abajo).
 
 4. **Restablecer levanta el bloqueo del NAVEGADOR**, no solo el de la cuenta.
    Quien agotó sus cinco intentos y por eso vino aquí no debe toparse con
@@ -1106,19 +1107,20 @@ nadie recibe el enlace**: la HU está completa pero el correo se lee del disco.
 `http://172.10.30.15:3401`, no el 3400 del default), porque de ahí sale el
 enlace. Los `.eml` no se limpian solos.
 
-### Limitación conocida: el JWT de acceso y las rutas que decide solo el front
+### El JWT de acceso y la sesión cerrada (HU05)
 
-**Primera etapa HECHA (2026-10-12); segunda pendiente.** Cerrar una sesión —
-voluntaria (HU05 CA-1), forzada (HU05 CA-4), por restablecer la contraseña (HU10
-CA-7) o por desactivar la cuenta— revoca la sesión. Hasta el 2026-10-12 eso solo
-impedía RENOVAR: el **JWT de acceso** ya emitido seguía valiendo hasta que venciera
-(`AUTH_ACCESO_MIN`, 15 minutos; medido: 897 de 900 segundos), también para ESCRIBIR
-y para páginas de administrador. Lo más grave que se midió: con el JWT de un
-administrador al que se le forzó el cierre se podía crear un usuario, hacerlo
-administrador, y ese usuario tenía una sesión de 7 días que sobrevivía al cierre.
+**Dos etapas, las dos HECHAS (la 1ª el 2026-10-12, la 2ª el 2026-10-13).** Cerrar
+una sesión —voluntaria (HU05 CA-1), forzada (HU05 CA-4), por restablecer la
+contraseña (HU10 CA-7) o por desactivar la cuenta— revoca la sesión. Hasta el
+2026-10-12 eso solo impedía RENOVAR: el **JWT de acceso** ya emitido seguía
+valiendo hasta que venciera (`AUTH_ACCESO_MIN`, 15 minutos; medido: 897 de 900
+segundos), también para ESCRIBIR y para páginas de administrador. Lo más grave que
+se midió: con el JWT de un administrador al que se le forzó el cierre se podía
+crear un usuario, hacerlo administrador, y ese usuario tenía una sesión de 7 días
+que sobrevivía al cierre.
 
-**Lo que ya se cerró (1ª etapa).** Los tres guards que validan un Bearer
-(`_usuario_del_bearer`, `_admin_de_organizacion`, `_exigir_admin_plataforma`)
+**1ª etapa (2026-10-12): lo que valida este back.** Los tres guards que validan un
+Bearer (`_usuario_del_bearer`, `_admin_de_organizacion`, `_exigir_admin_plataforma`)
 comprueban, en la misma lectura del registro (`usuarios.por_guid_y_sesion`), que la
 sesión del `sid` del JWT siga viva. Si no, **401 `sesion_cerrada`**; el front, al
 verlo en las pantallas de Usuarios y Organizaciones, borra las cookies y manda al
@@ -1127,23 +1129,81 @@ revocada por ningún motivo; `ROTATED` cuenta como revocada (al renovar se emite
 sesión nueva con su propio JWT, y el front solo renueva cuando el anterior ya
 venció: si algún día renovara por anticipado, `verificar_auth.py` 4c lo detecta).
 Una sesión que no existe en el registro, o que es de OTRA persona, tampoco vale
-(ante la duda, se rechaza). Se prueba en `verificar_auth.py` (4b-4d),
-`verificar_usuarios.py` (8c, el escenario del administrador cerrado a la fuerza) y
-`verificar_organizaciones.py` (6b). Una cuenta **desactivada** sigue recibiendo su
-403 `desactivada`, que se comprueba antes.
+(ante la duda, se rechaza). Una cuenta **desactivada** sigue recibiendo su 403
+`desactivada`, que se comprueba antes.
 
-**Lo que sigue abierto (2ª etapa).** Las rutas que decide solo el front —bandeja,
-llaves, webhooks, archivos, procesadores: unas veinte rutas `/api`— mandan al back
-solo la llave de servicio, no el Bearer, y las protege el guard de `hooks.server.ts`,
-que verifica el JWT con `jose` sin llamar aquí. Esas siguen aceptando el JWT de una
-sesión cerrada hasta que venza (15 minutos como máximo). Cerrarlas pide que el guard
-del front confirme la sesión con el back en cada petición (o con una caché corta, que
-deja una ventana), lo que rompe el principio de verificar sin llamar. Conviene
-hacerlo con la consulta de sesión por `sessionGuid` que se le pida al DBA en el SP de
-sesión (NEX-319): contra el registro provisional sería caro, porque cada consulta
-relee `usuarios.jsonl` completo. Acortar la vida del JWT no se recomienda: multiplica
-las renovaciones sobre ese mismo registro. La `NOTA` de `verificar_auth.py` (4d) lo
-deja dicho en cada corrida.
+**2ª etapa (2026-10-13): lo que decide solo el front.** Las rutas que decide solo el
+front —bandeja, llaves, webhooks, archivos, procesadores: unas veinte rutas `/api`—
+mandan al back solo la llave de servicio, no el Bearer, y las protege el guard de
+`hooks.server.ts`. Ese guard verificaba el JWT con `jose` y nada más, así que
+aceptaba el de una sesión cerrada (o de una cuenta desactivada) hasta que venciera.
+Ahora, además, le pregunta a este back `GET /auth/sesion` con el JWT como Bearer. Si
+la respuesta es `cerrada`, `desactivada` o `inexistente`, tira las cookies: las
+pantallas van al login (o a "Tu cuenta se encuentra desactivada") y las rutas `/api/*`
+contestan 401 `sesion_cerrada` (o 403 `desactivada`). Lo que hay que saber:
+
+- **Una respuesta definitiva es un 200 con `estado`.** Un 401 o un 503 (también el del
+  almacén caído) quieren decir que no se pudo contestar, y el guard no lo toma como
+  sesión muerta: es una CONSULTA, no un intento de acceso.
+- **Se deja pasar si el back no contesta** (caído, mal configurado, sin esta ruta o más
+  lento que el tope de 2 s): un back con problemas no debe dejar a todo el mundo fuera
+  de la app. Solo se rechaza con una respuesta explícita. Mientras el back no conteste,
+  un cierre de sesión no se nota en esas rutas —igual que antes de la 2ª etapa—; lo que
+  pasa por el back lo sigue rechazando él. Queda un aviso en el log del front
+  (`[sesion] /auth/sesion ...: se deja pasar`). **Orden de despliegue: el back
+  primero.** Con el front nuevo y el back viejo la consulta da 404 y la protección queda
+  apagada sin más señal que ese aviso; después de desplegar hay que comprobar, con un
+  JWT real, que `GET /auth/sesion` responde 200 `viva`.
+- **La respuesta se guarda 3 segundos por sesión** en el front
+  (`VIGENCIA_COMPROBACION_MS`): es lo máximo que tarda en notarse un cierre en esas
+  rutas, a cambio de no preguntar en cada petición (como mucho una vez cada 3 s por
+  sesión; la bandeja sola consulta cada 10 s). Si no se pudo saber, se recuerda 1.5 s,
+  para que un back colgado no haga esperar su tope a cada petición. La clave es persona
+  + sesión, y un JWT sin `sid` no se acepta (el back tampoco).
+- **Para que preguntar tan seguido fuera viable hubo que arreglar el registro
+  provisional.** `usuarios._indice()` releía y repasaba `usuarios.jsonl` completo en
+  CADA llamada. Ahora se guarda mientras el archivo no cambie (su "firma": ruta, inodo,
+  tamaño y fecha; el registro es de solo agregar, y lo que agrega otro proceso, como
+  `bootstrap_admin.py`, también se nota por el tamaño; una edición EN SITIO del mismo
+  tamaño no se nota, y contradice el contrato del registro), y el repaso es lineal:
+  antes cada revocación recorría todas las sesiones (20 mil eventos con 10 mil
+  sesiones: de 1.4 a 2.2 s; ahora, de 12 a 60 ms). Lo que devuelve es compartido y no
+  se modifica. **Lo que NO resuelve:** tras CADA escritura (login, renovación, cierre)
+  la siguiente consulta reconstruye todo, bajo el candado global del registro. Medido
+  por los revisores: 78 ms con 10 mil renglones, 0.4 s con 100 mil y 3.6 s con 500 mil.
+  Pasado ~2 s el guard deja pasar sin comprobar, y el back avisa en el log cuando una
+  reconstrucción tarda más de 0.5 s. Con unas 50 personas activas son unos 3 mil
+  renglones al día: es cuestión de meses. La salida es la base, no más caché.
+- **Hoy `GET /auth/sesion` contesta `usuarios.por_guid_y_sesion` sobre ese registro, y
+  con la base NO bastará con cambiar ese módulo.** `security.uspGetSession` (NEX-319)
+  busca por el hash del refresh, y el JWT trae el `sid`, no ese hash: hace falta una
+  consulta por (persona, sesión) que NO está en lo pedido al DBA. Está propuesta en
+  `docs/solicitudes-dba.md` (6.2, `uspGetSessionStatus`) y falta pedirla. Se hizo sin
+  esperar al DBA porque el registro provisional lo permite; el guard del front no
+  cambia cuando llegue.
+- **Renovar la sesión sin perderla (mismo día).** Revisándolo aparecieron dos defectos
+  de fondo que esta etapa volvía más visibles. (1) En el front, varias peticiones con el
+  mismo refresh renovaban cada una por su cuenta: un refresh es de un solo uso, así que
+  el back rechazaba a las demás y esos rechazos tiraban las cookies recién emitidas.
+  Ahora comparten UNA renovación (`renovarSesion`, con una gracia de 5 s para las que
+  salieron con el refresh viejo) y solo un rechazo EXPLÍCITO del back (401
+  `sesion_invalida` o `sesion_vencida`) tira las cookies: un 5xx, un timeout o el back
+  caído las conservan y contestan 503. (2) En el back, `/auth/refresh` comprobaba,
+  revocaba y creaba la sucesora en tres pasos sueltos: de un refresh podían salir varias
+  sesiones vivas (siete de ocho en la prueba) y un cierre forzado a medias dejaba una
+  sucesora viva. Ahora es un solo paso atómico (`usuarios.rotar_sesion`), y el login
+  revalida, bajo el mismo candado, que la contraseña verificada siga siendo la vigente
+  y la cuenta siga activa (`crear_sesion(hash_verificado=...)`).
+
+Se prueba en `verificar_auth.py` (4e el endpoint, 4f la caché, 4g el repaso lineal
+contra el cuadrático de antes con 300 registros al azar, 4h el canje atómico),
+`verificar_usuarios.py` (8c, el escenario del administrador cerrado a la fuerza),
+`verificar_organizaciones.py` (6b) y, en el navegador, con `probar-sesion-cerrada-front.mjs`
+y `probar-renovacion.mjs`.
+
+**Lo que NO cubre.** Los claims del JWT (`rol`, `tnt`) se leen al emitirlo: cambiar el
+rol de alguien (HU07) o moverlo de organización se nota hasta que renueva (15 minutos
+como máximo). Eso no es la sesión y no se tocó.
 
 ## Organizaciones (Sprint 1 · HU02, desde el 2026-10-07)
 
