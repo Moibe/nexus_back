@@ -20,6 +20,7 @@ from config import (
     MAX_SUBIDA_MB,
     PORT,
     SQLSERVER_HOST,
+    avisos_de_produccion,
 )
 from logging_config import configurar_logging
 
@@ -27,6 +28,18 @@ from logging_config import configurar_logging
 # imports (por ejemplo el aviso de que falta el driver ODBC) ya salga con formato.
 configurar_logging()
 logger = logging.getLogger(__name__)
+
+# Variables que se quedaron en un default que no sirve fuera de `local` — ver
+# `config.avisos_de_produccion`. Se evalúa UNA vez, aquí, porque el .env solo se
+# lee al arrancar: revisarlo por request sería gastar en algo que no cambia.
+#
+# Se loguea en el momento correcto (ya con formato y timestamp) y el CONTEO se
+# publica en /health. El detalle NO: este puerto lo alcanza cualquiera en la red
+# de CSI, y una lista de "qué está mal configurado" es justamente lo que no
+# conviene regalar. El conteo basta para saber que hay que ir al log.
+AVISOS_CONFIGURACION = avisos_de_produccion()
+for _aviso in AVISOS_CONFIGURACION:
+    logger.warning("Configuración de producción — %s", _aviso)
 
 # El orden de esta lista define el orden de los grupos en Swagger, y cada
 # entrada le pone descripción al encabezado del grupo.
@@ -258,10 +271,16 @@ def health():
     # y que el router cargó. NO significa que la base responda — para eso está
     # /health/db. Se expone aquí porque el deploy.sh de webhook-central no hace
     # healthcheck, así que es la forma de ver el estado con un solo curl.
+    #
+    # `avisos_configuracion` es un CONTEO, no la lista: el detalle dice qué
+    # variable está mal puesta y eso no se publica en un puerto que alcanza
+    # cualquiera en la red de CSI. Si no es 0, el detalle está en el log:
+    #   pm2 logs nexus-back-api --lines 40
     return {
         "status": "ok",
         "environment": ENVIRONMENT,
         "documentos_disponible": DOCUMENTOS_DISPONIBLE,
+        "avisos_configuracion": len(AVISOS_CONFIGURACION),
     }
 
 
