@@ -74,8 +74,8 @@ try:
     org_guid, olga_guid = r.json()["organizacion"]["guid"], r.json()["admin"]["guid"]
     # Olga hace su primer acceso para poder administrar.
     o = entrar(c, "olga@ejemplo.com", pwd_olga).json()
-    c.post("/auth/contrasena", json={"nueva": "Olga-Definitiva-123!", "confirmacion": "Olga-Definitiva-123!"}, headers={**srv(), "Authorization": f"Bearer {o['accessToken']}"})
-    o = entrar(c, "olga@ejemplo.com", "Olga-Definitiva-123!").json()
+    c.post("/auth/contrasena", json={"nueva": "Rumbo-Definitiva-123!", "confirmacion": "Rumbo-Definitiva-123!"}, headers={**srv(), "Authorization": f"Bearer {o['accessToken']}"})
+    o = entrar(c, "olga@ejemplo.com", "Rumbo-Definitiva-123!").json()
     bearer_o = {**srv(), "Authorization": f"Bearer {o['accessToken']}"}
     r = c.post("/usuarios/", json={"nombre": "Camila", "email": "camila@ejemplo.com", "rol": "ANALISTA"}, headers=bearer_o)
     pwd_camila, camila_guid = r.json()["contrasenaTemporal"], r.json()["usuario"]["guid"]
@@ -132,7 +132,7 @@ try:
         rev("al administrador de una organización: se niega", False)
     except usuarios.NoSePuedeEliminar as exc:
         rev("al administrador de una organización: se niega (admin_de_organizacion)", exc.motivo == "admin_de_organizacion")
-    rev("y no se tocó: sigue entrando", entrar(c, "olga@ejemplo.com", "Olga-Definitiva-123!").status_code == 200)
+    rev("y no se tocó: sigue entrando", entrar(c, "olga@ejemplo.com", "Rumbo-Definitiva-123!").status_code == 200)
     guid_a = usuarios.para_login("super.a@ejemplo.com")["guid"]
     guid_b = usuarios.para_login("super.b@ejemplo.com")["guid"]
     usuarios.cambiar_estado(guid_b, False, "prueba")

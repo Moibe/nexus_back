@@ -37,6 +37,12 @@ PASSWORD_RESET_COMPLETED = "PASSWORD_RESET_COMPLETED"
 # HU13 CA-4: alguien cambió SU contraseña desde una sesión abierta (con la actual). Lleva la persona, la sesión desde
 # la que lo hizo y cuántas OTRAS sesiones se cerraron; nunca la contraseña ni su hash.
 PASSWORD_CHANGED = "PASSWORD_CHANGED"
+# HU04 CA-5: la persona puso su contraseña definitiva en el primer acceso (la temporal dejó de servir). Lleva la persona, la
+# sesión desde la que lo hizo y cuántas sesiones se cerraron; nunca la contraseña ni su hash.
+FIRST_LOGIN_PASSWORD_CHANGED = "FIRST_LOGIN_PASSWORD_CHANGED"
+# HU12 CA-6: la persona guardó cambios en SU perfil. Lleva la persona, la sesión desde la que lo hizo y los NOMBRES de los
+# campos que cambiaron (`campos`); nunca los valores, que son datos personales y ya viven en el registro de usuarios.
+PROFILE_UPDATED = "PROFILE_UPDATED"
 # HU05 (cerrar sesión). Hasta el 2026-10-12 estos dos no tenían nombre propio:
 # el cierre voluntario solo dejaba un `sesion_revocada` en `usuarios.jsonl` y el
 # forzado un `cierre_forzado`. Los datos siempre se guardaron; faltaba el
@@ -54,7 +60,7 @@ INVITATION_REISSUED = "INVITATION_REISSUED"
 # Una cuenta se RETIRÓ (borrado lógico: `retirar_cuenta.py`). Lleva el correo, el motivo y quién lo hizo; nunca la contraseña.
 USER_DELETED = "USER_DELETED"
 
-ACCIONES = frozenset({PASSWORD_RESET_REQUESTED, PASSWORD_RESET_COMPLETED, PASSWORD_CHANGED, LOGOUT, FORCED_LOGOUT, USER_CREATED, INVITATION_REISSUED, USER_DELETED})
+ACCIONES = frozenset({PASSWORD_RESET_REQUESTED, PASSWORD_RESET_COMPLETED, PASSWORD_CHANGED, FIRST_LOGIN_PASSWORD_CHANGED, PROFILE_UPDATED, LOGOUT, FORCED_LOGOUT, USER_CREATED, INVITATION_REISSUED, USER_DELETED})
 
 
 def _ahora() -> datetime:

@@ -125,7 +125,7 @@ try:
     rev("entra y le toca cambiar la contraseña", primera["usuario"]["debeCambiarContrasena"] is True)
     # Y la cambia: desactivar/reactivar se prueban con una cuenta ya en uso,
     # que es el caso real.
-    nueva_contrasena = "Camila-Segura-2026!"
+    nueva_contrasena = "Cobre-Segura-2026!"
     c.post("/auth/contrasena", json={"nueva": nueva_contrasena, "confirmacion": nueva_contrasena},
            headers={**srv(), "Authorization": f"Bearer {primera['accessToken']}"})
     nueva = entrar(c, "camila.cg@ejemplo.com", nueva_contrasena)

@@ -175,6 +175,57 @@ try:
     rev("el refresh de la sesión anterior ya no sirve", r.status_code == 401 and r.json()["detail"]["codigo"] == "sesion_invalida")
     rev("la temporal ya no entra", login(c, "admin@ejemplo.com", temporal).status_code == 401)
 
+    titulo("3b · HU04 CA-3: la contraseña no puede contener el usuario ni palabras comunes; CA-5: el primer acceso deja FIRST_LOGIN_PASSWORD_CHANGED")
+    JUAN = ("juan.perez@ejemplo.com", ("Juan", "Pérez Hernández"))
+    casos_rechazados = [
+        ("el nombre de usuario (la parte del correo), ignorando separadores", "Juan-Perez-2026!zz", JUAN, "usuario"),
+        ("el nombre de usuario en medio de otros caracteres", "xJuanPerezx-9!Ab", JUAN, "usuario"),
+        ("el nombre de pila de la persona, sin acentos ni mayúsculas", "Zz-JUAN-vuela-91!", JUAN, "usuario"),
+        ("un apellido, aunque la contraseña no lo acentúe", "Hernandez#2026-zz!", JUAN, "usuario"),
+        ("el nombre de usuario escrito con números en vez de letras", "J04n.P3r3z-77!Qq", JUAN, "usuario"),
+        ("«password»", "Password123!Xy", JUAN, "comun"),
+        ("«password» con símbolos en vez de letras", "P@ssw0rd-2026!Zz", JUAN, "comun"),
+        ("«contraseña» (la palabra más común en español)", "Contraseña2026!Aa", JUAN, "comun"),
+        ("«contrasena» sin la ñ", "Nueva-Contrasena-123!", JUAN, "comun"),
+        ("una secuencia de teclado", "Qwerty-Rojo-99!Zz", JUAN, "comun"),
+        ("«bienvenido»", "Bienvenido#2026-Zz", JUAN, "comun"),
+        ("el nombre del producto", "NexusDoc-Azul-2026!", JUAN, "comun"),
+        ("«admin»", "Zz-Admin-Azul-2026!", JUAN, "comun"),
+        ("una secuencia numérica", "Zq!12345-vuela-Xy", JUAN, "comun"),
+    ]
+    for descripcion, clave, (correo_c, nombres_c), esperado in casos_rechazados:
+        rev(f"se rechaza una contraseña con {descripcion}: {esperado}", auth.contrasena_obvia(clave, correo_c, nombres_c) == esperado, f"{clave!r} -> {auth.contrasena_obvia(clave, correo_c, nombres_c)!r}")
+    casos_buenos = [
+        ("una frase larga sin nada de lo anterior", "Zorro-Azul-Veloz-47!", JUAN),
+        ("caracteres al azar", "Xk9!pL2@vN7#qR4$wT", JUAN),
+        ("palabras corrientes que no son de las comunes", "Mesa.Roja.Cielo.2026#", JUAN),
+        ("un usuario de menos de 4 letras NO bloquea palabras que lo contienen (no hay falsos positivos con «ana»)", "Banana-Verde-2026!Zz", ("ana@ejemplo.com", ("Ana", "Ruiz"))),
+    ]
+    for descripcion, clave, (correo_c, nombres_c) in casos_buenos:
+        rev(f"se acepta {descripcion}", auth.contrasena_obvia(clave, correo_c, nombres_c) is None, f"{clave!r} -> {auth.contrasena_obvia(clave, correo_c, nombres_c)!r}")
+    rev("sin correo ni nombres solo mira las palabras comunes", auth.contrasena_obvia("Zorro-Azul-Veloz-47!") is None and auth.contrasena_obvia("Password123!Xy") == "comun")
+
+    # Por HTTP: un primer acceso con una contraseña obvia se rechaza SIN cambiar nada y sin dejar evento.
+    vera = usuarios.bootstrap_admin("vera.lopez@ejemplo.com", "Vera", "Lopez Cuatro", auth.hash_de("Temporal-Larga-123!"))
+    sesion_vera = login(c, "vera.lopez@ejemplo.com", "Temporal-Larga-123!").json()
+    bearer_vera = {**srv(), "Authorization": f"Bearer {sesion_vera['accessToken']}"}
+    primeros_antes = len(eventos_de_auditoria("FIRST_LOGIN_PASSWORD_CHANGED"))
+    for descripcion, clave in (("el usuario", "Vera.Lopez-2026-Zz!"), ("una palabra común", "Password-2026-Zorro!")):
+        r = c.post("/auth/contrasena", json={"nueva": clave, "confirmacion": clave}, headers=bearer_vera)
+        rev(f"primer acceso con {descripcion}: 400 contrasena_debil, con el mensaje",
+            r.status_code == 400 and r.json()["detail"]["codigo"] == "contrasena_debil" and "fácil de adivinar" in r.json()["detail"]["mensaje"], r.text[:200])
+    rev("y no cambió nada: sigue pendiente, su sesión viva y sin evento",
+        usuarios.para_login("vera.lopez@ejemplo.com")["debeCambiarContrasena"] is True and login(c, "vera.lopez@ejemplo.com", "Temporal-Larga-123!").status_code == 200
+        and len(eventos_de_auditoria("FIRST_LOGIN_PASSWORD_CHANGED")) == primeros_antes)
+    r = c.post("/auth/contrasena", json={"nueva": "Cobre-Lento-Azul-77!", "confirmacion": "Cobre-Lento-Azul-77!"}, headers=bearer_vera)
+    rev("con una contraseña buena: 200 FIRST_LOGIN", r.status_code == 200 and r.json()["motivo"] == "FIRST_LOGIN", r.text[:200])
+    primeros = eventos_de_auditoria("FIRST_LOGIN_PASSWORD_CHANGED")
+    rev("CA-5: quedó UN evento FIRST_LOGIN_PASSWORD_CHANGED con la persona, la sesión desde la que se cambió, y la hora",
+        len(primeros) == primeros_antes + 1 and primeros[-1]["usuarioGuid"] == vera["guid"] and primeros[-1]["sesionGuid"] == auth.verificar_acceso(sesion_vera["accessToken"])["sid"]
+        and bool(primeros[-1]["en"]), str(primeros[-1:]))
+    rev("y no lleva la contraseña ni su hash",
+        "Cobre-Lento-Azul-77!" not in (RAIZ / ".registro" / "auditoria.jsonl").read_text(encoding="utf-8") and "$argon2id$" not in (RAIZ / ".registro" / "auditoria.jsonl").read_text(encoding="utf-8"))
+
     titulo("4 · Sesión normal: refresh rota, logout revoca, cambio con actual")
     r = login(c, "admin@ejemplo.com", "Nueva-Segura-123!")
     s2 = r.json()
@@ -548,7 +599,9 @@ try:
     from servicios.almacen import ErrorAlmacen
 
     def usuario_4i(correo: str, contrasena: str) -> dict:
-        nuevo = usuarios.bootstrap_admin(correo, "Prueba", "Cuatro-i", auth.hash_de("Temporal-Larga-123!"))
+        # El apellido NO se parece a las contraseñas de estas pruebas ("Cuatro-I-..."): desde HU04 CA-3 una contraseña que
+        # contiene el nombre de la persona se rechaza.
+        nuevo = usuarios.bootstrap_admin(correo, "Prueba", "Yu", auth.hash_de("Temporal-Larga-123!"))
         usuarios.fijar_contrasena(nuevo["guid"], auth.hash_de(contrasena), "FIRST_LOGIN")
         return nuevo
 
@@ -646,7 +699,7 @@ try:
     sesion_emi = login(c, "cuatro-i-emi@ejemplo.com", "Cuatro-I-Emi-1234!").json()
     bearer_emi = {**srv(), "Authorization": f"Bearer {sesion_emi['accessToken']}"}
     sesion_movil = login(c, "cuatro-i-emi@ejemplo.com", "Cuatro-I-Emi-1234!").json()
-    cambio = {"actual": "Cuatro-I-Emi-1234!", "nueva": "Cuatro-I-Emi-Otra-567!", "confirmacion": "Cuatro-I-Emi-Otra-567!"}
+    cambio = {"actual": "Cuatro-I-Emi-1234!", "nueva": "Zeta-Otro-Rumbo-567!", "confirmacion": "Zeta-Otro-Rumbo-567!"}
     original_verificar = con_efecto_tras_verificar(
         lambda: usuarios.fijar_contrasena(
             emi4["guid"], auth.hash_de("Cuatro-I-Emi-Movil-890!"), "CHANGE", sesion_guid=auth.verificar_acceso(sesion_movil["accessToken"])["sid"]
@@ -670,16 +723,16 @@ try:
         )
     )
     try:
-        r = c.post("/auth/contrasena", json={"actual": "Cuatro-I-Emi-Movil-890!", "nueva": "Cuatro-I-Emi-Segunda-222!", "confirmacion": "Cuatro-I-Emi-Segunda-222!"}, headers=bearer_doble)
+        r = c.post("/auth/contrasena", json={"actual": "Cuatro-I-Emi-Movil-890!", "nueva": "Zeta-Segunda-Ruta-222!", "confirmacion": "Zeta-Segunda-Ruta-222!"}, headers=bearer_doble)
     finally:
         auth.verificar_contrasena = original_verificar
     detalle = r.json().get("detail", {}) if r.headers.get("content-type", "").startswith("application/json") else {}
     rev("dos cambios a la vez desde la misma sesión: el segundo da 401 actual_incorrecta", r.status_code == 401 and detalle.get("codigo") == "actual_incorrecta", r.text[:200])
     rev("y la del primero es la vigente", login(c, "cuatro-i-emi@ejemplo.com", "Cuatro-I-Emi-Primera-111!").status_code == 200
-        and login(c, "cuatro-i-emi@ejemplo.com", "Cuatro-I-Emi-Segunda-222!").status_code == 401)
+        and login(c, "cuatro-i-emi@ejemplo.com", "Zeta-Segunda-Ruta-222!").status_code == 401)
     usuarios.fijar_contrasena(emi4["guid"], auth.hash_de("Cuatro-I-Emi-Movil-890!"), "FIRST_LOGIN")
     rev("y el cambio normal, sin carreras, sigue funcionando (200 CHANGE)",
-        c.post("/auth/contrasena", json={"actual": "Cuatro-I-Emi-Movil-890!", "nueva": "Cuatro-I-Emi-Final-321!", "confirmacion": "Cuatro-I-Emi-Final-321!"},
+        c.post("/auth/contrasena", json={"actual": "Cuatro-I-Emi-Movil-890!", "nueva": "Zeta-Final-Pista-321!", "confirmacion": "Zeta-Final-Pista-321!"},
                headers={**srv(), "Authorization": f"Bearer {login(c, 'cuatro-i-emi@ejemplo.com', 'Cuatro-I-Emi-Movil-890!').json()['accessToken']}"}).json().get("motivo") == "CHANGE")
 
     # (f) `fijar_contrasena` revalida bajo el candado (la prueba directa de lo que (d) y (e) ejercitan por HTTP).
@@ -845,7 +898,7 @@ try:
     bearer_k = {**srv(), "Authorization": f"Bearer {actual_k['accessToken']}"}
     sid_actual_k = auth.verificar_acceso(actual_k["accessToken"])["sid"]
     cambios_antes = len(eventos_de_auditoria("PASSWORD_CHANGED"))
-    NUEVA_K = "Cuatro-K-Hugo-Nueva-456!"
+    NUEVA_K = "Zeta-K-Nueva-Rumbo-456!"
 
     def estado_de(sesion: dict) -> str:
         return c.get("/auth/sesion", headers={**srv(), "Authorization": f"Bearer {sesion['accessToken']}"}).json()["estado"]
@@ -892,7 +945,7 @@ try:
     for x in vivas_de(hugo["guid"]):
         if x["sesionGuid"] != auth.verificar_acceso(sesion_k["accessToken"])["sid"]:
             usuarios.revocar_sesiones(hugo["guid"], x["sesionGuid"], "PRUEBA")
-    r = c.post("/auth/contrasena", json={"actual": NUEVA_K, "nueva": "Cuatro-K-Hugo-Otra-789!", "confirmacion": "Cuatro-K-Hugo-Otra-789!"}, headers=bearer_k2)
+    r = c.post("/auth/contrasena", json={"actual": NUEVA_K, "nueva": "Zeta-K-Otra-Ruta-789!", "confirmacion": "Zeta-K-Otra-Ruta-789!"}, headers=bearer_k2)
     rev("con una sola sesión: 200, otrasSesionesCerradas 0, y la sesión sigue viva",
         r.status_code == 200 and r.json()["otrasSesionesCerradas"] == 0 and estado_de(sesion_k) == "viva", r.text[:160])
     rev("y el cambio también se registra (con 0 sesiones cerradas)",
@@ -901,7 +954,7 @@ try:
     # Si el almacén falla a la mitad, no puede quedar la contraseña nueva con las sesiones viejas abiertas: las otras
     # sesiones se cierran ANTES de escribir la contraseña.
     from servicios.almacen import ErrorAlmacen as _ErrorAlmacen
-    otra_d = login(c, "cuatro-k-hugo@ejemplo.com", "Cuatro-K-Hugo-Otra-789!").json()
+    otra_d = login(c, "cuatro-k-hugo@ejemplo.com", "Zeta-K-Otra-Ruta-789!").json()
     bearer_d = {**srv(), "Authorization": f"Bearer {otra_d['accessToken']}"}
     sid_d = auth.verificar_acceso(otra_d["accessToken"])["sid"]
     otras_d = [x["sesionGuid"] for x in vivas_de(hugo["guid"]) if x["sesionGuid"] != sid_d]
@@ -915,7 +968,7 @@ try:
 
     usuarios.registro.agregar = agregar_que_falla_con_la_contrasena
     try:
-        r = c.post("/auth/contrasena", json={"actual": "Cuatro-K-Hugo-Otra-789!", "nueva": "Cuatro-K-Hugo-Falla-321!", "confirmacion": "Cuatro-K-Hugo-Falla-321!"}, headers=bearer_d)
+        r = c.post("/auth/contrasena", json={"actual": "Zeta-K-Otra-Ruta-789!", "nueva": "Zeta-K-Falla-Pista-321!", "confirmacion": "Zeta-K-Falla-Pista-321!"}, headers=bearer_d)
     finally:
         usuarios.registro.agregar = agregar_original
     rev("si el almacén falla al escribir la contraseña: 503, la contraseña NO cambió y las otras sesiones YA se cerraron",
@@ -924,10 +977,10 @@ try:
     rev("y no quedó evento PASSWORD_CHANGED de un cambio que no se hizo", len(eventos_de_auditoria("PASSWORD_CHANGED")) == eventos_antes + 1)
 
     # El primer acceso NO deja PASSWORD_CHANGED (es otra historia, HU04): el evento es del cambio desde una sesión.
-    primera = usuarios.bootstrap_admin("cuatro-k-primera@ejemplo.com", "Prueba", "Primera", auth.hash_de("Temporal-Larga-123!"))
+    primera = usuarios.bootstrap_admin("cuatro-k-primera@ejemplo.com", "Prueba", "Yu", auth.hash_de("Temporal-Larga-123!"))
     sesion_primera = login(c, "cuatro-k-primera@ejemplo.com", "Temporal-Larga-123!").json()
     cambios_k = len(eventos_de_auditoria("PASSWORD_CHANGED"))
-    r = c.post("/auth/contrasena", json={"nueva": "Cuatro-K-Primera-456!", "confirmacion": "Cuatro-K-Primera-456!"},
+    r = c.post("/auth/contrasena", json={"nueva": "Zeta-K-Primera-Lago-456!", "confirmacion": "Zeta-K-Primera-Lago-456!"},
                headers={**srv(), "Authorization": f"Bearer {sesion_primera['accessToken']}"})
     rev("el primer acceso: 200 FIRST_LOGIN, cierra todas (la suya incluida) y NO deja PASSWORD_CHANGED",
         r.status_code == 200 and r.json()["motivo"] == "FIRST_LOGIN" and r.json()["sesionesCerradas"] is True and r.json()["otrasSesionesCerradas"] == 0
@@ -990,6 +1043,53 @@ try:
         r.json()["usuario"]["recuperacion"]["email"] == "respaldo@ejemplo.com", r.text[:200])
     rev("la recuperación se puede vaciar",
         c.post("/auth/perfil", json={"nombre": "Ada", "apellidoPaterno": "Lovelace"}, headers=mio).json()["usuario"]["recuperacion"] == {})
+
+    titulo("6b · HU12 CA-6: guardar el perfil deja PROFILE_UPDATED con los campos que cambiaron")
+    perfiles_antes = len(eventos_de_auditoria("PROFILE_UPDATED"))
+    sid_perfil = auth.verificar_acceso(mio["Authorization"].split()[1])["sid"]
+
+    def guardar_perfil(**cambios):
+        base = {"nombre": "Ada", "apellidoPaterno": "Lovelace", "apellidoMaterno": "", "telefono": None, "recuperacion": {}}
+        return c.post("/auth/perfil", json={**base, **cambios}, headers=mio)
+
+    def ultimo_perfil() -> dict:
+        return eventos_de_auditoria("PROFILE_UPDATED")[-1]
+
+    r = guardar_perfil(nombre="Augusta Ada")
+    rev("cambiar solo el nombre: 200 y UN evento con el campo `nombre`",
+        r.status_code == 200 and len(eventos_de_auditoria("PROFILE_UPDATED")) == perfiles_antes + 1 and ultimo_perfil()["campos"] == ["nombre"], r.text[:160] + str(ultimo_perfil() if perfiles_antes else ""))
+    rev("con la persona, la sesión desde la que se guardó y la hora",
+        ultimo_perfil()["usuarioGuid"] == u["guid"] and ultimo_perfil()["sesionGuid"] == sid_perfil and bool(ultimo_perfil()["en"]), str(ultimo_perfil()))
+    cuenta = len(eventos_de_auditoria("PROFILE_UPDATED"))
+    r = guardar_perfil(nombre="Augusta Ada")
+    rev("guardar lo MISMO: 200 y ningún evento (no cambió nada)", r.status_code == 200 and len(eventos_de_auditoria("PROFILE_UPDATED")) == cuenta)
+    r = guardar_perfil(nombre="Augusta Ada", telefono="+52 55 1020 3040", recuperacion={"email": "respaldo@ejemplo.com", "telefono": "+52 55 1478 8523"})
+    rev("teléfono y recuperación: los tres campos, con los nombres de los campos y no sus valores",
+        ultimo_perfil()["campos"] == ["telefono", "correoRecuperacion", "telefonoRecuperacion"], str(ultimo_perfil()))
+    r = guardar_perfil(nombre="Augusta Ada", apellidoPaterno="King", apellidoMaterno="Noel", telefono="+52 55 1020 3040",
+                       recuperacion={"email": "respaldo@ejemplo.com", "telefono": "+52 55 1478 8523"})
+    rev("los dos apellidos", ultimo_perfil()["campos"] == ["apellidoPaterno", "apellidoMaterno"], str(ultimo_perfil()))
+    cuenta = len(eventos_de_auditoria("PROFILE_UPDATED"))
+    r = guardar_perfil(nombre="Augusta Ada", apellidoPaterno="King", apellidoMaterno="Noel", telefono="+52 55 1020 3040",
+                       recuperacion={"email": "  RESPALDO@ejemplo.com ", "telefono": "+52 55 1478 8523"})
+    rev("el mismo correo escrito con espacios y mayúsculas NO cuenta como cambio (se compara lo que quedó guardado)",
+        r.status_code == 200 and len(eventos_de_auditoria("PROFILE_UPDATED")) == cuenta, str(ultimo_perfil()))
+    r = guardar_perfil(nombre="  ", apellidoPaterno="King")
+    r2 = guardar_perfil(nombre="Augusta Ada", recuperacion={"email": "no-es-correo"})
+    rev("un guardado rechazado (sin nombre, correo inválido) no deja evento",
+        r.status_code == 400 and r2.status_code == 400 and len(eventos_de_auditoria("PROFILE_UPDATED")) == cuenta)
+    base_k = dict(nombre="Augusta Ada", apellidoPaterno="King", apellidoMaterno="Noel", telefono="+52 55 1020 3040")
+    guardar_perfil(**base_k, recuperacion={"email": "respaldo@ejemplo.com", "telefono": "+52 55 1478 8523"})
+    guardar_perfil(**base_k, recuperacion={"email": "otro.respaldo@ejemplo.com", "telefono": "+52 55 1478 8523"})
+    rev("cambiar SOLO el correo de recuperación: solo ese campo", ultimo_perfil()["campos"] == ["correoRecuperacion"], str(ultimo_perfil()))
+    guardar_perfil(**base_k, recuperacion={"email": "otro.respaldo@ejemplo.com", "telefono": "+52 55 9999 0000"})
+    rev("cambiar SOLO el teléfono de recuperación: solo ese campo", ultimo_perfil()["campos"] == ["telefonoRecuperacion"], str(ultimo_perfil()))
+    r = guardar_perfil(nombre="Augusta Ada", apellidoPaterno="King", apellidoMaterno="Noel", telefono="+52 55 1020 3040")
+    rev("vaciar la recuperación también es un cambio: los dos campos", ultimo_perfil()["campos"] == ["correoRecuperacion", "telefonoRecuperacion"], str(ultimo_perfil()))
+    texto_auditoria_perfil = (RAIZ / ".registro" / "auditoria.jsonl").read_text(encoding="utf-8")
+    rev("ningún evento lleva los datos de la persona (solo cuáles campos cambiaron)",
+        not any(v in texto_auditoria_perfil for v in ("Augusta", "King", "Noel", "respaldo@ejemplo.com", "1020 3040", "1478 8523", "9999 0000")))
+    guardar_perfil(nombre="Ada", apellidoPaterno="Lovelace")
 
     titulo("7 · Sin AUTH_JWT_SECRET")
     guardado = config.AUTH_JWT_SECRET

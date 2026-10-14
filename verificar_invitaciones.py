@@ -206,8 +206,8 @@ try:
     rev("y el evento no lleva la contraseña", pwd_beto not in (RAIZ / ".registro" / "auditoria.jsonl").read_text(encoding="utf-8"))
 
     # (c) El administrador de la organización da de alta a un usuario (HU06).
-    cambio = c.post("/auth/contrasena", json={"nueva": "Nueva-Contrasena-123!", "confirmacion": "Nueva-Contrasena-123!"}, headers=bearer_beto)
-    admin_org = c.post("/auth/login", json={"email": "beto@ejemplo.com", "password": "Nueva-Contrasena-123!"}, headers=srv()).json()
+    cambio = c.post("/auth/contrasena", json={"nueva": "Nueva-Segura-123!", "confirmacion": "Nueva-Segura-123!"}, headers=bearer_beto)
+    admin_org = c.post("/auth/login", json={"email": "beto@ejemplo.com", "password": "Nueva-Segura-123!"}, headers=srv()).json()
     bearer_admin = {**srv(), "Authorization": f"Bearer {admin_org['accessToken']}"}
     enviados.clear()
     r = c.post("/usuarios/", json={"nombre": hostil, "email": "camila@ejemplo.com", "rol": "ANALISTA"}, headers=bearer_admin)
@@ -340,7 +340,7 @@ try:
     rev("y la cuenta no acumuló intentos fallidos", usuarios.para_login("gael@ejemplo.com")["fallidos"] == fallidos_antes)
     ultimo = [e for e in usuarios.registro.eventos(usuarios.ARCHIVO) if e.get("evento") == "intento" and e.get("guid") == guid_gael][-1]
     rev("el intento quedó en la bitácora como EXPIRED", ultimo["exitoso"] is False and ultimo["motivo"] == "EXPIRED", str(ultimo))
-    r = c.post("/auth/contrasena", json={"nueva": "Nueva-Contrasena-456!", "confirmacion": "Nueva-Contrasena-456!"}, headers=token_gael)
+    r = c.post("/auth/contrasena", json={"nueva": "Nueva-Segura-456!", "confirmacion": "Nueva-Segura-456!"}, headers=token_gael)
     rev("quien entró a tiempo pero NO terminó tampoco puede completar el primer acceso después: 403",
         r.status_code == 403 and r.json()["detail"]["codigo"] == "activacion_vencida", r.text[:160])
     rev("y sus sesiones quedaron cerradas", sesiones_vivas(guid_gael) == 0)
@@ -359,9 +359,9 @@ try:
     r = c.post("/usuarios/", json={"nombre": "Hana", "email": "hana@ejemplo.com", "rol": "VIEWER"}, headers=bearer_admin)
     pwd_hana = r.json()["contrasenaTemporal"]
     h = entrar("hana@ejemplo.com", pwd_hana).json()
-    c.post("/auth/contrasena", json={"nueva": "Hana-Definitiva-123!", "confirmacion": "Hana-Definitiva-123!"}, headers={**srv(), "Authorization": f"Bearer {h['accessToken']}"})
+    c.post("/auth/contrasena", json={"nueva": "Rumbo-Definitiva-123!", "confirmacion": "Rumbo-Definitiva-123!"}, headers={**srv(), "Authorization": f"Bearer {h['accessToken']}"})
     viajar(400)
-    rev("quien YA hizo su primer acceso entra normal a las 400 horas", entrar("hana@ejemplo.com", "Hana-Definitiva-123!").status_code == 200)
+    rev("quien YA hizo su primer acceso entra normal a las 400 horas", entrar("hana@ejemplo.com", "Rumbo-Definitiva-123!").status_code == 200)
     volver()
     config.TOKEN_ACTIVACION_HORAS = 0.5
     r = c.post("/usuarios/", json={"nombre": "Ivo", "email": "ivo@ejemplo.com", "rol": "VIEWER"}, headers=bearer_admin)

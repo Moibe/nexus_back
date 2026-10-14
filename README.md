@@ -1027,6 +1027,24 @@ front, que pone las cookies httpOnly `nx_acceso` y `nx_refresh`):
 | `GET /auth/sesion` | ¿sigue viva la sesión de este JWT? (HU05, 2ª etapa). 200 con `estado`: `viva`, `cerrada` (se cerró o nunca existió), `desactivada` o `inexistente`; un 401 o 503 quiere decir que NO se pudo contestar. Lo consulta el guard del front, una vez cada pocos segundos por sesión abierta. |
 | `POST /auth/contrasena` | primer acceso: `nueva` + `confirmacion` (cierra todas las sesiones); después: también `actual`. Reglas: 12 caracteres, mayúscula, minúscula, número, carácter especial. |
 
+**La contraseña (HU04 CA-3, 2026-10-14).** Además de las cinco reglas de los
+chips (12 caracteres, mayúscula, minúscula, número, carácter especial: 400
+`reglas`, con `faltan`), una contraseña que las cumple se rechaza si es
+**obvia**: 400 `contrasena_debil` (con `motivo`: `usuario` o `comun`) cuando
+contiene el nombre de usuario (la parte del correo antes de la `@`), el nombre
+o un apellido de la persona, o una de las `PALABRAS_COMUNES` de
+`servicios/auth.py` (`password`, `contrasena`, `qwerty`, `12345`, `bienvenido`,
+`nexusdoc`…). Se busca DENTRO de la contraseña, sin acentos, sin mayúsculas y
+sin separadores (`Juan-Perez` contiene `juan.perez`), y también con símbolos en
+vez de letras (`P@ssw0rd`, `J0an`). Un nombre de menos de 4 letras no se busca
+(«ana» está dentro de «banana») y la lista es corta a propósito: no es un
+diccionario entero. Lo mismo vale al elegir la contraseña con el enlace de
+recuperación, **antes de gastarlo** (un typo no lo quema). Es
+`auth.contrasena_obvia`; se prueba en `verificar_auth.py` 3b y
+`verificar_recuperacion.py`. El primer acceso deja el evento
+`FIRST_LOGIN_PASSWORD_CHANGED` (HU04 CA-5: la persona, la sesión desde la que
+se cambió y cuántas sesiones se cerraron; nunca la contraseña ni su hash).
+
 **Política** (del diseño; vivirá en `uspRecordLoginResult`): 5 intentos
 fallidos seguidos → 15 minutos de bloqueo, que se levanta solo; los intentos
 durante el bloqueo no lo alargan. La base nunca ve contraseñas ni tokens: se
@@ -1476,6 +1494,17 @@ que lo ignora), y ese día este script cambia por el SP; todavía no se le ha pe
 `POST /auth/perfil` actualiza los datos de QUIEN LLAMA: nombre, apellido
 paterno y materno, teléfono y los datos de recuperación (correo y teléfono).
 `GET /auth/yo` los devuelve todos.
+
+Guardar cambios deja el evento `PROFILE_UPDATED` en la bitácora de auditoría
+(**HU12 CA-6, 2026-10-14**): la persona, la sesión desde la que se guardó, la
+hora y `campos`, la lista de los **nombres** de los campos que cambiaron
+(`nombre`, `apellidoPaterno`, `apellidoMaterno`, `telefono`,
+`correoRecuperacion`, `telefonoRecuperacion`). Nunca los valores: son datos
+personales y ya viven en el registro de usuarios. Se compara lo que QUEDÓ
+guardado con lo de antes, no lo que se mandó, así que el mismo correo escrito con
+espacios y mayúsculas no cuenta como cambio; si no cambió nada, no hay evento;
+un guardado rechazado (sin nombre, correo de recuperación inválido) tampoco lo
+deja. Se prueba en `verificar_auth.py`, sección 6b.
 
 Lo que **no** se toca ahí: el correo con el que inicia sesión (es su identidad)
 y su rol (lo mueve quien administra su organización). El cambio de contraseña

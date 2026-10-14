@@ -82,7 +82,7 @@ logging.getLogger().setLevel(logging.INFO)
 c = TestClient(app)
 
 CONTRASENA_INICIAL = "Contrasena-Inicial-1!"
-CONTRASENA_NUEVA = "Contrasena-Nueva-2026!"
+CONTRASENA_NUEVA = "Segura-Nueva-2026!"
 
 
 # ── Ayudas ──────────────────────────────────────────────────────────────────
@@ -255,7 +255,7 @@ try:
         r_basura.json()["detail"]["mensaje"].startswith("Por motivos de seguridad, este enlace de restablecimiento ya no se encuentra disponible."))
 
     titulo("8 · CA-5: la contraseña se valida ANTES de gastar el enlace")
-    r = confirmar(tok, "Otra-Contrasena-1!", "no-es-la-misma")
+    r = confirmar(tok, "Otra-Frase-1!", "no-es-la-misma")
     rev("no coincide: 400 no_coincide", r.status_code == 400 and r.json()["detail"]["codigo"] == "no_coincide", r.text)
     rev("con el texto del diseño", r.json()["detail"]["mensaje"] == "La contraseña no coincide; por favor intenta de nuevo.")
     for debil, falta in [("corta", "12 caracteres"), ("sinmayusculas12!!", "Mayúscula"), ("SINMINUSCULAS12!!", "Minúscula"),
@@ -265,6 +265,12 @@ try:
         rev(f"{debil!r}: 400 reglas, y dice qué falta ({falta})", r.status_code == 400 and det["codigo"] == "reglas" and falta in det.get("faltan", []), r.text)
     rev("el mensaje de reglas es el del Figma", det["mensaje"] == "La contraseña no cumple con el formato requerido; por favor intenta de nuevo.")
     rev("y tras tantos errores el enlace SIGUE sirviendo (un typo no lo quema)", revisar(tok).status_code == 200)
+    # HU04 CA-3: lo que cumple las cinco reglas pero es obvio tampoco gasta el enlace.
+    for obvia in ("Password-Zorro-2026!", "Contraseña-Zorro-2026!", "Qwerty-Zorro-2026!!"):
+        r = confirmar(tok, obvia)
+        det = r.json()["detail"]
+        rev(f"{obvia!r}: 400 contrasena_debil con su mensaje", r.status_code == 400 and det["codigo"] == "contrasena_debil" and "fácil de adivinar" in det["mensaje"], r.text)
+    rev("y el enlace SIGUE sirviendo tras las contraseñas obvias", revisar(tok).status_code == 200)
 
     titulo("9 · CA-6 y CA-7: se restablece, se gasta el enlace y mueren las sesiones")
     # Dos sesiones abiertas ANTES del restablecimiento.
@@ -303,7 +309,7 @@ try:
     forzar_vencimiento(viejo)
     r = revisar(viejo)
     rev("revisar: 410 enlace_vencido", r.status_code == 410 and r.json()["detail"]["codigo"] == "enlace_vencido", r.text)
-    r = confirmar(viejo, "Una-Contrasena-Buena-1!")
+    r = confirmar(viejo, "Una-Frase-Buena-1!")
     rev("confirmar: 410 y no cambia nada", r.status_code == 410 and login("ana@ejemplo.com", CONTRASENA_NUEVA).status_code == 200, r.text)
 
     titulo("12 · Pedir un enlace nuevo mata el anterior")
@@ -330,7 +336,7 @@ try:
     usuarios.cambiar_estado(erika["guid"], False, "prueba", None)
     r = revisar(t_erika)
     rev("desactivada: 410", r.status_code == 410, r.text)
-    r = confirmar(t_erika, "Una-Contrasena-Buena-1!")
+    r = confirmar(t_erika, "Una-Frase-Buena-1!")
     rev("y confirmar tampoco la cambia", r.status_code == 410 and login("erika@ejemplo.com", CONTRASENA_INICIAL).status_code == 403, r.text)
 
     titulo("15 · Restablecer levanta el bloqueo del NAVEGADOR (no solo el de la cuenta)")

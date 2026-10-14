@@ -396,19 +396,53 @@ def logout(datos: Logout) -> Response:
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-def _auditar_cambio_de_contrasena(usuario_guid: str, sesion_guid: str, otras_cerradas: int) -> None:
-    """Deja el evento `PASSWORD_CHANGED` (HU13 CA-4). Va DESPUÉS del cambio y sin poder romperlo: la contraseña ya
-    cambió y las demás sesiones ya se cerraron, y decirle a la persona que no se pudo sería falso. El dato también
-    queda en el registro de usuarios (`contrasena` con motivo CHANGE); si el almacén falla se avisa en el log."""
+def _campos_modificados(antes: dict, despues: dict) -> list[str]:
+    """Los NOMBRES de los campos del perfil que cambiaron (HU12 CA-6), en el orden de la pantalla. Se compara lo que QUEDÓ
+    guardado con lo de antes, no lo que se mandó: el mismo correo escrito con espacios y mayúsculas no es un cambio."""
+    rec_antes, rec_despues = antes.get("recuperacion") or {}, despues.get("recuperacion") or {}
+    pares = (
+        ("nombre", antes.get("nombre"), despues.get("nombre")),
+        ("apellidoPaterno", antes.get("apellidoPaterno"), despues.get("apellidoPaterno")),
+        ("apellidoMaterno", antes.get("apellidoMaterno"), despues.get("apellidoMaterno")),
+        ("telefono", antes.get("telefono"), despues.get("telefono")),
+        ("correoRecuperacion", rec_antes.get("email"), rec_despues.get("email")),
+        ("telefonoRecuperacion", rec_antes.get("telefono"), rec_despues.get("telefono")),
+    )
+    return [campo for campo, a, b in pares if (a or None) != (b or None)]
+
+
+def _auditar_perfil(usuario_guid: str, sesion_guid: str, campos: list[str]) -> None:
+    """Deja `PROFILE_UPDATED` si algo cambió. Va DESPUÉS de guardar y sin poder romperlo: los datos ya se guardaron y decirle
+    a la persona que no se pudo sería falso (igual que `LOGOUT` y `PASSWORD_CHANGED`)."""
+    if not campos:
+        return
     try:
-        auditoria.registrar(
-            auditoria.PASSWORD_CHANGED,
-            usuario_guid=usuario_guid,
-            sesionGuid=sesion_guid,
-            otrasSesionesCerradas=otras_cerradas,
-        )
+        auditoria.registrar(auditoria.PROFILE_UPDATED, usuario_guid=usuario_guid, sesionGuid=sesion_guid, campos=campos)
     except (ErrorAlmacen, OSError) as exc:
-        logger.warning("No se pudo registrar el PASSWORD_CHANGED en la bitácora de auditoría: %s", exc)
+        logger.warning("No se pudo registrar el PROFILE_UPDATED en la bitácora de auditoría: %s", exc)
+
+
+MENSAJE_CONTRASENA_DEBIL = "La contraseña es demasiado fácil de adivinar: no uses tu correo, tu nombre ni palabras comunes."
+
+
+def _contrasena_debil(contrasena: str, u: dict) -> HTTPException | None:
+    """El error 400 `contrasena_debil` si la contraseña lleva el usuario o una palabra común (HU04 CA-3), o `None`.
+    Va después de las cinco reglas de los chips. `motivo` dice cuál fue (`usuario` o `comun`)."""
+    motivo = auth.contrasena_obvia(contrasena, u["email"], (u.get("nombre") or "", u.get("apellidos") or ""))
+    if motivo is None:
+        return None
+    return _error(status.HTTP_400_BAD_REQUEST, "contrasena_debil", MENSAJE_CONTRASENA_DEBIL, motivo=motivo)
+
+
+def _auditar_cambio_de_contrasena(accion: str, usuario_guid: str, sesion_guid: str, **datos) -> None:
+    """Deja `PASSWORD_CHANGED` (HU13 CA-4: cambio desde una sesión) o `FIRST_LOGIN_PASSWORD_CHANGED` (HU04 CA-5: la
+    definitiva del primer acceso). Va DESPUÉS del cambio y sin poder romperlo: la contraseña ya cambió y las sesiones ya
+    se cerraron, y decirle a la persona que no se pudo sería falso. El dato también queda en el registro de usuarios
+    (`contrasena` con su motivo); si el almacén falla se avisa en el log. `datos`: cuántas sesiones se cerraron."""
+    try:
+        auditoria.registrar(accion, usuario_guid=usuario_guid, sesionGuid=sesion_guid, **datos)
+    except (ErrorAlmacen, OSError) as exc:
+        logger.warning("No se pudo registrar el %s en la bitácora de auditoría: %s", accion, exc)
 
 
 def _auditar_cierre(usuario_guid: str, sesion_guid: str, ip: str | None, user_agent: str | None) -> None:
@@ -507,7 +541,7 @@ def estado_de_sesion(response: Response, authorization: str | None = Header(defa
     ),
 )
 def actualizar_perfil(datos: Perfil, authorization: str | None = Header(default=None)) -> dict:
-    _, u = _usuario_del_bearer(authorization)
+    claims, u = _usuario_del_bearer(authorization)
     if not datos.nombre.strip():
         raise _error(status.HTTP_400_BAD_REQUEST, "nombre_requerido", "El nombre es obligatorio.")
     try:
@@ -521,6 +555,7 @@ def actualizar_perfil(datos: Perfil, authorization: str | None = Header(default=
             u["guid"], datos.nombre, datos.apellidoPaterno, datos.apellidoMaterno, datos.telefono, recuperacion
         )
         logger.info("Perfil actualizado (guid=%s)", u["guid"])
+        _auditar_perfil(u["guid"], claims["sid"], _campos_modificados(u, actualizado))
         return {"usuario": actualizado}
     except ValueError as exc:
         raise _error(status.HTTP_400_BAD_REQUEST, "datos_invalidos", str(exc)) from exc
@@ -544,6 +579,9 @@ def cambiar_contrasena(datos: CambioContrasena, authorization: str | None = Head
     faltan = auth.reglas_incumplidas(datos.nueva)
     if faltan:
         raise _error(status.HTTP_400_BAD_REQUEST, "reglas", "La contraseña no cumple las reglas de seguridad.", faltan=faltan)
+    debil = _contrasena_debil(datos.nueva, u)
+    if debil:
+        raise debil
     try:
         completo = usuarios.para_login(u["email"])
         if completo is None:
@@ -570,7 +608,9 @@ def cambiar_contrasena(datos: CambioContrasena, authorization: str | None = Head
         logger.info("Contraseña cambiada (guid=%s, motivo=%s, sesiones cerradas=%s)", u["guid"], motivo, cerradas)
         todas = motivo in usuarios.MOTIVOS_QUE_CIERRAN_SESIONES
         if motivo == "CHANGE":
-            _auditar_cambio_de_contrasena(u["guid"], claims["sid"], cerradas)
+            _auditar_cambio_de_contrasena(auditoria.PASSWORD_CHANGED, u["guid"], claims["sid"], otrasSesionesCerradas=cerradas)
+        elif motivo == "FIRST_LOGIN":
+            _auditar_cambio_de_contrasena(auditoria.FIRST_LOGIN_PASSWORD_CHANGED, u["guid"], claims["sid"], sesionesCerradas=cerradas)
         # `sesionesCerradas`: se cerraron TODAS, la de quien lo pidió incluida (primer acceso): hay que volver a entrar.
         # `otrasSesionesCerradas`: las de los OTROS dispositivos (HU13 CA-4); la de este sigue viva.
         return {"ok": True, "motivo": motivo, "sesionesCerradas": todas, "otrasSesionesCerradas": 0 if todas else cerradas, "usuario": actualizado}
@@ -723,6 +763,10 @@ def confirmar_recuperacion(datos: ConfirmacionRecuperacion, response: Response) 
     origen = (datos.origen or "").strip() or None
     try:
         _, u = _validar_enlace(datos.token)
+        # Tampoco debe gastar el enlace una contraseña que lleva el usuario o una palabra común (HU04 CA-3).
+        debil = _contrasena_debil(datos.nueva, u)
+        if debil:
+            raise debil
         # AHORA sí se gasta. Es atómico: con dos clics, uno gana y el otro
         # recibe `enlace_usado`.
         try:
