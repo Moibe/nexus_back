@@ -1219,6 +1219,12 @@ su primer acceso) o 409 `desactivada` (reactívala antes: a una cuenta desactiva
 Para que la pantalla pinte «Pendiente» y «Caducada», cada renglón del listado trae
 `debeCambiarContrasena` y `accesoVencido` (pendiente Y ya pasaron las horas; HU06 CA-5).
 
+Y `sesionActiva` (2026-10-14): ¿tiene una sesión sin cerrar y sin vencer? Cerrar una sesión (HU05) no
+cambia el estatus —la cuenta sigue activa y puede volver a entrar—, así que sin este dato la pantalla se
+veía igual antes y después de «Cerrar sesión». Sale de `usuarios.tiene_sesion`; una sesión sin fecha de
+vencimiento legible se toma por vencida, igual que al canjear el refresh. Con la base hará falta que
+`uspGetTenantUsers` (NEX-336) lo devuelva (p. ej. `hasActiveSession`): no está en lo pedido.
+
 Se prueba en `verificar_invitaciones.py` (la plantilla, el servicio, las altas por HTTP con un canal
 simulado, el script de bootstrap, la caducidad con el reloj movido y la reemisión) y, en el navegador,
 con `probar-correo-bienvenida.mjs`, `probar-activacion-caducada.mjs` y `probar-reenviar-invitacion.mjs`.

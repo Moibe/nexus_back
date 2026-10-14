@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 RAIZ = Path(tempfile.mkdtemp(prefix="verificar-usuarios-"))
@@ -29,7 +30,7 @@ os.environ.setdefault("SQLSERVER_HOST", "")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app import app  # noqa: E402
-from servicios import auth, roles, usuarios  # noqa: E402
+from servicios import auth, registro, roles, usuarios  # noqa: E402
 
 fallos = 0
 
@@ -189,12 +190,28 @@ try:
     rev("sin motivo: 400", r.status_code == 400)
     r = c.post(f"/usuarios/{yo_guid}/cerrar-sesion", json={"motivo": "x"}, headers=bearer_sm)
     rev("la tuya no, desde aquí: 409", r.status_code == 409 and r.json()["detail"]["codigo"] == "no_a_ti_mismo")
+    def con_sesion(correo: str) -> bool:
+        return next(u for u in c.get("/usuarios/", headers=bearer_sm).json()["usuarios"] if u["email"] == correo)["sesionActiva"]
+
+    rev("antes de cerrar, el listado la muestra CON sesión abierta", con_sesion("camila.cg@ejemplo.com") is True)
     r = c.post(f"/usuarios/{guid}/cerrar-sesion", json={"motivo": "Medida preventiva de seguridad."}, headers=bearer_sm)
     rev("cierra sus sesiones: 200 y dice cuántas", r.status_code == 200 and r.json()["cerradas"] >= 1, r.text[:160])
+    rev("después de cerrar, el listado la muestra SIN sesión, y su estatus sigue activo",
+        con_sesion("camila.cg@ejemplo.com") is False
+        and next(u for u in c.get("/usuarios/", headers=bearer_sm).json()["usuarios"] if u["email"] == "camila.cg@ejemplo.com")["activo"] is True)
     rev("su refresh ya no sirve",
         c.post("/auth/refresh", json={"refreshToken": sesion_camila["refreshToken"]}, headers=srv()).status_code == 401)
     rev("pero SIGUE activa: puede volver a entrar",
         c.post("/auth/login", json={"email": "camila.cg@ejemplo.com", "password": nueva_contrasena}, headers=srv()).status_code == 200)
+    rev("y al volver a entrar el listado la muestra con sesión otra vez", con_sesion("camila.cg@ejemplo.com") is True)
+    rev("una sesión vencida no cuenta: con el reloj 400 días adelante ya no tiene sesión",
+        usuarios.tiene_sesion(guid, datetime.now(timezone.utc) + timedelta(days=400)) is False and usuarios.tiene_sesion(guid) is True)
+    r = c.post("/usuarios/", json={"nombre": "Sin Fecha", "email": "sin.fecha@ejemplo.com", "rol": "VIEWER"}, headers=bearer_sm)
+    guid_sin_fecha = r.json()["usuario"]["guid"]
+    rev("quien nunca entró no tiene sesión", usuarios.tiene_sesion(guid_sin_fecha) is False)
+    registro.agregar(usuarios.ARCHIVO, {"evento": "sesion", "guid": guid_sin_fecha, "sesionGuid": "sesion-sin-fecha", "refreshHash": "h" * 64,
+                                        "expira": "esto-no-es-una-fecha", "en": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+    rev("una sesión sin fecha de vencimiento legible se toma por vencida (igual que al canjear el refresh)", usuarios.tiene_sesion(guid_sin_fecha) is False)
 
     titulo("8b · El cierre forzado deja su evento, y no cualquiera puede hacerlo (HU05 CA-4, CA-5)")
     registro_usuarios = RAIZ / ".registro" / "usuarios.jsonl"

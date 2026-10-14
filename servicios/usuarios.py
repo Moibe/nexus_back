@@ -565,6 +565,16 @@ def por_guid(guid: str) -> dict:
     return _publico(u)
 
 
+def tiene_sesion(guid: str, ahora: datetime | None = None) -> bool:
+    """¿Tiene alguna sesión sin revocar y sin vencer? Es decir, ¿hay un navegador que todavía puede renovar su acceso?
+    Una sesión sin fecha de vencimiento legible se toma por vencida, igual que al canjear el refresh."""
+    _, _, sesiones = _indice()
+    ahora = ahora or _ahora()
+    return any(
+        x["guid"] == guid and not x["revocadaEn"] and (_fecha(x["expira"]) or ahora) > ahora for x in sesiones.values()
+    )
+
+
 def para_listado(u: dict, tenant_guid: str, posicion: int) -> dict:
     """El usuario como lo pinta un listado de la organización `tenant_guid`: su
     rol EN ESA organización, el número de orden que el diseño muestra como ID, y
@@ -588,6 +598,10 @@ def para_listado(u: dict, tenant_guid: str, posicion: int) -> dict:
         # (HU06 CA-5). Es lo que decide si la pantalla pinta uno u otro estatus; "Reenviar invitación" se ofrece en
         # los dos (lo decide `invitaciones.por_que_no_reenviar`).
         "accesoVencido": acceso_vencido(u),
+        # Lo que el administrador necesita para saber si "Cerrar sesión" tiene algo que cerrar, y para ver que sí
+        # funcionó: el estatus (Activo/Inactivo) no cambia al cerrar una sesión, así que sin esto la pantalla no
+        # mostraba ninguna diferencia.
+        "sesionActiva": tiene_sesion(u["guid"]),
     }
 
 
