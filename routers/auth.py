@@ -396,6 +396,21 @@ def logout(datos: Logout) -> Response:
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+def _auditar_cambio_de_contrasena(usuario_guid: str, sesion_guid: str, otras_cerradas: int) -> None:
+    """Deja el evento `PASSWORD_CHANGED` (HU13 CA-4). Va DESPUÉS del cambio y sin poder romperlo: la contraseña ya
+    cambió y las demás sesiones ya se cerraron, y decirle a la persona que no se pudo sería falso. El dato también
+    queda en el registro de usuarios (`contrasena` con motivo CHANGE); si el almacén falla se avisa en el log."""
+    try:
+        auditoria.registrar(
+            auditoria.PASSWORD_CHANGED,
+            usuario_guid=usuario_guid,
+            sesionGuid=sesion_guid,
+            otrasSesionesCerradas=otras_cerradas,
+        )
+    except (ErrorAlmacen, OSError) as exc:
+        logger.warning("No se pudo registrar el PASSWORD_CHANGED en la bitácora de auditoría: %s", exc)
+
+
 def _auditar_cierre(usuario_guid: str, sesion_guid: str, ip: str | None, user_agent: str | None) -> None:
     """Deja el evento `LOGOUT`. Va DESPUÉS de revocar y sin poder romper el
     cierre: la sesión ya murió y el dato está también en `sesion_revocada`, así
@@ -549,11 +564,16 @@ def cambiar_contrasena(datos: CambioContrasena, authorization: str | None = Head
         # comprueba otra vez, bajo él, que la sesión siga viva y que la contraseña verificada siga siendo
         # la vigente. Sin eso, un restablecimiento a media petición (que cierra TODAS las sesiones) no
         # impedía que la sesión ya cerrada pusiera su contraseña encima de la del dueño.
-        actualizado = usuarios.fijar_contrasena(
+        actualizado, cerradas = usuarios.fijar_contrasena_y_cerrar(
             u["guid"], auth.hash_de(datos.nueva), motivo, sesion_guid=claims["sid"], hash_verificado=completo["hash"]
         )
-        logger.info("Contraseña cambiada (guid=%s, motivo=%s)", u["guid"], motivo)
-        return {"ok": True, "motivo": motivo, "sesionesCerradas": motivo in usuarios.MOTIVOS_QUE_CIERRAN_SESIONES, "usuario": actualizado}
+        logger.info("Contraseña cambiada (guid=%s, motivo=%s, sesiones cerradas=%s)", u["guid"], motivo, cerradas)
+        todas = motivo in usuarios.MOTIVOS_QUE_CIERRAN_SESIONES
+        if motivo == "CHANGE":
+            _auditar_cambio_de_contrasena(u["guid"], claims["sid"], cerradas)
+        # `sesionesCerradas`: se cerraron TODAS, la de quien lo pidió incluida (primer acceso): hay que volver a entrar.
+        # `otrasSesionesCerradas`: las de los OTROS dispositivos (HU13 CA-4); la de este sigue viva.
+        return {"ok": True, "motivo": motivo, "sesionesCerradas": todas, "otrasSesionesCerradas": 0 if todas else cerradas, "usuario": actualizado}
     except usuarios.SesionNoCanjeable as exc:
         if exc.motivo == "cerrada":
             raise _error(status.HTTP_401_UNAUTHORIZED, "sesion_cerrada", "La sesión ya no es válida. Inicia sesión de nuevo.") from exc

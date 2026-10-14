@@ -34,6 +34,9 @@ ARCHIVO = "auditoria.jsonl"
 
 PASSWORD_RESET_REQUESTED = "PASSWORD_RESET_REQUESTED"
 PASSWORD_RESET_COMPLETED = "PASSWORD_RESET_COMPLETED"
+# HU13 CA-4: alguien cambió SU contraseña desde una sesión abierta (con la actual). Lleva la persona, la sesión desde
+# la que lo hizo y cuántas OTRAS sesiones se cerraron; nunca la contraseña ni su hash.
+PASSWORD_CHANGED = "PASSWORD_CHANGED"
 # HU05 (cerrar sesión). Hasta el 2026-10-12 estos dos no tenían nombre propio:
 # el cierre voluntario solo dejaba un `sesion_revocada` en `usuarios.jsonl` y el
 # forzado un `cierre_forzado`. Los datos siempre se guardaron; faltaba el
@@ -51,7 +54,7 @@ INVITATION_REISSUED = "INVITATION_REISSUED"
 # Una cuenta se RETIRÓ (borrado lógico: `retirar_cuenta.py`). Lleva el correo, el motivo y quién lo hizo; nunca la contraseña.
 USER_DELETED = "USER_DELETED"
 
-ACCIONES = frozenset({PASSWORD_RESET_REQUESTED, PASSWORD_RESET_COMPLETED, LOGOUT, FORCED_LOGOUT, USER_CREATED, INVITATION_REISSUED, USER_DELETED})
+ACCIONES = frozenset({PASSWORD_RESET_REQUESTED, PASSWORD_RESET_COMPLETED, PASSWORD_CHANGED, LOGOUT, FORCED_LOGOUT, USER_CREATED, INVITATION_REISSUED, USER_DELETED})
 
 
 def _ahora() -> datetime:

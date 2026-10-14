@@ -30,6 +30,9 @@ tiene que ir en UNA transacción o ser un SP propio (`docs/solicitudes-dba.md`, 
     fijar_contrasena(sesion_guid, hash_verificado)
                                     solo cambia la contraseña si la sesión que lo pide
                                     sigue viva y la que se verificó sigue siendo la vigente
+    fijar_contrasena(CHANGE, sesion_guid)
+                                    cierra las sesiones de los OTROS dispositivos y conserva la
+                                    de este (HU13 CA-4): en el SP, un `@exceptSessionGuid`
 
 ## Qué se guarda, y qué NUNCA
 
@@ -65,9 +68,12 @@ logger = logging.getLogger(__name__)
 ARCHIVO = "usuarios.jsonl"
 
 MOTIVOS_CONTRASENA = {"FIRST_LOGIN", "RESET", "CHANGE"}
-# Con estos motivos, cambiar la contraseña cierra todas las sesiones: la
-# contraseña anterior era temporal o estaba comprometida.
+# Con estos motivos, cambiar la contraseña cierra TODAS las sesiones, la actual
+# incluida: la contraseña anterior era temporal o estaba comprometida.
 MOTIVOS_QUE_CIERRAN_SESIONES = {"FIRST_LOGIN", "RESET"}
+# Con `CHANGE` (la persona la cambia desde una sesión, HU13) se cierran las de los
+# OTROS dispositivos y se conserva la de quien la cambia: lo pide el criterio CA-4, y
+# es lo que corta a quien tenga una sesión robada sin sacar de su pantalla a la dueña.
 
 _RE_CORREO = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -755,7 +761,19 @@ def fijar_contrasena(
     sesion_guid: str | None = None,
     hash_verificado: str | None = None,
 ) -> dict:
-    """Pone una contraseña nueva. Con `sesion_guid` y `hash_verificado` (lo usa el cambio
+    """Lo mismo que `fijar_contrasena_y_cerrar`, sin decir cuántas sesiones cerró."""
+    return fijar_contrasena_y_cerrar(guid, hash_contrasena, motivo, sesion_guid=sesion_guid, hash_verificado=hash_verificado)[0]
+
+
+def fijar_contrasena_y_cerrar(
+    guid: str,
+    hash_contrasena: str,
+    motivo: str,
+    *,
+    sesion_guid: str | None = None,
+    hash_verificado: str | None = None,
+) -> tuple[dict, int]:
+    """`(usuario, cuántas sesiones se cerraron)`. Pone una contraseña nueva. Con `sesion_guid` y `hash_verificado` (lo usa el cambio
     desde una sesión, no la recuperación por enlace) comprueba, BAJO el candado, que esa
     sesión siga viva y que la contraseña contra la que se verificó siga siendo la vigente;
     si no, levanta `SesionNoCanjeable` (`cerrada` o `contrasena`) y no escribe nada.
@@ -764,7 +782,11 @@ def fijar_contrasena(
     FUERA del candado. Sin esta revisión, si en esa ventana el dueño restablecía la
     contraseña —lo que cierra TODAS las sesiones—, el cambio de la sesión ya cerrada la
     pisaba: quien tuviera una sesión robada recuperaba la cuenta él solo. Es la misma
-    carrera que `crear_sesion(hash_verificado=...)` cierra en el login."""
+    carrera que `crear_sesion(hash_verificado=...)` cierra en el login.
+
+    Qué sesiones se cierran (HU13 CA-4): con `FIRST_LOGIN` y `RESET`, TODAS. Con `CHANGE`, las de los OTROS
+    dispositivos: se conserva `sesion_guid`, la desde la que se cambió (sin ella no hay nada que conservar y se
+    cierran todas). Se revocan una por una, con su propio evento, para que el índice no necesite una regla nueva."""
     if motivo not in MOTIVOS_CONTRASENA:
         raise ValueError(f"Motivo inválido: {motivo}")
     with registro.candado:
@@ -778,10 +800,21 @@ def fijar_contrasena(
         if hash_verificado is not None and usuarios[guid]["hash"] != hash_verificado:
             raise SesionNoCanjeable("contrasena")
         en = _ahora().isoformat(timespec="seconds")
-        registro.agregar(ARCHIVO, {"evento": "contrasena", "guid": guid, "hash": hash_contrasena, "motivo": motivo, "en": en})
+        vivas = [x["sesionGuid"] for x in sesiones.values() if x["guid"] == guid and not x["revocadaEn"]]
+        evento_contrasena = {"evento": "contrasena", "guid": guid, "hash": hash_contrasena, "motivo": motivo, "en": en}
         if motivo in MOTIVOS_QUE_CIERRAN_SESIONES:
+            registro.agregar(ARCHIVO, evento_contrasena)
             registro.agregar(ARCHIVO, {"evento": "sesion_revocada", "guid": guid, "sesionGuid": None, "motivo": "PASSWORD_CHANGED", "en": en})
-    return por_guid(guid)
+            cerradas = len(vivas)
+        else:
+            # Primero las sesiones de los otros dispositivos y DESPUÉS la contraseña: si el almacén falla a la mitad,
+            # que no quede la contraseña nueva con las sesiones viejas todavía abiertas.
+            otras = [x for x in vivas if x != sesion_guid]
+            for otra in otras:
+                registro.agregar(ARCHIVO, {"evento": "sesion_revocada", "guid": guid, "sesionGuid": otra, "motivo": "PASSWORD_CHANGED", "en": en})
+            registro.agregar(ARCHIVO, evento_contrasena)
+            cerradas = len(otras)
+    return por_guid(guid), cerradas
 
 
 # ── La contraseña temporal caduca (HU06 CA-5) ──────────────────────────────

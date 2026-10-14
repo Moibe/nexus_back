@@ -640,20 +640,44 @@ try:
     rev("la contraseña del restablecimiento sigue vigente: la dueña entra", login(c, "cuatro-i-dora@ejemplo.com", "Cuatro-I-Duena-789!").status_code == 200)
     rev("y la de quien tenía la sesión robada NO sirve", login(c, "cuatro-i-dora@ejemplo.com", "Cuatro-I-Ladron-456!").status_code == 401)
 
-    # (e) Y si la cambió OTRO dispositivo mientras tanto, la "actual" que se verificó ya no lo es.
+    # (e) Y si la cambió OTRO dispositivo mientras tanto, desde HU13 su cambio CIERRA esta sesión (CA-4): la petición que
+    #     iba a medias encuentra su sesión cerrada, y la contraseña que puso el otro sigue vigente.
     emi4 = usuario_4i("cuatro-i-emi@ejemplo.com", "Cuatro-I-Emi-1234!")
-    bearer_emi = {**srv(), "Authorization": f"Bearer {login(c, 'cuatro-i-emi@ejemplo.com', 'Cuatro-I-Emi-1234!').json()['accessToken']}"}
+    sesion_emi = login(c, "cuatro-i-emi@ejemplo.com", "Cuatro-I-Emi-1234!").json()
+    bearer_emi = {**srv(), "Authorization": f"Bearer {sesion_emi['accessToken']}"}
+    sesion_movil = login(c, "cuatro-i-emi@ejemplo.com", "Cuatro-I-Emi-1234!").json()
     cambio = {"actual": "Cuatro-I-Emi-1234!", "nueva": "Cuatro-I-Emi-Otra-567!", "confirmacion": "Cuatro-I-Emi-Otra-567!"}
     original_verificar = con_efecto_tras_verificar(
-        lambda: usuarios.fijar_contrasena(emi4["guid"], auth.hash_de("Cuatro-I-Emi-Movil-890!"), "CHANGE")
+        lambda: usuarios.fijar_contrasena(
+            emi4["guid"], auth.hash_de("Cuatro-I-Emi-Movil-890!"), "CHANGE", sesion_guid=auth.verificar_acceso(sesion_movil["accessToken"])["sid"]
+        )
     )
     try:
         r = c.post("/auth/contrasena", json=cambio, headers=bearer_emi)
     finally:
         auth.verificar_contrasena = original_verificar
     detalle = r.json().get("detail", {}) if r.headers.get("content-type", "").startswith("application/json") else {}
-    rev("cambiarla mientras otro dispositivo ya la cambió: 401 actual_incorrecta", r.status_code == 401 and detalle.get("codigo") == "actual_incorrecta", r.text[:200])
+    rev("cambiarla mientras otro dispositivo ya la cambió (cerró esta sesión): 401 sesion_cerrada", r.status_code == 401 and detalle.get("codigo") == "sesion_cerrada", r.text[:200])
     rev("la que puso el otro dispositivo sigue vigente", login(c, "cuatro-i-emi@ejemplo.com", "Cuatro-I-Emi-Movil-890!").status_code == 200)
+
+    # (e2) Dos envíos a la vez DESDE LA MISMA sesión (doble clic): el segundo ya verificó una "actual" que dejó de serlo,
+    #      pero su sesión sigue viva (el primero la conserva): 401 actual_incorrecta, y gana la contraseña del primero.
+    sesion_doble = login(c, "cuatro-i-emi@ejemplo.com", "Cuatro-I-Emi-Movil-890!").json()
+    bearer_doble = {**srv(), "Authorization": f"Bearer {sesion_doble['accessToken']}"}
+    original_verificar = con_efecto_tras_verificar(
+        lambda: usuarios.fijar_contrasena(
+            emi4["guid"], auth.hash_de("Cuatro-I-Emi-Primera-111!"), "CHANGE", sesion_guid=auth.verificar_acceso(sesion_doble["accessToken"])["sid"]
+        )
+    )
+    try:
+        r = c.post("/auth/contrasena", json={"actual": "Cuatro-I-Emi-Movil-890!", "nueva": "Cuatro-I-Emi-Segunda-222!", "confirmacion": "Cuatro-I-Emi-Segunda-222!"}, headers=bearer_doble)
+    finally:
+        auth.verificar_contrasena = original_verificar
+    detalle = r.json().get("detail", {}) if r.headers.get("content-type", "").startswith("application/json") else {}
+    rev("dos cambios a la vez desde la misma sesión: el segundo da 401 actual_incorrecta", r.status_code == 401 and detalle.get("codigo") == "actual_incorrecta", r.text[:200])
+    rev("y la del primero es la vigente", login(c, "cuatro-i-emi@ejemplo.com", "Cuatro-I-Emi-Primera-111!").status_code == 200
+        and login(c, "cuatro-i-emi@ejemplo.com", "Cuatro-I-Emi-Segunda-222!").status_code == 401)
+    usuarios.fijar_contrasena(emi4["guid"], auth.hash_de("Cuatro-I-Emi-Movil-890!"), "FIRST_LOGIN")
     rev("y el cambio normal, sin carreras, sigue funcionando (200 CHANGE)",
         c.post("/auth/contrasena", json={"actual": "Cuatro-I-Emi-Movil-890!", "nueva": "Cuatro-I-Emi-Final-321!", "confirmacion": "Cuatro-I-Emi-Final-321!"},
                headers={**srv(), "Authorization": f"Bearer {login(c, 'cuatro-i-emi@ejemplo.com', 'Cuatro-I-Emi-Movil-890!').json()['accessToken']}"}).json().get("motivo") == "CHANGE")
@@ -813,6 +837,114 @@ try:
     rev("lo que devuelve por_guid se puede modificar sin tocar el índice (membresías y recuperación son copias)",
         limpia["membresias"] == [{"tenantGuid": "tenant-4i", "rol": "ADMIN"}] and limpia["recuperacion"] == {"email": "luna.recupera@ejemplo.com"},
         f"{limpia['membresias']} {limpia['recuperacion']}")
+
+    titulo("4k · HU13 CA-4: cambiar la contraseña desde una sesión cierra las de los OTROS dispositivos, conserva la actual y deja PASSWORD_CHANGED")
+    hugo = usuario_4i("cuatro-k-hugo@ejemplo.com", "Cuatro-K-Hugo-123!")
+    sesiones_k = [login(c, "cuatro-k-hugo@ejemplo.com", "Cuatro-K-Hugo-123!").json() for _ in range(3)]
+    actual_k, otra1_k, otra2_k = sesiones_k
+    bearer_k = {**srv(), "Authorization": f"Bearer {actual_k['accessToken']}"}
+    sid_actual_k = auth.verificar_acceso(actual_k["accessToken"])["sid"]
+    cambios_antes = len(eventos_de_auditoria("PASSWORD_CHANGED"))
+    NUEVA_K = "Cuatro-K-Hugo-Nueva-456!"
+
+    def estado_de(sesion: dict) -> str:
+        return c.get("/auth/sesion", headers={**srv(), "Authorization": f"Bearer {sesion['accessToken']}"}).json()["estado"]
+
+    rev("antes del cambio, las tres sesiones viven", [estado_de(x) for x in sesiones_k] == ["viva"] * 3)
+    r = c.post("/auth/contrasena", json={"actual": "Cuatro-K-Hugo-123!", "nueva": NUEVA_K, "confirmacion": NUEVA_K}, headers=bearer_k)
+    rev("el cambio: 200 CHANGE, dice que cerró 2 OTRAS sesiones y que la de este dispositivo sigue",
+        r.status_code == 200 and r.json()["motivo"] == "CHANGE" and r.json()["otrasSesionesCerradas"] == 2 and r.json()["sesionesCerradas"] is False, r.text[:200])
+    rev("la sesión de ESTE dispositivo sigue viva y renueva", estado_de(actual_k) == "viva"
+        and c.post("/auth/refresh", json={"refreshToken": actual_k["refreshToken"]}, headers=srv()).status_code == 200)
+    rev("las de los OTROS dos dispositivos murieron: su JWT dice cerrada", estado_de(otra1_k) == "cerrada" and estado_de(otra2_k) == "cerrada")
+    rev("y no pueden renovar: su refresh da 401",
+        c.post("/auth/refresh", json={"refreshToken": otra1_k["refreshToken"]}, headers=srv()).status_code == 401
+        and c.post("/auth/refresh", json={"refreshToken": otra2_k["refreshToken"]}, headers=srv()).status_code == 401)
+    rev("la contraseña vieja ya no entra y la nueva sí",
+        login(c, "cuatro-k-hugo@ejemplo.com", "Cuatro-K-Hugo-123!").status_code == 401 and login(c, "cuatro-k-hugo@ejemplo.com", NUEVA_K).status_code == 200)
+    cambiados = eventos_de_auditoria("PASSWORD_CHANGED")
+    rev("quedó UN evento PASSWORD_CHANGED, con la persona, la sesión desde la que se cambió, cuántas cerró y la hora",
+        len(cambiados) == cambios_antes + 1 and cambiados[-1]["usuarioGuid"] == hugo["guid"] and cambiados[-1]["sesionGuid"] == sid_actual_k
+        and cambiados[-1]["otrasSesionesCerradas"] == 2 and bool(cambiados[-1]["en"]), str(cambiados[-1:]))
+    texto_auditoria = (RAIZ / ".registro" / "auditoria.jsonl").read_text(encoding="utf-8")
+    rev("el evento NO lleva ninguna contraseña ni hash", NUEVA_K not in texto_auditoria and "Cuatro-K-Hugo-123!" not in texto_auditoria and "$argon2id$" not in texto_auditoria)
+
+    # Lo que NO debe cerrar nada ni dejar evento: un cambio rechazado.
+    def vivas_k() -> int:
+        return len(vivas_de(hugo["guid"]))
+
+    sesion_k = login(c, "cuatro-k-hugo@ejemplo.com", NUEVA_K).json()
+    login(c, "cuatro-k-hugo@ejemplo.com", NUEVA_K)
+    bearer_k2 = {**srv(), "Authorization": f"Bearer {sesion_k['accessToken']}"}
+    vivas_antes, eventos_antes = vivas_k(), len(eventos_de_auditoria("PASSWORD_CHANGED"))
+    rechazos = {
+        "actual incorrecta (401)": ({"actual": "No-Es-La-Actual-9!", "nueva": "Cuatro-K-Otra-789!", "confirmacion": "Cuatro-K-Otra-789!"}, 401),
+        "nueva igual a la actual (400)": ({"actual": NUEVA_K, "nueva": NUEVA_K, "confirmacion": NUEVA_K}, 400),
+        "confirmación distinta (400)": ({"actual": NUEVA_K, "nueva": "Cuatro-K-Otra-789!", "confirmacion": "Cuatro-K-Distinta-1!"}, 400),
+        "no cumple la política (400)": ({"actual": NUEVA_K, "nueva": "corta", "confirmacion": "corta"}, 400),
+    }
+    for nombre, (cuerpo, esperado) in rechazos.items():
+        r = c.post("/auth/contrasena", json=cuerpo, headers=bearer_k2)
+        rev(f"un cambio rechazado por {nombre}: no cierra ninguna sesión ni deja evento",
+            r.status_code == esperado and vivas_k() == vivas_antes and len(eventos_de_auditoria("PASSWORD_CHANGED")) == eventos_antes, f"{r.status_code} {r.text[:120]}")
+
+    # Con UNA sola sesión (la de este dispositivo): no hay otras que cerrar, y el cambio también se registra.
+    for x in vivas_de(hugo["guid"]):
+        if x["sesionGuid"] != auth.verificar_acceso(sesion_k["accessToken"])["sid"]:
+            usuarios.revocar_sesiones(hugo["guid"], x["sesionGuid"], "PRUEBA")
+    r = c.post("/auth/contrasena", json={"actual": NUEVA_K, "nueva": "Cuatro-K-Hugo-Otra-789!", "confirmacion": "Cuatro-K-Hugo-Otra-789!"}, headers=bearer_k2)
+    rev("con una sola sesión: 200, otrasSesionesCerradas 0, y la sesión sigue viva",
+        r.status_code == 200 and r.json()["otrasSesionesCerradas"] == 0 and estado_de(sesion_k) == "viva", r.text[:160])
+    rev("y el cambio también se registra (con 0 sesiones cerradas)",
+        len(eventos_de_auditoria("PASSWORD_CHANGED")) == eventos_antes + 1 and eventos_de_auditoria("PASSWORD_CHANGED")[-1]["otrasSesionesCerradas"] == 0)
+
+    # Si el almacén falla a la mitad, no puede quedar la contraseña nueva con las sesiones viejas abiertas: las otras
+    # sesiones se cierran ANTES de escribir la contraseña.
+    from servicios.almacen import ErrorAlmacen as _ErrorAlmacen
+    otra_d = login(c, "cuatro-k-hugo@ejemplo.com", "Cuatro-K-Hugo-Otra-789!").json()
+    bearer_d = {**srv(), "Authorization": f"Bearer {otra_d['accessToken']}"}
+    sid_d = auth.verificar_acceso(otra_d["accessToken"])["sid"]
+    otras_d = [x["sesionGuid"] for x in vivas_de(hugo["guid"]) if x["sesionGuid"] != sid_d]
+    hash_d_antes = usuarios.para_login("cuatro-k-hugo@ejemplo.com")["hash"]
+    agregar_original = usuarios.registro.agregar
+
+    def agregar_que_falla_con_la_contrasena(archivo, evento):
+        if evento.get("evento") == "contrasena":
+            raise _ErrorAlmacen("el NAS no contesta")
+        return agregar_original(archivo, evento)
+
+    usuarios.registro.agregar = agregar_que_falla_con_la_contrasena
+    try:
+        r = c.post("/auth/contrasena", json={"actual": "Cuatro-K-Hugo-Otra-789!", "nueva": "Cuatro-K-Hugo-Falla-321!", "confirmacion": "Cuatro-K-Hugo-Falla-321!"}, headers=bearer_d)
+    finally:
+        usuarios.registro.agregar = agregar_original
+    rev("si el almacén falla al escribir la contraseña: 503, la contraseña NO cambió y las otras sesiones YA se cerraron",
+        r.status_code == 503 and usuarios.para_login("cuatro-k-hugo@ejemplo.com")["hash"] == hash_d_antes
+        and otras_d and all(x not in [v["sesionGuid"] for v in vivas_de(hugo["guid"])] for x in otras_d) and estado_de(otra_d) == "viva", f"{r.status_code} {r.text[:120]}")
+    rev("y no quedó evento PASSWORD_CHANGED de un cambio que no se hizo", len(eventos_de_auditoria("PASSWORD_CHANGED")) == eventos_antes + 1)
+
+    # El primer acceso NO deja PASSWORD_CHANGED (es otra historia, HU04): el evento es del cambio desde una sesión.
+    primera = usuarios.bootstrap_admin("cuatro-k-primera@ejemplo.com", "Prueba", "Primera", auth.hash_de("Temporal-Larga-123!"))
+    sesion_primera = login(c, "cuatro-k-primera@ejemplo.com", "Temporal-Larga-123!").json()
+    cambios_k = len(eventos_de_auditoria("PASSWORD_CHANGED"))
+    r = c.post("/auth/contrasena", json={"nueva": "Cuatro-K-Primera-456!", "confirmacion": "Cuatro-K-Primera-456!"},
+               headers={**srv(), "Authorization": f"Bearer {sesion_primera['accessToken']}"})
+    rev("el primer acceso: 200 FIRST_LOGIN, cierra todas (la suya incluida) y NO deja PASSWORD_CHANGED",
+        r.status_code == 200 and r.json()["motivo"] == "FIRST_LOGIN" and r.json()["sesionesCerradas"] is True and r.json()["otrasSesionesCerradas"] == 0
+        and len(eventos_de_auditoria("PASSWORD_CHANGED")) == cambios_k and estado_de(sesion_primera) == "cerrada", r.text[:200])
+
+    # El servicio: CHANGE sin sesión desde la que se cambia no tiene nada que conservar, y los otros motivos cierran TODO.
+    _, h_a, v_a = auth.nuevo_refresh()
+    _, h_b, v_b = auth.nuevo_refresh()
+    usuarios.crear_sesion(hugo["guid"], h_a, v_a, None, None)
+    usuarios.crear_sesion(hugo["guid"], h_b, v_b, None, None)
+    viva_antes_de_service = vivas_k()
+    _, cerradas_sin_sesion = usuarios.fijar_contrasena_y_cerrar(hugo["guid"], auth.hash_de("Cuatro-K-Hugo-Final-1!"), "CHANGE")
+    rev("el servicio: un CHANGE sin sesión desde la que se cambia cierra todas (no hay una que conservar)",
+        cerradas_sin_sesion == viva_antes_de_service and vivas_k() == 0, f"{cerradas_sin_sesion} / {viva_antes_de_service}")
+    usuarios.crear_sesion(hugo["guid"], h_a + "x", v_a, None, None)
+    _, cerradas_reset = usuarios.fijar_contrasena_y_cerrar(hugo["guid"], auth.hash_de("Cuatro-K-Hugo-Final-2!"), "RESET")
+    rev("y RESET y FIRST_LOGIN siguen cerrando TODAS, la actual incluida", cerradas_reset == 1 and vivas_k() == 0)
 
     titulo("5 · Cuenta desactivada")
     r = login(c, "admin@ejemplo.com", "Otra-Segura-456!")

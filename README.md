@@ -1479,9 +1479,22 @@ paterno y materno, teléfono y los datos de recuperación (correo y teléfono).
 
 Lo que **no** se toca ahí: el correo con el que inicia sesión (es su identidad)
 y su rol (lo mueve quien administra su organización). El cambio de contraseña
-desde la sesión es `POST /auth/contrasena` con `actual`, que ya existía: con
-motivo `CHANGE` **no** cierra las demás sesiones, porque es un cambio
-voluntario y no un restablecimiento.
+desde la sesión es `POST /auth/contrasena` con `actual`, que ya existía. Con
+motivo `CHANGE` (**HU13 CA-4, 2026-10-14**) se cierran las sesiones de los
+**OTROS dispositivos** y se conserva la de quien lo hace: si la contraseña vieja
+estaba comprometida, quien la tuviera deja de entrar, y la dueña no se queda
+fuera de su pantalla. Hasta el 2026-10-13 `CHANGE` no cerraba ninguna, y una
+sesión robada seguía viva con la contraseña vieja. La respuesta trae
+`otrasSesionesCerradas` (cuántas) y `sesionesCerradas: false`; con el primer
+acceso (`FIRST_LOGIN`) y la recuperación (`RESET`) se siguen cerrando TODAS, la
+actual incluida (`sesionesCerradas: true`). Cada cambio desde una sesión deja el
+evento `PASSWORD_CHANGED` en la bitácora de auditoría (la persona, la sesión
+desde la que se cambió y cuántas se cerraron; **nunca** la contraseña ni su
+hash), también cuando no había otras que cerrar. Un cambio rechazado (actual
+incorrecta, nueva igual a la actual, confirmación distinta, política) no cierra
+nada ni deja evento. Las otras sesiones se cierran ANTES de escribir la
+contraseña: si el almacén falla a la mitad, no queda la contraseña nueva con las
+viejas sesiones abiertas. Se prueba en `verificar_auth.py`, sección 4k.
 
 Los apellidos se guardan **separados** (`apellidoPaterno`, `apellidoMaterno`),
 como los pide el diseño y como los tiene `security.users` (lastName,
