@@ -234,6 +234,36 @@ def cambiar_estado(guid: str, datos: CambioEstado, authorization: str | None = H
 
 
 @router.post(
+    "/{guid}/reenviar-invitacion",
+    summary="Reenviar la invitación de un usuario que no ha hecho su primer acceso (HU06 CA-6)",
+    description=(
+        "Le genera una contraseña temporal NUEVA, invalida la anterior (y las sesiones que se hubieran abierto con "
+        "ella), empieza otra vez las horas de vigencia y le manda la bienvenida. Igual que el alta: si el correo "
+        "salió, `contrasenaTemporal` NO viene; si no salió (`correoMotivo`: `sin_canal` o `fallo`), viene UNA vez. "
+        "409 `ya_activa` si ya hizo su primer acceso y 409 `desactivada` si la cuenta está desactivada. Queda como "
+        "`INVITATION_REISSUED`. Sirve también para quien dejó caducar su acceso."
+    ),
+)
+def reenviar_invitacion(guid: str, response: Response, authorization: str | None = Header(default=None)) -> dict:
+    yo, tenant = _admin_de_organizacion(authorization)
+    response.headers["Cache-Control"] = "no-store"
+    objetivo = _de_mi_organizacion(guid, tenant)
+    negativa = invitaciones.por_que_no_reenviar(objetivo)
+    if negativa:
+        raise _error(status.HTTP_409_CONFLICT, *negativa)
+    try:
+        resultado, temporal = invitaciones.reenviar(guid, actor_guid=yo["guid"])
+        lista = usuarios.de_tenant(tenant)
+        posicion = next((i + 1 for i, u in enumerate(lista) if u["guid"] == guid), len(lista))
+        logger.info("Invitación reenviada (guid=%s, resultado=%s)", guid, resultado)
+        return {"usuario": usuarios.para_listado(usuarios.por_guid(guid), tenant, posicion), **invitaciones.para_respuesta(resultado, temporal)}
+    except usuarios.NoPendiente as exc:
+        raise _error(status.HTTP_409_CONFLICT, "ya_activa", "Este usuario ya hizo su primer acceso: no hay invitación que reenviar.") from exc
+    except ErrorAlmacen as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@router.post(
     "/{guid}/cerrar-sesion",
     summary="Cerrar la sesión de un usuario (HU05)",
     description=(

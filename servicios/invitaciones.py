@@ -93,6 +93,17 @@ def perfil_de(u: dict) -> tuple[str, str | None]:
         return "admin_organizacion", None
 
 
+def por_que_no_reenviar(objetivo: dict) -> tuple[str, str] | None:
+    """`(codigo, mensaje)` si a esta cuenta NO se le puede reenviar la invitación, o `None` si se puede. `objetivo` es
+    lo que devuelve `usuarios.por_guid`. Solo tiene invitación que reenviar quien sigue en su primer acceso, y a una
+    cuenta desactivada no se le manda nada hasta que se reactive."""
+    if not objetivo["activo"]:
+        return "desactivada", "La cuenta está desactivada: reactívala antes de reenviar su invitación."
+    if not objetivo["debeCambiarContrasena"]:
+        return "ya_activa", "Este usuario ya hizo su primer acceso: no hay invitación que reenviar."
+    return None
+
+
 def reenviar(guid: str, actor_guid: str | None) -> tuple[str, str]:
     """Le genera a una cuenta que sigue en su primer acceso una contraseña temporal NUEVA, invalida la anterior
     (y las sesiones que se hubieran abierto con ella), empieza otra vez las horas de vigencia y le manda la

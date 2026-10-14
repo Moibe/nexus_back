@@ -451,6 +451,103 @@ try:
     todo_el_log = " ".join(recolector.lineas)
     rev("ninguna contraseña nueva llegó al log", not any(p and p in todo_el_log for p in (nueva_pwd, pwd_script, pwd_gael, pwd_cata)))
 
+    titulo("7 · Reenviar la invitación desde la pantalla (HU06 CA-6)")
+    sin_canal()
+    r = c.post("/usuarios/", json={"nombre": "Kika", "email": "kika@ejemplo.com", "rol": "VIEWER"}, headers=bearer_admin)
+    guid_kika, pwd_kika = r.json()["usuario"]["guid"], r.json()["contrasenaTemporal"]
+
+    def fila(correo: str, bearer: dict) -> dict:
+        return next(u for u in c.get("/usuarios/", headers=bearer).json()["usuarios"] if u["email"] == correo)
+
+    rev("el listado la marca pendiente de primer acceso y todavía vigente",
+        fila("kika@ejemplo.com", bearer_admin)["debeCambiarContrasena"] is True and fila("kika@ejemplo.com", bearer_admin)["accesoVencido"] is False)
+    r = c.post(f"/usuarios/{guid_kika}/reenviar-invitacion", headers=bearer_admin)
+    cuerpo_r = r.json()
+    rev("reenviar sin canal real: 200, no-store, contraseña NUEVA en pantalla y el motivo sin_canal",
+        r.status_code == 200 and r.headers.get("cache-control") == "no-store" and cuerpo_r["correoEnviado"] is False
+        and cuerpo_r["correoMotivo"] == "sin_canal" and cuerpo_r["contrasenaTemporal"] != pwd_kika, r.text[:200])
+    rev("devuelve la fila del listado, para que la pantalla se refresque", cuerpo_r["usuario"]["email"] == "kika@ejemplo.com" and cuerpo_r["usuario"]["debeCambiarContrasena"] is True)
+    rev("la contraseña anterior ya no sirve y la nueva sí",
+        entrar("kika@ejemplo.com", pwd_kika).status_code == 401 and entrar("kika@ejemplo.com", cuerpo_r["contrasenaTemporal"]).status_code == 200)
+    canal_real()
+    r = c.post(f"/usuarios/{guid_kika}/reenviar-invitacion", headers=bearer_admin)
+    rev("con canal real: el correo salió y la contraseña NO viene en la respuesta",
+        r.status_code == 200 and r.json()["correoEnviado"] is True and "contrasenaTemporal" not in r.json(), r.text[:200])
+    pwd_kika2 = contrasena_del_correo(enviados[0]) if enviados else ""
+    rev("el correo llega a ella, con el texto de HU06, y esa contraseña sirve",
+        len(enviados) == 1 and enviados[0]["destino"] == "kika@ejemplo.com" and "creada exitosamente por el administrador de tu organización" in enviados[0]["texto"]
+        and entrar("kika@ejemplo.com", pwd_kika2).status_code == 200)
+    viajar(49)
+    rev("pasadas las 48 horas el listado la marca CADUCADA", fila("kika@ejemplo.com", bearer_admin)["accesoVencido"] is True)
+    enviados.clear()
+    r = c.post(f"/usuarios/{guid_kika}/reenviar-invitacion", headers=bearer_admin)
+    rev("y reenviarle la invitación la deja vigente otra vez",
+        r.status_code == 200 and fila("kika@ejemplo.com", bearer_admin)["accesoVencido"] is False and entrar("kika@ejemplo.com", contrasena_del_correo(enviados[0])).status_code == 200, r.text[:200])
+    rev("y la fila que devuelve ya viene vigente (no la de antes de reenviar)", r.json()["usuario"]["accesoVencido"] is False, r.text[:200])
+    volver()
+    alta = [e for e in eventos("INVITATION_REISSUED") if e.get("usuarioGuid") == guid_kika]
+    rev("cada reenvío dejó INVITATION_REISSUED con el administrador que lo pidió",
+        len(alta) == 3 and all(e["actor"] == admin_org["usuario"]["guid"] for e in alta), str(alta))
+    estado_canal["falla"] = True
+    r = c.post(f"/usuarios/{guid_kika}/reenviar-invitacion", headers=bearer_admin)
+    rev("si el servicio de correo falla: 200 igual, con la contraseña en pantalla y el motivo fallo",
+        r.status_code == 200 and r.json()["correoMotivo"] == "fallo" and r.json().get("contrasenaTemporal"), r.text[:200])
+    estado_canal["falla"] = False
+    sin_canal()
+
+    # A quién NO se le reenvía.
+    r = c.post(f"/usuarios/{cuerpo['admin']['guid']}/reenviar-invitacion", headers=bearer_admin)
+    rev("a quien ya hizo su primer acceso (el propio administrador): 409 ya_activa", r.status_code == 409 and r.json()["detail"]["codigo"] == "ya_activa", r.text[:160])
+    usuarios.cambiar_estado(guid_kika, False, "prueba")
+    r = c.post(f"/usuarios/{guid_kika}/reenviar-invitacion", headers=bearer_admin)
+    rev("a una cuenta desactivada: 409 desactivada", r.status_code == 409 and r.json()["detail"]["codigo"] == "desactivada", r.text[:160])
+    usuarios.cambiar_estado(guid_kika, True)
+    rev("sin sesión: 401", c.post(f"/usuarios/{guid_kika}/reenviar-invitacion", headers=srv()).status_code == 401)
+    r = c.post("/organizaciones/", json={"nombre": "Lola SA", "adminNombre": "Lola", "adminApellidos": "L", "adminEmail": "lola@ejemplo.com"}, headers=bearer_super)
+    pwd_lola, guid_lola, org_lola = r.json()["contrasenaTemporal"], r.json()["admin"]["guid"], r.json()["organizacion"]["guid"]
+    bearer_lola = {**srv(), "Authorization": f"Bearer {entrar('lola@ejemplo.com', pwd_lola).json()['accessToken']}"}
+    r = c.post(f"/usuarios/{guid_kika}/reenviar-invitacion", headers=bearer_lola)
+    rev("el administrador de OTRA organización no puede: 404 (no se entera de quién hay en la de al lado)", r.status_code == 404, r.text[:160])
+    r = c.post(f"/usuarios/{guid_kika}/reenviar-invitacion", headers=bearer_super)
+    rev("el administrador de plataforma NO usa la ruta de organización (no tiene la suya): 403", r.status_code == 403, r.text[:160])
+
+    # El administrador de plataforma le reenvía el acceso al ADMINISTRADOR de una organización.
+    r = c.post(f"/organizaciones/{org_lola}/usuarios/{guid_lola}/reenviar-invitacion", headers=bearer_super)
+    rev("el de plataforma le reenvía la invitación al administrador de una organización: 200, no-store y contraseña nueva en pantalla",
+        r.status_code == 200 and r.headers.get("cache-control") == "no-store" and r.json()["contrasenaTemporal"] != pwd_lola, r.text[:200])
+    rev("la contraseña de Lola cambió: la anterior ya no sirve", entrar("lola@ejemplo.com", pwd_lola).status_code == 401)
+    r = c.post(f"/organizaciones/{org_lola}/usuarios/{guid_kika}/reenviar-invitacion", headers=bearer_super)
+    rev("con un usuario que NO es de esa organización: 404", r.status_code == 404, r.text[:160])
+    r = c.post(f"/organizaciones/{org_lola}/usuarios/{guid_lola}/reenviar-invitacion", headers=bearer_admin)
+    rev("un administrador de organización en la ruta de plataforma: 403", r.status_code == 403, r.text[:160])
+    r = c.post("/organizaciones/no-existe/usuarios/x/reenviar-invitacion", headers=bearer_super)
+    rev("organización inexistente: 404", r.status_code == 404, r.text[:160])
+
+    # Lo demás de la ruta de plataforma: la fila que devuelve, a quién se le niega y quién queda en la bitácora.
+    guid_super = usuarios.para_login("super@ejemplo.com")["guid"]
+    org_beto = cuerpo["organizacion"]["guid"]
+    r = c.post("/usuarios/", json={"nombre": "Mario", "email": "mario@ejemplo.com", "rol": "VIEWER"}, headers=bearer_admin)
+    guid_mario = r.json()["usuario"]["guid"]
+    numero_mario = fila("mario@ejemplo.com", bearer_admin)["numero"]
+    ruta_mario = f"/organizaciones/{org_beto}/usuarios/{guid_mario}/reenviar-invitacion"
+    viajar(49)
+    r = c.post(ruta_mario, headers=bearer_super)
+    volver()
+    fila_r = r.json().get("usuario", {})
+    rev("devuelve la fila ya actualizada, con su número en la lista de ESA organización y vigente",
+        r.status_code == 200 and fila_r.get("email") == "mario@ejemplo.com" and numero_mario != "001" and fila_r.get("numero") == numero_mario
+        and fila_r.get("accesoVencido") is False, r.text[:200])
+    de_mario = [e for e in eventos("INVITATION_REISSUED") if e.get("usuarioGuid") == guid_mario]
+    rev("la bitácora nombra al administrador de plataforma como responsable", len(de_mario) == 1 and de_mario[0]["actor"] == guid_super, str(de_mario))
+    usuarios.cambiar_estado(guid_mario, False, "prueba")
+    r = c.post(ruta_mario, headers=bearer_super)
+    rev("a una cuenta desactivada: 409 desactivada, y no se le generó nada",
+        r.status_code == 409 and r.json()["detail"]["codigo"] == "desactivada"
+        and len([e for e in eventos("INVITATION_REISSUED") if e.get("usuarioGuid") == guid_mario]) == 1, r.text[:160])
+    usuarios.cambiar_estado(guid_mario, True)
+    r = c.post(f"/organizaciones/{org_beto}/usuarios/{cuerpo['admin']['guid']}/reenviar-invitacion", headers=bearer_super)
+    rev("a quien ya hizo su primer acceso: 409 ya_activa", r.status_code == 409 and r.json()["detail"]["codigo"] == "ya_activa", r.text[:160])
+
 finally:
     sin_canal()
     raiz_log.removeHandler(recolector)

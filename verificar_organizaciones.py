@@ -127,7 +127,7 @@ try:
         r.status_code == 200 and [u["email"] for u in r.json()["usuarios"]] == ["benjamin.lg@ejemplo.com"], r.text[:200])
     u0 = r.json()["usuarios"][0]
     rev("con la forma del listado de su administrador (número, rol EN esa organización) y nada interno",
-        set(u0) == {"guid", "numero", "nombre", "email", "telefono", "rol", "rolNombre", "activo", "creadoEn", "debeCambiarContrasena"}
+        set(u0) == {"guid", "numero", "nombre", "email", "telefono", "rol", "rolNombre", "activo", "creadoEn", "debeCambiarContrasena", "accesoVencido"}
         and u0["numero"] == "001" and u0["rol"] == "ADMIN" and u0["activo"] is True, str(u0))
     rev("una organización que no existe: 404", c.get("/organizaciones/no-existe/usuarios", headers=bearer).status_code == 404)
     r = c.post("/organizaciones/", json={**cuerpo, "nombre": "Z", "adminEmail": "z2@ejemplo.com",

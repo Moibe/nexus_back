@@ -147,6 +147,45 @@ def usuarios_de(guid: str, authorization: str | None = Header(default=None)) -> 
 
 
 @router.post(
+    "/{guid}/usuarios/{usuario}/reenviar-invitacion",
+    summary="Reenviar la invitación de un usuario de cualquier organización (HU06 CA-6)",
+    description=(
+        "Lo mismo que `POST /usuarios/{guid}/reenviar-invitacion`, pero ejecutado por el administrador de plataforma "
+        "sobre un usuario de la organización `guid` (es quien le reenvía el acceso al ADMINISTRADOR de una "
+        "organización, que no tiene a nadie por encima en su organización). 404 si la organización no existe o el "
+        "usuario no es de ella; 409 `ya_activa` o `desactivada`."
+    ),
+)
+def reenviar_invitacion_de(guid: str, usuario: str, response: Response, authorization: str | None = Header(default=None)) -> dict:
+    yo = _exigir_admin_plataforma(authorization)
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        tenants_registro.por_guid(guid)
+        objetivo = usuarios.por_guid(usuario)
+    except tenants_registro.NoEncontrado as exc:
+        raise _error(status.HTTP_404_NOT_FOUND, "no_existe", "Esa organización no existe.") from exc
+    except usuarios.NoEncontrado as exc:
+        raise _error(status.HTTP_404_NOT_FOUND, "no_existe", "Ese usuario no existe.") from exc
+    except ErrorAlmacen as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    if not any(m["tenantGuid"] == guid for m in objetivo["membresias"]):
+        raise _error(status.HTTP_404_NOT_FOUND, "no_existe", "Ese usuario no existe.")
+    negativa = invitaciones.por_que_no_reenviar(objetivo)
+    if negativa:
+        raise _error(status.HTTP_409_CONFLICT, *negativa)
+    try:
+        resultado, temporal = invitaciones.reenviar(usuario, actor_guid=yo["guid"])
+        lista = usuarios.de_tenant(guid)
+        posicion = next((i + 1 for i, u in enumerate(lista) if u["guid"] == usuario), len(lista))
+        logger.info("Invitación reenviada por el administrador de plataforma (guid=%s, resultado=%s)", usuario, resultado)
+        return {"usuario": usuarios.para_listado(usuarios.por_guid(usuario), guid, posicion), **invitaciones.para_respuesta(resultado, temporal)}
+    except usuarios.NoPendiente as exc:
+        raise _error(status.HTTP_409_CONFLICT, "ya_activa", "Este usuario ya hizo su primer acceso: no hay invitación que reenviar.") from exc
+    except ErrorAlmacen as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@router.post(
     "/{guid}/usuarios/{usuario}/cerrar-sesion",
     summary="Cerrar la sesión de un usuario de cualquier organización (HU05)",
     description=(

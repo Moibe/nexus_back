@@ -1181,8 +1181,7 @@ bootstrap imprime la contraseña SIEMPRE, salga o no el correo: es el respaldo d
 
 **La contraseña viaja por correo, como dibuja el diseño** (y, con `api`, por el servicio de ART).
 Por eso el cuerpo jamás se registra, y por eso la cuenta nace obligada a cambiarla en el primer
-acceso. **Falta de HU06:** que el el botón «Reenviar invitación» de la pantalla de usuarios (CA-6): el
-núcleo ya está (`invitaciones.reenviar`, ver abajo) y solo falta el endpoint y la pantalla.
+acceso. El botón «Reenviar invitación» (HU06 CA-6) llama a `invitaciones.reenviar` por HTTP (ver abajo).
 
 **La contraseña temporal CADUCA (HU06 CA-5, desde el 2026-10-13).** Sirve `TOKEN_ACTIVACION_HORAS`
 (48 por default; admite fracciones —`0.01` es menos de un minuto, para probar sin esperar dos
@@ -1202,11 +1201,27 @@ cuenta que SIGUE en su primer acceso le genera una contraseña temporal NUEVA, i
 las sesiones que se hubieran abierto con ella, levanta los bloqueos, empieza otra vez las horas de
 vigencia y le manda la bienvenida. Imprime la contraseña siempre. Deja el evento `INVITATION_REISSUED`
 en la bitácora. A quien ya hizo su primer acceso se le niega: para eso está «Olvidé mi contraseña».
-Es lo que hay hoy para quien dejó caducar su acceso, hasta que exista la pantalla.
+Es lo que se usa para quien dejó caducar su acceso; desde el 2026-10-13 también por pantalla (siguiente
+párrafo). El script sigue sirviendo para el administrador de plataforma, que no tiene quién se lo reenvíe.
+
+**«Reenviar invitación» por pantalla (HU06 CA-6, 2026-10-13):** dos endpoints, el mismo servicio.
+`POST /usuarios/{guid}/reenviar-invitacion` (administrador de la organización, sobre un usuario de la
+suya) y `POST /organizaciones/{guid}/usuarios/{usuario}/reenviar-invitacion` (administrador de
+plataforma, sobre un usuario de esa organización: es quien le reenvía el acceso al ADMINISTRADOR de una
+organización, que no tiene a nadie por encima en la suya). Sin cuerpo. La respuesta es la del alta:
+`usuario` (el renglón del listado, ya actualizado) más `correoEnviado`, y `contrasenaTemporal` UNA vez
+solo si el correo no salió (`correoMotivo`: `sin_canal` o `fallo`). Se niega con 409 `ya_activa` (ya hizo
+su primer acceso) o 409 `desactivada` (reactívala antes: a una cuenta desactivada no se le manda nada);
+`invitaciones.por_que_no_reenviar` decide ambos. 404 si el usuario no es de esa organización. Queda
+`INVITATION_REISSUED` con el administrador responsable. La respuesta no se guarda en caché
+(`Cache-Control: no-store`: puede llevar una contraseña).
+
+Para que la pantalla pinte «Pendiente» y «Caducada», cada renglón del listado trae
+`debeCambiarContrasena` y `accesoVencido` (pendiente Y ya pasaron las horas; HU06 CA-5).
 
 Se prueba en `verificar_invitaciones.py` (la plantilla, el servicio, las altas por HTTP con un canal
 simulado, el script de bootstrap, la caducidad con el reloj movido y la reemisión) y, en el navegador,
-con `probar-correo-bienvenida.mjs` y `probar-activacion-caducada.mjs`.
+con `probar-correo-bienvenida.mjs`, `probar-activacion-caducada.mjs` y `probar-reenviar-invitacion.mjs`.
 
 ### El JWT de acceso y la sesión cerrada (HU05)
 
@@ -1359,6 +1374,7 @@ distingue quién pide.
 | `GET /organizaciones/coincidencias?nombre=` | el aviso del alta: qué organizaciones se llaman igual (`ID encontrado`) y qué slug se asignaría (`ID asignado`) |
 | `POST /organizaciones/` | crea la organización **y la cuenta de su administrador** y le manda su bienvenida por correo (`correoEnviado`); devuelve `contrasenaTemporal` UNA vez SOLO si el correo no salió (`correoMotivo`). 409 `correo_registrado` |
 | `GET /organizaciones/{guid}/usuarios` | sus usuarios, con la misma forma que el listado de su administrador (`GET /usuarios/`): número de orden, nombre, rol EN esa organización, estado y fecha de alta |
+| `POST /organizaciones/{guid}/usuarios/{usuario}/reenviar-invitacion` | HU06 CA-6: lo mismo que el de `/usuarios`, pero lo ejecuta el administrador de plataforma sobre un usuario de esa organización (sobre todo su administrador). 404 si no es de ella |
 | `POST /organizaciones/{guid}/usuarios/{usuario}/cerrar-sesion` | HU05 CA-4: el administrador de plataforma le cierra TODAS las sesiones a un usuario de esa organización. Ver «Desactivar, reactivar y cerrar sesión» |
 
 **Nombre, slug y código.** El nombre se puede repetir; el slug no. Al segundo
@@ -1403,6 +1419,7 @@ administrador de la organización, solo sobre la suya):
 | Ruta | Qué hace |
 |---|---|
 | `POST /usuarios/{guid}/estado` | `{activo, motivo}`. Desactivar cierra TODAS sus sesiones y deja de poder entrar; reactivar le devuelve el acceso con su misma contraseña |
+| `POST /usuarios/{guid}/reenviar-invitacion` | HU06 CA-6, sin cuerpo: contraseña temporal NUEVA (la anterior deja de servir), bienvenida otra vez y el mismo contrato que el alta (`correoEnviado`; `contrasenaTemporal` solo si el correo no salió). 409 `ya_activa` / `desactivada` |
 | `POST /usuarios/{guid}/cerrar-sesion` | `{motivo}`. Revoca TODAS sus sesiones (no podrá renovar) sin desactivarlo: puede volver a entrar. Deja un evento `FORCED_LOGOUT` ANTES de cerrar (si no se puede escribir, no se cierra nada). Esta ruta es la del administrador de una organización, sobre usuarios de la suya; el Super Admin recibe 403 aquí porque no tiene organización (la suya cuelga de `/organizaciones`, abajo). Su JWT deja de valer en este back al instante (401 `sesion_cerrada`). |
 
 El **motivo es obligatorio** en los dos y queda en el registro con quién lo

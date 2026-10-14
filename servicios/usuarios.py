@@ -334,6 +334,7 @@ def _publico(u: dict) -> dict:
         "activo": u["activo"],
         "ultimoLoginEn": u["ultimoLoginEn"],
         "creadoEn": u["creadoEn"],
+        "temporalEmitidaEn": u.get("temporalEmitidaEn"),
         "membresias": [dict(m) for m in u["membresias"]],
     }
 
@@ -553,7 +554,6 @@ def para_login(email: str) -> dict | None:
         "hash": u["hash"],
         "fallidos": u["fallidos"],
         "bloqueadoHasta": bloqueo.isoformat() if bloqueo else None,
-        "temporalEmitidaEn": u.get("temporalEmitidaEn"),
     }
 
 
@@ -584,6 +584,10 @@ def para_listado(u: dict, tenant_guid: str, posicion: int) -> dict:
         "activo": u["activo"],
         "creadoEn": u["creadoEn"],
         "debeCambiarContrasena": u["debeCambiarContrasena"],
+        # Pendiente = sigue en su primer acceso; Caducada = además ya pasaron las horas de `TOKEN_ACTIVACION_HORAS`
+        # (HU06 CA-5). Es lo que decide si la pantalla pinta uno u otro estatus; "Reenviar invitación" se ofrece en
+        # los dos (lo decide `invitaciones.por_que_no_reenviar`).
+        "accesoVencido": acceso_vencido(u),
     }
 
 
