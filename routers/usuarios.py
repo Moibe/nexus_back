@@ -28,6 +28,9 @@ router = APIRouter()
 class NuevoUsuario(BaseModel):
     nombre: str = Field(max_length=200)
     apellidos: str = Field(default="", max_length=200)
+    # Los formularios los piden por separado; si vienen, mandan sobre `apellidos` (ver `usuarios.crear_usuario`).
+    apellidoPaterno: str = Field(default="", max_length=100)
+    apellidoMaterno: str = Field(default="", max_length=100)
     email: str = Field(max_length=254)
     telefono: str | None = Field(default=None, max_length=25)
     rol: str = Field(max_length=40)
@@ -131,6 +134,8 @@ def crear(datos: NuevoUsuario, response: Response, authorization: str | None = H
             email=datos.email,
             nombre=datos.nombre,
             apellidos=datos.apellidos,
+            apellido_paterno=datos.apellidoPaterno,
+            apellido_materno=datos.apellidoMaterno,
             hash_contrasena=auth.hash_de(temporal),
             telefono=datos.telefono,
             tenant_guid=tenant,

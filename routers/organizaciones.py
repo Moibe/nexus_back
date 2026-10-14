@@ -47,6 +47,9 @@ class NuevaOrganizacion(BaseModel):
     nombre: str = Field(max_length=200)
     adminNombre: str = Field(max_length=200)
     adminApellidos: str = Field(default="", max_length=200)
+    # Los formularios los piden por separado; si vienen, mandan sobre `adminApellidos`.
+    adminApellidoPaterno: str = Field(default="", max_length=100)
+    adminApellidoMaterno: str = Field(default="", max_length=100)
     adminTelefono: str | None = Field(default=None, max_length=25)
     adminEmail: str = Field(max_length=254)
     recuperacion: Recuperacion | None = None
@@ -264,6 +267,8 @@ def crear(datos: NuevaOrganizacion, response: Response, authorization: str | Non
             email=datos.adminEmail,
             nombre=datos.adminNombre,
             apellidos=datos.adminApellidos,
+            apellido_paterno=datos.adminApellidoPaterno,
+            apellido_materno=datos.adminApellidoMaterno,
             hash_contrasena=auth.hash_de(temporal),
             telefono=datos.adminTelefono,
         )

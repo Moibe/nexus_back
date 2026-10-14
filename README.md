@@ -1533,8 +1533,10 @@ como los pide el diseño y como los tiene `security.users` (lastName,
 secondLastName). Los usuarios creados antes solo tienen `apellidos`: se parten
 al leerlos (`usuarios.separar_nombre`), sin migrar nada.
 
-**El formulario de alta trae UN campo «nombre completo»** (el de usuarios y el del administrador de una organización; el
-diseño no los separa) y manda `apellidos` vacío. Hasta el 2026-10-14 todo se guardaba en `nombre` y «Mi perfil» mostraba el
+**Desde el 2026-10-14 los formularios de alta piden Nombre(s), Apellido paterno (obligatorio) y Apellido materno** y los mandan
+en `apellidoPaterno`/`apellidoMaterno` (usuarios) o `adminApellidoPaterno`/`adminApellidoMaterno` (organizaciones): se guardan
+tal cual, sin adivinar. Lo de abajo es el respaldo para quien manda el nombre completo junto (la API directa) y para las cuentas
+anteriores. **Antes el formulario traía UN campo «nombre completo»** (el diseño no los separaba) y mandaba `apellidos` vacío. Hasta el 2026-10-14 todo se guardaba en `nombre` y «Mi perfil» mostraba el
 nombre entero con los apellidos en «—». Ahora `usuarios.separar_nombre` lo parte como se escribe en México: las **dos últimas
 unidades** son el apellido paterno y el materno, con sus partículas («De la Cruz», «Del Valle», «Ortega y Gasset» cuentan como
 UNA unidad) y lo anterior son los nombres: «Cesar Boris Hernandez Alvarado» → Cesar Boris / Hernandez / Alvarado. Con dos

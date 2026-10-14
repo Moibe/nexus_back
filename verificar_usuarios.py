@@ -170,6 +170,25 @@ try:
     rev("con apellidos explícitos (el alta de arriba) nada cambia: Camila Sofía / Cabrera / González",
         (previo["nombre"], previo["apellidoPaterno"], previo["apellidoMaterno"]) == ("Camila Sofía", "Cabrera", "González"), str(previo))
 
+    # Desde el 2026-10-14 los formularios piden nombre(s), apellido paterno y materno POR SEPARADO: se guardan tal cual, sin adivinar.
+    def crear_separado(nombre: str, paterno: str, materno: str, correo: str) -> dict:
+        r = c.post("/usuarios/", json={"nombre": nombre, "apellidoPaterno": paterno, "apellidoMaterno": materno, "email": correo, "rol": "VIEWER"}, headers=bearer_tn)
+        assert r.status_code == 201, r.text
+        return r.json()
+
+    sep = crear_separado("Maria Jose", "Perez Lopez", "Garcia", "mj.plg@ejemplo.com")
+    g = usuarios.por_guid(sep["usuario"]["guid"])
+    rev("con los tres campos separados se guardan tal cual, aunque el apellido paterno lleve dos palabras sin partícula",
+        (g["nombre"], g["apellidoPaterno"], g["apellidoMaterno"], g["apellidos"]) == ("Maria Jose", "Perez Lopez", "Garcia", "Perez Lopez Garcia"), str(g))
+    rev("y el listado dice el nombre completo", sep["usuario"]["nombre"] == "Maria Jose Perez Lopez Garcia", sep["usuario"]["nombre"])
+    g = usuarios.por_guid(crear_separado("Ana", "Soto", "", "ana.soto@ejemplo.com")["usuario"]["guid"])
+    rev("el apellido materno es opcional", (g["nombre"], g["apellidoPaterno"], g["apellidoMaterno"]) == ("Ana", "Soto", ""), str(g))
+    r = c.post("/organizaciones/", json={"nombre": "Maderas del Sur", "adminNombre": "Luis Angel", "adminApellidoPaterno": "De la Rosa", "adminApellidoMaterno": "Vega", "adminEmail": "luis.rv@ejemplo.com"}, headers=bearer_super)
+    assert r.status_code == 201, r.text
+    la = usuarios.por_guid(r.json()["admin"]["guid"])
+    rev("el administrador de una organización también llega con los tres campos",
+        (la["nombre"], la["apellidoPaterno"], la["apellidoMaterno"]) == ("Luis Angel", "De la Rosa", "Vega"), str(la))
+
     # Editar con el MISMO nombre completo (lo que el formulario manda de vuelta) no debe deshacer lo que la persona corrigió en su perfil.
     cuatro = crear_con("Juan Perez Lopez Garcia", "juan.plg@ejemplo.com")
     g4 = cuatro["usuario"]["guid"]

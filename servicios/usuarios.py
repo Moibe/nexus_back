@@ -449,10 +449,17 @@ def crear_usuario(
     telefono: str | None = None,
     tenant_guid: str | None = None,
     rol: str = "ADMIN",
+    *,
+    apellido_paterno: str = "",
+    apellido_materno: str = "",
 ) -> dict:
     """Da de alta un usuario con contraseña temporal (`debeCambiar`) y, si se
     indica un tenant, su membresía con rol. Levanta `YaExiste` si el correo ya
-    está registrado — el diseño lo dice tal cual bajo el campo."""
+    está registrado — el diseño lo dice tal cual bajo el campo.
+
+    Los formularios piden nombre(s), apellido paterno y materno POR SEPARADO (desde el 2026-10-14) y los mandan en
+    `apellido_paterno`/`apellido_materno`: se guardan tal cual. Quien llame con el nombre completo junto (`nombre`, y
+    `apellidos` vacío o el par de apellidos en una cadena) sigue funcionando: se separa con `separar_nombre`."""
     email = _normalizar_correo(email)
     if not correo_valido(email):
         raise ValueError("El correo no es válido.")
@@ -460,7 +467,11 @@ def crear_usuario(
     if not nombre:
         raise ValueError("El nombre es obligatorio.")
     # El formulario manda el nombre completo y `apellidos` vacío: se guarda separado (ver `separar_nombre`).
-    nombres, paterno, materno = separar_nombre(nombre, apellidos)
+    paterno_dado, materno_dado = " ".join(apellido_paterno.split()), " ".join(apellido_materno.split())
+    if paterno_dado or materno_dado:
+        nombres, paterno, materno = " ".join(nombre.split()), paterno_dado, materno_dado
+    else:
+        nombres, paterno, materno = separar_nombre(nombre, apellidos)
     with registro.candado:
         _, por_correo, _ = _indice()
         if email in por_correo:
