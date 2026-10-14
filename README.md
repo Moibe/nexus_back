@@ -1107,8 +1107,8 @@ DBA. Nunca llevan el token ni la contraseña.
 ART Broker (la subsección de abajo). **Mientras en dev siga en `archivo`, nadie
 recibe el enlace**: la HU está completa pero el correo se lee del disco.
 `FRONT_URL` tiene que apuntar al front real de cada ambiente (en dev de CSI es
-`http://172.10.30.15:3401`, no el 3400 del default), porque de ahí sale el
-enlace. Los `.eml` no se limpian solos.
+`https://dev-nexus-doc.buzzword.com.mx` —el dominio, no la IP—, no el localhost del
+default), porque de ahí sale el enlace de todos los correos. Los `.eml` no se limpian solos.
 
 #### Salir por el servicio de ART Broker (`CORREO_MODO=api`, desde el 2026-10-13)
 
