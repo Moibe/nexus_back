@@ -120,6 +120,85 @@ try:
         c.post("/usuarios/", json={"nombre": "X", "email": "y@ejemplo.com", "rol": "ADMIN"}, headers=bearer_sm).status_code == 400)
     rev("correo inválido: 400", c.post("/usuarios/", json={"nombre": "X", "email": "no-es", "rol": "VIEWER"}, headers=bearer_sm).status_code == 400)
 
+    titulo("3b · El nombre completo que escribe el formulario se separa en nombre y apellidos")
+    # El alta y la edición traen UN campo «nombre completo» y mandan `apellidos` vacío: hasta el 2026-10-14 todo se guardaba en
+    # `nombre`, y «Mi perfil» (que pide nombre, apellido paterno y materno por separado) mostraba el nombre entero y los apellidos en «—».
+    casos = [
+        ("Cesar Boris Hernandez Alvarado", ("Cesar Boris", "Hernandez", "Alvarado")),
+        ("Juan Perez Lopez", ("Juan", "Perez", "Lopez")),
+        ("Juan Perez", ("Juan", "Perez", "")),
+        ("Juan", ("Juan", "", "")),
+        ("  Juan   Perez 	 Lopez  ", ("Juan", "Perez", "Lopez")),
+        ("Maria de los Angeles Perez Lopez", ("Maria de los Angeles", "Perez", "Lopez")),
+        ("Juan De la Cruz", ("Juan", "De la Cruz", "")),
+        ("Ana Maria De la Cruz Del Valle", ("Ana Maria", "De la Cruz", "Del Valle")),
+        ("Jose Ortega y Gasset", ("Jose", "Ortega y Gasset", "")),
+        ("JUAN PÉREZ LÓPEZ", ("JUAN", "PÉREZ", "LÓPEZ")),
+    ]
+    malos = [(t, usuarios.separar_nombre(t), esperado) for t, esperado in casos if usuarios.separar_nombre(t) != esperado]
+    rev("`separar_nombre`: los dos últimos nombres son los apellidos, con sus partículas («De la», «Del»), y queda al menos un nombre", not malos, str(malos[:2]))
+    rev("con apellidos explícitos se respetan: el segundo apellido es TODO lo que sigue al primero (compuestos incluidos)",
+        usuarios.separar_nombre("Camila Sofía", "Cabrera González") == ("Camila Sofía", "Cabrera", "González")
+        and usuarios.separar_nombre("Luis", "De la Cruz Soto") == ("Luis", "De la Cruz", "Soto")
+        and usuarios.separar_nombre("Ada", "Perez Lopez Garcia") == ("Ada", "Perez", "Lopez Garcia")
+        and usuarios.separar_nombre("Ada", "Lovelace") == ("Ada", "Lovelace", ""))
+
+    # Una organización aparte para esta sección: las demás cuentan sus usuarios más abajo.
+    r = c.post("/organizaciones/", json={"nombre": "Textiles del Norte", "adminNombre": "Rosa Maria Lopez Garcia", "adminEmail": "rosa.lg@ejemplo.com"}, headers=bearer_super)
+    assert r.status_code == 201, r.text
+    rosa = usuarios.por_guid(r.json()["admin"]["guid"])
+    rev("el administrador de una organización nueva también se separa",
+        (rosa["nombre"], rosa["apellidoPaterno"], rosa["apellidoMaterno"]) == ("Rosa Maria", "Lopez", "Garcia"), str(rosa))
+    bearer_tn = {**srv(), "Authorization": f"Bearer {entrar(c, 'rosa.lg@ejemplo.com', r.json()['contrasenaTemporal'])['accessToken']}"}
+
+    def crear_con(nombre: str, correo: str, apellidos: str = "") -> dict:
+        r = c.post("/usuarios/", json={"nombre": nombre, "apellidos": apellidos, "email": correo, "rol": "VIEWER"}, headers=bearer_tn)
+        assert r.status_code == 201, r.text
+        return r.json()
+
+    completo = crear_con("Cesar Boris Hernandez Alvarado", "cesar.ha@ejemplo.com")
+    guardado = usuarios.por_guid(completo["usuario"]["guid"])
+    rev("al crear con el nombre completo se guarda separado: nombre, apellido paterno y apellido materno",
+        (guardado["nombre"], guardado["apellidoPaterno"], guardado["apellidoMaterno"]) == ("Cesar Boris", "Hernandez", "Alvarado"), str(guardado))
+    rev("`apellidos` queda compuesto, para quien ya lo usaba", guardado["apellidos"] == "Hernandez Alvarado")
+    rev("y el listado, la confirmación y el JWT siguen diciendo el nombre completo",
+        completo["usuario"]["nombre"] == "Cesar Boris Hernandez Alvarado", completo["usuario"]["nombre"])
+    suyo_cesar = entrar(c, "cesar.ha@ejemplo.com", completo["contrasenaTemporal"])["usuario"]
+    rev("y así lo recibe la persona al entrar (es lo que pinta Mi perfil): nombre y apellidos en sus campos",
+        (suyo_cesar["nombre"], suyo_cesar["apellidoPaterno"], suyo_cesar["apellidoMaterno"]) == ("Cesar Boris", "Hernandez", "Alvarado"), str(suyo_cesar))
+    previo = usuarios.por_guid(camila["usuario"]["guid"])
+    rev("con apellidos explícitos (el alta de arriba) nada cambia: Camila Sofía / Cabrera / González",
+        (previo["nombre"], previo["apellidoPaterno"], previo["apellidoMaterno"]) == ("Camila Sofía", "Cabrera", "González"), str(previo))
+
+    # Editar con el MISMO nombre completo (lo que el formulario manda de vuelta) no debe deshacer lo que la persona corrigió en su perfil.
+    cuatro = crear_con("Juan Perez Lopez Garcia", "juan.plg@ejemplo.com")
+    g4 = cuatro["usuario"]["guid"]
+    usuarios.actualizar_perfil(g4, "Juan", "Perez Lopez", "Garcia", None, None)
+    r = c.post(f"/usuarios/{g4}", json={"nombre": "Juan Perez Lopez Garcia", "telefono": "+52 55 9999 0000", "rol": "VIEWER"}, headers=bearer_tn)
+    u4 = usuarios.por_guid(g4)
+    rev("editar con el mismo nombre completo conserva lo que la persona corrigió en Mi perfil",
+        r.status_code == 200 and (u4["nombre"], u4["apellidoPaterno"], u4["apellidoMaterno"]) == ("Juan", "Perez Lopez", "Garcia") and u4["telefono"] == "+52 55 9999 0000", str(u4))
+    r = c.post(f"/usuarios/{g4}", json={"nombre": "Juan Carlos Ramirez Soto", "rol": "VIEWER"}, headers=bearer_tn)
+    u4 = usuarios.por_guid(g4)
+    rev("y editar con OTRO nombre lo separa de nuevo",
+        r.status_code == 200 and (u4["nombre"], u4["apellidoPaterno"], u4["apellidoMaterno"]) == ("Juan Carlos", "Ramirez", "Soto") and r.json()["usuario"]["nombre"] == "Juan Carlos Ramirez Soto", str(u4))
+
+    # Lo ya guardado: una cuenta creada ANTES de este arreglo, con todo en `nombre` y sin apellidos, se lee separada.
+    viejo = "11111111-2222-4333-8444-555555555555"
+    registro.agregar(usuarios.ARCHIVO, {"evento": "creado", "guid": viejo, "email": "vieja.cuenta@ejemplo.com", "nombre": "Maria Elena Torres Rivas",
+                                        "apellidos": "", "telefono": None, "esAdminPlataforma": False, "hash": "x", "debeCambiar": True, "en": "2026-10-01T10:00:00+00:00"})
+    leida = usuarios.por_guid(viejo)
+    rev("una cuenta vieja (todo en `nombre`, `apellidos` vacío) se lee ya separada, sin migrar nada",
+        (leida["nombre"], leida["apellidoPaterno"], leida["apellidoMaterno"]) == ("Maria Elena", "Torres", "Rivas") and leida["apellidos"] == "Torres Rivas", str(leida))
+    # Y una edición del formulario de antes del arreglo (evento `datos` con el nombre completo en `nombre` y `apellidos` vacío).
+    registro.agregar(usuarios.ARCHIVO, {"evento": "datos", "guid": viejo, "nombre": "Ana Lucia Gomez Soto", "apellidos": "", "telefono": None, "en": "2026-10-02T10:00:00+00:00"})
+    editada = usuarios.por_guid(viejo)
+    rev("y una edición vieja del formulario (nombre completo, `apellidos` vacío) también se lee separada",
+        (editada["nombre"], editada["apellidoPaterno"], editada["apellidoMaterno"]) == ("Ana Lucia", "Gomez", "Soto"), str(editada))
+    rev("pero una persona que ya guardó sus apellidos VACÍOS en Mi perfil no se vuelve a separar",
+        (usuarios.actualizar_perfil(viejo, "Maria Elena Torres Rivas", "", "", None, None)["nombre"],
+         usuarios.por_guid(viejo)["apellidoPaterno"]) == ("Maria Elena Torres Rivas", ""))
+
     titulo("4 · El usuario nuevo entra")
     primera = entrar(c, "camila.cg@ejemplo.com", camila["contrasenaTemporal"])
     rev("entra y le toca cambiar la contraseña", primera["usuario"]["debeCambiarContrasena"] is True)

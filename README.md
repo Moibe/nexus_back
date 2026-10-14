@@ -1531,7 +1531,18 @@ viejas sesiones abiertas. Se prueba en `verificar_auth.py`, sección 4k.
 Los apellidos se guardan **separados** (`apellidoPaterno`, `apellidoMaterno`),
 como los pide el diseño y como los tiene `security.users` (lastName,
 secondLastName). Los usuarios creados antes solo tienen `apellidos`: se parten
-por el primer espacio, que es lo más cercano a la verdad sin inventar.
+al leerlos (`usuarios.separar_nombre`), sin migrar nada.
+
+**El formulario de alta trae UN campo «nombre completo»** (el de usuarios y el del administrador de una organización; el
+diseño no los separa) y manda `apellidos` vacío. Hasta el 2026-10-14 todo se guardaba en `nombre` y «Mi perfil» mostraba el
+nombre entero con los apellidos en «—». Ahora `usuarios.separar_nombre` lo parte como se escribe en México: las **dos últimas
+unidades** son el apellido paterno y el materno, con sus partículas («De la Cruz», «Del Valle», «Ortega y Gasset» cuentan como
+UNA unidad) y lo anterior son los nombres: «Cesar Boris Hernandez Alvarado» → Cesar Boris / Hernandez / Alvarado. Con dos
+palabras, la segunda es el paterno; con una, solo hay nombre; siempre queda al menos un nombre. Con `apellidos` explícitos se
+respetan (el materno es todo lo que sigue al primero). Es una heurística —no puede saber si «María José Pérez» son dos nombres y
+un apellido—: la persona lo corrige en su perfil, y **editar a un usuario con el mismo nombre completo que mostró el listado no
+lo deshace**. Las cuentas y las ediciones de antes se separan igual al leerlas. El listado, la confirmación y el JWT siguen
+diciendo el nombre completo; el correo de bienvenida saluda solo con los nombres. Se prueba en `verificar_usuarios.py`, sección 3b.
 
 ## Aislamiento entre organizaciones (Sprint 1 · HU11, desde el 2026-10-14)
 

@@ -121,6 +121,60 @@ def _normalizar_correo(correo: str) -> str:
     return correo.strip().lower()
 
 
+# Palabras que forman parte de un apellido compuesto y no son un apellido por sí solas («De la Cruz», «Del Valle», «San Martín»).
+_PARTICULAS = frozenset({"de", "del", "la", "las", "los", "da", "das", "do", "dos", "di", "du", "van", "von", "san", "santa", "mc", "mac", "le"})
+# «Ortega y Gasset»: la «y» (o «e») une las dos palabras de al lado en una sola unidad.
+_CONECTORES = frozenset({"y", "e"})
+
+
+def _unidades(palabras: list[str]) -> list[str]:
+    """Agrupa palabras en unidades de nombre o de apellido: una partícula se pega a la palabra que le sigue, y «y»/«e» une la de
+    antes con la de después. «De la Cruz» es UNA unidad; «María de los Ángeles», dos."""
+    unidades: list[list[str]] = []
+    particulas: list[str] = []
+    unir = False  # la última palabra fue una «y»: la que viene se une a la unidad anterior
+    for palabra in palabras:
+        clave = palabra.lower()
+        if clave in _CONECTORES and unidades and not particulas and not unir:
+            unidades[-1].append(palabra)
+            unir = True
+        elif clave in _PARTICULAS:
+            particulas.append(palabra)
+        elif unir:
+            unidades[-1].extend(particulas + [palabra])
+            particulas, unir = [], False
+        else:
+            unidades.append(particulas + [palabra])
+            particulas = []
+    if particulas:
+        unidades.append(particulas)
+    return [" ".join(u) for u in unidades]
+
+
+def separar_nombre(nombre: str, apellidos: str = "") -> tuple[str, str, str]:
+    """(nombres, apellido paterno, apellido materno) a partir de lo que escribió el formulario.
+
+    Las altas y las ediciones de usuarios y de administradores de organización traen UN campo «nombre completo» y mandan
+    `apellidos` vacío (el diseño no trae campos separados), pero «Mi perfil» y `security.users` sí los separan. Con `apellidos`
+    el primero es el paterno y TODO lo que sigue, el materno. Sin él se parte el nombre completo como se escribe en México: las
+    dos últimas unidades son los apellidos, con sus partículas («De la Cruz»), y todo lo anterior son los nombres. Con dos
+    palabras, la segunda es el paterno; con una, solo hay nombre; siempre queda al menos un nombre.
+
+    Es una heurística y no puede adivinar «María José Pérez» (¿dos nombres y un apellido?): la persona lo corrige en su perfil, y
+    una edición que manda de vuelta el mismo nombre completo no lo deshace (`actualizar_datos`)."""
+    nombre = " ".join(nombre.split())
+    apellidos = " ".join((apellidos or "").split())
+    if apellidos:
+        unidades = _unidades(apellidos.split())
+        return nombre, unidades[0], " ".join(unidades[1:])
+    unidades = _unidades(nombre.split())
+    if len(unidades) <= 1:
+        return nombre, "", ""
+    if len(unidades) == 2:
+        return unidades[0], unidades[1], ""
+    return " ".join(unidades[:-2]), unidades[-2], unidades[-1]
+
+
 def _construir_indice(eventos: list[dict]) -> tuple[dict[str, dict], dict[str, str], dict[str, dict]]:
     """(usuarios por guid, guid por correo, sesiones por guid de sesión), repasando
     los eventos en el orden en que se escribieron. Es LINEAL en el número de
@@ -136,17 +190,22 @@ def _construir_indice(eventos: list[dict]) -> tuple[dict[str, dict], dict[str, s
         if tipo == "creado" and isinstance(guid, str):
             if guid in usuarios:
                 continue  # gana el primero, nadie "recrea" a otro
+            # El diseño del perfil (HU12) pide los apellidos por separado, igual que `security.users` (lastName, secondLastName).
+            # Los eventos nuevos ya los traen; los de antes se separan al leerlos (`separar_nombre`): unos traían `apellidos`
+            # y otros —los del formulario, hasta el 2026-10-14— el nombre completo entero en `nombre` y `apellidos` vacío.
+            if "apellidoPaterno" in e:
+                nombres, paterno, materno = e.get("nombre", ""), e.get("apellidoPaterno") or "", e.get("apellidoMaterno") or ""
+                apellidos = e.get("apellidos", "")
+            else:
+                nombres, paterno, materno = separar_nombre(e.get("nombre", ""), e.get("apellidos", ""))
+                apellidos = " ".join(x for x in (paterno, materno) if x)
             usuarios[guid] = {
                 "guid": guid,
                 "email": e.get("email", ""),
-                "nombre": e.get("nombre", ""),
-                "apellidos": e.get("apellidos", ""),
-                # El diseño del perfil (HU12) pide los apellidos por separado,
-                # igual que `security.users` (lastName, secondLastName). Los
-                # usuarios creados antes solo tienen `apellidos`: se parte por
-                # el primer espacio, que es lo más cercano a la verdad.
-                "apellidoPaterno": e.get("apellidoPaterno") or (e.get("apellidos", "").split(" ", 1) + [""])[0],
-                "apellidoMaterno": e.get("apellidoMaterno") or (e.get("apellidos", "").split(" ", 1) + [""])[1],
+                "nombre": nombres,
+                "apellidos": apellidos,
+                "apellidoPaterno": paterno,
+                "apellidoMaterno": materno,
                 "recuperacion": e.get("recuperacion") or {},
                 "esAdminPlataforma": bool(e.get("esAdminPlataforma")),
                 "telefono": e.get("telefono"),
@@ -202,15 +261,17 @@ def _construir_indice(eventos: list[dict]) -> tuple[dict[str, dict], dict[str, s
         elif tipo == "estado" and u:
             u["activo"] = bool(e.get("activo"))
         elif tipo == "datos" and u:
-            u["nombre"] = e.get("nombre", u["nombre"])
-            u["apellidos"] = e.get("apellidos", u["apellidos"])
             u["telefono"] = e.get("telefono", u.get("telefono"))
             if "apellidoPaterno" in e:
+                u["nombre"] = e.get("nombre", u["nombre"])
+                u["apellidos"] = e.get("apellidos", u["apellidos"])
                 u["apellidoPaterno"] = e.get("apellidoPaterno") or ""
                 u["apellidoMaterno"] = e.get("apellidoMaterno") or ""
-            elif "apellidos" in e:
-                partes = (e.get("apellidos", "").split(" ", 1) + [""])
-                u["apellidoPaterno"], u["apellidoMaterno"] = partes[0], partes[1]
+            else:
+                # Un evento de antes del arreglo del 2026-10-14: la edición del formulario mandaba el nombre completo en `nombre`.
+                nombres, paterno, materno = separar_nombre(e.get("nombre", u["nombre"]), e.get("apellidos", u["apellidos"]))
+                u["nombre"], u["apellidoPaterno"], u["apellidoMaterno"] = nombres, paterno, materno
+                u["apellidos"] = " ".join(x for x in (paterno, materno) if x)
             if "recuperacion" in e:
                 u["recuperacion"] = e.get("recuperacion") or {}
         elif tipo == "membresia" and u:
@@ -398,6 +459,8 @@ def crear_usuario(
     nombre, apellidos = nombre.strip(), apellidos.strip()
     if not nombre:
         raise ValueError("El nombre es obligatorio.")
+    # El formulario manda el nombre completo y `apellidos` vacío: se guarda separado (ver `separar_nombre`).
+    nombres, paterno, materno = separar_nombre(nombre, apellidos)
     with registro.candado:
         _, por_correo, _ = _indice()
         if email in por_correo:
@@ -410,8 +473,10 @@ def crear_usuario(
                 "evento": "creado",
                 "guid": guid,
                 "email": email,
-                "nombre": nombre,
-                "apellidos": apellidos,
+                "nombre": nombres,
+                "apellidos": " ".join(x for x in (paterno, materno) if x),
+                "apellidoPaterno": paterno,
+                "apellidoMaterno": materno,
                 "telefono": telefono,
                 "esAdminPlataforma": False,
                 "hash": hash_contrasena,
@@ -448,20 +513,29 @@ def agregar_membresia(guid: str, tenant_guid: str, rol: str = "ADMIN") -> dict:
 def actualizar_datos(guid: str, nombre: str, apellidos: str = "", telefono: str | None = None) -> dict:
     """Cambia nombre, apellidos y teléfono. El correo NO se toca: es la
     identidad con la que entra, y cambiarlo es otra historia."""
-    nombre, apellidos = nombre.strip(), (apellidos or "").strip()
+    nombre, apellidos = " ".join(nombre.split()), " ".join((apellidos or "").split())
     if not nombre:
         raise ValueError("El nombre es obligatorio.")
     with registro.candado:
         usuarios, _, _ = _indice()
         if guid not in usuarios:
             raise NoEncontrado(guid)
+        actual = usuarios[guid]
+        if not apellidos and nombre == " ".join(f"{actual['nombre']} {actual['apellidos']}".split()):
+            # El formulario manda de vuelta el nombre completo tal como lo mostró el listado: si no lo tocaron, no se vuelve a
+            # separar, o se desharía lo que la persona corrigió en su perfil.
+            nombres, paterno, materno = actual["nombre"], actual["apellidoPaterno"], actual["apellidoMaterno"]
+        else:
+            nombres, paterno, materno = separar_nombre(nombre, apellidos)
         registro.agregar(
             ARCHIVO,
             {
                 "evento": "datos",
                 "guid": guid,
-                "nombre": nombre,
-                "apellidos": apellidos,
+                "nombre": nombres,
+                "apellidos": " ".join(x for x in (paterno, materno) if x),
+                "apellidoPaterno": paterno,
+                "apellidoMaterno": materno,
                 "telefono": telefono,
                 "en": _ahora().isoformat(timespec="seconds"),
             },

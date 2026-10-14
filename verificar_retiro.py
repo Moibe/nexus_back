@@ -112,7 +112,8 @@ try:
     rev("se puede dar de alta otra vez: 201 y es OTRA cuenta (otro guid)", r.status_code == 201 and r.json()["usuario"]["guid"] != camila_guid, r.text[:160])
     nueva_pwd = r.json()["contrasenaTemporal"]
     rev("la cuenta nueva entra con SU contraseña y no tiene nada de la anterior",
-        entrar(c, "camila@ejemplo.com", nueva_pwd).status_code == 200 and usuarios.para_login("camila@ejemplo.com")["nombre"] == "Camila Dos")
+        entrar(c, "camila@ejemplo.com", nueva_pwd).status_code == 200
+        and usuarios.para_login("camila@ejemplo.com")["nombre"] == "Camila" and usuarios.para_login("camila@ejemplo.com")["apellidos"] == "Dos")
     rev("la contraseña de la cuenta retirada no sirve con la nueva", entrar(c, "camila@ejemplo.com", pwd_camila).status_code == 401)
     try:
         usuarios.eliminar_usuario("no-existe", "x")
