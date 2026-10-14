@@ -43,6 +43,11 @@ FIRST_LOGIN_PASSWORD_CHANGED = "FIRST_LOGIN_PASSWORD_CHANGED"
 # HU12 CA-6: la persona guardó cambios en SU perfil. Lleva la persona, la sesión desde la que lo hizo y los NOMBRES de los
 # campos que cambiaron (`campos`); nunca los valores, que son datos personales y ya viven en el registro de usuarios.
 PROFILE_UPDATED = "PROFILE_UPDATED"
+# HU11 CA-6: alguien con sesión de una organización intentó llegar a algo de OTRA (un tenant que no es el suyo, un archivo
+# bajo el prefijo de otra, un webhook o una llave ajenos). Lleva quién (`usuarioGuid`), a qué organizaciones pertenece
+# (`tenantsDelActor`), qué pidió (`tenantPedido`, `recurso`, `recursoId`), por qué camino lo detectó (`via`: `tenant`, `id` o
+# `ruta`) y la sesión. Lo que se le contesta a quien lo intentó es siempre lo mismo que si no existiera.
+CROSS_TENANT_ACCESS = "CROSS_TENANT_ACCESS"
 # HU05 (cerrar sesión). Hasta el 2026-10-12 estos dos no tenían nombre propio:
 # el cierre voluntario solo dejaba un `sesion_revocada` en `usuarios.jsonl` y el
 # forzado un `cierre_forzado`. Los datos siempre se guardaron; faltaba el
@@ -60,7 +65,7 @@ INVITATION_REISSUED = "INVITATION_REISSUED"
 # Una cuenta se RETIRÓ (borrado lógico: `retirar_cuenta.py`). Lleva el correo, el motivo y quién lo hizo; nunca la contraseña.
 USER_DELETED = "USER_DELETED"
 
-ACCIONES = frozenset({PASSWORD_RESET_REQUESTED, PASSWORD_RESET_COMPLETED, PASSWORD_CHANGED, FIRST_LOGIN_PASSWORD_CHANGED, PROFILE_UPDATED, LOGOUT, FORCED_LOGOUT, USER_CREATED, INVITATION_REISSUED, USER_DELETED})
+ACCIONES = frozenset({PASSWORD_RESET_REQUESTED, PASSWORD_RESET_COMPLETED, PASSWORD_CHANGED, FIRST_LOGIN_PASSWORD_CHANGED, PROFILE_UPDATED, CROSS_TENANT_ACCESS, LOGOUT, FORCED_LOGOUT, USER_CREATED, INVITATION_REISSUED, USER_DELETED})
 
 
 def _ahora() -> datetime:

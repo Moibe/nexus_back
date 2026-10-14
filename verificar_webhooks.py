@@ -53,6 +53,7 @@ os.environ.setdefault("SQLSERVER_HOST", "")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+import verificacion_comun  # noqa: E402  (antes que `config` y `app`: fija el secreto de los JWT)
 import config  # noqa: E402
 from app import app  # noqa: E402
 from servicios import almacen, entrega_webhooks, entregas_webhooks, webhooks_cliente  # noqa: E402
@@ -100,7 +101,8 @@ def lineas() -> int:
 
 
 def main() -> int:
-    c = TestClient(app)
+    # Con la sesión de un administrador de plataforma en cada llamada con la llave de servicio, como hace el BFF (HU11).
+    c = verificacion_comun.cliente_con_sesion_de_plataforma(app, SERVICIO)
 
     titulo("1 · Registrar: el secret sale UNA vez, cifrado en el registro")
     r = alta(c, eventos=["documento.fallido", "documento.completado"])

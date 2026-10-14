@@ -22,6 +22,7 @@ concurrencia): cada línea es un evento, `entrada` o `retiro`, y lo pendiente es
 lo que entró y no ha salido.
 """
 
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -115,6 +116,24 @@ def retirar(tenant: str, id_entrada: str, motivo: str) -> bool:
             },
         )
     return True
+
+
+_RE_ID = re.compile(r"[0-9a-f]{32}")
+
+
+def existe_en_otro_tenant(tenant: str, id_entrada: str) -> bool:
+    """¿Hay una entrada con ese id en la bandeja de OTRO tenant? Solo para anotar un intento cruzado (HU11 CA-6): a quien
+    pidió se le contesta igual que si no existiera.
+
+    Repasa el registro de cada tenant, así que un valor que ni tiene forma de id (32 hexadecimales) no se busca: no cuesta
+    nada rechazarlo y no se puede usar para hacer trabajar al servidor."""
+    if not _RE_ID.fullmatch(id_entrada):
+        return False
+    propio = _nombre(tenant)
+    for archivo in registro.ruta(propio).parent.glob("bandeja-*.jsonl"):
+        if archivo.name != propio and any(e.get("evento") == "entrada" and e.get("id") == id_entrada for e in registro.eventos(archivo.name)):
+            return True
+    return False
 
 
 def entrada_en_pipeline(tenant: str, id_entrada: str) -> dict | None:

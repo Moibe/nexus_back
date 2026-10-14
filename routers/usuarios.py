@@ -17,7 +17,8 @@ import logging
 from fastapi import APIRouter, Header, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
-from servicios import auth, invitaciones, roles, tenants_registro, usuarios
+from routers.errores import almacen_no_disponible
+from servicios import aislamiento, auth, invitaciones, roles, tenants_registro, usuarios
 from servicios.almacen import ErrorAlmacen
 
 logger = logging.getLogger(__name__)
@@ -99,7 +100,7 @@ def listar(authorization: str | None = Header(default=None)) -> dict:
     except tenants_registro.NoEncontrado as exc:
         raise _error(status.HTTP_404_NOT_FOUND, "no_existe", "Tu organización ya no existe.") from exc
     except ErrorAlmacen as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise almacen_no_disponible(exc) from exc
     return {
         "organizacion": {"guid": organizacion["guid"], "nombre": organizacion["nombre"]},
         "usuarios": [usuarios.para_listado(u, tenant, i + 1) for i, u in enumerate(lista)],
@@ -146,7 +147,7 @@ def crear(datos: NuevoUsuario, response: Response, authorization: str | None = H
     except ValueError as exc:
         raise _error(status.HTTP_400_BAD_REQUEST, "datos_invalidos", str(exc)) from exc
     except ErrorAlmacen as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise almacen_no_disponible(exc) from exc
 
 
 @router.post(
@@ -158,14 +159,8 @@ def actualizar(guid: str, datos: CambioUsuario, authorization: str | None = Head
     yo, tenant = _admin_de_organizacion(authorization)
     if datos.rol not in roles.VALIDOS:
         raise _error(status.HTTP_400_BAD_REQUEST, "rol_invalido", "Elige un rol de la lista.")
-    try:
-        objetivo = usuarios.por_guid(guid)
-    except usuarios.NoEncontrado as exc:
-        raise _error(status.HTTP_404_NOT_FOUND, "no_existe", "Ese usuario no existe.") from exc
-    if not any(m["tenantGuid"] == tenant for m in objetivo["membresias"]):
-        # Ni siquiera se admite que exista: un administrador no tiene por qué
-        # saber quién hay en otra organización.
-        raise _error(status.HTTP_404_NOT_FOUND, "no_existe", "Ese usuario no existe.")
+    # Ni siquiera se admite que exista el de otra organización: un administrador no tiene por qué saber quién hay en ella.
+    objetivo = _de_mi_organizacion(guid, tenant, yo)
     if objetivo["guid"] == yo["guid"] and datos.rol != roles.ADMIN:
         raise _error(
             status.HTTP_409_CONFLICT,
@@ -182,17 +177,20 @@ def actualizar(guid: str, datos: CambioUsuario, authorization: str | None = Head
     except ValueError as exc:
         raise _error(status.HTTP_400_BAD_REQUEST, "datos_invalidos", str(exc)) from exc
     except ErrorAlmacen as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise almacen_no_disponible(exc) from exc
 
 
-def _de_mi_organizacion(guid: str, tenant: str) -> dict:
-    """El usuario, si es de mi organización. Si no, 404: un administrador no
-    tiene por qué enterarse de quién hay en otra."""
+def _de_mi_organizacion(guid: str, tenant: str, yo: dict) -> dict:
+    """El usuario, si es de mi organización. Si no, 404 —el mismo que si no existiera: un administrador no tiene por qué
+    enterarse de quién hay en otra— y, si existe pero es de otra, queda anotado el intento (HU11 CA-6)."""
     try:
         objetivo = usuarios.por_guid(guid)
     except usuarios.NoEncontrado as exc:
         raise _error(status.HTTP_404_NOT_FOUND, "no_existe", "Ese usuario no existe.") from exc
     if not any(m["tenantGuid"] == tenant for m in objetivo["membresias"]):
+        aislamiento.intento_cruzado(
+            aislamiento.Actor(guid=yo["guid"], tenants=(tenant,), es_admin_plataforma=False, sesion=None), "usuario", guid
+        )
         raise _error(status.HTTP_404_NOT_FOUND, "no_existe", "Ese usuario no existe.")
     return objetivo
 
@@ -210,7 +208,7 @@ def cambiar_estado(guid: str, datos: CambioEstado, authorization: str | None = H
     motivo = datos.motivo.strip()
     if not motivo:
         raise _error(status.HTTP_400_BAD_REQUEST, "motivo_requerido", "Escribe el motivo.")
-    objetivo = _de_mi_organizacion(guid, tenant)
+    objetivo = _de_mi_organizacion(guid, tenant, yo)
     if objetivo["guid"] == yo["guid"]:
         raise _error(
             status.HTTP_409_CONFLICT,
@@ -230,7 +228,7 @@ def cambiar_estado(guid: str, datos: CambioEstado, authorization: str | None = H
         logger.info("Usuario %s (guid=%s)", "reactivado" if datos.activo else "desactivado", guid)
         return {"usuario": usuarios.para_listado(actualizado, tenant, posicion)}
     except ErrorAlmacen as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise almacen_no_disponible(exc) from exc
 
 
 @router.post(
@@ -247,7 +245,7 @@ def cambiar_estado(guid: str, datos: CambioEstado, authorization: str | None = H
 def reenviar_invitacion(guid: str, response: Response, authorization: str | None = Header(default=None)) -> dict:
     yo, tenant = _admin_de_organizacion(authorization)
     response.headers["Cache-Control"] = "no-store"
-    objetivo = _de_mi_organizacion(guid, tenant)
+    objetivo = _de_mi_organizacion(guid, tenant, yo)
     negativa = invitaciones.por_que_no_reenviar(objetivo)
     if negativa:
         raise _error(status.HTTP_409_CONFLICT, *negativa)
@@ -260,7 +258,7 @@ def reenviar_invitacion(guid: str, response: Response, authorization: str | None
     except usuarios.NoPendiente as exc:
         raise _error(status.HTTP_409_CONFLICT, "ya_activa", "Este usuario ya hizo su primer acceso: no hay invitación que reenviar.") from exc
     except ErrorAlmacen as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise almacen_no_disponible(exc) from exc
 
 
 @router.post(
@@ -280,7 +278,7 @@ def cerrar_sesion(guid: str, datos: CierreSesion, authorization: str | None = He
     motivo = datos.motivo.strip()
     if not motivo:
         raise _error(status.HTTP_400_BAD_REQUEST, "motivo_requerido", "Escribe el motivo.")
-    objetivo = _de_mi_organizacion(guid, tenant)
+    objetivo = _de_mi_organizacion(guid, tenant, yo)
     if objetivo["guid"] == yo["guid"]:
         # Para salirse está el menú de la barra; hacerlo desde aquí te echaría
         # de la pantalla en la que estás trabajando.
@@ -294,4 +292,4 @@ def cerrar_sesion(guid: str, datos: CierreSesion, authorization: str | None = He
         logger.info("Sesiones cerradas por el administrador (guid=%s, cuantas=%s)", guid, cerradas)
         return {"cerradas": cerradas}
     except ErrorAlmacen as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise almacen_no_disponible(exc) from exc

@@ -23,17 +23,18 @@ import logging
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi import APIRouter, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 
-from servicios import entrega_webhooks, entregas_webhooks, webhooks_cliente
+from servicios import aislamiento, bandeja, entrega_webhooks, entregas_webhooks, webhooks_cliente
 from servicios.almacen import ErrorAlmacen
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_NO_EXISTE = "Ese webhook no existe o es de otro cliente."
+# Lo mismo se contesta si el webhook no existe que si es de otra organización: no se confirma que exista (HU11 CA-5).
+_NO_EXISTE = "Ese webhook no existe."
 
 
 class Alta(BaseModel):
@@ -72,6 +73,16 @@ class Aviso(BaseModel):
     motivo: str | None = Field(None, description="Código del motivo, para fallido y rechazado")
 
 
+def _no_existe(actor: aislamiento.Actor, tenant: str, identificador: str) -> HTTPException:
+    """El 404 de un webhook. Si en realidad era de otra organización, además queda anotado el intento (HU11 CA-6)."""
+    try:
+        if webhooks_cliente.existe_en_otro_tenant(tenant, identificador):
+            aislamiento.intento_cruzado(actor, "webhook", identificador)
+    except ErrorAlmacen:
+        logger.warning("No se pudo comprobar si el webhook era de otra organización", exc_info=True)
+    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
+
+
 def _no_disponible(exc: Exception, que: str) -> HTTPException:
     logger.exception("Falló el registro de webhooks (%s)", que)
     return HTTPException(
@@ -100,7 +111,8 @@ def _sin_cifrado(exc: Exception) -> HTTPException:
         "cifrado y lo devuelve UNA vez. Todavía no se envía ningún aviso."
     ),
 )
-def registrar(datos: Alta, response: Response):
+def registrar(datos: Alta, response: Response, authorization: str | None = Header(default=None)):
+    aislamiento.exigir(authorization, datos.tenant, "webhook")
     try:
         secret, webhook = webhooks_cliente.registrar(datos.tenant, datos.url, datos.eventos)
     except webhooks_cliente.Duplicado as exc:
@@ -125,7 +137,8 @@ def registrar(datos: Alta, response: Response):
     summary="Listar los webhooks de un cliente",
     description="Del más nuevo al más viejo. Nunca trae el secret ni su cifrado.",
 )
-def listar(tenant: str = Query(...)):
+def listar(tenant: str = Query(...), authorization: str | None = Header(default=None)):
+    aislamiento.exigir(authorization, tenant, "webhook")
     try:
         return {"webhooks": webhooks_cliente.listar(tenant)}
     except ValueError as exc:
@@ -140,7 +153,8 @@ def listar(tenant: str = Query(...)):
     summary="Activar o desactivar un webhook",
     description="Pedir el estado que ya tiene no es error: responde igual y no escribe nada.",
 )
-def cambiar_estado(identificador: str, datos: CambioDeEstado):
+def cambiar_estado(identificador: str, datos: CambioDeEstado, authorization: str | None = Header(default=None)):
+    actor = aislamiento.exigir(authorization, datos.tenant, "webhook")
     try:
         webhook = webhooks_cliente.cambiar_estado(datos.tenant, identificador, datos.estado)
     except ValueError as exc:
@@ -148,7 +162,7 @@ def cambiar_estado(identificador: str, datos: CambioDeEstado):
     except ErrorAlmacen as exc:
         raise _no_disponible(exc, f"estado, tenant={datos.tenant}") from exc
     if webhook is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
+        raise _no_existe(actor, datos.tenant, identificador)
     if datos.estado == "inactivo":
         entregas_webhooks.cancelar_de(identificador, "El webhook se desactivó.")
     logger.info("Webhook %s (id=%s, tenant=%s)", datos.estado, identificador, datos.tenant)
@@ -164,7 +178,8 @@ def cambiar_estado(identificador: str, datos: CambioDeEstado):
         "que ya estaba eliminado no es error."
     ),
 )
-def eliminar(identificador: str, datos: Baja):
+def eliminar(identificador: str, datos: Baja, authorization: str | None = Header(default=None)):
+    actor = aislamiento.exigir(authorization, datos.tenant, "webhook")
     try:
         existia = webhooks_cliente.eliminar(datos.tenant, identificador)
     except ValueError as exc:
@@ -172,7 +187,7 @@ def eliminar(identificador: str, datos: Baja):
     except ErrorAlmacen as exc:
         raise _no_disponible(exc, f"eliminar, tenant={datos.tenant}") from exc
     if not existia:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
+        raise _no_existe(actor, datos.tenant, identificador)
     entregas_webhooks.cancelar_de(identificador, "El webhook se eliminó.")
     logger.info("Webhook eliminado (id=%s, tenant=%s)", identificador, datos.tenant)
     return {"eliminado": True}
@@ -193,7 +208,8 @@ def eliminar(identificador: str, datos: Baja):
         "validaciones en curso. Cada intento queda en el historial."
     ),
 )
-def validar(identificador: str, datos: Validacion):
+def validar(identificador: str, datos: Validacion, authorization: str | None = Header(default=None)):
+    actor = aislamiento.exigir(authorization, datos.tenant, "webhook")
     try:
         objetivo = webhooks_cliente.para_validar(datos.tenant, identificador)
     except ValueError as exc:
@@ -203,7 +219,7 @@ def validar(identificador: str, datos: Validacion):
     except ErrorAlmacen as exc:
         raise _no_disponible(exc, f"validar, tenant={datos.tenant}") from exc
     if objetivo is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
+        raise _no_existe(actor, datos.tenant, identificador)
 
     espera = entrega_webhooks.limite_validaciones.motivo_para_esperar(identificador)
     if espera:
@@ -222,7 +238,7 @@ def validar(identificador: str, datos: Validacion):
     except ErrorAlmacen as exc:
         raise _no_disponible(exc, f"marcar la validación, tenant={datos.tenant}") from exc
     if webhook is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
+        raise _no_existe(actor, datos.tenant, identificador)
     if r["ok"]:
         logger.info(
             "Webhook validado (id=%s, tenant=%s, intentos=%s, codigo=%s, ms=%s)",
@@ -248,10 +264,18 @@ def validar(identificador: str, datos: Validacion):
         "webhook validado, activo y suscrito, y las entrega y reintenta en segundo plano."
     ),
 )
-def recibir_aviso(datos: Aviso):
+def recibir_aviso(datos: Aviso, authorization: str | None = Header(default=None)):
+    actor = aislamiento.exigir(authorization, datos.tenant, "webhook")
     try:
         resultado = entregas_webhooks.avisar(datos.tenant, datos.tipo, datos.entradaId, datos.tipoDocumental, datos.motivo)
     except entregas_webhooks.AvisoRechazado as exc:
+        if exc.codigo == status.HTTP_404_NOT_FOUND:
+            # La entrada no es de este tenant (o no existe): si en realidad es de OTRO, queda anotado el intento (HU11 CA-6).
+            try:
+                if bandeja.existe_en_otro_tenant(datos.tenant, datos.entradaId):
+                    aislamiento.intento_cruzado(actor, "bandeja", datos.entradaId)
+            except ErrorAlmacen:
+                logger.warning("No se pudo comprobar si la entrada era de otra organización", exc_info=True)
         raise HTTPException(status_code=exc.codigo, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -276,10 +300,17 @@ def recibir_aviso(datos: Aviso):
         "`[desde, hasta)`, igual que en las métricas de las API Keys."
     ),
 )
-def metricas(identificador: str, tenant: str = Query(...), desde: datetime = Query(...), hasta: datetime = Query(...)):
+def metricas(
+    identificador: str,
+    tenant: str = Query(...),
+    desde: datetime = Query(...),
+    hasta: datetime = Query(...),
+    authorization: str | None = Header(default=None),
+):
+    actor = aislamiento.exigir(authorization, tenant, "webhook")
     try:
         if not any(w["id"] == identificador for w in webhooks_cliente.listar(tenant)):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
+            raise _no_existe(actor, tenant, identificador)
         return entregas_webhooks.metricas(tenant, identificador, desde, hasta)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -298,10 +329,16 @@ def metricas(identificador: str, tenant: str = Query(...), desde: datetime = Que
         "De las entregas, también el `entradaId` del documento."
     ),
 )
-def historial(identificador: str, tenant: str = Query(...), limite: int = Query(50, ge=1, le=200)):
+def historial(
+    identificador: str,
+    tenant: str = Query(...),
+    limite: int = Query(50, ge=1, le=200),
+    authorization: str | None = Header(default=None),
+):
+    actor = aislamiento.exigir(authorization, tenant, "webhook")
     try:
         if not any(w["id"] == identificador for w in webhooks_cliente.listar(tenant)):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
+            raise _no_existe(actor, tenant, identificador)
         return {"intentos": entregas_webhooks.historial(tenant, identificador, limite)}
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -319,7 +356,8 @@ def historial(identificador: str, tenant: str = Query(...), limite: int = Query(
         "eventos, sigue como estaba. 409 si otro webhook del cliente ya tiene esa URL."
     ),
 )
-def editar(identificador: str, datos: Edicion):
+def editar(identificador: str, datos: Edicion, authorization: str | None = Header(default=None)):
+    actor = aislamiento.exigir(authorization, datos.tenant, "webhook")
     try:
         webhook = webhooks_cliente.editar(datos.tenant, identificador, datos.url, datos.eventos)
     except webhooks_cliente.Duplicado as exc:
@@ -329,7 +367,7 @@ def editar(identificador: str, datos: Edicion):
     except ErrorAlmacen as exc:
         raise _no_disponible(exc, f"editar, tenant={datos.tenant}") from exc
     if webhook is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
+        raise _no_existe(actor, datos.tenant, identificador)
     # Si quedó sin validar (cambió la URL) ya no recibe avisos: lo que tuviera
     # pendiente se cancela. Con la misma URL, lo pendiente sigue su curso.
     if webhook["validadoEn"] is None:

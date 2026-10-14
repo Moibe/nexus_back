@@ -178,7 +178,7 @@ def avisar(tenant: str, tipo: str, entrada_id: str, tipo_documental: str | None,
 
     entrada = bandeja.entrada_en_pipeline(tenant, entrada_id)
     if entrada is None:
-        raise AvisoRechazado("Esa entrada no existe, es de otro cliente o no pasó al pipeline.", 404)
+        raise AvisoRechazado("Esa entrada no existe o no pasó al pipeline.", 404)
 
     with registro.candado:
         anteriores = [

@@ -403,8 +403,10 @@ están en registros de solo agregar dentro del NAS (`{ALMACEN_RUTA}/.registro/`,
 SPs del DBA; solo cambian `servicios/bandeja.py` y
 `servicios/llaves_cliente.py`.
 
-**Un solo cliente.** El front opera con un tenant fijo, `NEXUS_TENANT` en su
-`.env` (default `demo`): de él muestra la bandeja y a él pertenecen las llaves.
+**Un tenant por organización** (desde el 2026-10-09, HU11). El front saca el tenant de la organización de la
+sesión (`tenantDe`); el administrador de plataforma, que no tiene organización, opera en el espacio de plataforma:
+`NEXUS_TENANT` en el `.env` del front (default `demo`). Y desde el 2026-10-14 este back no se fía de ese cálculo: ver
+«Aislamiento entre organizaciones», al final.
 
 **El dominio de los clientes** es `nexus-doc-api.buzzword.com.mx` (proxy de
 Soporte TI hacia el 8083, con certificado válido). Se pidió que reenviara solo
@@ -550,8 +552,9 @@ conoce el cliente, el `id` que recibió al subir. Lo subido a mano no se avisa.
 | error del servicio | `documento.fallido` | `error_del_servicio` |
 | tipo reconocido pero sin extractor o sin calibrar | `documento.fallido` | `tipo_sin_configurar` |
 
-**No se le cree a ciegas al front**, que hoy se alcanza desde internet sin
-iniciar sesión: la entrada tiene que existir en la bandeja de ese cliente y
+**No se le cree a ciegas al front** (hasta el 2026-10-07 se alcanzaba desde internet sin
+iniciar sesión; hoy pide login y esta ruta, además, comprueba por su cuenta que la persona sea de ese cliente: ver
+«Aislamiento entre organizaciones»): la entrada tiene que existir en la bandeja de ese cliente y
 haber salido de ella hacia el pipeline; el tipo y el motivo vienen de listas
 cerradas y el resto del cuerpo lo arma el servidor; y se acepta un resultado
 final por entrada (repetir el mismo aviso no programa nada). Así, quien use el
@@ -1529,3 +1532,95 @@ Los apellidos se guardan **separados** (`apellidoPaterno`, `apellidoMaterno`),
 como los pide el diseño y como los tiene `security.users` (lastName,
 secondLastName). Los usuarios creados antes solo tienen `apellidos`: se parten
 por el primer espacio, que es lo más cercano a la verdad sin inventar.
+
+## Aislamiento entre organizaciones (Sprint 1 · HU11, desde el 2026-10-14)
+
+Dos organizaciones no se ven entre sí: ni sus datos ni sus archivos, ni siquiera para saber si lo del otro existe. Hay dos
+redes, y la segunda es de esta API.
+
+### La segunda red: ya no se le cree al front
+
+La primera red está en el front: el BFF saca el `tenant` de la organización de la **sesión** (`tenantDe`, en
+`src/lib/server/nexus.ts`) y nunca del navegador. Era lo único que había. Un olvido ahí —y lo hubo: `/api/archivos` tomaba el
+`tenant` del formulario que arma el navegador, así que cualquiera con sesión podía subir al prefijo de otra organización— y
+una organización leía o escribía en otra, porque este back se creía el `tenant` que el front le mandara.
+
+Desde el 2026-10-14 las rutas con `tenant` exigen **también el JWT de la persona** (el BFF lo reenvía junto con la llave de
+servicio) y `servicios/aislamiento.py` comprueba, contra el registro y no contra los claims del JWT (que pueden tener
+minutos), que esa persona pueda operar en ese tenant:
+
+- Si pertenece a una organización, **solo en la suya** (su membresía, con el guid exacto).
+- El **administrador de plataforma**, que no pertenece a ninguna, opera en el *espacio de plataforma*: cualquier tenant que
+  **no** sea el guid de una organización (`demo`, el heredado `csi`…). **Nunca** en el de una organización: para eso están las
+  rutas `/organizaciones/…`. El guid se compara sin espacios en los extremos y sin distinguir mayúsculas, porque el almacén
+  recorta el tenant y un montaje que no distingue mayúsculas llevaría `ABC…` al directorio de `abc…`: escribirlo así no es un
+  rodeo.
+- Sin Bearer: 401 `sin_sesion`. Con una sesión cerrada: 401 `sesion_cerrada`. Con la cuenta desactivada: 403 `desactivada`.
+  Igual que el resto de las rutas que piden persona.
+
+| Ruta | Qué comprueba |
+|---|---|
+| `GET /bandeja/`, `POST /bandeja/{id}/retirar`, `POST /bandeja/` (con la llave de servicio) | el `tenant` que se manda |
+| `GET/POST /llaves/`, `POST /llaves/{id}/revocar`, `GET /llaves/{id}/metricas` | el `tenant` que se manda |
+| `/webhooks/…` (las nueve: alta, lista, estado, eliminar, validar, editar, eventos, métricas, intentos) | el `tenant` que se manda |
+| `POST /archivos/` | el `tenant` del formulario |
+| `GET /archivos/{ruta}` | el primer segmento de la ruta (`{tenant}/aa/bb/sha256`) |
+| `/usuarios/{guid}…` | que el usuario sea de la organización del administrador (ya se comprobaba; ahora además se anota) |
+
+**No** pasa por aquí `POST /bandeja/` con una **API Key de cliente**: el tenant sale de la llave y no hay persona. Tampoco
+`/ia/*`, `/procesadores/*` ni `/organizaciones/*` (esas piden su propio rol).
+
+### Qué se contesta (CA-4 y CA-5)
+
+- **Un tenant que no es tuyo**: 403 `sin_acceso` con «No tienes acceso a esa organización.» —no nombra nada de la otra—.
+- **Algo que existe pero es de otra organización** (un webhook, una llave, una entrada de la bandeja, un archivo, un usuario):
+  un 404 **idéntico** al de algo que no existe (mismo estado y mismo cuerpo; `verificar_aislamiento.py` los compara byte por
+  byte). Quien lo intentó no aprende si existe. Los mensajes ya no dicen «o es de otro cliente».
+- **Un fallo del almacén**: 503 con un mensaje fijo («El servicio no está disponible en este momento…»). El texto del sistema
+  —rutas del servidor, nombres de los registros, que llevan el guid de la organización— va al log, no a la respuesta
+  (`routers/errores.py`; antes lo devolvían tal cual `routers/auth.py`, `organizaciones.py` y `usuarios.py`).
+
+### Qué se anota (CA-6)
+
+Cada intento deja `CROSS_TENANT_ACCESS` en la bitácora de auditoría: `usuarioGuid`, `sesionGuid`, `tenantsDelActor` (las
+organizaciones a las que pertenece; vacío para el administrador de plataforma), qué pidió (`tenantPedido`, `recurso`,
+`recursoId`) y por dónde se detectó (`via`: `tenant` si mandó un tenant ajeno, `id` si pidió por id algo de otra
+organización, `ruta` si pidió un archivo bajo el prefijo de otra; `sesionGuid` va vacío cuando el intento se detecta en las
+rutas de `/usuarios`, cuyo guard no lleva la sesión). La anotación **nunca cambia la respuesta**: si la bitácora
+falla, se avisa en el log y el rechazo se da igual. No cuentan como cruce: un id inventado (no existe en ningún lado), faltar
+la sesión (es otro error) ni lo heredado de abajo.
+
+### Lo heredado: el prefijo `csi`
+
+Los ejemplos documentales de la configuración se guardaban TODOS bajo el prefijo fijo `csi`, para cualquiera. Ese prefijo
+sigue en el almacén (`PREFIJOS_HEREDADOS` en `servicios/aislamiento.py`): lo lee el administrador de plataforma; **quien
+pertenece a una organización recibe el 404 de siempre**, sin que cuente como intento cruzado (es su propio apuntador viejo, no un
+ataque). Los ejemplos nuevos van bajo el tenant de la sesión. Consecuencia: los ejemplos que una organización guardó antes
+bajo `csi` dejan de cargarse para sus usuarios (el front pinta el hueco de siempre); si hace falta recuperarlos, se mueven los
+objetos a su carpeta o se vuelven a subir.
+
+Los archivos se sirven con `Cache-Control: private`: una caché compartida (un proxy, una CDN) no debe poder entregárselo a
+quien no pasó por esta comprobación.
+
+### Límites conocidos (decididos el 2026-10-14)
+
+- **`/procesadores/*`** son recursos globales de Document AI, no de una organización: cualquier sesión del front los ve. No
+  se aíslan en esta pasada; cuando haya un procesador por organización habrá que atarlos a ella.
+- **`/documentos/*`** (SQL, hoy sin montar porque la base no existe) usan `tenant_id` entero y no pasan por esta red: se
+  rediseñan con el DBA.
+- **Los roles no se aplican** en bandeja, llaves ni webhooks: cualquier miembro puede emitir llaves o registrar webhooks de SU
+  organización. No es de HU11 (aísla organizaciones, no personas dentro de una); queda anotado.
+- La bitácora es el registro provisional (`.registro/auditoria.jsonl`); `CROSS_TENANT_ACCESS` pasa a la tabla de auditoría
+  con los demás eventos cuando exista.
+
+### Verificarlo
+
+`verificar_aislamiento.py` (offline, como los demás): dos organizaciones con su administrador y lo suyo (webhook, llave,
+entrada, archivo, usuario); la sesión de la segunda intenta, por **cada** ruta que recibe un tenant o un id, llegar a lo de la
+primera, y se comprueba que no ve nada, que no se toca nada, que ninguna respuesta lleva un dato de la otra, que lo ajeno se
+contesta como lo que no existe y que cada intento queda anotado. Es la prueba de seguridad multi-tenant del criterio CA-3.
+
+Los otros `verificar_*` que llaman a estas rutas con la llave de servicio (`verificar_bandeja.py`, `verificar_subida.py`,
+`verificar_llaves_cliente.py`, `verificar_webhooks.py`) usan `verificacion_comun.cliente_con_sesion_de_plataforma`: un cliente
+de prueba que hace lo que hace el BFF, agregar el Bearer de un administrador de plataforma a toda petición con la llave de
+servicio.

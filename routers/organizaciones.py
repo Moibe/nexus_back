@@ -26,6 +26,7 @@ import logging
 from fastapi import APIRouter, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 
+from routers.errores import almacen_no_disponible
 from servicios import auth, invitaciones, tenants_registro, usuarios
 from servicios.almacen import ErrorAlmacen
 
@@ -104,7 +105,7 @@ def listar(authorization: str | None = Header(default=None)) -> dict:
     try:
         return {"organizaciones": [_con_admin(t) for t in tenants_registro.listar()]}
     except ErrorAlmacen as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise almacen_no_disponible(exc) from exc
 
 
 @router.get(
@@ -123,7 +124,7 @@ def buscar_coincidencias(nombre: str = Query(max_length=200), authorization: str
             "slugPropuesto": tenants_registro.slug_propuesto(nombre),
         }
     except ErrorAlmacen as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise almacen_no_disponible(exc) from exc
 
 
 @router.get(
@@ -142,7 +143,7 @@ def usuarios_de(guid: str, authorization: str | None = Header(default=None)) -> 
     except tenants_registro.NoEncontrado as exc:
         raise _error(status.HTTP_404_NOT_FOUND, "no_existe", "Esa organización no existe.") from exc
     except ErrorAlmacen as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise almacen_no_disponible(exc) from exc
     return {"usuarios": [usuarios.para_listado(u, guid, i + 1) for i, u in enumerate(lista)]}
 
 
@@ -167,7 +168,7 @@ def reenviar_invitacion_de(guid: str, usuario: str, response: Response, authoriz
     except usuarios.NoEncontrado as exc:
         raise _error(status.HTTP_404_NOT_FOUND, "no_existe", "Ese usuario no existe.") from exc
     except ErrorAlmacen as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise almacen_no_disponible(exc) from exc
     if not any(m["tenantGuid"] == guid for m in objetivo["membresias"]):
         raise _error(status.HTTP_404_NOT_FOUND, "no_existe", "Ese usuario no existe.")
     negativa = invitaciones.por_que_no_reenviar(objetivo)
@@ -182,7 +183,7 @@ def reenviar_invitacion_de(guid: str, usuario: str, response: Response, authoriz
     except usuarios.NoPendiente as exc:
         raise _error(status.HTTP_409_CONFLICT, "ya_activa", "Este usuario ya hizo su primer acceso: no hay invitación que reenviar.") from exc
     except ErrorAlmacen as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise almacen_no_disponible(exc) from exc
 
 
 @router.post(
@@ -210,7 +211,7 @@ def cerrar_sesion_de(
     except usuarios.NoEncontrado as exc:
         raise _error(status.HTTP_404_NOT_FOUND, "no_existe", "Ese usuario no existe.") from exc
     except ErrorAlmacen as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise almacen_no_disponible(exc) from exc
     # Se cierra la sesión de un MIEMBRO de esa organización, no de cualquiera que
     # se nombre en la URL: la ruta cuelga de la organización justamente para que el
     # permiso y el listado que se ve en pantalla digan lo mismo que lo que se ejecuta.
@@ -225,7 +226,7 @@ def cerrar_sesion_de(
     try:
         cerradas = usuarios.forzar_cierre(usuario, motivo, yo["guid"], guid, usuarios.ACTOR_ADMIN_PLATAFORMA)
     except ErrorAlmacen as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise almacen_no_disponible(exc) from exc
     logger.info("Sesiones cerradas por el administrador de plataforma (guid=%s, cuantas=%s)", usuario, cerradas)
     return {"cerradas": cerradas}
 
@@ -287,4 +288,4 @@ def crear(datos: NuevaOrganizacion, response: Response, authorization: str | Non
     except ValueError as exc:
         raise _error(status.HTTP_400_BAD_REQUEST, "datos_invalidos", str(exc)) from exc
     except ErrorAlmacen as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise almacen_no_disponible(exc) from exc

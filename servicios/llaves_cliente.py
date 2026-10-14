@@ -154,6 +154,14 @@ def revocar(tenant: str, identificador: str) -> str | None:
     return en
 
 
+def existe_en_otro_tenant(tenant: str, identificador: str) -> bool:
+    """¿Esa llave existe y es de OTRO tenant? Solo para anotar un intento cruzado (HU11 CA-6): a quien pidió se le
+    contesta igual que si no existiera."""
+    emitidas, _ = _indice()
+    llave = emitidas.get(identificador)
+    return llave is not None and llave.get("tenant") != tenant
+
+
 def buscar_por_id(identificador: str) -> dict | None:
     """La fila que necesita `seguridad_llaves.verificar`, o `None` si no existe:
     `secret_hash`, `revocada_en` y `expira_en` (como `datetime`), más `tenant`,

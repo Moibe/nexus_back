@@ -30,6 +30,7 @@ os.environ.setdefault("SQLSERVER_HOST", "")
 from fastapi.testclient import TestClient  # noqa: E402
 
 import seguridad_llaves  # noqa: E402
+import verificacion_comun  # noqa: E402  (antes que `app`: fija el secreto de los JWT)
 from app import app  # noqa: E402
 from servicios import almacen  # noqa: E402
 
@@ -82,7 +83,8 @@ def pendientes(c, tenant="demo"):
 
 
 def main() -> int:
-    c = TestClient(app)
+    # Con la sesión de un administrador de plataforma en cada llamada con la llave de servicio, como hace el BFF (HU11).
+    c = verificacion_comun.cliente_con_sesion_de_plataforma(app, SERVICIO)
 
     titulo("1 · Emitir: el secret sale UNA vez y no queda escrito")
     r = emitir(c)
@@ -393,6 +395,9 @@ def main() -> int:
     rev("el formulario ya no pide `tenant`", "tenant" not in formulario["properties"], str(list(formulario["properties"])))
     rev("pide el archivo", "archivo" in (formulario.get("required") or []))
     rev("con candado", pub["paths"]["/bandeja/"]["post"].get("security") == [{"APIKeyHeader": []}])
+    rev("y no le pide al cliente el header `authorization`: es de la sesión de una persona (HU11), no de una API Key",
+        not any(str(p.get("name", "")).lower() == "authorization" for p in pub["paths"]["/bandeja/"]["post"].get("parameters", [])),
+        str(pub["paths"]["/bandeja/"]["post"].get("parameters")))
     texto = json.dumps(pub)
     rev("no menciona la llave de servicio ni rutas internas",
         not any(x in texto for x in ("NEXUS_API_KEY", "/llaves", "/ia/", "/procesadores", "/archivos", "retirar")), "")

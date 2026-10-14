@@ -182,6 +182,12 @@ def esquema_publico(completo: dict) -> dict:
     """Del esquema completo, solo lo que un cliente puede usar."""
     operacion = copy.deepcopy(completo["paths"][RUTA_PUBLICA]["post"])
 
+    # Sin el header `authorization`: es el JWT de la persona con que el front se identifica ante el aislamiento entre
+    # organizaciones (HU11). Un cliente entra con su API Key y ahí no hay persona.
+    operacion["parameters"] = [p for p in operacion.get("parameters", []) if str(p.get("name", "")).lower() != "authorization"]
+    if not operacion["parameters"]:
+        operacion.pop("parameters")
+
     # El formulario, sin `tenant`: con una llave de cliente no se manda.
     contenido = operacion["requestBody"]["content"]["multipart/form-data"]
     nombre_cuerpo = contenido["schema"]["$ref"].split("/")[-1]

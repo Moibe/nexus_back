@@ -34,6 +34,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Response,
 from pydantic import BaseModel, Field
 
 import config
+from routers.errores import almacen_no_disponible
 from servicios import auditoria, auth, correo, plantillas_correo, tokens, usuarios
 from servicios.almacen import ErrorAlmacen
 
@@ -335,7 +336,7 @@ def login(datos: Login, response: Response) -> dict:
         logger.info("Login correcto (guid=%s)", u["guid"])
         return sesion
     except ErrorAlmacen as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise almacen_no_disponible(exc) from exc
     except auth.SinConfigurar as exc:
         raise _sin_configurar() from exc
 
@@ -360,7 +361,7 @@ def refresh(datos: Refresh, response: Response) -> dict:
             raise _error(status.HTTP_401_UNAUTHORIZED, "sesion_vencida", "La sesión venció. Inicia sesión de nuevo.") from exc
         raise _error(status.HTTP_401_UNAUTHORIZED, "sesion_invalida", "La sesión ya no es válida. Inicia sesión de nuevo.") from exc
     except ErrorAlmacen as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise almacen_no_disponible(exc) from exc
     except auth.SinConfigurar as exc:
         raise _sin_configurar() from exc
 
@@ -392,7 +393,7 @@ def logout(datos: Logout) -> Response:
                 if cerradas:
                     _auditar_cierre(s["guid"], s["sesionGuid"], datos.ip, datos.userAgent)
         except ErrorAlmacen as exc:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+            raise almacen_no_disponible(exc) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -526,7 +527,7 @@ def estado_de_sesion(response: Response, authorization: str | None = Header(defa
     except ErrorAlmacen as exc:
         # El montaje caído NO es una sesión muerta: 503, para que quien pregunta lo trate
         # como "no se pudo contestar" (y el log diga por qué, en vez de un 500 anónimo).
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise almacen_no_disponible(exc) from exc
     if not u["activo"]:
         return {"estado": "desactivada"}
     return {"estado": "viva" if viva else "cerrada"}
@@ -560,7 +561,7 @@ def actualizar_perfil(datos: Perfil, authorization: str | None = Header(default=
     except ValueError as exc:
         raise _error(status.HTTP_400_BAD_REQUEST, "datos_invalidos", str(exc)) from exc
     except ErrorAlmacen as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise almacen_no_disponible(exc) from exc
 
 
 @router.post(
@@ -620,7 +621,7 @@ def cambiar_contrasena(datos: CambioContrasena, authorization: str | None = Head
         # `contrasena`: otro dispositivo la cambió mientras tanto, y la "actual" que se verificó ya no lo es.
         raise _error(status.HTTP_401_UNAUTHORIZED, "actual_incorrecta", "La contraseña actual es incorrecta.") from exc
     except ErrorAlmacen as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise almacen_no_disponible(exc) from exc
 
 
 # ── Recuperar la contraseña (HU10) ──────────────────────────────────────────
@@ -717,7 +718,7 @@ def solicitar_recuperacion(datos: SolicitudRecuperacion, response: Response, seg
         logger.info("Recuperación solicitada (resultado=%s)", resultado)
         return {"ok": True, "mensaje": MENSAJE_NEUTRO}
     except ErrorAlmacen as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise almacen_no_disponible(exc) from exc
 
 
 @router.post(
@@ -734,7 +735,7 @@ def revisar_enlace(datos: RevisionEnlace, response: Response) -> dict:
     try:
         _validar_enlace(datos.token)
     except ErrorAlmacen as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise almacen_no_disponible(exc) from exc
     return {"ok": True}
 
 
@@ -798,4 +799,4 @@ def confirmar_recuperacion(datos: ConfirmacionRecuperacion, response: Response) 
         logger.info("Contraseña restablecida (guid=%s)", u["guid"])
         return {"ok": True, "sesionesCerradas": True}
     except ErrorAlmacen as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        raise almacen_no_disponible(exc) from exc

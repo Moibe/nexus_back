@@ -38,11 +38,11 @@ síncrono y deben ir al threadpool.
 
 import logging
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile, status
 
 from routers.archivos import guardar_subida
 from seguridad import Identidad, exigir_llave, exigir_llave_o_cliente
-from servicios import bandeja
+from servicios import aislamiento, bandeja
 from servicios.almacen import ErrorAlmacen
 from servicios.subidas import normalizar_tipo
 
@@ -117,8 +117,13 @@ def subir_a_bandeja(
         examples=[""],
     ),
     quien: Identidad = Depends(exigir_llave_o_cliente),
+    authorization: str | None = Header(default=None),
 ):
     tenant = _tenant_de(quien, tenant)
+    if quien.tipo == "servicio":
+        # Con la llave del front, el tenant lo dice la petición: se comprueba contra la persona (HU11). Con una API Key de
+        # cliente sale de la llave y no hay persona.
+        aislamiento.exigir(authorization, tenant, "bandeja")
     if normalizar_tipo(archivo.content_type) not in MIME_BANDEJA:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -148,7 +153,8 @@ def subir_a_bandeja(
     summary="Lo que está pendiente en la bandeja",
     description="Las entradas que llegaron y todavía no pasan al pipeline ni se descartan, de la más vieja a la más nueva.",
 )
-def listar_bandeja(tenant: str = Query(..., description="Cliente")):
+def listar_bandeja(tenant: str = Query(..., description="Cliente"), authorization: str | None = Header(default=None)):
+    aislamiento.exigir(authorization, tenant, "bandeja")
     try:
         return {"entradas": bandeja.listar_pendientes(tenant)}
     except ValueError as exc:
@@ -171,7 +177,9 @@ def retirar_de_bandeja(
     id_entrada: str,
     tenant: str = Form(...),
     motivo: str = Form(..., description="«pipeline» o «descartado»"),
+    authorization: str | None = Header(default=None),
 ):
+    actor = aislamiento.exigir(authorization, tenant, "bandeja")
     try:
         retirada = bandeja.retirar(tenant, id_entrada, motivo)
     except ValueError as exc:
@@ -179,6 +187,8 @@ def retirar_de_bandeja(
     except ErrorAlmacen as exc:
         raise _no_disponible(exc, f"retirar, tenant={tenant}") from exc
     if not retirada:
+        if bandeja.existe_en_otro_tenant(tenant, id_entrada):
+            aislamiento.intento_cruzado(actor, "bandeja", id_entrada)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Esa entrada no está pendiente en la bandeja (no existe o ya salió).",
