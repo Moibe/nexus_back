@@ -141,6 +141,21 @@ try:
     rev("y le toca cambiarla", r.json()["usuario"]["debeCambiarContrasena"] is True)
     rev("su membresía dice de qué organización es",
         r.json()["usuario"]["membresias"] == [{"tenantGuid": primera["organizacion"]["guid"], "rol": "ADMIN"}], str(r.json()["usuario"]["membresias"]))
+    rev("y lo que capturó como datos de recuperación está en SU perfil (no solo en la organización)",
+        r.json()["usuario"]["recuperacion"] == {"telefono": "+52 55 1478 8523", "email": "respaldo@ejemplo.com"}, str(r.json()["usuario"]["recuperacion"]))
+    # Un administrador creado ANTES del arreglo (2026-10-14): su recuperación vivía solo en la organización. Se lee de ahí.
+    import uuid as _uuid
+    from servicios import registro
+    g_viejo, t_viejo = str(_uuid.uuid4()), str(_uuid.uuid4())
+    registro.agregar(usuarios.ARCHIVO, {"evento": "creado", "guid": g_viejo, "email": "admin.viejo@ejemplo.com", "nombre": "Ana", "apellidos": "Vieja",
+                                        "esAdminPlataforma": False, "hash": "x", "debeCambiar": True, "en": "2026-10-01T10:00:00+00:00"})
+    registro.agregar(usuarios.ARCHIVO, {"evento": "membresia", "guid": g_viejo, "tenantGuid": t_viejo, "rol": "ADMIN", "en": "2026-10-01T10:00:00+00:00"})
+    registro.agregar(tenants_registro.ARCHIVO, {"evento": "creada", "guid": t_viejo, "nombre": "Vieja SA", "slug": "vieja-sa", "codigo": "NEX-09999", "adminGuid": g_viejo,
+                                                "recuperacion": {"telefono": "+52 55 0000 1111", "email": "vieja@ejemplo.com"}, "en": "2026-10-01T10:00:00+00:00"})
+    rev("y el de un administrador anterior al arreglo se lee de los datos de su organización",
+        usuarios.por_guid(g_viejo)["recuperacion"] == {"telefono": "+52 55 0000 1111", "email": "vieja@ejemplo.com"}, str(usuarios.por_guid(g_viejo)["recuperacion"]))
+    usuarios.actualizar_perfil(g_viejo, "Ana", "Vieja", "", None, {})
+    rev("pero si la persona los borra en su perfil, se quedan borrados (no se vuelven a heredar)", usuarios.por_guid(g_viejo)["recuperacion"] == {}, str(usuarios.por_guid(g_viejo)["recuperacion"]))
     suyo = {**srv(), "Authorization": f"Bearer {r.json()['accessToken']}"}
     r = c.get("/organizaciones/", headers=suyo)
     rev("no puede listar organizaciones: 403 sin_permiso",

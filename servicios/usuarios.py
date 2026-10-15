@@ -207,6 +207,7 @@ def _construir_indice(eventos: list[dict]) -> tuple[dict[str, dict], dict[str, s
                 "apellidoPaterno": paterno,
                 "apellidoMaterno": materno,
                 "recuperacion": e.get("recuperacion") or {},
+                "recuperacionPropia": "recuperacion" in e,
                 "esAdminPlataforma": bool(e.get("esAdminPlataforma")),
                 "telefono": e.get("telefono"),
                 "hash": e.get("hash"),
@@ -274,6 +275,7 @@ def _construir_indice(eventos: list[dict]) -> tuple[dict[str, dict], dict[str, s
                 u["apellidos"] = " ".join(x for x in (paterno, materno) if x)
             if "recuperacion" in e:
                 u["recuperacion"] = e.get("recuperacion") or {}
+                u["recuperacionPropia"] = True
         elif tipo == "membresia" and u:
             tenant = e.get("tenantGuid")
             if isinstance(tenant, str):
@@ -353,6 +355,21 @@ def _firma_del_registro() -> tuple | None:
     return str(ruta), st.st_ino, st.st_size, st.st_mtime_ns
 
 
+def _heredar_recuperacion(usuarios: dict[str, dict]) -> None:
+    """Un administrador de organización anterior al 2026-10-14 capturó sus datos de recuperación en el alta de la organización y
+    se guardaron SOLO en la organización: su perfil los mostraba vacíos. Mientras no haya guardado los suyos (`recuperacionPropia`),
+    se leen de los de su organización. Desde ese día el alta los guarda también en el usuario."""
+    pendientes = [u for u in usuarios.values() if not u["recuperacion"] and not u.get("recuperacionPropia")
+                  and any(m["rol"] == roles.ADMIN for m in u["membresias"])]
+    if not pendientes:
+        return
+    from servicios import tenants_registro
+
+    de_su_organizacion = {t["adminGuid"]: t["recuperacion"] for t in tenants_registro.listar() if t.get("adminGuid") and t.get("recuperacion")}
+    for u in pendientes:
+        u["recuperacion"] = dict(de_su_organizacion.get(u["guid"], {}))
+
+
 def _indice() -> tuple[dict[str, dict], dict[str, str], dict[str, dict]]:
     """(usuarios por guid, guid por correo, sesiones por guid de sesión)."""
     global _cache_indice
@@ -363,6 +380,7 @@ def _indice() -> tuple[dict[str, dict], dict[str, str], dict[str, dict]]:
             return guardado[1]
         inicio = time.perf_counter()
         indice = _construir_indice(registro.eventos(ARCHIVO))
+        _heredar_recuperacion(indice[0])
         duracion = time.perf_counter() - inicio
         if duracion > UMBRAL_RECONSTRUCCION_S:
             # El guard del front espera esto como mucho 2 s y, pasado ese tope, deja pasar
@@ -452,6 +470,7 @@ def crear_usuario(
     *,
     apellido_paterno: str = "",
     apellido_materno: str = "",
+    recuperacion: dict | None = None,
 ) -> dict:
     """Da de alta un usuario con contraseña temporal (`debeCambiar`) y, si se
     indica un tenant, su membresía con rol. Levanta `YaExiste` si el correo ya
@@ -489,6 +508,7 @@ def crear_usuario(
                 "apellidoPaterno": paterno,
                 "apellidoMaterno": materno,
                 "telefono": telefono,
+                **({"recuperacion": recuperacion} if recuperacion is not None else {}),
                 "esAdminPlataforma": False,
                 "hash": hash_contrasena,
                 "debeCambiar": True,

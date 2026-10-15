@@ -1533,6 +1533,12 @@ como los pide el diseño y como los tiene `security.users` (lastName,
 secondLastName). Los usuarios creados antes solo tienen `apellidos`: se parten
 al leerlos (`usuarios.separar_nombre`), sin migrar nada.
 
+**Datos de recuperación del administrador de una organización (2026-10-14).** El alta de la organización los pide bajo «tu
+cuenta», pero se guardaban solo en la organización: Mi perfil del administrador los mostraba vacíos. Ahora `POST /organizaciones/`
+también los guarda en SU usuario, y a los administradores anteriores se les leen de los de su organización mientras no hayan
+guardado los suyos (`usuarios._heredar_recuperacion`; si los borran en su perfil, quedan borrados). Se prueba en
+`verificar_organizaciones.py`, sección 6.
+
 **Desde el 2026-10-14 los formularios de alta piden Nombre(s), Apellido paterno (obligatorio) y Apellido materno** y los mandan
 en `apellidoPaterno`/`apellidoMaterno` (usuarios) o `adminApellidoPaterno`/`adminApellidoMaterno` (organizaciones): se guardan
 tal cual, sin adivinar. Lo de abajo es el respaldo para quien manda el nombre completo junto (la API directa) y para las cuentas

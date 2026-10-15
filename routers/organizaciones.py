@@ -271,6 +271,8 @@ def crear(datos: NuevaOrganizacion, response: Response, authorization: str | Non
             apellido_materno=datos.adminApellidoMaterno,
             hash_contrasena=auth.hash_de(temporal),
             telefono=datos.adminTelefono,
+            # Es la recuperación de la cuenta de SU administrador: también va en su perfil, no solo en la organización.
+            recuperacion=recuperacion,
         )
         organizacion = tenants_registro.crear(
             nombre,
