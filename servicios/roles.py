@@ -69,6 +69,11 @@ CATALOGO: list[dict[str, str]] = [
     },
 ]
 
+#: Los roles que pueden DESCARTAR un documento de la bandeja de preparación (HU «Descartar archivos»): los que trabajan la
+#: bandeja. Compliance, auditor y viewer son de consulta y no pueden destruir el trabajo de otro. Es una decisión de producto
+#: pendiente de confirmar con César; el administrador de plataforma siempre puede (en su espacio).
+PUEDEN_DESCARTAR = frozenset({ADMIN, "SUPERVISOR", "ANALISTA", "OPERADOR"})
+
 ASIGNABLES = frozenset(r["codigo"] for r in CATALOGO)
 #: Todos los que puede llevar una membresía, incluido el administrador.
 VALIDOS = ASIGNABLES | {ADMIN}

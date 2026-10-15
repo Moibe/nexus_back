@@ -1643,3 +1643,24 @@ Los otros `verificar_*` que llaman a estas rutas con la llave de servicio (`veri
 `verificar_llaves_cliente.py`, `verificar_webhooks.py`) usan `verificacion_comun.cliente_con_sesion_de_plataforma`: un cliente
 de prueba que hace lo que hace el BFF, agregar el Bearer de un administrador de plataforma a toda petición con la llave de
 servicio.
+
+## Descartar documentos de la bandeja (2026-10-15)
+
+«Descartar» es `POST /bandeja/{id}/retirar` con `motivo=descartado`, y ahora además:
+
+- **`detalle`** (opcional, hasta 500 caracteres): el porqué que escribe la persona. Se guarda sin espacios sobrantes en el evento
+  `retiro` de la bandeja y en la auditoría. Más de 500: 422.
+- **Solo ciertos roles**: administrador de la organización, supervisor, analista y operador (`roles.PUEDEN_DESCARTAR`), y el
+  administrador de plataforma en su espacio. Compliance, auditor y viewer reciben **403 `sin_permiso`** («Tu rol no puede descartar
+  documentos.»), que se contesta ANTES de mirar si la entrada existe: quien no puede no aprende nada de la bandeja. Se lee del
+  registro, no del JWT. **Es una decisión de producto mía, pendiente de confirmar con César**: el diseño de los roles no dice quién
+  descarta. Retirar por `pipeline` no cambió (no se restringe por rol).
+- **`DOCUMENT_DISCARDED`** en la bitácora de auditoría: `usuarioGuid`, `sesionGuid`, `tenant`, `entradaId`, `nombreOriginal`,
+  `sha256`, `canal` y `detalle`. Se escribe DESPUÉS de retirar (el retiro es atómico); si la bitácora falla se avisa en el log y no
+  se le dice a la persona que no se descartó, igual que `CROSS_TENANT_ACCESS`.
+- **No se borra nada del almacén**: los bytes se comparten por contenido y borrar sería peligroso sin conteo de referencias. Descartar
+  es reversible a nivel de datos (el archivo y la entrada siguen en los registros), pero todavía NO hay pantalla para recuperar.
+- Solo aplica a lo que vive en el servidor (lo que llegó por la API). Lo subido a mano está en la memoria de la pestaña: se quita
+  de la lista y no deja rastro (no hay registro donde dejarlo) hasta que lo ingerido por la interfaz también se guarde en el servidor.
+
+Se prueba en `verificar_descartar.py` (28 comprobaciones; 9 mutaciones muertas).

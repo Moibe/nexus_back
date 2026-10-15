@@ -65,7 +65,12 @@ INVITATION_REISSUED = "INVITATION_REISSUED"
 # Una cuenta se RETIRÓ (borrado lógico: `retirar_cuenta.py`). Lleva el correo, el motivo y quién lo hizo; nunca la contraseña.
 USER_DELETED = "USER_DELETED"
 
-ACCIONES = frozenset({PASSWORD_RESET_REQUESTED, PASSWORD_RESET_COMPLETED, PASSWORD_CHANGED, FIRST_LOGIN_PASSWORD_CHANGED, PROFILE_UPDATED, CROSS_TENANT_ACCESS, LOGOUT, FORCED_LOGOUT, USER_CREATED, INVITATION_REISSUED, USER_DELETED})
+# Alguien DESCARTÓ un documento de la bandeja de preparación: sale de la bandeja y el archivo se queda en el almacén. Lleva quién
+# (`usuarioGuid`, `sesionGuid`), de qué organización (`tenant`), qué documento (`entradaId`, `nombreOriginal`, `sha256`,
+# `canal`) y el motivo que escribió la persona (`detalle`, opcional).
+DOCUMENT_DISCARDED = "DOCUMENT_DISCARDED"
+
+ACCIONES = frozenset({DOCUMENT_DISCARDED, PASSWORD_RESET_REQUESTED, PASSWORD_RESET_COMPLETED, PASSWORD_CHANGED, FIRST_LOGIN_PASSWORD_CHANGED, PROFILE_UPDATED, CROSS_TENANT_ACCESS, LOGOUT, FORCED_LOGOUT, USER_CREATED, INVITATION_REISSUED, USER_DELETED})
 
 
 def _ahora() -> datetime:

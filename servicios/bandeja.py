@@ -87,7 +87,15 @@ def listar_pendientes(tenant: str) -> list[dict]:
     ]
 
 
-def retirar(tenant: str, id_entrada: str, motivo: str) -> bool:
+def datos_de_entrada(tenant: str, id_entrada: str) -> dict | None:
+    """La entrada tal como llegó (de ese tenant), o `None`. Para anotar qué documento se descartó."""
+    for e in registro.eventos(_nombre(tenant)):
+        if e.get("evento") == "entrada" and e.get("id") == id_entrada:
+            return _publica(e)
+    return None
+
+
+def retirar(tenant: str, id_entrada: str, motivo: str, detalle: str | None = None) -> bool:
     """Saca una entrada de la bandeja. `False` si no existe o ya había salido.
 
     El archivo NO se borra del almacén: se retira de la bandeja porque pasó al
@@ -112,6 +120,8 @@ def retirar(tenant: str, id_entrada: str, motivo: str) -> bool:
                 "evento": "retiro",
                 "id": id_entrada,
                 "motivo": motivo,
+                # Lo que escribió la persona al descartar (opcional): el porqué, para quien revise después.
+                **({"detalle": detalle} if detalle else {}),
                 "en": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             },
         )

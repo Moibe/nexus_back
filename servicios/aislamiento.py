@@ -39,7 +39,7 @@ from typing import NamedTuple
 
 from fastapi import HTTPException, status
 
-from servicios import auditoria, auth, tenants_registro, usuarios
+from servicios import auditoria, auth, roles, tenants_registro, usuarios
 from servicios.almacen import ErrorAlmacen
 
 logger = logging.getLogger(__name__)
@@ -116,6 +116,18 @@ def puede_operar_en(actor: Actor, tenant: str) -> bool:
     if tenant in actor.tenants:
         return True
     return actor.es_admin_plataforma and not es_organizacion(tenant)
+
+
+def puede_descartar(actor: Actor, tenant: str) -> bool:
+    """¿Su rol en ESA organización permite descartar documentos? El administrador de plataforma sí (en su espacio, que es lo único
+    donde `exigir` lo deja operar). Se lee del registro, no del JWT."""
+    if actor.es_admin_plataforma:
+        return True
+    try:
+        u = usuarios.por_guid(actor.guid)
+    except usuarios.NoEncontrado:
+        return False
+    return any(m["tenantGuid"] == tenant and m["rol"] in roles.PUEDEN_DESCARTAR for m in u["membresias"])
 
 
 def intento_cruzado(actor: Actor, recurso: str, recurso_id: str | None = None, tenant_pedido: str | None = None, via: str = "id") -> None:
