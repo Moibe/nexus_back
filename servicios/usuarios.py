@@ -75,7 +75,16 @@ MOTIVOS_QUE_CIERRAN_SESIONES = {"FIRST_LOGIN", "RESET"}
 # OTROS dispositivos y se conserva la de quien la cambia: lo pide el criterio CA-4, y
 # es lo que corta a quien tenga una sesión robada sin sacar de su pantalla a la dueña.
 
-_RE_CORREO = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+# La forma de un correo (la MISMA que `RE_CORREO` de `src/lib/acceso/correo.ts` en el front: si cambia una, cambia la otra):
+# parte local de caracteres normales separados por UN punto (sin punto al principio, al final ni dos seguidos, de hasta 64),
+# una arroba, y un dominio de etiquetas con letras, números y guiones (que no empiezan ni terminan en guion) separadas por
+# puntos, que termina en una extensión de al menos DOS caracteres y que empieza con letra. Antes era `^[^@\s]+@[^@\s]+\.[^@\s]+$`,
+# que solo pedía una arroba y un punto y dejaba pasar `a@b.c`, `a@b..com` o `a@-b.com` (corregido el 2026-10-15, a pedido de
+# QA). NO acepta acentos ni letras fuera del ASCII.
+_RE_CORREO = re.compile(
+    r"^(?=[^@]{1,64}@)[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*"
+    r"@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z][A-Za-z0-9-]*[A-Za-z0-9]\Z"
+)
 
 
 class YaExiste(Exception):

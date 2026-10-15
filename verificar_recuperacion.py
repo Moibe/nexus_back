@@ -188,7 +188,7 @@ try:
         "recibirás un enlace de recuperación en los próximos minutos." in MENSAJE_NEUTRO and MENSAJE_NEUTRO.startswith("Si existe una cuenta"))
 
     titulo("2 · Lo que NO es un correo se rechaza, y es lo único que se distingue")
-    for malo in ["pepito", "a@b", "", "no es correo@x.com"]:
+    for malo in ["pepito", "a@b", "", "no es correo@x.com", "a@b.c", "a@b..com", "a@-b.com", ".a@b.com"]:
         r = solicitar(malo)
         rev(f"{malo!r}: 400 correo_invalido", r.status_code == 400 and r.json()["detail"]["codigo"] == "correo_invalido", r.text)
     rev("sin llave de servicio: 401", c.post("/auth/recuperacion/solicitar", json={"email": "ana@ejemplo.com"}).status_code == 401)

@@ -113,6 +113,9 @@ try:
     despues = c.get("/organizaciones/", headers=bearer).json()["organizaciones"]
     rev("y NO se creó la organización a medias", len(despues) == antes, f"{antes} -> {len(despues)}")
     rev("correo inválido: 400", c.post("/organizaciones/", json={**cuerpo, "nombre": "X", "adminEmail": "no-es"}, headers=bearer).status_code == 400)
+    for malo in ["a@b.c", "a@b..com", "a@-b.com", ".a@b.com", "a@b.com."]:
+        r = c.post("/organizaciones/", json={**cuerpo, "nombre": "X", "adminEmail": malo}, headers=bearer)
+        rev(f"correo con arroba y punto pero mal formado ({malo!r}): 400 correo_invalido", r.status_code == 400 and r.json()["detail"]["codigo"] == "correo_invalido", r.text[:120])
     r = c.post("/organizaciones/", json={**cuerpo, "nombre": "Y", "adminEmail": "y@ejemplo.com",
                                         "recuperacion": {"email": "pepito", "telefono": None}}, headers=bearer)
     rev("correo de RECUPERACIÓN inválido: 400 y no crea nada",
