@@ -1103,11 +1103,11 @@ Convenciones que ya seguimos con NEX-294/295: GUIDs hacia fuera, enteros solo pa
 2. ¿Prefieres las credenciales como columnas de `users` o en tabla aparte? Nosotros la preferimos aparte (una fila de `users` se lee en muchos lados; el hash no debería viajar con ella).
 3. ¿Un tenant `SUSPENDED` deja entrar a sus usuarios? Propuesta: sí entra, pero el JWT lleva el estado y el front bloquea las operaciones; así el admin puede leer. Tú decides.
 
-## 7 · Ingesta · Bandeja de preparación en la base (Épica 3: HU 24, 25 y 27) — borrador 2026-10-15, SIN ENVIAR
+## 7 · Ingesta · Bandeja de preparación en la base (Épica 3: HU 24, 25 y 27) — CREADO como NEX-377 el 2026-10-15 (asignado a Charlie, NEX Sprint 5)
 
 **Título del ticket:** `Ingesta · Bandeja de preparación: estado del archivo, descarte, y listado con filtros y paginación (HU 24, 25 y 27)`
 
-Para Charlie. Depende de lo que ya entregó en NEX-294 y NEX-295 (`uspGetOrCreateInboxExpediente` y `uspCreateFile`) y, para la
+Texto del ticket NEX-377 (en Jira va sin esta primera frase y con «Preguntas para ti» por «Preguntas para él»). Depende de lo que ya entregó en NEX-294 y NEX-295 (`uspGetOrCreateInboxExpediente` y `uspCreateFile`) y, para la
 auditoría, de `auditEvents` de NEX-336. Mismas convenciones de siempre: esquema y prefijo `usp`, parámetros en camelCase,
 GUIDs hacia fuera, `THROW 5xxxx` con mensaje claro, `SUSER_SNAME()` en auditoría.
 
