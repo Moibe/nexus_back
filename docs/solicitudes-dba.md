@@ -1102,3 +1102,102 @@ Convenciones que ya seguimos con NEX-294/295: GUIDs hacia fuera, enteros solo pa
 1. ¿`dbo.uspRegistrarResultadoLogin` escribe en una tabla que podamos reusar como `loginAttempts`? Si sí, `uspRecordLoginResult` puede llamarla por dentro.
 2. ¿Prefieres las credenciales como columnas de `users` o en tabla aparte? Nosotros la preferimos aparte (una fila de `users` se lee en muchos lados; el hash no debería viajar con ella).
 3. ¿Un tenant `SUSPENDED` deja entrar a sus usuarios? Propuesta: sí entra, pero el JWT lleva el estado y el front bloquea las operaciones; así el admin puede leer. Tú decides.
+
+## 7 · Ingesta · Bandeja de preparación en la base (Épica 3: HU 24, 25 y 27) — borrador 2026-10-15, SIN ENVIAR
+
+**Título del ticket:** `Ingesta · Bandeja de preparación: estado del archivo, descarte, y listado con filtros y paginación (HU 24, 25 y 27)`
+
+Para Charlie. Depende de lo que ya entregó en NEX-294 y NEX-295 (`uspGetOrCreateInboxExpediente` y `uspCreateFile`) y, para la
+auditoría, de `auditEvents` de NEX-336. Mismas convenciones de siempre: esquema y prefijo `usp`, parámetros en camelCase,
+GUIDs hacia fuera, `THROW 5xxxx` con mensaje claro, `SUSER_SNAME()` en auditoría.
+
+### Por qué ahora
+
+La bandeja de preparación es lo primero que ve quien opera: los archivos que llegaron (a mano o por la API de clientes) y todavía
+no pasan al pipeline. Hoy **no vive en la base**: lo que llega por la API está en un registro provisional en archivo en el NAS, y lo
+que se sube a mano solo existe en la memoria del navegador (se pierde al refrescar). Ya construimos del lado nuestro lo que el
+Figma pide: **descartar** documentos (con motivo, rastro y permiso por rol), una **sección de descartados**, **filtros**
+(Estado, Canal y Fecha) y **paginación de 8 en 8**. Funciona, pero filtrando y paginando en el navegador sobre lo que cabe en
+memoria: no escala y no guarda nada. Esto es lo que falta para que viva en la base.
+
+El back va a llamar `uspGetOrCreateInboxExpediente` y `uspCreateFile` por **cada** archivo que entre, por cualquier canal; ya no
+solo por la API.
+
+### Lo que YA existe (leído, no supuesto)
+
+- `[documents].[files]` con `fileId`, `fileGuid`, `tenantId`, `caseId` NOT NULL, `ingestionChannelId`, `storageUri`,
+  `originalFileName`, `mimeType`, `sizeBytes`, `sha256 char(64)`, `pageCount`, `receivedAt`; sin índice único por `(tenantId, sha256)`.
+- `uspGetOrCreateInboxExpediente @tenantGuid` y `uspCreateFile ...` (NEX-294 y NEX-295).
+- Del lado nuestro, el contrato que debe imitar la base: `GET /bandeja/?estado=pendientes|descartados`, `POST /bandeja/{id}/retirar`
+  con `motivo` (`pipeline` | `descartado`) y `detalle`, y el evento de auditoría `DOCUMENT_DISCARDED`.
+
+### 1. Estado del archivo en la bandeja, sin actualizar `files`
+
+`files` es de solo agregar (el diccionario lo dice), así que los cambios de estado van en una tabla de eventos:
+
+`[documents].[fileEvents]`: `fileEventId`, `fileEventGuid`, `fileId` (FK), `eventType varchar(30) NOT NULL`
+(`SENT_TO_PIPELINE`, `DISCARDED`; `RESTORED` reservado, ver preguntas), `occurredAt datetime2 NOT NULL`, `byUserId int NULL`
+(la API no tiene persona), `reason nvarchar(500) NULL` y auditoría. El estado vigente es el último evento; sin eventos, el archivo
+sigue en la bandeja.
+
+### 2. Dos columnas en `files`
+
+- **`validationCode varchar(20) NULL`**: `READY`, `PASSWORD_PROTECTED` o `CORRUPT`; `NULL` = todavía sin revisar. Se escribe al crear el
+  archivo (compatible con solo-agregar). Hoy lo calcula el navegador (huella, protegido con contraseña, corrupto); la HU 23 lo
+  moverá al back, que es quien tiene los bytes, y la base solo lo guarda. Es lo que hace posible filtrar «Listo» y «Pendiente» en
+  la base.
+- **`ingestionSourceRef nvarchar(100) NULL`**: de dónde vino, para trazabilidad (el id de la API Key que lo mandó). Hoy lo guardamos
+  como `llaveId`.
+
+Los dos entran como parámetros opcionales de `uspCreateFile` (`@validationCode`, `@sourceRef`), sin romper a quien ya lo llame.
+
+### 3. Dos índices
+
+- `(tenantId, sha256)` **NO único**: para saber si un archivo es duplicado. Se siguen permitiendo reingresos: el diseño habla de
+  «duplicado procesado de forma explícita» y el aviso nunca bloquea.
+- `(tenantId, receivedAt, fileId)`: para listar y paginar.
+
+### 4. Stored procedures
+
+- **`uspListInboxFiles`** `@tenantGuid, @statuses varchar(100) NULL` (lista separada por comas de `PENDING, READY, DUPLICATE, DISCARDED`),
+  `@channels varchar(100) NULL` (códigos de `ingestionChannels`, separados por comas), `@receivedFrom datetime2 NULL`,
+  `@receivedTo datetime2 NULL` (periodo semiabierto `[desde, hasta)`, instantes con zona, igual que las métricas),
+  `@pageNumber int = 1`, `@pageSize int = 8` (tope 100), `@sortDescending bit = 0`.
+  - Resultado 1, la página: `fileGuid, originalName, mimeType, sizeBytes, sha256, storageUri, ingestionChannel, receivedAt,
+    validationCode, inboxStatus, isDuplicate, discardedAt, discardedReason, sourceRef`.
+  - Resultado 2, una fila: `totalCount` (con los filtros puestos) y `duplicateCount` (de todo el tenant, para la insignia roja del
+    botón «Filtros»).
+  - **`inboxStatus`**, en este orden: `DISCARDED` si el último evento es `DISCARDED`; si no, `PENDING` si `validationCode` es NULL,
+    `PASSWORD_PROTECTED` o `CORRUPT`; si no, `DUPLICATE` si `isDuplicate`; si no, `READY`.
+  - **`isDuplicate`**: existe otro archivo del MISMO tenant con el mismo `sha256`, que llegó antes y que no está descartado.
+  - Lo que ya pasó al pipeline (`SENT_TO_PIPELINE`) no sale. Sin `@statuses` se devuelve la bandeja ACTIVA: todo menos
+    `DISCARDED`. Con `DISCARDED` en la lista, salen también los descartados (es la «sección de descartados»).
+  - Orden por `receivedAt` y `fileId` (el segundo desempata). Una página fuera de rango devuelve 0 filas y el `totalCount` correcto.
+- **`uspDiscardFile`** `@tenantGuid, @fileGuid, @reason nvarchar(500) NULL, @byUserGuid` → `discardedAt`. Agrega el evento
+  `DISCARDED`, **atómico** (`UPDLOCK`): si dos personas descartan lo mismo, una gana y la otra recibe el error. Errores con código
+  propio: no existe en ese tenant, ya está descartado, ya pasó al pipeline. **No borra nada ni toca el archivo del almacén**: se
+  comparte por contenido. Si `auditEvents` ya existe, que escriba ahí `DOCUMENT_DISCARDED` en la MISMA transacción (con quién, qué
+  archivo y el motivo); si no, lo escribimos nosotros con `uspWriteAuditEvent`.
+- **`uspSendFileToPipeline`** `@tenantGuid, @fileGuid, @byUserGuid` → agrega `SENT_TO_PIPELINE`, con las mismas reglas de atomicidad
+  y de errores. Es lo que hoy hace `retirar` con motivo `pipeline`.
+
+### Aislamiento por organización (HU11)
+
+Cada SP recibe `@tenantGuid` y filtra por él **siempre**; un `fileGuid` de otro tenant se contesta como «no existe» (mismo código
+que uno inventado), sin decir que existe. El back ya lo hace; la segunda red es la que vale el día que haya un error nuestro.
+
+### Lo que NO se pide (es nuestro)
+
+- Calcular el hash, revisar si el archivo está protegido o corrupto, guardar los bytes en el almacén.
+- Qué rol puede descartar (lo decide el back).
+- **API Keys de cliente, su uso, los webhooks y sus entregas.** También viven hoy en registros provisionales, pero es otro ticket,
+  más grande: va después de este.
+
+### Preguntas para él
+
+1. ¿`validationCode` como columna de `files` te parece bien, o prefieres una tabla de validaciones aparte? Nos sirve cualquiera
+   mientras `uspListInboxFiles` lo devuelva.
+2. **Recuperar un descartado** (`RESTORED`): el Figma todavía no lo dibuja. Proponemos dejar el tipo de evento reservado y el SP para
+   cuando lo pida el diseño. ¿Algún problema con el nombre?
+3. ¿`OFFSET/FETCH` te parece suficiente para paginar, o prefieres paginación por llave (`receivedAt, fileId`) pensando en tenants con
+   cientos de miles de archivos?
