@@ -126,6 +126,25 @@ try:
         and e.get("nombreOriginal") == "factura-duplicada.pdf" and e.get("sha256") == e1["_sha"] and e.get("canal") == "API", str(e))
     rev("y por qué", e.get("detalle") == "Es un duplicado de la factura 1234", str(e))
 
+    titulo("1b · Lo descartado se puede consultar (el filtro «Descartado» de la bandeja)")
+    r = c.get("/bandeja/", params={"tenant": org, "estado": "descartados"}, headers=cab(bearers["ADMIN"]))
+    lista = r.json()["entradas"] if r.status_code == 200 else []
+    d1 = next((x for x in lista if x["id"] == e1["id"]), {})
+    rev("`estado=descartados` trae la entrada descartada, con cuándo y con su motivo",
+        r.status_code == 200 and d1.get("nombreOriginal") == "factura-duplicada.pdf" and d1.get("descartadaEn") and d1.get("detalle") == "Es un duplicado de la factura 1234", str(d1))
+    rev("y con lo que se necesita para pintarla (tamaño, tipo, canal, huella)", all(k in d1 for k in ("tamanoBytes", "mime", "canal", "sha256", "recibidoEn")), str(d1))
+    rev("la lista de pendientes ya no la trae (sigue igual que antes)", e1["id"] not in pendientes(org, bearers["ADMIN"]))
+    e_otra = nueva_entrada(org, "sigue-pendiente.pdf")
+    rev("y una entrada pendiente NO sale entre los descartados", e_otra["id"] not in [x["id"] for x in c.get("/bandeja/", params={"tenant": org, "estado": "descartados"}, headers=cab(bearers["ADMIN"])).json()["entradas"]])
+    rev("quien solo consulta (AUDITOR) también la ve: ver no destruye nada",
+        c.get("/bandeja/", params={"tenant": org, "estado": "descartados"}, headers=cab(bearers["AUDITOR"])).status_code == 200)
+    rev("un estado que no existe: 422", c.get("/bandeja/", params={"tenant": org, "estado": "otro"}, headers=cab(bearers["ADMIN"])).status_code == 422)
+    rev("otra organización no ve los descartados de esta (403 sin_acceso, como el resto)",
+        c.get("/bandeja/", params={"tenant": "demo", "estado": "descartados"}, headers=cab(bearers["ADMIN"])).status_code == 403)
+    rev("el administrador de plataforma en su espacio ve su lista vacía, no la de la organización",
+        c.get("/bandeja/", params={"tenant": "demo", "estado": "descartados"}, headers=cab(bearer_super)).json()["entradas"] == [])
+    c.post(f"/bandeja/{e_otra['id']}/retirar", data={"tenant": org, "motivo": "descartado"}, headers=cab(bearers["ADMIN"]))
+
     titulo("2 · Descartar otra vez, o algo que no existe: 404 y un solo rastro")
     antes = len(descartes())
     r = descartar(bearers["ADMIN"], org, e1["id"])

@@ -1663,4 +1663,9 @@ servicio.
 - Solo aplica a lo que vive en el servidor (lo que llegó por la API). Lo subido a mano está en la memoria de la pestaña: se quita
   de la lista y no deja rastro (no hay registro donde dejarlo) hasta que lo ingerido por la interfaz también se guarde en el servidor.
 
-Se prueba en `verificar_descartar.py` (28 comprobaciones; 9 mutaciones muertas).
+**Consultar lo descartado** (2026-10-15): `GET /bandeja/?tenant=…&estado=descartados` trae lo descartado, del más reciente al más viejo,
+con `descartadaEn` y su `detalle`; sin `estado` (o `estado=pendientes`) es lo de siempre. Cualquier rol de la organización puede
+consultarlo: ver no destruye nada. Es lo que alimenta el filtro «Descartado» de la bandeja (la «sección de descartados» del Figma);
+el front lo trae solo cuando ese filtro está puesto. Otro valor de `estado`: 422.
+
+Se prueba en `verificar_descartar.py` (36 comprobaciones; 9 mutaciones del descarte muertas).

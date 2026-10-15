@@ -95,6 +95,19 @@ def datos_de_entrada(tenant: str, id_entrada: str) -> dict | None:
     return None
 
 
+def listar_descartadas(tenant: str) -> list[dict]:
+    """Lo que se DESCARTÓ de esa bandeja, del descarte más reciente al más viejo: la entrada tal como llegó, más `descartadaEn` y,
+    si la persona lo escribió, `detalle`. Es lo que ve el filtro «Descartado» de la bandeja; el archivo sigue en el almacén."""
+    eventos = registro.eventos(_nombre(tenant))
+    entradas = {e["id"]: e for e in eventos if e.get("evento") == "entrada" and isinstance(e.get("id"), str)}
+    descartadas = [
+        {**_publica(entradas[e["id"]]), "descartadaEn": e.get("en"), **({"detalle": e["detalle"]} if e.get("detalle") else {})}
+        for e in eventos
+        if e.get("evento") == "retiro" and e.get("motivo") == "descartado" and e.get("id") in entradas
+    ]
+    return list(reversed(descartadas))
+
+
 def retirar(tenant: str, id_entrada: str, motivo: str, detalle: str | None = None) -> bool:
     """Saca una entrada de la bandeja. `False` si no existe o ya había salido.
 

@@ -151,12 +151,19 @@ def subir_a_bandeja(
     dependencies=[Depends(exigir_llave)],
     tags=["Bandeja"],
     summary="Lo que está pendiente en la bandeja",
-    description="Las entradas que llegaron y todavía no pasan al pipeline ni se descartan, de la más vieja a la más nueva.",
+    description=(
+        "Las entradas que llegaron y todavía no pasan al pipeline ni se descartan, de la más vieja a la más nueva. Con "
+        "`estado=descartados`, las que se descartaron (con `descartadaEn` y su `detalle`), de la más reciente a la más vieja."
+    ),
 )
-def listar_bandeja(tenant: str = Query(..., description="Cliente"), authorization: str | None = Header(default=None)):
+def listar_bandeja(
+    tenant: str = Query(..., description="Cliente"),
+    estado: str = Query("pendientes", pattern="^(pendientes|descartados)$", description="`pendientes` (lo de siempre) o `descartados`"),
+    authorization: str | None = Header(default=None),
+):
     aislamiento.exigir(authorization, tenant, "bandeja")
     try:
-        return {"entradas": bandeja.listar_pendientes(tenant)}
+        return {"entradas": bandeja.listar_descartadas(tenant) if estado == "descartados" else bandeja.listar_pendientes(tenant)}
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ErrorAlmacen as exc:
