@@ -1669,3 +1669,68 @@ consultarlo: ver no destruye nada. Es lo que alimenta el filtro «Descartado» d
 el front lo trae solo cuando ese filtro está puesto. Otro valor de `estado`: 422.
 
 Se prueba en `verificar_descartar.py` (36 comprobaciones; 9 mutaciones del descarte muertas).
+
+## Tipos documentales: el catálogo vive en el servidor, por organización (2026-10-15)
+
+Hasta hoy la biblioteca de Configuración (tipos, campos, estado, el procesador de Document AI de cada uno, historial de
+versiones, ejemplos recortados) vivía en el `localStorage` de **cada navegador**. Ahora vive aquí, **por organización**:
+`servicios/tipos_documentales.py` (registro provisional, `tipos-documentales.jsonl` dentro de `.registro/`) y
+`routers/tipos_documentales.py`.
+
+| Ruta | Qué hace |
+|---|---|
+| `GET /tipos-documentales/?tenant=` | Los tipos de la organización (borradores, activos y archivados), en su orden. |
+| `PUT /tipos-documentales/{id}` | Crea (`revision: 0`) o guarda (`revision: n`) el tipo completo. |
+| `PUT /tipos-documentales/orden` | Guarda el orden de la biblioteca de la organización. |
+| `DELETE /tipos-documentales/{id}?tenant=` | Lo quita (no toca Google: el front borra antes el procesador con `/procesadores`). |
+
+Piden la llave de servicio **y** el JWT de la persona (HU11): leer los de otra organización es 403 `sin_acceso` y un id ajeno
+responde 404 igual que uno que no existe.
+
+**Dos personas editando lo mismo.** Cada tipo lleva una `revision`. Guardar exige la que se editó; si otra persona guardó antes,
+es un 409 `conflicto` con `revisionActual` y no se pisa nada. Crear con un id que ya existe —en esta organización o en
+otra— también es 409.
+
+**Ids.** Los inventa el cliente (`tipo-` + 32 hexadecimales). Tienen que ser únicos en TODAS las organizaciones, porque el
+clasificador es global y nombra cada categoría con el id.
+
+**Auditoría.** Crear, borrar, cambiar de estado y calibrar dejan `DOCUMENT_TYPE_CREATED`, `DOCUMENT_TYPE_DELETED`,
+`DOCUMENT_TYPE_STATE_CHANGED` y `DOCUMENT_TYPE_CALIBRATED`, con quién y de qué organización. Guardar a secas, no.
+
+### El clasificador sale de este registro
+
+`POST /procesadores/clasificador/sincronizar` **ya no recibe cuerpo**: arma las categorías con los tipos `activo` de TODAS las
+organizaciones, leídos del registro (antes los mandaba el navegador, y el último que sincronizaba pisaba a los demás). Por eso
+lo que cambia de estado hay que **guardarlo antes** de llamar. `POST /procesadores/clasificador/asegurar` compara lo que Google
+tiene (nombre y descripción de cada categoría) con el registro y sincroniza solo si difieren; el front lo llama una vez por
+sesión, antes de clasificar.
+
+### Procesadores huérfanos
+
+Al pasar el catálogo al servidor sin migrar lo de cada computadora, los extractores que esas pruebas crearon en Google quedaron
+sin dueño. `limpiar_procesadores_huerfanos.py` los lista (solo lectura) y, con `--borrar`, borra ÚNICAMENTE los que ningún tipo
+señala —ni como vigente, ni en su historial—, pidiendo escribir BORRAR. Nunca toca el clasificador, el extractor de INE del
+`.env` ni lo que no se llame `nexusdoc--…`. Se corre en el servidor (necesita las credenciales de Google y el almacén).
+
+### Límites conocidos
+
+- **No distingue roles**: quien opera en la organización lee y escribe sus tipos, como en llaves y webhooks. El catálogo de roles
+  de HU07 no tiene uno que configure; cuando lo haya, se exige aquí.
+- **`/procesadores/*` y `/ia/extraer` siguen sin comprobar la organización** (lo vio HU11): quien tiene la llave de servicio y un
+  `procesadorId` puede usarlo. Falta ligarlos al registro.
+- **Un tipo en edición sale del clasificador** (`crearNuevaVersion` lo pasa a `borrador`): mientras alguien edita el «INE» de su
+  organización, el clasificador deja de conocerlo en la siguiente sincronización. Es lo de siempre, pero ahora el clasificador es
+  de todos.
+- **El archivo crece con cada guardado** (cada uno escribe el tipo entero). Con el uso de hoy basta; el remedio es compactarlo o
+  la base.
+- **Los ejemplos subidos** (`/archivos`, bajo el prefijo de cada organización) que ya estaban en el almacén sin tipo que los
+  señale quedan ahí: no se borran.
+
+### Verificarlo
+
+```
+.venv/Scripts/python verificar_tipos_documentales.py
+```
+
+Offline: crear, ver desde otra persona, 409 por revisión, aislamiento, validación, orden, auditoría, clasificador sin cuerpo con
+los activos de las dos organizaciones, `asegurar`, y qué procesadores quedarían huérfanos.

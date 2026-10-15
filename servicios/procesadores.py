@@ -514,3 +514,34 @@ async def eliminar_procesador(procesador_id: str) -> None:
             # delete devuelve una Operation de v1; el poller pega a v1beta3,
             # que también la sirve — es el mismo espacio de operaciones.
             await _esperar_operacion(cliente, op["name"])
+
+
+async def listar_procesadores_nexusdoc() -> list[dict]:
+    """TODOS los procesadores del proyecto cuyo nombre visible empieza con `nexusdoc`: los extractores
+    (`nexusdoc--{id}--v{n}--{nombre}`) y el clasificador (`nexusdoc-clasificador`). Lectura pura: no cobra y no cambia nada.
+
+    Existe para la limpieza de procesadores huérfanos (`limpiar_procesadores_huerfanos.py`): Document AI no ofrece
+    filtro, así que se pagina `processors.list` completo."""
+    ruta = f"{_PADRE}/processors"
+    encontrados: list[dict] = []
+    token = ""
+    async with httpx.AsyncClient() as cliente:
+        while True:
+            params: dict[str, Any] = {"pageSize": 100}
+            if token:
+                params["pageToken"] = token
+            pagina = await _pedir(cliente, "GET", "v1", ruta, params=params)
+            for p in pagina.get("processors", []):
+                nombre = p.get("displayName", "")
+                if nombre.startswith("nexusdoc"):
+                    encontrados.append(
+                        {
+                            "id": p.get("name", "").split("/")[-1],
+                            "displayName": nombre,
+                            "tipo": p.get("type", ""),
+                            "creado": p.get("createTime", ""),
+                        }
+                    )
+            token = pagina.get("nextPageToken", "")
+            if not token:
+                return encontrados

@@ -58,6 +58,10 @@ TAGS = [
         "description": "Emitir, listar y revocar API Keys de cliente. Solo el front.",
     },
     {
+        "name": "Tipos documentales",
+        "description": "El catálogo de tipos documentales de cada organización. Solo el front.",
+    },
+    {
         "name": "Documentos",
         "description": "Ingesta, bandeja de preparación y pipeline documental.",
     },
@@ -383,6 +387,17 @@ from routers.procesadores import router as procesadores_router  # noqa: E402
 
 app.include_router(
     procesadores_router, prefix="/procesadores", dependencies=[Depends(exigir_llave)]
+)
+
+# Los tipos documentales de cada organización (la biblioteca de Configuración): antes vivían en el localStorage de cada
+# navegador. Como llaves y webhooks, piden la llave de servicio Y el JWT de la persona (HU11).
+from routers.tipos_documentales import router as tipos_documentales_router  # noqa: E402
+
+app.include_router(
+    tipos_documentales_router,
+    prefix="/tipos-documentales",
+    tags=["Tipos documentales"],
+    dependencies=[Depends(exigir_llave)],
 )
 
 # Archivos SÍ se registra siempre, a diferencia de Documentos: no depende de la
