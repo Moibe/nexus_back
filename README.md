@@ -1780,3 +1780,76 @@ traducción de errores.
 .venv/Scripts/python verificar_extraccion_generica.py  # listas, filas, ausentes, confianza
 .venv/Scripts/python verificar_procesadores.py         # rutas, activar con grupos, errores, memoria de la estructura
 ```
+
+## Documentos largos: extracción por bloques de páginas (2026-10-16)
+
+Document AI rechaza en línea un documento de **más de 15 páginas** («Document pages exceed the limit: 15 got 20») y un acta
+constitutiva ronda las 20. `POST /ia/extraer` ahora procesa esos documentos **por bloques de páginas** y une el resultado, hasta
+`EXTRACCION_MAX_PAGINAS` (20 por default). Un documento de 15 páginas o menos sigue como siempre: una sola llamada.
+
+**Lo que se midió contra Google antes de construirlo** (procesador de prueba, PDF de 20 páginas armado con el acta de 10 dos veces):
+
+- El rechazo llega en ~2 s, **no se cobra**, y trae cuántas páginas tiene el archivo:
+  `details[].metadata = {"page_limit": "15", "pages": "20"}` (`reason: PAGE_LIMIT_EXCEEDED`). No hace falta abrir el PDF ni una
+  librería para contar páginas.
+- `processOptions.individualPageSelector.pages` **esquiva el tope**: pidiendo solo las páginas 11 a 20 de un PDF de 20, Google
+  contestó bien y cobró diez.
+- `document.pages[].pageNumber` viene **absoluto** (11…20), pero las entidades apuntan **por índice** dentro de esa lista
+  (`pageRefs[].page` = 0…9, y Google omite `page` cuando es 0). `ia._pagina_de` traduce con la lista de páginas del bloque.
+- De punta a punta, por el camino del producto: 20 páginas en 13 s (los dos bloques corren a la vez), 21 páginas cobradas
+  (US$0.63), 117 campos, ninguno apuntando al renglón de OCR de otra página.
+
+**Cómo funciona** (`servicios/ia.py` orquesta; `servicios/bloques.py` es lógica pura, sin red):
+
+1. Se intenta el documento entero, como siempre. Si Google lo rechaza por largo, el rechazo dice cuántas páginas tiene.
+2. Más páginas que `EXTRACCION_MAX_PAGINAS` → 422 «El documento tiene 25 páginas y el máximo que se procesa es 20», **sin procesar
+   (ni cobrar) nada**.
+3. `planear_bloques`: el menor número de bloques, **parejos** (20 páginas con tope 15 son 11 + 10, no 15 + 5) y con **una página de
+   solape**: una cláusula o una fila de tabla que cruza el corte sale completa en alguno de los dos bloques.
+4. Cada bloque se pide con `individualPageSelector` (hasta 3 a la vez). Un bloque que falla por algo pasajero (`servicio`, `cuota`)
+   se repite **una** vez; lo que es del documento (`archivo_ilegible`) no. **Todo o nada**: si un bloque falla, falla la extracción
+   —entregar el documento sin un pedazo, callado, sería peor—, y los demás bloques se cancelan. Todo el trabajo tiene el tope de
+   `IA_TIMEOUT` (504 si no termina), por debajo de los 130 s que espera el front.
+5. Se unen los resultados como si el documento hubiera pasado entero: páginas del documento (no del bloque), una sola capa de OCR,
+   `ocr.page_count` = el total, y `bloque_indice` de cada campo reapuntado a esa capa.
+
+**Cómo se une** (las reglas, para que nadie las redescubra):
+
+- Un campo **único** que salió en varios bloques: gana la **mayor confianza** (empate: el bloque más temprano). Excepción: un valor
+  largo (30+ caracteres) en una página de solape que otro bloque trae completo —su texto lo contiene— se descarta: es el pedazo que
+  el borde del bloque le cortó a la cláusula.
+- Un campo **múltiple**: se concatenan las listas en el orden del documento, sin repetir lo que el solape mostró dos veces.
+- Un **grupo** múltiple: se concatenan las filas, y la fila que dos bloques vieron (la del solape) se une en una sola con las columnas
+  de los dos. «La misma entidad» = misma página, mismo texto y casi la misma caja (la caja no sale idéntica entre dos llamadas).
+- `_metadata.campos_ausentes` se calcula sobre lo ya unido, y `_metadata` agrega `paginas_totales`, `bloques` (`[{desde, hasta}]`) y
+  `paginas_procesadas` (lo que Google cobró: más que el total por las páginas del solape).
+
+**Por qué bloques GRANDES** (medido con el acta real de 10 páginas y el esquema plano de 24 campos): 2 bloques dieron **lo mismo** que el
+documento entero (16/24 exactos, campo por campo igual); 3 bloques de 4 páginas dieron 15/24. Un bloque que no trae el dato igual
+devuelve un candidato para el campo, y a veces con más confianza que el bueno (la confianza no separa lo bueno de lo malo): entre más
+bloques, más candidatos que se pelean un campo único. Por eso `EXTRACCION_PAGINAS_POR_BLOQUE` es 15, el máximo de Google: partir
+más chico no mejora nada y empeora lo que se une.
+
+**Configuración** (`.env`; los defaults sirven y no hay que tocar el del server):
+
+| Variable | Default | Qué hace |
+|---|---|---|
+| `EXTRACCION_MAX_PAGINAS` | 20 | lo más largo que se acepta (política de negocio acordada para las actas); mínimo 15 |
+| `EXTRACCION_PAGINAS_POR_BLOQUE` | 15 | tope de páginas de un bloque (15 es el de Google) |
+| `EXTRACCION_SOLAPE_PAGINAS` | 1 | páginas que cada bloque repite del anterior (cada una se cobra dos veces) |
+
+**Lo que NO cambia ni cubre:**
+
+- `POST /ia/ine` **no** parte nada (`permitir_bloques=False`): una credencial de 20 páginas no es una credencial, y no se paga por
+  procesarla. Responde 422 con los números de Google («tiene 20 páginas y el máximo es 15»).
+- La **clasificación** ya miraba solo las primeras 2 páginas (`PAGINAS_PARA_CLASIFICAR`), así que un acta larga se clasifica igual.
+- Un valor que cruza **tres** páginas sobre un corte puede salir partido (el solape de una página no alcanza para que un bloque lo vea
+  entero). Una tabla o una cláusula típica de acta no llega a eso.
+- La confianza sigue sin separar lo bueno de lo malo: lo que sale mal en un documento entero sale igual de mal por bloques.
+
+**Verificarlo** (sin red):
+
+```
+.venv/Scripts/python verificar_bloques.py            # partir y unir: 53 casos (planear: 150×15×5 combinaciones; filas, OCR)
+.venv/Scripts/python verificar_documentos_largos.py  # el flujo con un Google de mentiras: 66 casos (20 págs, solape, reintentos, tope, tiempo)
+```

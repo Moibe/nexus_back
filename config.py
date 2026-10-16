@@ -159,6 +159,23 @@ DOCAI_VERSION_CLASIFICADOR = os.getenv("DOCAI_VERSION_CLASIFICADOR", "")
 DOCAI_VERSION_INE = os.getenv("DOCAI_VERSION_INE", "")
 IA_TIMEOUT = _numero("IA_TIMEOUT", 120)
 
+# ── Documentos largos (más de 15 páginas) ─────────────────────────────────────
+# El procesamiento EN LÍNEA de Document AI rechaza un documento de más de 15 páginas ("Document pages exceed the limit: 15 got
+# 20"), y un acta constitutiva ronda las 20. Cuando eso pasa, la extracción se hace por BLOQUES de páginas y se unen los
+# resultados (servicios/bloques.py). Un documento de 15 páginas o menos nunca pasa por aquí.
+#
+# EXTRACCION_MAX_PAGINAS: lo más largo que se acepta. Por encima, se rechaza SIN procesar nada (ni cobrar) con el número de
+#   páginas en el mensaje. Es una política de negocio: 20 es lo que se acordó para las actas (2026-10-16); se sube aquí si
+#   algún día se aceptan más. Cada página extra cuesta lo mismo (US$0.03) y alarga el trabajo, no lo vuelve más arriesgado.
+#   No puede ser menor que 15, porque lo de 15 o menos ni siquiera llega a medirse.
+# EXTRACCION_PAGINAS_POR_BLOQUE: tope de páginas de un bloque (15 es lo que admite Google). Más chico = más bloques y más
+#   cortes, pero cada llamada ve menos páginas a la vez.
+# EXTRACCION_SOLAPE_PAGINAS: páginas que un bloque repite del anterior para que lo que cruza el corte salga completo en uno.
+#   Cada página repetida se cobra dos veces.
+EXTRACCION_MAX_PAGINAS = max(15, int(_numero("EXTRACCION_MAX_PAGINAS", 20)))
+EXTRACCION_PAGINAS_POR_BLOQUE = max(1, min(15, int(_numero("EXTRACCION_PAGINAS_POR_BLOQUE", 15))))
+EXTRACCION_SOLAPE_PAGINAS = max(0, int(_numero("EXTRACCION_SOLAPE_PAGINAS", 1)))
+
 # ── Límite de subida ──────────────────────────────────────────────────────────
 # En el server de CSI la API se expone IP:puerto directo, sin nginx delante (los
 # dominios y el proxy solo se usan en el droplet de DigitalOcean). O sea: no hay

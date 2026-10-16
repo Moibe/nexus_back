@@ -35,9 +35,11 @@ router = APIRouter()
 # pasarela; mezclarlos hacía que cualquier monitoreo por status code contara
 # archivos malos del usuario como caídas de Document AI.
 _POR_MOTIVO: dict[str, tuple[int, str]] = {
+    # Sin números solo cuando Google no los dijo; con ellos, `_fallar` escribe «El documento tiene 25 páginas y el máximo que
+    # se procesa es 20».
     "limite_paginas": (
         status.HTTP_422_UNPROCESSABLE_ENTITY,
-        "El documento excede el máximo de páginas que Document AI procesa en línea.",
+        "El documento excede el máximo de páginas que se puede procesar.",
     ),
     "archivo_ilegible": (
         status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -112,6 +114,9 @@ def _fallar(exc: Exception, generico: str) -> HTTPException:
         codigo, mensaje = _POR_MOTIVO.get(
             exc.motivo, (status.HTTP_502_BAD_GATEWAY, generico)
         )
+        if exc.motivo == "limite_paginas" and exc.paginas and exc.limite:
+            # Decir los números convierte «es muy largo» en algo que se puede arreglar: se sabe cuánto sobra.
+            mensaje = f"El documento tiene {exc.paginas} páginas y el máximo que se procesa es {exc.limite}."
         return HTTPException(status_code=codigo, detail=mensaje)
     if isinstance(exc, httpx.TimeoutException):
         # No llegó a haber respuesta: del otro lado el trabajo pudo terminar
@@ -178,7 +183,14 @@ async def extraer_ine(imagen: UploadFile = File(...)):
         "(`confianza_promedio`, `confianza_minima`, `ocr`, `_metadata` y un campo por dato "
         "encontrado), con una diferencia: aquí NO se aplica ninguna limpieza "
         "por nombre de campo — las de INE (quitar el punto de `estado`, partir "
-        "`fecha_registro`) solo tienen sentido en una credencial."
+        "`fecha_registro`) solo tienen sentido en una credencial. "
+        "DOCUMENTOS LARGOS: Document AI rechaza en línea más de 15 páginas, así "
+        "que un documento más largo (un acta constitutiva ronda las 20) se "
+        "procesa por bloques de páginas y se unen los resultados; la respuesta "
+        "tiene la misma forma, con las páginas del documento entero, y "
+        "`_metadata` agrega `paginas_totales`, `bloques` y `paginas_procesadas`. "
+        "Por encima de `EXTRACCION_MAX_PAGINAS` (20 por default) se responde 422 "
+        "sin procesar nada."
     ),
 )
 async def extraer_generico(
