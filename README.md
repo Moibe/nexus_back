@@ -1734,3 +1734,49 @@ señala —ni como vigente, ni en su historial—, pidiendo escribir BORRAR. Nun
 
 Offline: crear, ver desde otra persona, 409 por revisión, aislamiento, validación, orden, auditoría, clasificador sin cuerpo con
 los activos de las dos organizaciones, `asegurar`, y qué procesadores quedarían huérfanos.
+
+## Grupos de campos y forma del resultado de la extracción (2026-10-16)
+
+Pedido para las **actas constitutivas**: ahí un dato no es un valor suelto sino una *fila* de varios (un accionista = nombre +
+acciones + monto). Un campo de un tipo documental puede ser ahora un **grupo**:
+
+- **El esquema** (`servicios/esquema.py`, `esquema_desde_campos`): un campo con `tipoDato: "grupo"` y `subcampos: [...]` se declara
+  como lo declara Google en el procesador de INE para `domicilio`: la Property apunta por nombre a un EntityType auxiliar con
+  `baseTypes: ["object"]` y sus propias `properties`. Con `cardinalidad: "multiple"` la Property es `*_MULTIPLE` (una instancia por
+  fila). **Un solo nivel**: los subcampos son campos sueltos (no otro grupo). Un grupo sin subcampos no se puede declarar:
+  `POST /procesadores/activar` responde 422 con el nombre del grupo.
+- **El resultado** (`servicios/ia.py`, `_extraer_entidades`): antes el diccionario se llenaba por nombre y de varias entidades del
+  mismo tipo **solo sobrevivía la última** (de tres socios quedaba uno). Ahora un campo que el esquema declara múltiple sale
+  **siempre como lista** (aunque haya aparecido una vez), y un grupo múltiple como **lista de filas** con sus subcampos en el
+  orden del esquema (Google los devuelve en orden alfabético); un grupo único (domicilio) sigue siendo un diccionario. Un campo
+  único que llegó repetido se queda con la aparición de mayor confianza (antes, la última).
+- **Qué se repite y qué es obligatorio sale del esquema que el procesador tiene EN GOOGLE** (`procesadores.estructura_del_procesador`,
+  lectura que no cobra, con memoria de 5 minutos que `activar` invalida): la respuesta de Document AI no dice si un campo se repite.
+  Funciona igual para el procesador de INE. Si no se puede leer, la extracción sigue y aplana por lo que llegó.
+- **`_metadata.campos_ausentes`**: lo obligatorio que no salió, como rutas (`capital_social`; `accionistas` si el grupo
+  obligatorio no trae ninguna fila; `accionistas[2].nombre` si la fila 2 salió sin ese subcampo, que casi siempre es una instancia
+  espuria que el modelo sacó de otra parte del documento). Lista vacía = se revisó y no faltó nada; **sin la clave = no se pudo leer
+  el esquema** (no se sabe).
+
+Lo que se midió con un acta real de 10 páginas: un grupo entrega cada fila con sus datos **juntos** (cada accionista con SUS
+acciones y SU monto, que con listas paralelas salían desordenadas), pero el modelo también saca filas de más: una «accionista» de la
+cláusula del capital y ~30 «cargos» de todo el texto legal. Por eso se señalan en vez de esconderse.
+
+**Límites**: la confianza no distingue lo bueno de lo malo (ver `docs/` del front, medición del acta); una fila que cruza una
+página se parte en dos (el subcampo que cae en la otra página sale en otra fila); los subcampos no pueden ser lista ni grupo.
+
+### Un error que vale la pena recordar
+
+El 2026-10-15 el commit de «tipos documentales en el servidor» borró por accidente `POST /procesadores/activar` y el ayudante
+`_mensaje_para`: un parche cortó «todo lo que hay entre A y B» y entre A y B estaba la ruta. Se desplegó y la activación en dev dio
+«Method Not Allowed» hasta que se restauró (2026-10-16). Nada lo atrapó porque ninguna prueba tocaba esa ruta. Ahora
+`verificar_procesadores.py` vigila el **inventario de rutas** (si falta una, o sobra una, se pone en rojo), la activación y la
+traducción de errores.
+
+### Verificarlo
+
+```
+.venv/Scripts/python verificar_esquema.py              # el esquema con grupos y la lectura de su estructura
+.venv/Scripts/python verificar_extraccion_generica.py  # listas, filas, ausentes, confianza
+.venv/Scripts/python verificar_procesadores.py         # rutas, activar con grupos, errores, memoria de la estructura
+```
