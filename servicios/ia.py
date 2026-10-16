@@ -9,6 +9,7 @@ oficial `google-cloud-documentai`, para no arrastrar grpc y por consistencia con
 cómo ya se llamaba Document AI en el proyecto `document_ai`.
 """
 
+import asyncio
 import base64
 import logging
 import re
@@ -307,26 +308,123 @@ def _pagina_de(entidad: dict[str, Any]) -> int | None:
     return int(refs[0].get("page", 0)) + 1
 
 
+def _es_campo(valor: Any) -> bool:
+    """¿Es un campo hoja ya empaquetado por `_campo`? (y no un grupo, que es un diccionario de campos)."""
+    return isinstance(valor, dict) and "value_normalized" in valor and "metodo_confianza" in valor
+
+
+def _el_mejor(elementos: list[Any]) -> Any:
+    """De varias apariciones de un campo que el esquema declara ÚNICO, la de mayor confianza.
+
+    Antes se quedaba la ÚLTIMA, que era un accidente de cómo se llenaba el diccionario: un dato que el modelo encontró dos veces
+    (la fecha del encabezado y la de las firmas, por ejemplo) quedaba con el que apareciera después, no con el más seguro. En un
+    grupo único (un domicilio) no hay con qué comparar: se queda el primero."""
+    if len(elementos) == 1:
+        return elementos[0]
+    hojas = [e for e in elementos if _es_campo(e)]
+    if not hojas:
+        return elementos[0]
+    return max(hojas, key=lambda c: c["confianza"] if isinstance(c.get("confianza"), (int, float)) else -1.0)
+
+
 def _extraer_entidades(
-    entidades: list[dict[str, Any]], offsets_ocr: list[list[tuple[int, int]]]
+    entidades: list[dict[str, Any]],
+    offsets_ocr: list[list[tuple[int, int]]],
+    estructura: dict[str, dict] | None = None,
 ) -> dict[str, Any]:
     """Convierte las entidades de Document AI en un diccionario, CONSERVANDO la
     jerarquía: una entidad con sub-propiedades (ej. 'domicilio') queda como
     sub-diccionario de campos, para que no choquen llaves repetidas con el nivel
     raíz (ej. 'estado' dentro de domicilio vs. 'estado' suelto). Cada campo hoja
-    trae la forma de `entity_fact` — ver `_campo`."""
-    resultado: dict[str, Any] = {}
+    trae la forma de `entity_fact` — ver `_campo`.
+
+    Lo que se REPITE (2026-10-16). Antes el diccionario se llenaba por nombre, así
+    que de varias entidades del mismo tipo solo sobrevivía la última: de tres socios
+    quedaba uno. Ahora un campo que el esquema declara MÚLTIPLE sale SIEMPRE como
+    lista, aunque haya aparecido una sola vez, en el orden del documento:
+
+      - campo hoja múltiple  → `[campo, campo, …]`
+      - grupo múltiple       → `[{subcampo: campo, …}, {…}]`, una fila por instancia,
+                               con los subcampos en el orden del esquema (Google los
+                               devuelve en orden alfabético)
+      - campo o grupo único  → como siempre: un `campo` o un diccionario
+
+    `estructura` (`esquema.estructura_desde_esquema`) es lo que dice qué se repite: la
+    respuesta de Google no lo dice. Sin ella —no se pudo leer el esquema— se aplana
+    por lo que llegó: un tipo que aparece más de una vez es lista.
+    """
+    por_tipo: dict[str, list[dict[str, Any]]] = {}
     for entidad in entidades:
         nombre = entidad.get("type")
-        if not nombre:
+        if nombre:
+            por_tipo.setdefault(nombre, []).append(entidad)
+
+    resultado: dict[str, Any] = {}
+    for nombre, ocurrencias in por_tipo.items():
+        definicion = (estructura or {}).get(nombre)
+        multiple = definicion["multiple"] if definicion else len(ocurrencias) > 1
+        hijos_definidos = definicion.get("hijos") if definicion else None
+        elementos: list[Any] = []
+        for entidad in ocurrencias:
+            if entidad.get("properties"):
+                hijos = _extraer_entidades(entidad["properties"], offsets_ocr, hijos_definidos)
+                if hijos and multiple and hijos_definidos:
+                    # Una fila de una tabla: sus columnas en el orden del esquema, no en el alfabético de Google.
+                    hijos = {**{h: hijos[h] for h in hijos_definidos if h in hijos}, **{h: v for h, v in hijos.items() if h not in hijos_definidos}}
+                if hijos:
+                    elementos.append(hijos)
+            elif hijos_definidos:
+                continue  # un grupo sin ninguna hija no dice nada: no se vuelve un «campo» vacío
+            else:
+                campo = _campo(entidad, offsets_ocr)
+                if campo["value_normalized"] is not None:
+                    elementos.append(campo)
+        if not elementos:
             continue
-        if entidad.get("properties"):
-            resultado[nombre] = _extraer_entidades(entidad["properties"], offsets_ocr)
-        else:
-            campo = _campo(entidad, offsets_ocr)
-            if campo["value_normalized"] is not None:
-                resultado[nombre] = campo
+        resultado[nombre] = elementos if multiple else _el_mejor(elementos)
     return resultado
+
+
+def _campos_ausentes(estructura: dict[str, dict], datos: dict[str, Any]) -> list[str]:
+    """Lo OBLIGATORIO que el esquema pide y la extracción no trae.
+
+    Antes un campo que Document AI no devolvía simplemente no aparecía, y nada lo distinguía de un campo que nadie pidió. Es
+    una lista de rutas: `capital_social` (un campo que faltó), `accionistas` (un grupo obligatorio sin ninguna fila) o
+    `accionistas[2].nombre` (la fila 2 del grupo salió sin un subcampo obligatorio: casi siempre una instancia espuria que el
+    modelo sacó de otra parte del documento, y por eso se señala en vez de esconderla)."""
+    ausentes: list[str] = []
+    for nombre, definicion in estructura.items():
+        valor = datos.get(nombre)
+        if definicion["obligatorio"] and (valor is None or valor == []):
+            ausentes.append(nombre)
+            continue
+        hijos = definicion.get("hijos")
+        if not hijos or not valor:
+            continue
+        filas = valor if isinstance(valor, list) else [valor]
+        for i, fila in enumerate(filas, start=1):
+            for hijo, def_hijo in hijos.items():
+                if def_hijo["obligatorio"] and hijo not in fila:
+                    ausentes.append(f"{nombre}[{i}].{hijo}" if isinstance(valor, list) else f"{nombre}.{hijo}")
+    return ausentes
+
+
+async def _estructura_de(procesador_id: str) -> dict[str, dict] | None:
+    """La estructura del esquema del procesador (ver `procesadores.estructura_del_procesador`), o `None` si no se pudo leer.
+
+    Nunca levanta: sin ella la extracción sigue, solo que aplanando por lo que llegó y sin poder decir qué campo obligatorio
+    faltó. Fallar la extracción entera por no poder leer un dato accesorio sería peor que perder esa precisión."""
+    from servicios import procesadores  # import tardío: `procesadores` importa a este módulo
+
+    try:
+        return await procesadores.estructura_del_procesador(procesador_id) or None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "No se pudo leer la estructura del procesador %s; se aplana por lo que devolvió Document AI: %s",
+            procesador_id,
+            exc,
+        )
+        return None
 
 
 def _limpiar_ine(datos: dict[str, Any]) -> dict[str, Any]:
@@ -390,7 +488,8 @@ def _descomponer_anio_registro(datos: dict[str, Any]) -> dict[str, Any]:
 
 def _confianzas(datos: dict[str, Any]) -> list[float]:
     """Las `confianza` (escala 0-100) de TODOS los campos extraídos, recorriendo
-    también los anidados como 'domicilio'.
+    también los anidados como 'domicilio' y las listas (campos múltiples y filas de
+    grupos).
 
     Se recolectan ANTES de agregar la capa de OCR al resultado, a propósito: los
     bloques de OCR también traen `confianza`, y esa es la confianza de LECTURA,
@@ -400,21 +499,23 @@ def _confianzas(datos: dict[str, Any]) -> list[float]:
     con una lista de entidades vacía si la imagen no es legible)."""
     confianzas: list[float] = []
 
-    def recorrer(nodo: dict[str, Any]) -> None:
-        for valor in nodo.values():
-            if not isinstance(valor, dict):
-                continue
-            if "confianza" in valor:
+    def recorrer(nodo: Any) -> None:
+        if isinstance(nodo, list):
+            for elemento in nodo:
+                recorrer(elemento)
+        elif isinstance(nodo, dict):
+            if _es_campo(nodo):
                 # Se filtran los None: `_a_cien` devuelve None cuando Document AI
                 # omite `confidence` en una entidad, y en Python 3 comparar None
                 # con un float dentro de min() lanza TypeError. Eso convertiría
                 # una extracción PERFECTA en un 502 "No se pudo procesar la
                 # credencial" — el peor tipo de falla, porque el mensaje culpa al
                 # documento cuando el problema es nuestro.
-                if isinstance(valor["confianza"], (int, float)):
-                    confianzas.append(float(valor["confianza"]))
+                if isinstance(nodo.get("confianza"), (int, float)):
+                    confianzas.append(float(nodo["confianza"]))
             else:
-                recorrer(valor)
+                for valor in nodo.values():
+                    recorrer(valor)
 
     recorrer(datos)
     return confianzas
@@ -497,7 +598,12 @@ async def extraer_con_procesador(
     se creó el procesador — así que aquí no hay ninguna limpieza por nombre de
     campo; publica lo que Document AI haya encontrado.
     """
-    crudo = await _procesar(procesador_id, contenido, mime_type, version)
+    # La estructura del esquema (qué se repite, qué es obligatorio) se lee MIENTRAS Document AI procesa: casi siempre sale de
+    # la memoria, y la primera vez no alarga la extracción porque corren juntas.
+    crudo, estructura = await asyncio.gather(
+        _procesar(procesador_id, contenido, mime_type, version),
+        _estructura_de(procesador_id),
+    )
     procesado_en = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     metadata: dict[str, Any] = {
         "procesado_en": procesado_en,
@@ -519,7 +625,10 @@ async def extraer_con_procesador(
 
     capa_ocr, offsets_ocr = extraer_capa_ocr(crudo.get("document", {}), version or None)
 
-    datos = _extraer_entidades(entidades, offsets_ocr)
+    datos = _extraer_entidades(entidades, offsets_ocr, estructura)
+    if estructura:
+        # Solo cuando se pudo leer el esquema: sin él no se sabe qué era obligatorio, y una lista vacía diría «no faltó nada».
+        metadata["campos_ausentes"] = _campos_ausentes(estructura, datos)
     if transformar is not None:
         datos = transformar(datos)
     # El PROMEDIO va primero porque es el que la interfaz muestra; el mínimo

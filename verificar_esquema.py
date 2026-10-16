@@ -161,6 +161,204 @@ if raiz["displayName"] == "Póliza de seguro" and raiz["description"] == "Póliz
 else:
     mal("se perdió el nombre o la descripción del tipo")
 
+# ── Grupos de campos ─────────────────────────────────────────────────────────
+ACCIONISTAS = {
+    "nombre": "Accionistas",
+    "tipoDato": "grupo",
+    "descripcion": "Cada socio fundador con las acciones que suscribe.",
+    "obligatorio": True,
+    "cardinalidad": "multiple",
+    "subcampos": [
+        {"nombre": "Nombre", "tipoDato": "texto", "descripcion": "Nombre del socio.", "obligatorio": True},
+        {"nombre": "Número de acciones", "tipoDato": "numero", "obligatorio": True},
+        {"nombre": "Monto", "tipoDato": "moneda", "obligatorio": False},
+        {"nombre": "Fecha de ingreso", "tipoDato": "fecha"},
+    ],
+}
+
+caso("[9] Un grupo repetible: la Property apunta a un EntityType `object` con sus subcampos (el patrón de `domicilio` de INE)")
+e = esquema_desde_campos("Acta", "", [{"nombre": "Denominación", "tipoDato": "texto"}, ACCIONISTAS])
+raiz_props = {p["name"]: p for p in e["entityTypes"][0]["properties"]}
+aux = {t["name"]: t for t in e["entityTypes"][1:]}
+p = raiz_props.get("accionistas", {})
+if p.get("valueType") == "accionistas" and p.get("occurrenceType") == "REQUIRED_MULTIPLE":
+    ok("la Property `accionistas` apunta a su EntityType y es REQUIRED_MULTIPLE (obligatorio + múltiple)")
+else:
+    mal(f"Property del grupo: {p}")
+if p.get("description") == "Cada socio fundador con las acciones que suscribe.":
+    ok("la descripción del grupo viaja (es prompt, como la de cualquier campo)")
+else:
+    mal(f"descripción del grupo: {p.get('description')!r}")
+t = aux.get("accionistas", {})
+if t.get("baseTypes") == ["object"] and [h["name"] for h in t.get("properties", [])] == ["nombre", "numero_de_acciones", "monto", "fecha_de_ingreso"]:
+    ok("el EntityType auxiliar es `object` y trae los 4 subcampos, con nombres normalizados y en orden")
+else:
+    mal(f"EntityType del grupo: {t}")
+hijos = {h["name"]: h for h in t.get("properties", [])}
+esperado = {
+    "nombre": ("string", "REQUIRED_ONCE"),
+    "numero_de_acciones": ("number", "REQUIRED_ONCE"),
+    "monto": ("money", "OPTIONAL_ONCE"),
+    "fecha_de_ingreso": ("datetime", "OPTIONAL_ONCE"),
+}
+if all((hijos[n]["valueType"], hijos[n]["occurrenceType"]) == v for n, v in esperado.items()):
+    ok("cada subcampo con su valueType y su obligatoriedad; dentro de un grupo siempre «una vez» por instancia")
+else:
+    mal(f"subcampos: { {n: (h['valueType'], h['occurrenceType']) for n, h in hijos.items()} }")
+if hijos["nombre"]["description"] == "Nombre del socio." and hijos["monto"]["description"] == "":
+    ok("las descripciones de los subcampos también viajan (y vacío sigue siendo vacío)")
+else:
+    mal("descripciones de subcampos")
+if len(e["entityTypes"]) == 2:
+    ok("un solo EntityType auxiliar: ni de más ni de menos")
+else:
+    mal(f"{len(e['entityTypes']) - 1} auxiliares")
+
+caso("[10] Un grupo que aparece UNA vez (un domicilio) y el que no es obligatorio")
+e = esquema_desde_campos("T", "", [{**ACCIONISTAS, "nombre": "Domicilio", "cardinalidad": "unico", "obligatorio": False}])
+p = e["entityTypes"][0]["properties"][0]
+if p["occurrenceType"] == "OPTIONAL_ONCE" and p["valueType"] == "domicilio":
+    ok("único + opcional -> OPTIONAL_ONCE")
+else:
+    mal(f"quedó {p}")
+e = esquema_desde_campos("T", "", [{**ACCIONISTAS, "obligatorio": False}])
+if e["entityTypes"][0]["properties"][0]["occurrenceType"] == "OPTIONAL_MULTIPLE":
+    ok("múltiple + opcional -> OPTIONAL_MULTIPLE")
+else:
+    mal("múltiple + opcional")
+
+caso("[11] Un subcampo de tipo lista agrega su propio EntityType con `enumValues`, sin chocar con el de otro grupo")
+cargos = {
+    "nombre": "Cargos",
+    "tipoDato": "grupo",
+    "cardinalidad": "multiple",
+    "subcampos": [
+        {"nombre": "Tipo", "tipoDato": "lista", "valoresLista": ["Administrador", " Comisario ", "", "Apoderado"]},
+        {"nombre": "Nombre", "tipoDato": "texto"},
+    ],
+}
+otro = {**cargos, "nombre": "Representantes"}
+e = esquema_desde_campos("T", "", [cargos, otro])
+nombres_aux = [t["name"] for t in e["entityTypes"][1:]]
+if len(nombres_aux) == len(set(nombres_aux)) == 4:
+    ok(f"cuatro EntityTypes auxiliares, todos con nombre único: {nombres_aux}")
+else:
+    mal(f"auxiliares: {nombres_aux}")
+enum = next((t for t in e["entityTypes"] if t["name"] == "cargos_tipo_valores"), {})
+if enum.get("enumValues") == {"values": ["Administrador", "Comisario", "Apoderado"]}:
+    ok("los valores de la lista salen limpios (sin espacios ni vacíos)")
+else:
+    mal(f"enum: {enum}")
+tipo_hijo = next((h for h in next(t for t in e["entityTypes"] if t["name"] == "cargos")["properties"] if h["name"] == "tipo"), {})
+if tipo_hijo.get("valueType") == "cargos_tipo_valores":
+    ok("el subcampo apunta a SU enum")
+else:
+    mal(f"subcampo lista: {tipo_hijo}")
+
+caso("[12] Nombres: el mismo subcampo en dos grupos no choca; dos subcampos que normalizan igual sí se desambiguan")
+e = esquema_desde_campos(
+    "T",
+    "",
+    [
+        {"nombre": "Grupo A", "tipoDato": "grupo", "subcampos": [{"nombre": "Año"}, {"nombre": "ano"}, {"nombre": "Nombre"}]},
+        {"nombre": "Grupo B", "tipoDato": "grupo", "subcampos": [{"nombre": "Nombre"}]},
+        {"nombre": "Nombre", "tipoDato": "texto"},
+    ],
+)
+a = next(t for t in e["entityTypes"] if t["name"] == "grupo_a")
+nombres_a = [h["name"] for h in a["properties"]]
+if len(set(nombres_a)) == 3:
+    ok(f"subcampos únicos dentro del grupo: {nombres_a}")
+else:
+    mal(f"colisionaron: {nombres_a}")
+if [p["name"] for p in e["entityTypes"][0]["properties"]] == ["grupo_a", "grupo_b", "nombre"]:
+    ok("`nombre` puede existir en la raíz y dentro de cada grupo a la vez (las propiedades se acotan por tipo)")
+else:
+    mal([p["name"] for p in e["entityTypes"][0]["properties"]])
+
+caso("[13] Lo que NO se puede declarar se omite en vez de mandarle a Google un esquema inválido")
+e = esquema_desde_campos(
+    "T",
+    "",
+    [
+        {"nombre": "Vacío", "tipoDato": "grupo", "subcampos": []},
+        {"nombre": "Anidado", "tipoDato": "grupo", "subcampos": [{"nombre": "Otro grupo", "tipoDato": "grupo", "subcampos": [{"nombre": "x"}]}, {"nombre": "Bueno"}]},
+        {"nombre": "Suelto", "tipoDato": "texto"},
+    ],
+)
+raiz = [p["name"] for p in e["entityTypes"][0]["properties"]]
+if raiz == ["anidado", "suelto"]:
+    ok("el grupo sin subcampos se omite; el resto sigue")
+else:
+    mal(f"raíz: {raiz}")
+anidado = next(t for t in e["entityTypes"] if t["name"] == "anidado")
+if [h["name"] for h in anidado["properties"]] == ["bueno"]:
+    ok("un grupo dentro de un grupo se ignora (un solo nivel)")
+else:
+    mal(f"subcampos: {[h['name'] for h in anidado['properties']]}")
+
+caso("[14] Un esquema sin grupos sigue saliendo EXACTAMENTE igual que antes (ningún EntityType auxiliar de más)")
+e = esquema_desde_campos("T", "", [{"nombre": "A", "tipoDato": "texto"}, {"nombre": "B", "tipoDato": "lista", "valoresLista": ["x"]}])
+if [t["name"] for t in e["entityTypes"]] == ["custom_extraction_document_type", "b_valores"]:
+    ok("solo la raíz y el enum de la lista, como antes")
+else:
+    mal([t["name"] for t in e["entityTypes"]])
+
+caso("[15] La estructura que se lee de un esquema: qué es obligatorio, qué se repite y qué es grupo")
+from servicios.esquema import estructura_desde_esquema  # noqa: E402
+
+# El esquema REAL del procesador de INE (bajado de Google el 2026-10-16), recortado: un grupo único declarado a mano en la consola.
+ESQUEMA_INE = {
+    "entityTypes": [
+        {
+            "name": "custom_extraction_document_type",
+            "baseTypes": ["document"],
+            "properties": [
+                {"name": "curp", "valueType": "string", "occurrenceType": "REQUIRED_ONCE"},
+                {"name": "domicilio", "valueType": "domicilio", "occurrenceType": "REQUIRED_ONCE"},
+                {"name": "folio", "valueType": "number", "occurrenceType": "OPTIONAL_ONCE"},
+            ],
+        },
+        {
+            "name": "domicilio",
+            "baseTypes": ["object"],
+            "displayName": "domicilio",
+            "properties": [
+                {"name": "calle_numero", "valueType": "string", "occurrenceType": "REQUIRED_ONCE"},
+                {"name": "localidad", "valueType": "address", "occurrenceType": "OPTIONAL_ONCE"},
+            ],
+        },
+    ]
+}
+est = estructura_desde_esquema(ESQUEMA_INE)
+if est["curp"] == {"obligatorio": True, "multiple": False} and est["folio"] == {"obligatorio": False, "multiple": False}:
+    ok("campos sueltos: obligatorio y múltiple salen del occurrenceType")
+else:
+    mal(f"quedó: {est}")
+if est["domicilio"].get("hijos") == {"calle_numero": {"obligatorio": True, "multiple": False}, "localidad": {"obligatorio": False, "multiple": False}}:
+    ok("el `domicilio` de INE (un EntityType `object`) se reconoce como grupo, con sus hijas")
+else:
+    mal(f"domicilio: {est['domicilio']}")
+if list(est) == ["curp", "domicilio", "folio"]:
+    ok("en el orden del esquema")
+else:
+    mal(list(est))
+
+e = esquema_desde_campos("T", "", [{"nombre": "Nombre", "tipoDato": "texto", "obligatorio": True}, ACCIONISTAS, {"nombre": "Tipo", "tipoDato": "lista", "valoresLista": ["a"], "cardinalidad": "multiple"}])
+est = estructura_desde_esquema(e)
+if est["accionistas"]["multiple"] is True and est["accionistas"]["obligatorio"] is True and list(est["accionistas"]["hijos"]) == ["nombre", "numero_de_acciones", "monto", "fecha_de_ingreso"]:
+    ok("lo que genera `esquema_desde_campos` se lee de vuelta: ida y vuelta sin perder nada")
+else:
+    mal(f"accionistas: {est['accionistas']}")
+if "hijos" not in est["tipo"] and est["tipo"]["multiple"] is True:
+    ok("un campo `lista` (EntityType con enumValues, sin properties) NO se confunde con un grupo")
+else:
+    mal(f"tipo: {est['tipo']}")
+if estructura_desde_esquema({}) == {} and estructura_desde_esquema({"entityTypes": []}) == {}:
+    ok("un esquema vacío da estructura vacía, sin tronar")
+else:
+    mal("esquema vacío")
+
 print()
 print("=== FALLÓ ===" if fallas else "=== MAPEO VERIFICADO ===")
 raise SystemExit(1 if fallas else 0)

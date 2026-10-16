@@ -45,6 +45,7 @@ vez de crear uno nuevo — ver el docstring de esa función para el detalle.
 import asyncio
 import logging
 import re
+import time
 import unicodedata
 from typing import Any
 
@@ -56,7 +57,7 @@ from config import (
     DOCAI_PROJECT_ID,
     DOCAI_VERSION_CLASIFICADOR,
 )
-from servicios.esquema import esquema_clasificador_desde_tipos
+from servicios.esquema import esquema_clasificador_desde_tipos, estructura_desde_esquema
 from servicios.ia import SCOPES, _token  # misma credencial cacheada que /ia
 
 logger = logging.getLogger(__name__)
@@ -307,6 +308,9 @@ async def activar_tipo_documental(
                 "documentSchema": esquema,
             },
         )
+        # Un esquema nuevo (también el de un «Activar» repetido, que adopta el procesador y lo vuelve a subir) hace vieja la
+        # estructura que se tenía en memoria de este procesador.
+        _CACHE_ESTRUCTURA.pop(nombre_recurso.split("/")[-1], None)
 
         # Se relee el procesador para conocer su versión default REAL (la
         # foundation vigente al momento de crear), en vez de suponerla: es lo
@@ -474,6 +478,30 @@ async def consultar_esquema_clasificador() -> dict:
             for t in tipos
         ],
     }
+
+
+# La estructura de un procesador (qué es obligatorio, qué se repite, qué es grupo) solo cambia cuando se le sube un esquema
+# nuevo, y eso lo invalida `activar_tipo_documental`. El tiempo es la red de seguridad para lo que cambie por fuera (alguien
+# lo edita en la consola de Google): a lo más 5 minutos de estructura vieja.
+_CACHE_ESTRUCTURA: dict[str, tuple[float, dict]] = {}
+TTL_ESTRUCTURA_S = 300
+
+
+async def estructura_del_procesador(procesador_id: str) -> dict:
+    """La estructura (`esquema.estructura_desde_esquema`) del esquema que el procesador TIENE en Google, con memoria de 5 minutos.
+
+    Se lee del procesador y no del registro de tipos documentales a propósito: el esquema de Google es lo que el modelo usa de
+    verdad (un tipo en edición puede ir adelante de él), y sirve igual para el procesador de INE, que no tiene tipo en el
+    registro. Es lectura pura: no cobra y no modifica nada. Devuelve `{}` si el procesador no tiene esquema."""
+    ahora = time.monotonic()
+    guardada = _CACHE_ESTRUCTURA.get(procesador_id)
+    if guardada and ahora - guardada[0] < TTL_ESTRUCTURA_S:
+        return guardada[1]
+    async with httpx.AsyncClient() as cliente:
+        respuesta = await _pedir(cliente, "GET", "v1beta3", f"{_PADRE}/processors/{procesador_id}/dataset/datasetSchema")
+    estructura = estructura_desde_esquema(respuesta.get("documentSchema") or {})
+    _CACHE_ESTRUCTURA[procesador_id] = (ahora, estructura)
+    return estructura
 
 
 async def consultar_procesador(procesador_id: str) -> dict:

@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from servicios import tipos_documentales as registro_tipos
 from servicios.almacen import ErrorAlmacen
-from servicios.esquema import CATEGORIA_OTRO, esquema_clasificador_desde_tipos, esquema_desde_campos
+from servicios.esquema import CATEGORIA_OTRO, TIPO_GRUPO, esquema_clasificador_desde_tipos, esquema_desde_campos
 from servicios.procesadores import (
     DocumentAIError,
     activar_tipo_documental,
@@ -32,6 +32,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+class SubcampoEntrada(BaseModel):
+    """Un campo DENTRO de un grupo (accionista → nombre, acciones, monto). Mismo molde que un campo suelto, sin cardinalidad
+    (dentro de una fila cada subcampo aparece una vez) y sin poder ser, a su vez, otro grupo."""
+
+    nombre: str = Field(min_length=1, max_length=200)
+    tipoDato: str = "texto"
+    descripcion: str = ""
+    valorEstructura: str = ""
+    obligatorio: bool = False
+    valoresLista: list[str] = []
+
+
 class CampoEntrada(BaseModel):
     nombre: str = Field(min_length=1, max_length=200)
     tipoDato: str = "texto"
@@ -40,6 +52,8 @@ class CampoEntrada(BaseModel):
     obligatorio: bool = False
     cardinalidad: str = "unico"
     valoresLista: list[str] = []
+    # Solo con `tipoDato == "grupo"` (2026-10-16): los campos de cada fila. Un grupo sin ninguno no se puede activar.
+    subcampos: list[SubcampoEntrada] = []
 
 
 class TipoDocumentalEntrada(BaseModel):
@@ -52,6 +66,102 @@ class TipoDocumentalEntrada(BaseModel):
     # SIGUIENTE como procesador nuevo en vez de adoptar el vigente — ver
     # `activar_tipo_documental`.
     version: int = Field(default=0, ge=0)
+
+
+def _mensaje_para(exc: DocumentAIError, *, mensaje_4xx: str) -> str:
+    """Traduce un DocumentAIError al mensaje que ve el usuario.
+
+    El branch de 5xx SÍ es idéntico para activar y eliminar: en los dos casos
+    significa lo mismo ("Document AI no respondió; no es algo que se arregle
+    cambiando nada, solo reintentar"). El de 4xx NO puede compartirse: para
+    activar, un 4xx casi siempre es el esquema mal formado, y "revisa los
+    campos" es cierto y accionable. Para eliminar, un DELETE no tiene campos
+    que revisar — decir eso ahí sería tan confuso como el texto técnico crudo
+    que este mensaje existe para evitar. Cada endpoint manda SU frase.
+    """
+    if 400 <= exc.status_code < 500:
+        return mensaje_4xx
+    return "No se pudo contactar a Document AI en este momento. Intenta de nuevo en unos minutos."
+
+
+@router.post(
+    "/activar",
+    tags=["Procesadores"],
+    summary="Activar un tipo documental",
+    description=(
+        "Crea (o adopta, si un intento anterior ya lo dejó a medias) el Custom "
+        "Extractor de Document AI para la SIGUIENTE versión del tipo documental "
+        "(`version` + 1) y le sube el esquema armado desde sus campos. Una "
+        "versión nunca reutiliza el procesador de la anterior — esa se queda "
+        "viva sin tocarse. El procesador nace en modalidad zero-shot: extrae "
+        "leyendo solo el esquema, sin entrenamiento. Devuelve `procesadorId` y "
+        "`versionDefault`, que el front debe guardar junto al tipo — la versión "
+        "se fija en cada extracción para que el resultado sea reproducible — "
+        "más `procesadorDisplayName`, que es el nombre VISIBLE del procesador "
+        "en la consola de GCP (algo como `nexusdoc--tipo-abc--v2--ine`): sirve "
+        "para que una persona pueda casar el tipo documental de NexusDoc con "
+        "el procesador que ve en Document AI."
+    ),
+)
+async def activar(tipo: TipoDocumentalEntrada):
+    # Sin campos no hay nada que extraer: un procesador con esquema vacío se
+    # crearía bien y fallaría después, en la primera extracción, lejos de la
+    # causa. Mejor el error aquí, donde todavía se llama por su nombre.
+    if not tipo.campos:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El tipo documental no tiene campos de extracción; agrega al menos uno antes de activar.",
+        )
+
+    # Un grupo es un campo que trae campos: sin ninguno, o con otro grupo adentro, no hay un esquema válido que armar. Se dice
+    # aquí, con el nombre del grupo, y no se deja que el generador lo omita en silencio (el tipo se activaría sin ese dato).
+    for campo in tipo.campos:
+        if campo.tipoDato != TIPO_GRUPO:
+            continue
+        if not campo.subcampos:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"El grupo «{campo.nombre}» no tiene campos; agrega al menos uno antes de activar.",
+            )
+        if any(sub.tipoDato == TIPO_GRUPO for sub in campo.subcampos):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"El grupo «{campo.nombre}» tiene un grupo adentro; los grupos solo pueden tener campos sueltos.",
+            )
+
+    esquema = esquema_desde_campos(
+        tipo.nombre, tipo.descripcion, [c.model_dump() for c in tipo.campos]
+    )
+    try:
+        resultado = await activar_tipo_documental(tipo.id, tipo.nombre, esquema, tipo.version)
+    except DocumentAIError as exc:
+        # El texto técnico completo (status HTTP, ruta, el JSON de error de
+        # Google) va al log, no al usuario: un "Invalid JSON payload received
+        # at process_options.schema_override..." no le dice nada a quien está
+        # configurando un tipo documental, y en el peor caso expone detalles
+        # internos (nombres de recurso de GCP) sin necesidad.
+        logger.exception("Falló la activación del tipo %s", tipo.id)
+        mensaje = _mensaje_para(
+            exc,
+            mensaje_4xx=(
+                "Document AI rechazó la configuración de este modelo. Revisa "
+                "los nombres y tipos de los campos, y vuelve a intentar la "
+                "activación."
+            ),
+        )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=mensaje) from exc
+    except RuntimeError as exc:
+        # Fallas que NO vienen de una respuesta HTTP de Google (falta
+        # DOCAI_PROJECT_ID en el .env, o el polling de la operación se agotó a
+        # los 90s): no hay un status code que triar, así que van a un mensaje
+        # genérico pero honesto — nunca el texto técnico crudo.
+        logger.exception("Falló la activación del tipo %s", tipo.id)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="No se pudo completar la activación. Intenta de nuevo; si el problema persiste, avisa al equipo técnico.",
+        ) from exc
+
+    return resultado
 
 
 def _tipos_activos() -> list[dict]:
