@@ -149,14 +149,14 @@ def main() -> int:
     rutas = c.get("/openapi-interno.json").json()["paths"]
     probadas, abiertas = 0, []
     for ruta, metodos in rutas.items():
-        if not ruta.startswith(("/ia/", "/procesadores/", "/archivos/", "/llaves/")):
+        if not ruta.startswith(("/ia/", "/procesadores/", "/archivos/", "/llaves/", "/esquema/")):
             continue
         for metodo in metodos:
             probadas += 1
             rr = c.request(metodo.upper(), ruta.replace("{", "x").replace("}", ""), headers=cliente)
             if rr.status_code != 401:
                 abiertas.append(f"{metodo.upper()} {ruta} -> {rr.status_code}")
-    rev(f"ninguna de las {probadas} rutas de /ia, /procesadores, /archivos y /llaves la acepta",
+    rev(f"ninguna de las {probadas} rutas de /ia, /procesadores, /archivos, /llaves y /esquema la acepta",
         probadas >= 5 and not abiertas, f"probadas={probadas}; " + "; ".join(abiertas))
 
     titulo("7 · Llaves falsas o alteradas: 401")

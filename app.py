@@ -508,6 +508,35 @@ else:
         )
         DOCUMENTOS_DISPONIBLE = True
 
+    # Esquema (inventario de tablas) va DENTRO de este mismo bloque y no
+    # arriba con los demás routers, porque arrastra pyodbc por la misma cadena
+    # que documentos: routers.esquema → repositorios.esquema → db.sqlserver.
+    # Registrarlo afuera reintroduciría justo el fallo que el try/except de
+    # aquí evita — un SO sin runtime de ODBC tumbaría la API COMPLETA — y
+    # además publicaría en Swagger un endpoint que, sin SQLSERVER_HOST, solo
+    # sabe responder error.
+    #
+    # Lo consume Nexus Monitor (su pantalla de Tablas). Es de solo lectura y
+    # no devuelve datos de negocio: nombres de tabla y conteos, nada más.
+    try:
+        from routers.esquema import router as esquema_router  # noqa: E402
+    except ImportError as exc:
+        _raiz = (exc.name or "").split(".")[0]
+        if _raiz != "pyodbc" and "odbc" not in str(exc).lower():
+            raise
+        logger.warning(
+            "No se pudo importar el router de esquema: falta el runtime de "
+            "ODBC en este SO (%s). La API arranca SIN /esquema/*.",
+            exc,
+        )
+    else:
+        app.include_router(
+            esquema_router,
+            prefix="/esquema",
+            tags=["Esquema"],
+            dependencies=[Depends(exigir_llave)],
+        )
+
 
 # Al final, con todos los routers ya incluidos: la documentación pública se
 # deriva del esquema completo.
