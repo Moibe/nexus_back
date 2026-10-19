@@ -265,12 +265,6 @@ try:
         rev(f"{debil!r}: 400 reglas, y dice qué falta ({falta})", r.status_code == 400 and det["codigo"] == "reglas" and falta in det.get("faltan", []), r.text)
     rev("el mensaje de reglas es el del Figma", det["mensaje"] == "La contraseña no cumple con el formato requerido; por favor intenta de nuevo.")
     rev("y tras tantos errores el enlace SIGUE sirviendo (un typo no lo quema)", revisar(tok).status_code == 200)
-    # HU04 CA-3: lo que cumple las cinco reglas pero es obvio tampoco gasta el enlace.
-    for obvia in ("Password-Zorro-2026!", "Contraseña-Zorro-2026!", "Qwerty-Zorro-2026!!"):
-        r = confirmar(tok, obvia)
-        det = r.json()["detail"]
-        rev(f"{obvia!r}: 400 contrasena_debil con su mensaje", r.status_code == 400 and det["codigo"] == "contrasena_debil" and "fácil de adivinar" in det["mensaje"], r.text)
-    rev("y el enlace SIGUE sirviendo tras las contraseñas obvias", revisar(tok).status_code == 200)
 
     titulo("9 · CA-6 y CA-7: se restablece, se gasta el enlace y mueren las sesiones")
     # Dos sesiones abiertas ANTES del restablecimiento.

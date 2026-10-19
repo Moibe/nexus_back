@@ -175,48 +175,13 @@ try:
     rev("el refresh de la sesión anterior ya no sirve", r.status_code == 401 and r.json()["detail"]["codigo"] == "sesion_invalida")
     rev("la temporal ya no entra", login(c, "admin@ejemplo.com", temporal).status_code == 401)
 
-    titulo("3b · HU04 CA-3: la contraseña no puede contener el usuario ni palabras comunes; CA-5: el primer acceso deja FIRST_LOGIN_PASSWORD_CHANGED")
-    JUAN = ("juan.perez@ejemplo.com", ("Juan", "Pérez Hernández"))
-    casos_rechazados = [
-        ("el nombre de usuario (la parte del correo), ignorando separadores", "Juan-Perez-2026!zz", JUAN, "usuario"),
-        ("el nombre de usuario en medio de otros caracteres", "xJuanPerezx-9!Ab", JUAN, "usuario"),
-        ("el nombre de pila de la persona, sin acentos ni mayúsculas", "Zz-JUAN-vuela-91!", JUAN, "usuario"),
-        ("un apellido, aunque la contraseña no lo acentúe", "Hernandez#2026-zz!", JUAN, "usuario"),
-        ("el nombre de usuario escrito con números en vez de letras", "J04n.P3r3z-77!Qq", JUAN, "usuario"),
-        ("«password»", "Password123!Xy", JUAN, "comun"),
-        ("«password» con símbolos en vez de letras", "P@ssw0rd-2026!Zz", JUAN, "comun"),
-        ("«contraseña» (la palabra más común en español)", "Contraseña2026!Aa", JUAN, "comun"),
-        ("«contrasena» sin la ñ", "Nueva-Contrasena-123!", JUAN, "comun"),
-        ("una secuencia de teclado", "Qwerty-Rojo-99!Zz", JUAN, "comun"),
-        ("«bienvenido»", "Bienvenido#2026-Zz", JUAN, "comun"),
-        ("el nombre del producto", "NexusDoc-Azul-2026!", JUAN, "comun"),
-        ("«admin»", "Zz-Admin-Azul-2026!", JUAN, "comun"),
-        ("una secuencia numérica", "Zq!12345-vuela-Xy", JUAN, "comun"),
-    ]
-    for descripcion, clave, (correo_c, nombres_c), esperado in casos_rechazados:
-        rev(f"se rechaza una contraseña con {descripcion}: {esperado}", auth.contrasena_obvia(clave, correo_c, nombres_c) == esperado, f"{clave!r} -> {auth.contrasena_obvia(clave, correo_c, nombres_c)!r}")
-    casos_buenos = [
-        ("una frase larga sin nada de lo anterior", "Zorro-Azul-Veloz-47!", JUAN),
-        ("caracteres al azar", "Xk9!pL2@vN7#qR4$wT", JUAN),
-        ("palabras corrientes que no son de las comunes", "Mesa.Roja.Cielo.2026#", JUAN),
-        ("un usuario de menos de 4 letras NO bloquea palabras que lo contienen (no hay falsos positivos con «ana»)", "Banana-Verde-2026!Zz", ("ana@ejemplo.com", ("Ana", "Ruiz"))),
-    ]
-    for descripcion, clave, (correo_c, nombres_c) in casos_buenos:
-        rev(f"se acepta {descripcion}", auth.contrasena_obvia(clave, correo_c, nombres_c) is None, f"{clave!r} -> {auth.contrasena_obvia(clave, correo_c, nombres_c)!r}")
-    rev("sin correo ni nombres solo mira las palabras comunes", auth.contrasena_obvia("Zorro-Azul-Veloz-47!") is None and auth.contrasena_obvia("Password123!Xy") == "comun")
-
-    # Por HTTP: un primer acceso con una contraseña obvia se rechaza SIN cambiar nada y sin dejar evento.
+    titulo("3b · HU04 CA-5: el primer acceso deja FIRST_LOGIN_PASSWORD_CHANGED")
+    # Aquí estaba también CA-3 (rechazar contraseñas con el usuario o palabras comunes). Se quitó el 2026-10-19 a pedido
+    # de Moibe: el medidor decía «Muy segura» de contraseñas que el servidor luego rechazaba. Ver el README.
     vera = usuarios.bootstrap_admin("vera.lopez@ejemplo.com", "Vera", "Lopez Cuatro", auth.hash_de("Temporal-Larga-123!"))
     sesion_vera = login(c, "vera.lopez@ejemplo.com", "Temporal-Larga-123!").json()
     bearer_vera = {**srv(), "Authorization": f"Bearer {sesion_vera['accessToken']}"}
     primeros_antes = len(eventos_de_auditoria("FIRST_LOGIN_PASSWORD_CHANGED"))
-    for descripcion, clave in (("el usuario", "Vera.Lopez-2026-Zz!"), ("una palabra común", "Password-2026-Zorro!")):
-        r = c.post("/auth/contrasena", json={"nueva": clave, "confirmacion": clave}, headers=bearer_vera)
-        rev(f"primer acceso con {descripcion}: 400 contrasena_debil, con el mensaje",
-            r.status_code == 400 and r.json()["detail"]["codigo"] == "contrasena_debil" and "fácil de adivinar" in r.json()["detail"]["mensaje"], r.text[:200])
-    rev("y no cambió nada: sigue pendiente, su sesión viva y sin evento",
-        usuarios.para_login("vera.lopez@ejemplo.com")["debeCambiarContrasena"] is True and login(c, "vera.lopez@ejemplo.com", "Temporal-Larga-123!").status_code == 200
-        and len(eventos_de_auditoria("FIRST_LOGIN_PASSWORD_CHANGED")) == primeros_antes)
     r = c.post("/auth/contrasena", json={"nueva": "Cobre-Lento-Azul-77!", "confirmacion": "Cobre-Lento-Azul-77!"}, headers=bearer_vera)
     rev("con una contraseña buena: 200 FIRST_LOGIN", r.status_code == 200 and r.json()["motivo"] == "FIRST_LOGIN", r.text[:200])
     primeros = eventos_de_auditoria("FIRST_LOGIN_PASSWORD_CHANGED")

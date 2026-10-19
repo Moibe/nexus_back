@@ -1030,21 +1030,19 @@ front, que pone las cookies httpOnly `nx_acceso` y `nx_refresh`):
 | `GET /auth/sesion` | ¿sigue viva la sesión de este JWT? (HU05, 2ª etapa). 200 con `estado`: `viva`, `cerrada` (se cerró o nunca existió), `desactivada` o `inexistente`; un 401 o 503 quiere decir que NO se pudo contestar. Lo consulta el guard del front, una vez cada pocos segundos por sesión abierta. |
 | `POST /auth/contrasena` | primer acceso: `nueva` + `confirmacion` (cierra todas las sesiones); después: también `actual`. Reglas: 12 caracteres, mayúscula, minúscula, número, carácter especial. |
 
-**La contraseña (HU04 CA-3, 2026-10-14).** Además de las cinco reglas de los
-chips (12 caracteres, mayúscula, minúscula, número, carácter especial: 400
-`reglas`, con `faltan`), una contraseña que las cumple se rechaza si es
-**obvia**: 400 `contrasena_debil` (con `motivo`: `usuario` o `comun`) cuando
-contiene el nombre de usuario (la parte del correo antes de la `@`), el nombre
-o un apellido de la persona, o una de las `PALABRAS_COMUNES` de
-`servicios/auth.py` (`password`, `contrasena`, `qwerty`, `12345`, `bienvenido`,
-`nexusdoc`…). Se busca DENTRO de la contraseña, sin acentos, sin mayúsculas y
-sin separadores (`Juan-Perez` contiene `juan.perez`), y también con símbolos en
-vez de letras (`P@ssw0rd`, `J0an`). Un nombre de menos de 4 letras no se busca
-(«ana» está dentro de «banana») y la lista es corta a propósito: no es un
-diccionario entero. Lo mismo vale al elegir la contraseña con el enlace de
-recuperación, **antes de gastarlo** (un typo no lo quema). Es
-`auth.contrasena_obvia`; se prueba en `verificar_auth.py` 3b y
-`verificar_recuperacion.py`. El primer acceso deja el evento
+**La contraseña (HU04 CA-3).** Solo se exigen las cinco reglas de los chips (12
+caracteres, mayúscula, minúscula, número, carácter especial): 400 `reglas`, con
+`faltan`. **No hay regla de «contraseña obvia»**: ni palabras comunes, ni el
+nombre o el correo de la persona, ni secuencias como `abcde` o `12345`. Existió
+del 2026-10-14 al 2026-10-19 (`auth.contrasena_obvia`, 400 `contrasena_debil`) y
+se QUITÓ a pedido de Moibe: el medidor del front solo cuenta las cinco reglas y
+decía «Muy segura» de contraseñas como `Abcdef@182182`, que el servidor luego
+rechazaba al final, y la lista de palabras era corta y fácil de esquivar
+(`Bcdefg@182182` pasaba). El criterio de HU04 pedía "no contenga el nombre de
+usuario ni palabras comunes de diccionario"; hoy eso NO se cumple, y
+`Password123!` es una contraseña válida. Si se vuelve a pedir, que el front y el
+back apliquen LA MISMA regla, para que el medidor no prometa lo que el servidor
+rechaza. El primer acceso deja el evento
 `FIRST_LOGIN_PASSWORD_CHANGED` (HU04 CA-5: la persona, la sesión desde la que
 se cambió y cuántas sesiones se cerraron; nunca la contraseña ni su hash).
 

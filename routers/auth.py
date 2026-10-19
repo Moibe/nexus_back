@@ -423,18 +423,6 @@ def _auditar_perfil(usuario_guid: str, sesion_guid: str, campos: list[str]) -> N
         logger.warning("No se pudo registrar el PROFILE_UPDATED en la bitácora de auditoría: %s", exc)
 
 
-MENSAJE_CONTRASENA_DEBIL = "La contraseña es demasiado fácil de adivinar: no uses tu correo, tu nombre ni palabras comunes."
-
-
-def _contrasena_debil(contrasena: str, u: dict) -> HTTPException | None:
-    """El error 400 `contrasena_debil` si la contraseña lleva el usuario o una palabra común (HU04 CA-3), o `None`.
-    Va después de las cinco reglas de los chips. `motivo` dice cuál fue (`usuario` o `comun`)."""
-    motivo = auth.contrasena_obvia(contrasena, u["email"], (u.get("nombre") or "", u.get("apellidos") or ""))
-    if motivo is None:
-        return None
-    return _error(status.HTTP_400_BAD_REQUEST, "contrasena_debil", MENSAJE_CONTRASENA_DEBIL, motivo=motivo)
-
-
 def _auditar_cambio_de_contrasena(accion: str, usuario_guid: str, sesion_guid: str, **datos) -> None:
     """Deja `PASSWORD_CHANGED` (HU13 CA-4: cambio desde una sesión) o `FIRST_LOGIN_PASSWORD_CHANGED` (HU04 CA-5: la
     definitiva del primer acceso). Va DESPUÉS del cambio y sin poder romperlo: la contraseña ya cambió y las sesiones ya
@@ -580,9 +568,6 @@ def cambiar_contrasena(datos: CambioContrasena, authorization: str | None = Head
     faltan = auth.reglas_incumplidas(datos.nueva)
     if faltan:
         raise _error(status.HTTP_400_BAD_REQUEST, "reglas", "La contraseña no cumple las reglas de seguridad.", faltan=faltan)
-    debil = _contrasena_debil(datos.nueva, u)
-    if debil:
-        raise debil
     try:
         completo = usuarios.para_login(u["email"])
         if completo is None:
@@ -764,10 +749,6 @@ def confirmar_recuperacion(datos: ConfirmacionRecuperacion, response: Response) 
     origen = (datos.origen or "").strip() or None
     try:
         _, u = _validar_enlace(datos.token)
-        # Tampoco debe gastar el enlace una contraseña que lleva el usuario o una palabra común (HU04 CA-3).
-        debil = _contrasena_debil(datos.nueva, u)
-        if debil:
-            raise debil
         # AHORA sí se gasta. Es atómico: con dos clics, uno gana y el otro
         # recibe `enlace_usado`.
         try:

@@ -20,7 +20,6 @@ que sí decide este módulo:
 import hashlib
 import secrets
 import string
-import unicodedata
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -67,74 +66,6 @@ def reglas_incumplidas(contrasena: str) -> list[str]:
     if not any(c in _ESPECIALES for c in contrasena):
         faltan.append("Carácter especial")
     return faltan
-
-
-# ── Contraseñas obvias (HU04 CA-3) ──────────────────────────────────────────
-#
-# Además de las cinco reglas de los chips, el criterio pide que la contraseña "no contenga el nombre de usuario ni
-# palabras comunes de diccionario". Las cinco reglas dejan pasar "Password123!" o "Contraseña2026!": cumplen todo y
-# son de las primeras que se prueban.
-#
-# "Palabras comunes" aquí NO es un diccionario entero (rechazaría contraseñas largas y buenas por llevar «mesa»): es una
-# lista corta de las contraseñas y raíces más usadas en español y en inglés, más el nombre del producto. Se busca DENTRO de
-# la contraseña, sin acentos, sin mayúsculas y sin separadores, y también con los cambios de letras por símbolos de siempre
-# (`P@ssw0rd`). Una palabra de menos de 5 caracteres no está en la lista a propósito: daría falsos positivos.
-PALABRAS_COMUNES = frozenset(
-    {
-        # las contraseñas y raíces más usadas, en español y en inglés
-        "password", "passwd", "contrasena", "contrasenia", "clave", "claves", "secreto", "secret", "temporal",
-        "changeme", "cambiame", "default", "welcome", "bienvenido", "bienvenida", "letmein", "iloveyou", "teamo",
-        # cuentas y nombres de usuario típicos
-        "admin", "administrador", "administrator", "usuario", "invitado", "guest", "login",
-        # secuencias de teclado y de números
-        "qwerty", "qwertyuiop", "azerty", "asdfg", "asdfgh", "zxcvb", "zxcvbn", "abcde", "abc123", "12345", "123456",
-        "654321", "111111", "000000",
-        # palabras que la gente usa por cariño o por costumbre
-        "monkey", "dragon", "master", "shadow", "sunshine", "princess", "princesa", "superman", "batman", "football",
-        "futbol", "soccer", "baseball", "michael", "jordan", "charlie", "freedom", "whatever", "starwars", "computer",
-        "computadora", "internet", "summer", "winter", "verano", "invierno", "flower", "mariposa", "estrella",
-        "corazon", "familia", "amigos", "amistad", "dinero", "trustno", "america", "mexico", "colombia", "argentina",
-        "chivas", "pumas", "barcelona", "realmadrid",
-        # el producto y la empresa
-        "nexusdoc", "grupocsi",
-    }
-)
-
-# Letras que se escriben como símbolo: `P@ssw0rd`, `Adm1n`, `$ecreto`.
-_COMO_LETRAS = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s", "!": "i"})
-# Menos de esto, el nombre de usuario o de la persona no se busca en la contraseña: «ana» está dentro de «banana».
-LARGO_MINIMO_NOMBRE = 4
-
-
-def _sin_acentos(texto: str) -> str:
-    return unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii").lower()
-
-
-def _alfanumerico(texto: str) -> str:
-    return "".join(c for c in _sin_acentos(texto) if c.isalnum())
-
-
-def contrasena_obvia(contrasena: str, correo: str = "", nombres: tuple[str, ...] | list[str] = ()) -> str | None:
-    """Por qué esta contraseña es demasiado fácil de adivinar, o `None` si no lo es (HU04 CA-3).
-
-    - `"usuario"`: contiene el nombre de usuario (la parte del correo antes de la `@`) o el nombre o un apellido de la
-      persona (`nombres`, cada palabra suelta). Se compara sin acentos, sin mayúsculas, sin separadores
-      (`Juan-Perez` contiene `juan.perez`) y también con los símbolos por letras (`J0an`).
-    - `"comun"`: contiene una de las `PALABRAS_COMUNES`.
-
-    No mira las cinco reglas de los chips (`reglas_incumplidas`): se llama DESPUÉS de ellas."""
-    plana = _alfanumerico(contrasena)
-    como_letras = "".join(c for c in _sin_acentos(contrasena).translate(_COMO_LETRAS) if c.isalnum())
-    propios = {_alfanumerico(correo.split("@", 1)[0])}
-    for nombre in nombres:
-        propios.update(_alfanumerico(parte) for parte in nombre.split())
-    for propio in propios:
-        if len(propio) >= LARGO_MINIMO_NOMBRE and (propio in plana or propio in como_letras):
-            return "usuario"
-    for palabra in PALABRAS_COMUNES:
-        if palabra in plana or palabra in como_letras:
-            return "comun"
-    return None
 
 
 def contrasena_temporal() -> str:
