@@ -400,6 +400,17 @@ app.include_router(
     dependencies=[Depends(exigir_llave)],
 )
 
+# Los procesos de cada organización (el motor de reglas: tipos documentales como entradas y operadores como reglas). Aquí solo se
+# GUARDA el dibujo del lienzo; no hay motor que los corra todavía. Como los tipos documentales: llave de servicio Y JWT (HU11).
+from routers.procesos import router as procesos_router  # noqa: E402
+
+app.include_router(
+    procesos_router,
+    prefix="/procesos",
+    tags=["Procesos"],
+    dependencies=[Depends(exigir_llave)],
+)
+
 # Archivos SÍ se registra siempre, a diferencia de Documentos: no depende de la
 # base, solo del almacén. Si `ALMACEN_RUTA` está vacía el endpoint responde un
 # 503 que NOMBRA la variable que falta — más útil que esconder la ruta y dejar

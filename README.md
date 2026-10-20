@@ -1733,6 +1733,51 @@ señala —ni como vigente, ni en su historial—, pidiendo escribir BORRAR. Nun
 Offline: crear, ver desde otra persona, 409 por revisión, aislamiento, validación, orden, auditoría, clasificador sin cuerpo con
 los activos de las dos organizaciones, `asegurar`, y qué procesadores quedarían huérfanos.
 
+## Procesos: el motor de reglas guarda su dibujo, por organización (2026-10-20)
+
+Un **proceso** es un conjunto de reglas y corre sobre un **expediente** (un conjunto de documentos). Se arma en un lienzo del front:
+los tipos documentales de la organización son sus entradas, las reglas son operadores (igual, distinto, contiene, mayor, menor, y,
+o, no) y los cables llevan un campo de un documento a la entrada de un operador, o el resultado de una regla a otra. Aquí solo se
+**guarda ese dibujo**: `servicios/procesos.py` (registro provisional, `procesos.jsonl` dentro de `.registro/`) y `routers/procesos.py`.
+**Todavía no hay un motor que corra los procesos sobre un expediente de verdad**: el back no interpreta las reglas, solo
+comprueba que el dibujo esté entero.
+
+| Ruta | Qué hace |
+|---|---|
+| `GET /procesos/?tenant=` | Los procesos de la organización, en el orden de su creación. |
+| `PUT /procesos/{id}` | Crea (`revision: 0`) o guarda (`revision: n`) el proceso completo. |
+| `DELETE /procesos/{id}?tenant=` | Lo quita. |
+
+Piden la llave de servicio **y** el JWT de la persona (HU11), igual que los tipos documentales: leer los de otra organización es 403
+`sin_acceso` y un id ajeno responde 404 igual que uno que no existe. Crear con un id que ya existe —en esta organización o en otra—
+es 409; **dos personas editando lo mismo**: guardar exige la `revision` que se editó y, si otra persona guardó antes, es un 409
+`conflicto` con `revisionActual`, sin pisar nada.
+
+**Qué es un proceso guardado:** `nombre` (hasta 200), `descripcion`, `nodos` y `aristas`. Cada nodo es `{id, type, position, data}`
+con `type` `tipo-documental` (`data.tipoId`) u `operador` (`data.operador` y los valores de ejemplo `a` y `b`); cada cable, `{id,
+source, sourceHandle, target, targetHandle}`. Se rechazan con 400: un id que no sea `proceso-…`, un nodo de un tipo inventado o sin
+posición, posiciones que no son números o pasan de un millón, ids de nodo o de cable repetidos, un cable que une un nodo que no
+existe, más de 300 nodos o 600 cables, y más de 1 MB. **Lo que se guarda sale limpio**: del nodo y del cable solo lo que el lienzo
+usa (la librería manda también medidas y banderas de selección); lo demás que mande la pantalla (por ejemplo la vista) se conserva
+en `datos`. `revision`, `creadoPor`, `creadoEn`, `modificadoPor`, `modificadoEn` y `tenant` los pone el servidor y no se pueden forzar.
+
+**Auditoría.** Crear y borrar dejan `PROCESS_CREATED` y `PROCESS_DELETED` (quién, qué organización, `procesoId`, `nombre`); guardar a
+secas, no: mover un nodo o escribir un valor de ejemplo son muchos guardados y no cambian lo que el proceso ES. El rastro no lleva el
+dibujo.
+
+**Límites conocidos:** no distingue roles (quien opera en la organización lee y escribe sus procesos); borrar un tipo documental no
+avisa a los procesos que lo usan (el lienzo muestra «Tipo documental no disponible»); el archivo crece con cada guardado.
+
+### Verificarlo
+
+```
+.venv/Scripts/python verificar_procesos.py
+```
+
+Offline: crear, ver desde otra persona, 409 por revisión, aislamiento entre organizaciones, validación del dibujo, que lo guardado
+salga limpio, auditoría y corte a media escritura. Se probó rompiendo 18 reglas del servicio y del router a propósito: las 18 se
+detectan.
+
 ## Grupos de campos y forma del resultado de la extracción (2026-10-16)
 
 Pedido para las **actas constitutivas**: ahí un dato no es un valor suelto sino una *fila* de varios (un accionista = nombre +
