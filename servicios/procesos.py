@@ -4,8 +4,9 @@
 
 Un proceso es un conjunto de reglas y corre sobre un EXPEDIENTE (un conjunto de documentos). Se arma en un lienzo: los tipos
 documentales de la organización son sus entradas (nodos de tipo `tipo-documental`), las reglas son operadores (nodos de tipo
-`operador`: igual, distinto, contiene, mayor, menor, y, o, no) y los cables llevan un campo de un documento a la entrada de un
-operador, o el resultado de una regla a otra.
+`operador`: igual, distinto, contiene, mayor, menor; cantidad, suma, alguno, todos y unicos, que trabajan con LISTAS; y, o, no),
+un `constante` es un valor fijo que se escribe en el lienzo (por ejemplo el «2» de «más de 2 socios») y los cables llevan un campo,
+un valor fijo o el resultado de una regla a la entrada de un operador.
 
 Guardado, un proceso es su `nombre`, su `descripcion` y el dibujo: `nodos` y `aristas`. Es lo mismo que maneja el lienzo del
 front, así que el back lo trata como una caja y NO interpreta las reglas: no sabe qué es «igual» ni qué campo es de qué tipo
@@ -50,12 +51,17 @@ ARCHIVO = "procesos.jsonl"
 _RE_ID = re.compile(r"^proceso-[a-z0-9-]{6,58}$")
 
 #: Los tipos de nodo que existen en el lienzo.
-TIPOS_DE_NODO = ("tipo-documental", "operador")
+TIPOS_DE_NODO = ("tipo-documental", "operador", "constante")
+
+#: De qué clase es el valor de un nodo `constante`: las cuatro familias que el lienzo sabe comparar.
+FAMILIAS = ("texto", "numero", "fecha", "booleano")
 
 #: Topes. Un proceso normal tiene unas decenas de nodos; esto es para que un cliente descontrolado no llene el disco.
 MAX_NODOS = 300
 MAX_ARISTAS = 600
 MAX_TEXTO = 500
+#: El valor de ejemplo de una LISTA son varios renglones (uno por elemento), así que cabe mucho más que un valor suelto.
+MAX_MUESTRA = 5000
 TOPE_BYTES = 1_000_000
 
 #: Lo que NO se acepta dentro de `datos`: lo pone el servidor.
@@ -131,11 +137,16 @@ def _nodo(n: object) -> dict:
     limpio_datos: dict = {}
     if n["type"] == "tipo-documental":
         limpio_datos["tipoId"] = _texto(datos.get("tipoId"), "El tipo documental de un nodo", 100)
+    elif n["type"] == "constante":
+        if datos.get("familia") not in FAMILIAS:
+            raise ProcesoInvalido("La clase de un valor fijo no es válida.")
+        limpio_datos["familia"] = datos["familia"]
+        limpio_datos["valor"] = _texto(datos.get("valor", ""), "Un valor fijo", obligatorio=False)
     else:
         limpio_datos["operador"] = _texto(datos.get("operador"), "El operador de un nodo", 40)
-        # Los valores de ejemplo con los que se probó la regla: texto libre, pueden estar vacíos.
-        limpio_datos["a"] = _texto(datos.get("a", ""), "Un valor de ejemplo", obligatorio=False)
-        limpio_datos["b"] = _texto(datos.get("b", ""), "Un valor de ejemplo", obligatorio=False)
+        # Los valores de ejemplo con los que se probó la regla: texto libre, pueden estar vacíos. De una lista, varios renglones.
+        limpio_datos["a"] = _texto(datos.get("a", ""), "Un valor de ejemplo", MAX_MUESTRA, obligatorio=False)
+        limpio_datos["b"] = _texto(datos.get("b", ""), "Un valor de ejemplo", MAX_MUESTRA, obligatorio=False)
     return {
         "id": nodo_id,
         "type": n["type"],

@@ -230,8 +230,18 @@ try:
     n["nodos"][2]["data"]["a"] = 5
     rechaza("con un valor de ejemplo que no es texto", n)
     n = proceso("x")
-    n["nodos"][2]["data"]["a"] = "x" * 501
-    rechaza("con un valor de ejemplo demasiado largo", n)
+    n["nodos"][2]["data"]["a"] = "x" * 5001
+    rechaza("con un valor de ejemplo demasiado largo (más de 5000 caracteres)", n)
+    n = proceso("x")
+    n["nodos"].append({"id": "constante-1", "type": "constante", "position": {"x": 0, "y": 0}, "data": {"familia": "numero", "valor": "2"}})
+    n["nodos"][-1]["data"]["familia"] = "marciano"
+    rechaza("con un valor fijo de una clase que no existe", n, texto="clase")
+    n["nodos"][-1]["data"] = {"familia": "numero", "valor": 2}
+    rechaza("con un valor fijo que no es texto", n)
+    n["nodos"][-1]["data"] = {"valor": "2"}
+    rechaza("con un valor fijo sin su clase", n)
+    n["nodos"][-1]["data"] = {"familia": "texto", "valor": "x" * 501}
+    rechaza("con un valor fijo demasiado largo", n)
     n = proceso("x")
     n["nodos"][1]["id"] = "tipo-acta"
     rechaza("con dos nodos del mismo id", n, texto="mismo identificador")
@@ -287,6 +297,34 @@ try:
     rev("de los datos de un nodo solo lo que el lienzo usa", d["nodos"][0]["data"] == {"tipoId": "tipo-aaaa1111"} and set(d["nodos"][2]["data"]) == {"operador", "a", "b"}, str(d["nodos"]))
     rev("del cable solo id, origen, destino y sus dos puntos", set(d["aristas"][0]) == {"id", "source", "sourceHandle", "target", "targetHandle"}, str(d["aristas"][0]))
     rev("lo demás que mandó la pantalla (la vista) se conserva en `datos`", d.get("vista") == {"x": 10, "y": 20, "zoom": 0.8})
+
+    titulo("8b · Las listas: operadores de listas, valores fijos y muestras de varios renglones")
+    listas = proceso("Socios")
+    muestra_larga = "\n".join(f"Socio número {i}" for i in range(200))  # unos 3 KB: una lista de ejemplo
+    listas["nodos"] += [
+        {"id": "operador-2", "type": "operador", "position": {"x": 700, "y": 10}, "data": {"operador": "cantidad", "a": muestra_larga, "b": "", "resultado": "200"}},
+        {"id": "constante-1", "type": "constante", "position": {"x": 700, "y": 300}, "data": {"familia": "numero", "valor": "2", "basura": "x"}, "selected": True},
+        {"id": "operador-3", "type": "operador", "position": {"x": 1000, "y": 10}, "data": {"operador": "mayor"}},
+    ]
+    listas["aristas"] += [cable("operador-2", "resultado", "operador-3", "a"), cable("constante-1", "valor", "operador-3", "b")]
+    p5 = nuevo_id()
+    r = guardar(a_admin, org_a, p5, listas, 0)
+    rev("un proceso con una cantidad, un valor fijo y una comparación se guarda", r.status_code == 200, r.text[:200])
+    d = r.json()["datos"]
+    cant = next(n for n in d["nodos"] if n["id"] == "operador-2")
+    fijo = next(n for n in d["nodos"] if n["id"] == "constante-1")
+    rev("la muestra de varios renglones (unos 3 KB) se conserva entera", cant["data"]["a"] == muestra_larga and len(muestra_larga) > 2500, str(len(cant["data"]["a"])))
+    rev("el valor fijo guarda solo su clase y su valor", fijo["data"] == {"familia": "numero", "valor": "2"} and set(fijo) == {"id", "type", "position", "data"}, str(fijo))
+    rev("de un operador solo se guardan cuál es y sus dos muestras (lo que calculó, no)", set(cant["data"]) == {"operador", "a", "b"}, str(cant["data"]))
+    rev("un operador sin muestras en sus datos las guarda vacías", next(n for n in d["nodos"] if n["id"] == "operador-3")["data"] == {"operador": "mayor", "a": "", "b": ""})
+    rev("los cables del valor fijo y del resultado se guardan", {(a["source"], a["sourceHandle"]) for a in d["aristas"]} >= {("operador-2", "resultado"), ("constante-1", "valor")})
+    n = proceso("x")
+    n["nodos"][2]["data"]["a"] = "x" * 5000
+    r = guardar(a_admin, org_a, nuevo_id(), n, 0)
+    rev("una muestra de exactamente 5000 caracteres cabe", r.status_code == 200, r.text[:120])
+    r = guardar(a_admin, org_a, p5, listas, 1)
+    rev("y se puede volver a guardar encima", r.status_code == 200 and r.json()["revision"] == 2, r.text[:120])
+    c.delete(f"/procesos/{p5}", params={"tenant": org_a}, headers=cab(a_admin))
 
     titulo("9 · Un proceso vacío y uno con cables a un punto sin nombre")
     p4 = nuevo_id()

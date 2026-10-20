@@ -1736,8 +1736,9 @@ los activos de las dos organizaciones, `asegurar`, y qué procesadores quedaría
 ## Procesos: el motor de reglas guarda su dibujo, por organización (2026-10-20)
 
 Un **proceso** es un conjunto de reglas y corre sobre un **expediente** (un conjunto de documentos). Se arma en un lienzo del front:
-los tipos documentales de la organización son sus entradas, las reglas son operadores (igual, distinto, contiene, mayor, menor, y,
-o, no) y los cables llevan un campo de un documento a la entrada de un operador, o el resultado de una regla a otra. Aquí solo se
+los tipos documentales de la organización son sus entradas, las reglas son operadores (igual, distinto, contiene, mayor, menor;
+cantidad, suma, alguno, todos y unicos, que trabajan con **listas**; y, o, no), un **valor fijo** es un dato que se escribe en el lienzo
+(el «2» de «más de 2 socios») y los cables llevan un campo, un valor fijo o el resultado de una regla a la entrada de un operador. Aquí solo se
 **guarda ese dibujo**: `servicios/procesos.py` (registro provisional, `procesos.jsonl` dentro de `.registro/`) y `routers/procesos.py`.
 **Todavía no hay un motor que corra los procesos sobre un expediente de verdad**: el back no interpreta las reglas, solo
 comprueba que el dibujo esté entero.
@@ -1754,7 +1755,9 @@ es 409; **dos personas editando lo mismo**: guardar exige la `revision` que se e
 `conflicto` con `revisionActual`, sin pisar nada.
 
 **Qué es un proceso guardado:** `nombre` (hasta 200), `descripcion`, `nodos` y `aristas`. Cada nodo es `{id, type, position, data}`
-con `type` `tipo-documental` (`data.tipoId`) u `operador` (`data.operador` y los valores de ejemplo `a` y `b`); cada cable, `{id,
+con `type` `tipo-documental` (`data.tipoId`), `operador` (`data.operador` y los valores de ejemplo `a` y `b`, de hasta 5000
+caracteres porque el ejemplo de una lista son varios renglones) o `constante` (`data.familia` —`texto`, `numero`, `fecha` o
+`booleano`— y `data.valor`, de hasta 500); cada cable, `{id,
 source, sourceHandle, target, targetHandle}`. Se rechazan con 400: un id que no sea `proceso-…`, un nodo de un tipo inventado o sin
 posición, posiciones que no son números o pasan de un millón, ids de nodo o de cable repetidos, un cable que une un nodo que no
 existe, más de 300 nodos o 600 cables, y más de 1 MB. **Lo que se guarda sale limpio**: del nodo y del cable solo lo que el lienzo
@@ -1775,8 +1778,8 @@ avisa a los procesos que lo usan (el lienzo muestra «Tipo documental no disponi
 ```
 
 Offline: crear, ver desde otra persona, 409 por revisión, aislamiento entre organizaciones, validación del dibujo, que lo guardado
-salga limpio, auditoría y corte a media escritura. Se probó rompiendo 18 reglas del servicio y del router a propósito: las 18 se
-detectan.
+salga limpio, listas de ejemplo largas y valores fijos, auditoría y corte a media escritura. Se probó rompiendo 22 reglas del
+servicio y del router a propósito: las 22 se detectan.
 
 ## Grupos de campos y forma del resultado de la extracción (2026-10-16)
 
