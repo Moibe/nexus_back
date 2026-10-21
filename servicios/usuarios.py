@@ -468,6 +468,18 @@ def bootstrap_admin(email: str, nombre: str, apellidos: str, hash_contrasena: st
     return por_guid(guid)
 
 
+def administradores_de_plataforma() -> list[dict]:
+    """Los administradores de plataforma que EXISTEN, en el orden de su alta (el de menos tiempo, al final).
+
+    Es el control que `bootstrap_admin.py` no daba: saber quiénes son, si ya hicieron su primer acceso y si siguen activos.
+    Los que se retiraron (`eliminar_usuario`) ya no están: el índice los quita de todos lados, y su rastro vive en la bitácora.
+    Sin el hash de la contraseña (`_publico`)."""
+    indice, _, _ = _indice()
+    admins = [_publico(u) for u in indice.values() if u["esAdminPlataforma"]]
+    admins.sort(key=lambda u: u["creadoEn"] or "")
+    return admins
+
+
 def crear_usuario(
     email: str,
     nombre: str,

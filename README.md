@@ -1733,6 +1733,41 @@ señala —ni como vigente, ni en su historial—, pidiendo escribir BORRAR. Nun
 Offline: crear, ver desde otra persona, 409 por revisión, aislamiento, validación, orden, auditoría, clasificador sin cuerpo con
 los activos de las dos organizaciones, `asegurar`, y qué procesadores quedarían huérfanos.
 
+## Administradores de plataforma desde Nexus Monitor (2026-10-20)
+
+Un administrador de plataforma no se da de alta desde NexusDoc sino desde fuera, por quien opera el sistema. Eso eran tres scripts
+en una terminal del servidor (`bootstrap_admin.py`, `reenviar_invitacion.py`, `retirar_cuenta.py`); ahora Nexus Monitor (el
+proyecto hermano, la herramienta del operador) lo hace desde una pantalla con estas rutas, que usan los MISMOS servicios. Los
+scripts siguen sirviendo: `routers/admins_plataforma.py`.
+
+| Ruta | Qué hace |
+|---|---|
+| `GET /admins-plataforma/` | Los que existen, con su estado (`pendiente`, `activo`, `inactivo`), su último acceso y si tienen sesión. Los retirados ya no salen. |
+| `POST /admins-plataforma/` | Crea uno con contraseña temporal y le manda la bienvenida (`enviarCorreo: false` equivale a `--sin-correo`). Devuelve la contraseña SIEMPRE, y `correo`: `enviado`, `sin_canal`, `fallo` u `omitido`. Un correo repetido: 409. |
+| `POST /admins-plataforma/{guid}/reenviar-invitacion` | Regenera la contraseña temporal de quien no ha hecho su primer acceso (la anterior deja de servir). Quien ya entró: 409 `ya_hizo_su_primer_acceso`. |
+| `DELETE /admins-plataforma/{guid}?motivo=` | Lo retira (borrado lógico; su correo queda libre). El motivo es obligatorio. Al último administrador activo no se le retira: 409 `ultimo_superadmin`. |
+
+**Se toca solo a administradores de PLATAFORMA**: una cuenta de una organización responde 404 como si no existiera, así que Monitor no
+sirve para administrar usuarios ajenos. Crear, regenerar y retirar dejan `USER_CREATED`, `INVITATION_REISSUED` y `USER_DELETED` con
+`actor: "monitor"` y qué pasó con el correo; nunca la contraseña.
+
+### ⚠️ Sin protección extra (decisión del usuario, 2026-10-20: «sin protección extra por ahora»)
+
+Estas rutas piden SOLO la llave de servicio, como `/esquema` o `/procesos`: no hay un JWT de persona (Monitor no tiene login) ni una
+llave de administración aparte. **Quien tenga la llave de servicio y llegue al puerto del back puede crear un administrador de
+plataforma** —la cuenta con más poder del sistema—, y quien abra Monitor desde la VPN, también. Antes de esto, crear uno exigía tener
+acceso al servidor. Para cerrarlo después: una `ADMIN_PLATAFORMA_LLAVE` en el `.env` que estas rutas exijan en un encabezado (y que
+Monitor pida tecleada en cada acción), y apagar las rutas si no está puesta. Al promover esto a `main`, las rutas quedan activas en
+producción.
+
+```
+.venv/Scripts/python verificar_admins_plataforma.py
+```
+
+Offline, con el correo simulado: crear (con y sin canal, con fallo y omitido), contraseña que sirve y obliga a cambiarse, listar con
+estados, regenerar, retirar con motivo y sin retirar al último, solo cuentas de plataforma, sin llave nada, y la bitácora sin
+contraseñas. Se probó rompiendo 15 reglas a propósito: las 15 se detectan.
+
 ## Procesos: el motor de reglas guarda su dibujo, por organización (2026-10-20)
 
 Un **proceso** es un conjunto de reglas y corre sobre un **expediente** (un conjunto de documentos). Se arma en un lienzo del front:
