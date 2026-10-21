@@ -9,6 +9,7 @@ oficial `google-cloud-documentai`, para no arrastrar grpc y por consistencia con
 cómo ya se llamaba Document AI en el proyecto `document_ai`.
 """
 
+import asyncio
 import base64
 import logging
 import re
@@ -27,9 +28,13 @@ from config import (
     DOCAI_PROJECT_ID,
     DOCAI_VERSION_CLASIFICADOR,
     DOCAI_VERSION_INE,
+    EXTRACCION_MAX_PAGINAS,
+    EXTRACCION_PAGINAS_POR_BLOQUE,
+    EXTRACCION_SOLAPE_PAGINAS,
     IA_TIMEOUT,
 )
 from errores import ErrorDocumentAI
+from servicios.bloques import Parcial, combinar_datos, es_campo, planear_bloques, remapear_bloques, unir_capas_ocr
 from servicios.ocr import bloque_de, extraer_capa_ocr
 
 logger = logging.getLogger(__name__)
@@ -106,6 +111,27 @@ def _motivo_de(status_code: int, detalle: str, reason: str = "") -> str:
     return "desconocido"
 
 
+_RE_LIMITE_PAGINAS = re.compile(r"limit:\s*(\d+)\s+got\s+(\d+)", re.IGNORECASE)
+
+
+def _paginas_del_error(detalles: list[dict[str, Any]], mensaje: str) -> tuple[int | None, int | None]:
+    """`(páginas del documento, tope que aplicó)` de un error de límite de páginas, o `(None, None)` si Google no los dijo.
+
+    Se leen de `details[].metadata` (`{"page_limit": "15", "pages": "20"}`, MEDIDO el 2026-10-16 contra la API real), que es
+    parte del contrato del error; si no vinieran, del texto («Document pages exceed the limit: 15 got 20»), que Google ya
+    reescribió una vez (ver `_motivo_de`). Con ellas la extracción sabe cuántas páginas tiene un documento sin abrirlo."""
+    for detalle in detalles:
+        metadata = detalle.get("metadata") or {}
+        try:
+            return int(metadata["pages"]), int(metadata["page_limit"])
+        except (KeyError, TypeError, ValueError):
+            continue
+    encontrado = _RE_LIMITE_PAGINAS.search(mensaje or "")
+    if encontrado:
+        return int(encontrado.group(2)), int(encontrado.group(1))
+    return None, None
+
+
 def _url_procesador(procesador_id: str, version: str = "") -> str:
     """URL del `:process`. Con `version`, se llama a esa versión exacta del
     modelo; sin ella, a la que Google tenga como default en ese momento."""
@@ -169,22 +195,26 @@ async def _procesar(
             try:
                 error = respuesta.json().get("error", {})
                 detalle = error.get("message", "")
+                detalles = error.get("details", [])
                 # `details[].reason` es estable aunque Google reescriba el
                 # mensaje; ver `_motivo_de`.
-                razon = next(
-                    (d["reason"] for d in error.get("details", []) if d.get("reason")),
-                    "",
-                )
+                razon = next((d["reason"] for d in detalles if d.get("reason")), "")
             except Exception:  # noqa: BLE001
                 detalle = respuesta.text[:500]
+                detalles = []
                 razon = ""
             logger.error(
                 "Document AI respondió %s: %s", respuesta.status_code, respuesta.text
             )
+            motivo = _motivo_de(respuesta.status_code, detalle, razon)
+            # Un documento demasiado largo trae cuántas páginas tiene: con eso se sabe en cuántos bloques partirlo.
+            paginas, limite = _paginas_del_error(detalles, detalle) if motivo == "limite_paginas" else (None, None)
             raise ErrorDocumentAI(
                 f"Document AI respondió {respuesta.status_code}: {detalle}",
                 status_code=respuesta.status_code,
-                motivo=_motivo_de(respuesta.status_code, detalle, razon),
+                motivo=motivo,
+                paginas=paginas,
+                limite=limite,
             )
         return respuesta.json()
 
@@ -267,7 +297,9 @@ def _tramos(entidad: dict[str, Any]) -> list[tuple[int, int]]:
     return [(int(s.get("startIndex", 0)), int(s.get("endIndex", 0))) for s in segmentos]
 
 
-def _campo(entidad: dict[str, Any], offsets_ocr: list[list[tuple[int, int]]]) -> dict[str, Any]:
+def _campo(
+    entidad: dict[str, Any], offsets_ocr: list[list[tuple[int, int]]], paginas: list[int] | None = None
+) -> dict[str, Any]:
     """Empaqueta una entidad hoja con la forma que pide `entity_fact`.
 
     Puntos donde esto se apega al diccionario y no a lo que da Document AI:
@@ -290,43 +322,152 @@ def _campo(entidad: dict[str, Any], offsets_ocr: list[list[tuple[int, int]]]) ->
         "confianza": _a_cien(entidad.get("confidence")),
         "confianza_cruda": entidad.get("confidence"),
         "metodo_confianza": "extractor_confidence",
-        "page_number": _pagina_de(entidad),
+        "page_number": _pagina_de(entidad, paginas),
         "bloque_indice": bloque_de(offsets_ocr, _tramos(entidad)),
         "posicion": _rectangulo(entidad),
     }
 
 
-def _pagina_de(entidad: dict[str, Any]) -> int | None:
+def _pagina_de(entidad: dict[str, Any], paginas: list[int] | None = None) -> int | None:
     """Página donde cae la entidad (1-based). El diccionario la guarda en
     `entity_fact.page_number` aunque sea redundante con el bloque, porque hace
-    falta cuando `ocr_block_id` viene en NULL."""
+    falta cuando `ocr_block_id` viene en NULL.
+
+    `page` es un ÍNDICE dentro de `document.pages`, no un número de página (medido el 2026-10-16 pidiendo las páginas 11 a 20
+    de un PDF de 20: las entidades traen 0…9 mientras `pages[].pageNumber` trae 11…20). En un documento procesado entero
+    coinciden (índice + 1); en un bloque no, y `paginas` —los números de página del documento entero, en el orden de
+    `document.pages`— hace la traducción."""
     refs = entidad.get("pageAnchor", {}).get("pageRefs")
     if not refs:
         return None
     # Document AI omite `page` cuando es la primera página.
-    return int(refs[0].get("page", 0)) + 1
+    indice = int(refs[0].get("page", 0))
+    if paginas is not None and 0 <= indice < len(paginas):
+        return paginas[indice]
+    return indice + 1
+
+
+def _es_campo(valor: Any) -> bool:
+    """¿Es un campo hoja ya empaquetado por `_campo`? (y no un grupo, que es un diccionario de campos)."""
+    return es_campo(valor)
+
+
+def _el_mejor(elementos: list[Any]) -> Any:
+    """De varias apariciones de un campo que el esquema declara ÚNICO, la de mayor confianza.
+
+    Antes se quedaba la ÚLTIMA, que era un accidente de cómo se llenaba el diccionario: un dato que el modelo encontró dos veces
+    (la fecha del encabezado y la de las firmas, por ejemplo) quedaba con el que apareciera después, no con el más seguro. En un
+    grupo único (un domicilio) no hay con qué comparar: se queda el primero."""
+    if len(elementos) == 1:
+        return elementos[0]
+    hojas = [e for e in elementos if _es_campo(e)]
+    if not hojas:
+        return elementos[0]
+    return max(hojas, key=lambda c: c["confianza"] if isinstance(c.get("confianza"), (int, float)) else -1.0)
 
 
 def _extraer_entidades(
-    entidades: list[dict[str, Any]], offsets_ocr: list[list[tuple[int, int]]]
+    entidades: list[dict[str, Any]],
+    offsets_ocr: list[list[tuple[int, int]]],
+    estructura: dict[str, dict] | None = None,
+    paginas: list[int] | None = None,
 ) -> dict[str, Any]:
     """Convierte las entidades de Document AI en un diccionario, CONSERVANDO la
     jerarquía: una entidad con sub-propiedades (ej. 'domicilio') queda como
     sub-diccionario de campos, para que no choquen llaves repetidas con el nivel
     raíz (ej. 'estado' dentro de domicilio vs. 'estado' suelto). Cada campo hoja
-    trae la forma de `entity_fact` — ver `_campo`."""
-    resultado: dict[str, Any] = {}
+    trae la forma de `entity_fact` — ver `_campo`.
+
+    Lo que se REPITE (2026-10-16). Antes el diccionario se llenaba por nombre, así
+    que de varias entidades del mismo tipo solo sobrevivía la última: de tres socios
+    quedaba uno. Ahora un campo que el esquema declara MÚLTIPLE sale SIEMPRE como
+    lista, aunque haya aparecido una sola vez, en el orden del documento:
+
+      - campo hoja múltiple  → `[campo, campo, …]`
+      - grupo múltiple       → `[{subcampo: campo, …}, {…}]`, una fila por instancia,
+                               con los subcampos en el orden del esquema (Google los
+                               devuelve en orden alfabético)
+      - campo o grupo único  → como siempre: un `campo` o un diccionario
+
+    `estructura` (`esquema.estructura_desde_esquema`) es lo que dice qué se repite: la
+    respuesta de Google no lo dice. Sin ella —no se pudo leer el esquema— se aplana
+    por lo que llegó: un tipo que aparece más de una vez es lista.
+
+    `paginas` (los números de página del documento entero, en el orden de `document.pages`) solo hace falta cuando lo que se
+    procesó es un BLOQUE de un documento largo: ver `_pagina_de`.
+    """
+    por_tipo: dict[str, list[dict[str, Any]]] = {}
     for entidad in entidades:
         nombre = entidad.get("type")
-        if not nombre:
+        if nombre:
+            por_tipo.setdefault(nombre, []).append(entidad)
+
+    resultado: dict[str, Any] = {}
+    for nombre, ocurrencias in por_tipo.items():
+        definicion = (estructura or {}).get(nombre)
+        multiple = definicion["multiple"] if definicion else len(ocurrencias) > 1
+        hijos_definidos = definicion.get("hijos") if definicion else None
+        elementos: list[Any] = []
+        for entidad in ocurrencias:
+            if entidad.get("properties"):
+                hijos = _extraer_entidades(entidad["properties"], offsets_ocr, hijos_definidos, paginas)
+                if hijos and multiple and hijos_definidos:
+                    # Una fila de una tabla: sus columnas en el orden del esquema, no en el alfabético de Google.
+                    hijos = {**{h: hijos[h] for h in hijos_definidos if h in hijos}, **{h: v for h, v in hijos.items() if h not in hijos_definidos}}
+                if hijos:
+                    elementos.append(hijos)
+            elif hijos_definidos:
+                continue  # un grupo sin ninguna hija no dice nada: no se vuelve un «campo» vacío
+            else:
+                campo = _campo(entidad, offsets_ocr, paginas)
+                if campo["value_normalized"] is not None:
+                    elementos.append(campo)
+        if not elementos:
             continue
-        if entidad.get("properties"):
-            resultado[nombre] = _extraer_entidades(entidad["properties"], offsets_ocr)
-        else:
-            campo = _campo(entidad, offsets_ocr)
-            if campo["value_normalized"] is not None:
-                resultado[nombre] = campo
+        resultado[nombre] = elementos if multiple else _el_mejor(elementos)
     return resultado
+
+
+def _campos_ausentes(estructura: dict[str, dict], datos: dict[str, Any]) -> list[str]:
+    """Lo OBLIGATORIO que el esquema pide y la extracción no trae.
+
+    Antes un campo que Document AI no devolvía simplemente no aparecía, y nada lo distinguía de un campo que nadie pidió. Es
+    una lista de rutas: `capital_social` (un campo que faltó), `accionistas` (un grupo obligatorio sin ninguna fila) o
+    `accionistas[2].nombre` (la fila 2 del grupo salió sin un subcampo obligatorio: casi siempre una instancia espuria que el
+    modelo sacó de otra parte del documento, y por eso se señala en vez de esconderla)."""
+    ausentes: list[str] = []
+    for nombre, definicion in estructura.items():
+        valor = datos.get(nombre)
+        if definicion["obligatorio"] and (valor is None or valor == []):
+            ausentes.append(nombre)
+            continue
+        hijos = definicion.get("hijos")
+        if not hijos or not valor:
+            continue
+        filas = valor if isinstance(valor, list) else [valor]
+        for i, fila in enumerate(filas, start=1):
+            for hijo, def_hijo in hijos.items():
+                if def_hijo["obligatorio"] and hijo not in fila:
+                    ausentes.append(f"{nombre}[{i}].{hijo}" if isinstance(valor, list) else f"{nombre}.{hijo}")
+    return ausentes
+
+
+async def _estructura_de(procesador_id: str) -> dict[str, dict] | None:
+    """La estructura del esquema del procesador (ver `procesadores.estructura_del_procesador`), o `None` si no se pudo leer.
+
+    Nunca levanta: sin ella la extracción sigue, solo que aplanando por lo que llegó y sin poder decir qué campo obligatorio
+    faltó. Fallar la extracción entera por no poder leer un dato accesorio sería peor que perder esa precisión."""
+    from servicios import procesadores  # import tardío: `procesadores` importa a este módulo
+
+    try:
+        return await procesadores.estructura_del_procesador(procesador_id) or None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "No se pudo leer la estructura del procesador %s; se aplana por lo que devolvió Document AI: %s",
+            procesador_id,
+            exc,
+        )
+        return None
 
 
 def _limpiar_ine(datos: dict[str, Any]) -> dict[str, Any]:
@@ -390,7 +531,8 @@ def _descomponer_anio_registro(datos: dict[str, Any]) -> dict[str, Any]:
 
 def _confianzas(datos: dict[str, Any]) -> list[float]:
     """Las `confianza` (escala 0-100) de TODOS los campos extraídos, recorriendo
-    también los anidados como 'domicilio'.
+    también los anidados como 'domicilio' y las listas (campos múltiples y filas de
+    grupos).
 
     Se recolectan ANTES de agregar la capa de OCR al resultado, a propósito: los
     bloques de OCR también traen `confianza`, y esa es la confianza de LECTURA,
@@ -400,21 +542,23 @@ def _confianzas(datos: dict[str, Any]) -> list[float]:
     con una lista de entidades vacía si la imagen no es legible)."""
     confianzas: list[float] = []
 
-    def recorrer(nodo: dict[str, Any]) -> None:
-        for valor in nodo.values():
-            if not isinstance(valor, dict):
-                continue
-            if "confianza" in valor:
+    def recorrer(nodo: Any) -> None:
+        if isinstance(nodo, list):
+            for elemento in nodo:
+                recorrer(elemento)
+        elif isinstance(nodo, dict):
+            if _es_campo(nodo):
                 # Se filtran los None: `_a_cien` devuelve None cuando Document AI
                 # omite `confidence` en una entidad, y en Python 3 comparar None
                 # con un float dentro de min() lanza TypeError. Eso convertiría
                 # una extracción PERFECTA en un 502 "No se pudo procesar la
                 # credencial" — el peor tipo de falla, porque el mensaje culpa al
                 # documento cuando el problema es nuestro.
-                if isinstance(valor["confianza"], (int, float)):
-                    confianzas.append(float(valor["confianza"]))
+                if isinstance(nodo.get("confianza"), (int, float)):
+                    confianzas.append(float(nodo["confianza"]))
             else:
-                recorrer(valor)
+                for valor in nodo.values():
+                    recorrer(valor)
 
     recorrer(datos)
     return confianzas
@@ -467,12 +611,188 @@ def _confianza_minima(datos: dict[str, Any]) -> float | None:
 _MOTIVO_NO_LEGIBLE = "Calidad del OCR inferior al umbral requerido o nulo"
 
 
+# ── Documentos largos ─────────────────────────────────────────────────────────
+
+# Cuántos bloques de un mismo documento se mandan a Google a la vez.
+BLOQUES_EN_PARALELO = 3
+# Cuánto se espera antes de repetir un bloque que falló por algo pasajero.
+PAUSA_REINTENTO_BLOQUE_S = 3.0
+# Un bloque se repite UNA vez si falló por algo pasajero (Google caído un momento, cuota por minuto). Lo que es del documento
+# (archivo ilegible, otro tope) saldría igual y no se repite.
+_MOTIVOS_PASAJEROS = ("servicio", "cuota")
+
+
+def _paginas_absolutas(documento: dict[str, Any], desde: int, hasta: int) -> list[int]:
+    """Los números de página DEL DOCUMENTO ENTERO de las páginas que Document AI devolvió para un bloque, en el orden en que las
+    devolvió (el índice al que apuntan las entidades; ver `_pagina_de`).
+
+    Medido el 2026-10-16 pidiendo las páginas 11 a 20 de un PDF de 20: `pages[].pageNumber` viene ABSOLUTO (11…20). Se usa eso
+    mientras cuadre con lo pedido; si no cuadra (otra convención en una versión futura de Google), se confía en lo que se pidió."""
+    devueltas = [p.get("pageNumber") for p in documento.get("pages") or []]
+    if devueltas and all(isinstance(n, int) and desde <= n <= hasta for n in devueltas):
+        return devueltas
+    return list(range(desde, hasta + 1))
+
+
+def _con_paginas_absolutas(capa: dict[str, Any], paginas: list[int]) -> dict[str, Any]:
+    """La capa de OCR de un bloque con los números de página del documento entero (no cambia nada si Google ya los manda así)."""
+    mapa = {p["page_number"]: nuevo for p, nuevo in zip(capa["paginas"], paginas)}
+    return {
+        **capa,
+        "paginas": [{**p, "page_number": mapa.get(p["page_number"], p["page_number"])} for p in capa["paginas"]],
+        "bloques": [{**b, "page_number": mapa.get(b["page_number"], b["page_number"])} for b in capa["bloques"]],
+    }
+
+
+async def _procesar_bloque(
+    procesador_id: str,
+    contenido: bytes,
+    mime_type: str,
+    version: str,
+    desde: int,
+    hasta: int,
+    semaforo: asyncio.Semaphore,
+) -> dict:
+    """Procesa SOLO las páginas `desde`…`hasta` del documento (`individualPageSelector`: Google cobra solo esas), y repite una vez
+    si falla por algo pasajero."""
+    opciones = {"processOptions": {"individualPageSelector": {"pages": list(range(desde, hasta + 1))}}}
+    async with semaforo:
+        for intento in (1, 2):
+            try:
+                return await _procesar(procesador_id, contenido, mime_type, version, opciones)
+            except ErrorDocumentAI as exc:
+                if intento == 2 or exc.motivo not in _MOTIVOS_PASAJEROS:
+                    raise
+                logger.warning(
+                    "El bloque de las páginas %s a %s falló (%s); se repite una vez.", desde, hasta, exc.motivo
+                )
+                await asyncio.sleep(PAUSA_REINTENTO_BLOQUE_S)
+    raise AssertionError("inalcanzable: el segundo intento devuelve o levanta")
+
+
+def _cerrar_resultado(
+    datos: dict[str, Any],
+    estructura: dict[str, dict] | None,
+    capa_ocr: dict[str, Any],
+    metadata: dict[str, Any],
+    transformar: Callable[[dict[str, Any]], dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Lo que es igual para un documento procesado entero y para uno procesado por bloques: los campos ausentes, la
+    transformación propia del tipo, las dos confianzas resumen, la capa de OCR y `_metadata`."""
+    if estructura:
+        # Solo cuando se pudo leer el esquema: sin él no se sabe qué era obligatorio, y una lista vacía diría «no faltó nada».
+        metadata["campos_ausentes"] = _campos_ausentes(estructura, datos)
+    if transformar is not None:
+        datos = transformar(datos)
+    # El PROMEDIO va primero porque es el que la interfaz muestra; el mínimo
+    # queda como dato de apoyo. Los dos se calculan sobre `datos` ANTES de
+    # meterle la capa `ocr`, que trae confianzas de otra naturaleza.
+    datos["confianza_promedio"] = _confianza_promedio(datos)
+    datos["confianza_minima"] = _confianza_minima(datos)
+    datos["ocr"] = capa_ocr
+    datos["_metadata"] = metadata
+    return datos
+
+
+async def _extraer_por_bloques(
+    procesador_id: str,
+    contenido: bytes,
+    mime_type: str,
+    version: str,
+    transformar: Callable[[dict[str, Any]], dict[str, Any]] | None,
+    rechazo: ErrorDocumentAI,
+    estructura_tarea: "asyncio.Future[dict[str, dict] | None]",
+) -> dict[str, Any]:
+    """Extrae un documento que Document AI rechazó por largo (`rechazo` trae cuántas páginas tiene), partiéndolo en bloques de
+    páginas (`servicios.bloques.planear_bloques`), procesándolos a la vez y uniendo el resultado como si hubiera pasado entero.
+
+    Todo o nada: si un bloque falla (después de su reintento), falla la extracción. Entregar el documento sin un pedazo,
+    callado, sería peor que no entregarlo: faltaría un dato y nada lo diría."""
+    total = rechazo.paginas
+    if total > EXTRACCION_MAX_PAGINAS:
+        # Se rechaza sin procesar nada (y sin cobrar): el rechazo de Google ya dijo cuántas páginas tiene.
+        raise ErrorDocumentAI(
+            f"El documento tiene {total} páginas y el máximo que se procesa es {EXTRACCION_MAX_PAGINAS}",
+            status_code=422,
+            motivo="limite_paginas",
+            paginas=total,
+            limite=EXTRACCION_MAX_PAGINAS,
+        )
+    plan = planear_bloques(total, min(EXTRACCION_PAGINAS_POR_BLOQUE, rechazo.limite or 15), EXTRACCION_SOLAPE_PAGINAS)
+    logger.info(
+        "El documento tiene %s páginas (tope de Document AI en línea: %s): se procesa en %s bloques %s",
+        total,
+        rechazo.limite,
+        len(plan),
+        plan,
+    )
+
+    semaforo = asyncio.Semaphore(BLOQUES_EN_PARALELO)
+    tareas = [
+        asyncio.ensure_future(_procesar_bloque(procesador_id, contenido, mime_type, version, desde, hasta, semaforo))
+        for desde, hasta in plan
+    ]
+    try:
+        try:
+            # Por debajo del tiempo que espera el front (130 s, ver `TIMEOUT_MS` del BFF): mejor decir «tardó demasiado» que
+            # que el navegador se rinda con el trabajo todavía corriendo y cobrándose.
+            crudos = await asyncio.wait_for(asyncio.gather(*tareas), timeout=IA_TIMEOUT)
+        except asyncio.TimeoutError as exc:
+            raise httpx.ReadTimeout("Los bloques del documento no terminaron a tiempo") from exc
+    except BaseException:
+        # Un bloque que falla no deja a los demás procesando (y cobrando) un resultado que nadie va a usar.
+        for tarea in tareas:
+            tarea.cancel()
+        await asyncio.gather(*tareas, return_exceptions=True)
+        raise
+
+    estructura = await estructura_tarea
+    procesado_en = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    metadata: dict[str, Any] = {
+        "procesado_en": procesado_en,
+        "quality_alert": False,
+        "engine": "document_ai_extractor",
+        "engine_version": version or None,
+        "paginas_totales": total,
+        "bloques": [{"desde": desde, "hasta": hasta} for desde, hasta in plan],
+        # Lo que Google cobró: más que `paginas_totales` por las páginas que los bloques repiten.
+        "paginas_procesadas": sum(hasta - desde + 1 for desde, hasta in plan),
+    }
+
+    documentos = [crudo.get("document", {}) for crudo in crudos]
+    if all(d.get("entities") is None for d in documentos):
+        logger.warning(
+            "Ningún bloque de la respuesta de Document AI (procesador %s) trae document.entities: se marca quality_alert.",
+            procesador_id,
+        )
+        metadata["quality_alert"] = True
+        metadata["motivo"] = _MOTIVO_NO_LEGIBLE
+        return {"confianza_promedio": None, "confianza_minima": None, "_metadata": metadata}
+
+    capas: list[dict[str, Any]] = []
+    por_bloque: list[dict[str, Any]] = []
+    for (desde, hasta), documento in zip(plan, documentos):
+        paginas = _paginas_absolutas(documento, desde, hasta)
+        capa, offsets_ocr = extraer_capa_ocr(documento, version or None)
+        capas.append(_con_paginas_absolutas(capa, paginas))
+        por_bloque.append(_extraer_entidades(documento.get("entities") or [], offsets_ocr, estructura, paginas))
+
+    capa_ocr, mapas = unir_capas_ocr(capas, total)
+    parciales = [
+        Parcial(desde, hasta, remapear_bloques(datos, mapa))
+        for (desde, hasta), datos, mapa in zip(plan, por_bloque, mapas)
+    ]
+    datos = combinar_datos(parciales, estructura)
+    return _cerrar_resultado(datos, estructura, capa_ocr, metadata, transformar)
+
+
 async def extraer_con_procesador(
     procesador_id: str,
     contenido: bytes,
     mime_type: str,
     version: str = "",
     transformar: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    permitir_bloques: bool = True,
 ) -> dict[str, Any]:
     """Extrae los campos de un documento con CUALQUIER Custom Extractor.
 
@@ -496,8 +816,29 @@ async def extraer_con_procesador(
     genérico no sabe qué campos esperar — eso lo define el esquema con el que
     se creó el procesador — así que aquí no hay ninguna limpieza por nombre de
     campo; publica lo que Document AI haya encontrado.
+
+    DOCUMENTOS LARGOS (2026-10-16). Document AI rechaza en línea más de 15 páginas. Si el rechazo trae cuántas tiene el
+    documento, se procesa por BLOQUES de páginas y se unen los resultados (`_extraer_por_bloques`), hasta
+    `EXTRACCION_MAX_PAGINAS`. El resultado tiene la misma forma, con las páginas del documento entero, y `_metadata` agrega
+    `paginas_totales`, `bloques` y `paginas_procesadas`. `permitir_bloques=False` lo apaga: una credencial de 20 páginas no es
+    una credencial, y no vale la pena cobrarla.
     """
-    crudo = await _procesar(procesador_id, contenido, mime_type, version)
+    # La estructura del esquema (qué se repite, qué es obligatorio) se lee MIENTRAS Document AI procesa: casi siempre sale de
+    # la memoria, y la primera vez no alarga la extracción porque corren juntas.
+    estructura_tarea = asyncio.ensure_future(_estructura_de(procesador_id))
+    try:
+        try:
+            crudo = await _procesar(procesador_id, contenido, mime_type, version)
+        except ErrorDocumentAI as exc:
+            if not (permitir_bloques and exc.motivo == "limite_paginas" and exc.paginas):
+                raise
+            return await _extraer_por_bloques(
+                procesador_id, contenido, mime_type, version, transformar, exc, estructura_tarea
+            )
+        estructura = await estructura_tarea
+    finally:
+        if not estructura_tarea.done():
+            estructura_tarea.cancel()
     procesado_en = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     metadata: dict[str, Any] = {
         "procesado_en": procesado_en,
@@ -519,17 +860,8 @@ async def extraer_con_procesador(
 
     capa_ocr, offsets_ocr = extraer_capa_ocr(crudo.get("document", {}), version or None)
 
-    datos = _extraer_entidades(entidades, offsets_ocr)
-    if transformar is not None:
-        datos = transformar(datos)
-    # El PROMEDIO va primero porque es el que la interfaz muestra; el mínimo
-    # queda como dato de apoyo. Los dos se calculan sobre `datos` ANTES de
-    # meterle la capa `ocr`, que trae confianzas de otra naturaleza.
-    datos["confianza_promedio"] = _confianza_promedio(datos)
-    datos["confianza_minima"] = _confianza_minima(datos)
-    datos["ocr"] = capa_ocr
-    datos["_metadata"] = metadata
-    return datos
+    datos = _extraer_entidades(entidades, offsets_ocr, estructura)
+    return _cerrar_resultado(datos, estructura, capa_ocr, metadata, transformar)
 
 
 async def extraer_ine(contenido: bytes, mime_type: str = "image/jpeg") -> dict[str, Any]:
@@ -590,6 +922,8 @@ async def extraer_ine(contenido: bytes, mime_type: str = "image/jpeg") -> dict[s
         mime_type,
         DOCAI_VERSION_INE,
         transformar=lambda datos: _descomponer_anio_registro(_limpiar_ine(datos)),
+        # Una credencial son una o dos caras: si trae 20 páginas no es una credencial, y no se paga por procesarla.
+        permitir_bloques=False,
     )
 
 

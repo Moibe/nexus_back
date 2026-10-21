@@ -22,6 +22,7 @@ concurrencia): cada línea es un evento, `entrada` o `retiro`, y lo pendiente es
 lo que entró y no ha salido.
 """
 
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -86,7 +87,28 @@ def listar_pendientes(tenant: str) -> list[dict]:
     ]
 
 
-def retirar(tenant: str, id_entrada: str, motivo: str) -> bool:
+def datos_de_entrada(tenant: str, id_entrada: str) -> dict | None:
+    """La entrada tal como llegó (de ese tenant), o `None`. Para anotar qué documento se descartó."""
+    for e in registro.eventos(_nombre(tenant)):
+        if e.get("evento") == "entrada" and e.get("id") == id_entrada:
+            return _publica(e)
+    return None
+
+
+def listar_descartadas(tenant: str) -> list[dict]:
+    """Lo que se DESCARTÓ de esa bandeja, del descarte más reciente al más viejo: la entrada tal como llegó, más `descartadaEn` y,
+    si la persona lo escribió, `detalle`. Es lo que ve el filtro «Descartado» de la bandeja; el archivo sigue en el almacén."""
+    eventos = registro.eventos(_nombre(tenant))
+    entradas = {e["id"]: e for e in eventos if e.get("evento") == "entrada" and isinstance(e.get("id"), str)}
+    descartadas = [
+        {**_publica(entradas[e["id"]]), "descartadaEn": e.get("en"), **({"detalle": e["detalle"]} if e.get("detalle") else {})}
+        for e in eventos
+        if e.get("evento") == "retiro" and e.get("motivo") == "descartado" and e.get("id") in entradas
+    ]
+    return list(reversed(descartadas))
+
+
+def retirar(tenant: str, id_entrada: str, motivo: str, detalle: str | None = None) -> bool:
     """Saca una entrada de la bandeja. `False` si no existe o ya había salido.
 
     El archivo NO se borra del almacén: se retira de la bandeja porque pasó al
@@ -111,10 +133,30 @@ def retirar(tenant: str, id_entrada: str, motivo: str) -> bool:
                 "evento": "retiro",
                 "id": id_entrada,
                 "motivo": motivo,
+                # Lo que escribió la persona al descartar (opcional): el porqué, para quien revise después.
+                **({"detalle": detalle} if detalle else {}),
                 "en": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             },
         )
     return True
+
+
+_RE_ID = re.compile(r"[0-9a-f]{32}")
+
+
+def existe_en_otro_tenant(tenant: str, id_entrada: str) -> bool:
+    """¿Hay una entrada con ese id en la bandeja de OTRO tenant? Solo para anotar un intento cruzado (HU11 CA-6): a quien
+    pidió se le contesta igual que si no existiera.
+
+    Repasa el registro de cada tenant, así que un valor que ni tiene forma de id (32 hexadecimales) no se busca: no cuesta
+    nada rechazarlo y no se puede usar para hacer trabajar al servidor."""
+    if not _RE_ID.fullmatch(id_entrada):
+        return False
+    propio = _nombre(tenant)
+    for archivo in registro.ruta(propio).parent.glob("bandeja-*.jsonl"):
+        if archivo.name != propio and any(e.get("evento") == "entrada" and e.get("id") == id_entrada for e in registro.eventos(archivo.name)):
+            return True
+    return False
 
 
 def entrada_en_pipeline(tenant: str, id_entrada: str) -> dict | None:

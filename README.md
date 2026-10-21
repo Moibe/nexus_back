@@ -403,8 +403,10 @@ están en registros de solo agregar dentro del NAS (`{ALMACEN_RUTA}/.registro/`,
 SPs del DBA; solo cambian `servicios/bandeja.py` y
 `servicios/llaves_cliente.py`.
 
-**Un solo cliente.** El front opera con un tenant fijo, `NEXUS_TENANT` en su
-`.env` (default `demo`): de él muestra la bandeja y a él pertenecen las llaves.
+**Un tenant por organización** (desde el 2026-10-09, HU11). El front saca el tenant de la organización de la
+sesión (`tenantDe`); el administrador de plataforma, que no tiene organización, opera en el espacio de plataforma:
+`NEXUS_TENANT` en el `.env` del front (default `demo`). Y desde el 2026-10-14 este back no se fía de ese cálculo: ver
+«Aislamiento entre organizaciones», al final.
 
 **El dominio de los clientes** es `nexus-doc-api.buzzword.com.mx` (proxy de
 Soporte TI hacia el 8083, con certificado válido). Se pidió que reenviara solo
@@ -550,8 +552,9 @@ conoce el cliente, el `id` que recibió al subir. Lo subido a mano no se avisa.
 | error del servicio | `documento.fallido` | `error_del_servicio` |
 | tipo reconocido pero sin extractor o sin calibrar | `documento.fallido` | `tipo_sin_configurar` |
 
-**No se le cree a ciegas al front**, que hoy se alcanza desde internet sin
-iniciar sesión: la entrada tiene que existir en la bandeja de ese cliente y
+**No se le cree a ciegas al front** (hasta el 2026-10-07 se alcanzaba desde internet sin
+iniciar sesión; hoy pide login y esta ruta, además, comprueba por su cuenta que la persona sea de ese cliente: ver
+«Aislamiento entre organizaciones»): la entrada tiene que existir en la bandeja de ese cliente y
 haber salido de ella hacia el pipeline; el tipo y el motivo vienen de listas
 cerradas y el resto del cuerpo lo arma el servidor; y se acepta un resultado
 final por entrada (repetir el mismo aviso no programa nada). Así, quien use el
@@ -984,3 +987,960 @@ tail -2 /home/mbriseno/webhook-central/logs/deploys.jsonl
   página en Document AI. En la red interna es una decisión defendible, pero es
   una decisión: cualquier miembro de la empresa que alcance el puerto puede
   generar costo.
+
+## Acceso: login con JWT (Sprint 1, desde el 2026-10-07)
+
+HU01 (alta de administradores), HU03 (login), HU04 (cambio de contraseña en el
+primer acceso) y HU10 (recuperar la contraseña, más abajo). Código: `routers/auth.py`, `servicios/auth.py`
+(argon2id, reglas, JWT, refresh) y `servicios/usuarios.py` (registro
+PROVISIONAL `usuarios.jsonl`, espejo de los SPs pedidos en **NEX-319**; cuando
+lleguen, cambia solo ese módulo). Verificación: `verificar_auth.py`.
+
+**Configurar** (los dos procesos, back y front):
+
+```
+AUTH_JWT_SECRET=<mínimo 32 caracteres; python -c "import secrets; print(secrets.token_urlsafe(48))">
+```
+
+El mismo valor en el `.env` de `nexus_back` (firma los JWT) y en el del front
+(los verifica con `jose`, y además le pregunta a `GET /auth/sesion` si la sesión sigue viva). Sin él, `/auth/*` responde 503 y el front no
+deja entrar a nadie.
+
+**Crear un administrador de plataforma** (puede haber varios: cada corrida con otro correo crea otro; en el servidor; ahí el virtualenv es `venv/`, sin punto — en la laptop es `.venv/`):
+
+```
+cd /home/mbriseno/code/nexus_back-dev   # o nexus_back en prod
+venv/bin/python bootstrap_admin.py --email alguien@grupocsi.com --nombre Nombre --apellidos "Apellidos"
+```
+
+Imprime la contraseña temporal UNA vez y, si este ambiente manda correo de
+verdad, también le manda a la persona su bienvenida con los accesos (ver «La
+bienvenida con los accesos temporales»; `--sin-correo` lo evita). Al entrar con
+ella, la app obliga a cambiarla antes de mostrar nada.
+
+**Endpoints** (`/auth/*`, con la llave de servicio; los llama solo el BFF del
+front, que pone las cookies httpOnly `nx_acceso` y `nx_refresh`):
+
+| Ruta | Qué hace |
+|---|---|
+| `POST /auth/login` | correo + contraseña → JWT de acceso (15 min) + refresh (7 días). Errores con `codigo`: `correo_invalido`, `correo_no_existe`, `credenciales` (+ `intentosRestantes`), `bloqueada` (423, + `hastaEn`), `desactivada` (403). |
+| `POST /auth/refresh` | refresh vigente → tokens nuevos; el refresh anterior queda revocado. |
+| `POST /auth/logout` | revoca la sesión de ESE refresh token y solo esa (las de otros dispositivos siguen). 204 aunque el token no exista o ya esté revocado; 503 solo si el almacén no responde. Deja un evento `LOGOUT` en la bitácora de auditoría. Su JWT deja de valer en este back al instante (401 `sesion_cerrada`) y en el front en unos segundos; ver *El JWT de acceso y la sesión cerrada* abajo. |
+| `GET /auth/yo` | el usuario del Bearer. |
+| `GET /auth/sesion` | ¿sigue viva la sesión de este JWT? (HU05, 2ª etapa). 200 con `estado`: `viva`, `cerrada` (se cerró o nunca existió), `desactivada` o `inexistente`; un 401 o 503 quiere decir que NO se pudo contestar. Lo consulta el guard del front, una vez cada pocos segundos por sesión abierta. |
+| `POST /auth/contrasena` | primer acceso: `nueva` + `confirmacion` (cierra todas las sesiones); después: también `actual`. Reglas: 12 caracteres, mayúscula, minúscula, número, carácter especial. |
+
+**La contraseña (HU04 CA-3).** Solo se exigen las cinco reglas de los chips (12
+caracteres, mayúscula, minúscula, número, carácter especial): 400 `reglas`, con
+`faltan`. **No hay regla de «contraseña obvia»**: ni palabras comunes, ni el
+nombre o el correo de la persona, ni secuencias como `abcde` o `12345`. Existió
+del 2026-10-14 al 2026-10-19 (`auth.contrasena_obvia`, 400 `contrasena_debil`) y
+se QUITÓ a pedido de Moibe: el medidor del front solo cuenta las cinco reglas y
+decía «Muy segura» de contraseñas como `Abcdef@182182`, que el servidor luego
+rechazaba al final, y la lista de palabras era corta y fácil de esquivar
+(`Bcdefg@182182` pasaba). El criterio de HU04 pedía "no contenga el nombre de
+usuario ni palabras comunes de diccionario"; hoy eso NO se cumple, y
+`Password123!` es una contraseña válida. Si se vuelve a pedir, que el front y el
+back apliquen LA MISMA regla, para que el medidor no prometa lo que el servidor
+rechaza. El primer acceso deja el evento
+`FIRST_LOGIN_PASSWORD_CHANGED` (HU04 CA-5: la persona, la sesión desde la que
+se cambió y cuántas sesiones se cerraron; nunca la contraseña ni su hash).
+
+**Política** (del diseño; vivirá en `uspRecordLoginResult`): 5 intentos
+fallidos seguidos → 15 minutos de bloqueo, que se levanta solo; los intentos
+durante el bloqueo no lo alargan. La base nunca ve contraseñas ni tokens: se
+guardan el hash argon2id y el SHA-256 del refresh.
+
+### Recuperar la contraseña (HU10)
+
+Tres pasos, los tres SIN sesión, porque quien los usa no puede entrar:
+
+| Ruta | Qué hace |
+|---|---|
+| `POST /auth/recuperacion/solicitar` | "olvidé mi contraseña": manda el enlace al correo de la cuenta. Responde SIEMPRE lo mismo si el correo tiene forma de correo (`correo_invalido` 400 si no; `demasiados_intentos` 429 si rebasa un límite). |
+| `POST /auth/recuperacion/revisar` | ¿el enlace todavía sirve? Lo pregunta la pantalla antes de pintar el formulario. Sin gastarlo. 410 `enlace_invalido` / `enlace_usado` / `enlace_vencido` (el mismo mensaje para los tres). No devuelve de quién es. |
+| `POST /auth/recuperacion/confirmar` | contraseña nueva + confirmación + token. Valida la contraseña ANTES de gastar el enlace (un typo no lo quema), lo gasta, cambia la contraseña y **cierra todas las sesiones**. |
+
+Código: `routers/auth.py` (los tres endpoints), `servicios/tokens.py` (enlaces de
+un solo uso), `servicios/correo.py` (envío), `servicios/plantillas_correo.py`
+(los textos), `servicios/auditoria.py` (bitácora y límites). Verificación:
+`verificar_recuperacion.py` (una sección por criterio de aceptación).
+
+**Decisiones, escritas como decisiones y no como omisiones** (conviene que Cesar
+las conozca; NEX-241):
+
+1. **CA-2 gana sobre CA-3 y sobre el Figma.** CA-2 dice que nunca se revele si
+   una cuenta existe; CA-3 pide ofrecer a quien escribe un correo elegir entre
+   el principal y el de recuperación, ambos enmascarados. No caben juntos: una
+   pantalla de elección ES la prueba de que la cuenta existe. El enlace va al
+   correo **principal** y la respuesta es siempre la misma. Por la misma razón
+   no se dibuja el estado "El correo electrónico no existe" del Figma ni se dice
+   "te enviamos un enlace a X" (ambos afirman o niegan que la cuenta existe).
+   El teléfono de recuperación no se usa: no hay canal SMS.
+
+   *Ojo:* el login (HU03) sí distingue "el correo no existe" de "contraseña
+   incorrecta", porque así lo dibujó UX. Mientras eso siga, este endurecimiento
+   no cierra del todo la enumeración. Es una decisión de producto para las dos
+   pantallas juntas.
+
+   **Revertido a pedido de QA el 2026-10-20** (incidencia HU10 CA4: «al ingresar un correo que no está registrado
+   debería mandar la notificación en letras rojas "El correo electrónico no existe…"»). Con
+   `RECUPERACION_DICE_SI_EXISTE` encendida —el valor por defecto— `/auth/recuperacion/solicitar` contesta
+   `404 correo_no_existe` cuando el correo no tiene cuenta, y la pantalla dibuja el error del Figma. Una cuenta
+   desactivada o sin primer acceso sigue recibiendo el 200 neutral. La solicitud se anota igual (`SIN_CUENTA`) y los
+   límites de abajo se aplican antes. **Es una decisión de producto con costo de seguridad**: con ella cualquiera puede
+   preguntar si un correo tiene cuenta (el login ya lo permitía). Para volver a CA-2 basta
+   `RECUPERACION_DICE_SI_EXISTE=0` en el `.env` y reiniciar; `verificar_recuperacion.py` prueba los dos modos.
+
+2. **CA-9 se resuelve en el servidor.** Una cuenta que nunca ha entrado no recibe
+   enlace de recuperación, pero la pantalla le responde lo mismo que a todos; lo
+   que cambia es el correo, que le dice que termine su primer acceso. Además es
+   lo único correcto: restablecer apagaría en silencio `debeCambiar`.
+
+3. **CA-7 cierra las sesiones y, desde HU05, también el JWT.**
+   Restablecer revoca todas las sesiones: nadie puede renovar y los guards que
+   validan un Bearer (`/auth/*`, `/usuarios/*`, `/organizaciones/*`) rechazan
+   ya el JWT de esas sesiones (401 `sesion_cerrada`). Lo que decide solo el
+   front (bandeja, llaves, webhooks...) lo rechaza su guard, que lo consulta en
+   `GET /auth/sesion` (ver *El JWT de acceso y la sesión cerrada* más abajo).
+
+4. **Restablecer levanta el bloqueo del NAVEGADOR**, no solo el de la cuenta.
+   Quien agotó sus cinco intentos y por eso vino aquí no debe toparse con
+   "cuenta bloqueada" al entrar con la contraseña nueva. Solo el del navegador
+   que completó el restablecimiento.
+
+5. **El correo se manda después de responder** (`BackgroundTasks`), para que el
+   tiempo de envío no delate si la cuenta existe, y un fallo de envío no cambia
+   lo que ve la persona. Queda una diferencia de milisegundos (con cuenta se
+   crea un token y se escribe un renglón más) que no se pretende eliminar.
+
+**Límites contra abuso** (`RECUPERACION_*` en `config.py`, en segundos salvo lo que
+dice "por hora"). Esa pantalla la abre cualquiera y cada solicitud puede mandar un
+correo: sin límite sería una forma de llenarle el buzón a alguien o de gastar el
+relay de CSI. Cuentan TODAS las solicitudes, existan o no las cuentas (si no,
+delatarían cuáles existen) y se aplican antes de mirar si la cuenta existe: 60 s
+entre dos del mismo correo, 5 por hora por correo, 5 por hora por navegador, 30
+por hora por IP y 200 por hora en total. Los de IP y total no dependen de nada que
+el cliente controle (la cookie del navegador se puede no mandar).
+
+**Auditoría.** `PASSWORD_RESET_REQUESTED` (una por solicitud válida, exista o no
+la cuenta) y `PASSWORD_RESET_COMPLETED` caen hoy en `auditoria.jsonl`: es un
+registro PROVISIONAL, como los demás. La tabla `audit_event` está en el
+diccionario de datos pero todavía no existe en la base ni se le ha pedido al
+DBA. Nunca llevan el token ni la contraseña.
+
+**El correo.** `CORREO_MODO=archivo` (el default) deja cada correo como `.eml` en
+`<ALMACEN_RUTA>/correos/` y no toca la red; con `smtp` sale de verdad (necesita
+`CORREO_SMTP_HOST` y `CORREO_REMITENTE`); con `api` sale por el servicio HTTP de
+ART Broker (la subsección de abajo). **Mientras en dev siga en `archivo`, nadie
+recibe el enlace**: la HU está completa pero el correo se lee del disco.
+`FRONT_URL` tiene que apuntar al front real de cada ambiente (en dev de CSI es
+`https://dev-nexus-doc.buzzword.com.mx` —el dominio, no la IP—, no el localhost del
+default), porque de ahí sale el enlace de todos los correos. Los `.eml` no se limpian solos.
+
+#### Salir por el servicio de ART Broker (`CORREO_MODO=api`, desde el 2026-10-13)
+
+TI todavía no entrega el relay SMTP, pero ART Broker ya tiene un servicio HTTP que
+manda correo (Ray y Brandon, 2026-10-13). El modo `api` lo usa: pide un token con
+`POST /OAuth/AuthToken` (`{usr, psd}`) y manda con
+`POST /II_1_General_Notifications/Emailsending` (`mailRecipients`, `mailCc`,
+`mailBcc`, `mailSubject` y `mailBody` en HTML) llevando ese token como `Bearer`.
+Se enciende con cuatro variables del `.env` DEL SERVIDOR (nunca del repo, nunca de
+un chat):
+
+    CORREO_MODO=api
+    CORREO_API_URL=https://<host del servicio>   # sin ruta; solo https (http solo a localhost)
+    CORREO_API_USUARIO=<el usuario que dé ART>
+    CORREO_API_CONTRASENA=<su contraseña>
+
+Lo que hace el código, y por qué:
+
+- **Un token para todos.** Se guarda en memoria hasta un minuto antes de su `exp` (si
+  no es un JWT legible, cinco minutos); varios hilos con el token en frío piden UNO.
+  Un 401 o 403 al enviar lo renueva UNA vez y reintenta.
+- **No reintenta lo que pudo haber salido.** Un timeout o un 5xx no se repiten: el
+  servicio pudo haber aceptado el correo y se duplicaría. Quien llama ya decide qué
+  hacer con el `ErrorCorreo` (la recuperación contesta lo mismo exista o no la cuenta).
+- **200 no es éxito por sí solo.** Un HTTP 200 con `error: true`, o con algo que no
+  es JSON (una página de login de un proxy), es una falla.
+- **Un solo destinatario.** `mailRecipients` es una cadena y el servicio podría
+  partirla: no se admiten `;`, `,`, `<`, `>`, comillas ni espacios.
+- **Nada de secretos afuera.** No sigue redirecciones, y ni el log ni el mensaje de
+  error llevan el cuerpo del correo, sus enlaces, el token ni las credenciales,
+  aunque el servicio los repita en su respuesta.
+- **Sin adjuntos.** El envío con adjuntos del servicio recibe rutas de red del servidor
+  de ART; aquí no se usa.
+
+Lo que NO controlamos, y hay que pedirles a Ray y a Brandon: el **remitente** (lo
+decide el servicio; sin uno propio de NexusDoc, un "restablece tu contraseña" de otra
+marca parece phishing), **credenciales dedicadas** (las que nos pasaron son de ART
+Broker y se comparten), la **vigencia del token**, los **límites de envío**, la
+**forma de sus errores** y la **URL de producción**.
+
+`python verificar_correo.py` prueba todo esto contra un servidor FALSO en localhost y
+no toca el servicio real. La única prueba real que cabe es UN correo al propio
+buzón de quien la corra, a mano y nunca en bucle: `python probar_correo.py
+tu.correo@grupocsi.com` (en el servidor, o donde estén puestas las variables). Dice
+si salió y por dónde, o por qué no, sin imprimir nunca el usuario, la contraseña ni
+el token.
+
+#### La bienvenida con los accesos temporales (HU01, HU02, HU06 CA-1; desde el 2026-10-13)
+
+Al dar de alta a alguien —`bootstrap_admin.py` (superadmin), `POST /organizaciones/` (el
+administrador de la organización) y `POST /usuarios/` (un usuario)— se le manda el correo de
+bienvenida del diseño: su usuario, su contraseña temporal y el enlace a la pantalla de inicio de
+sesión (`FRONT_URL`). Los textos son LITERALES del Figma, con tres presentaciones (Super
+Administrador, administrador de una organización y usuario): `servicios/plantillas_correo.py`.
+Lo manda `servicios/invitaciones.py`, EN LÍNEA (hace falta saber si salió) y con la espera acotada
+a 10 s por llamada. Contesta una de tres cosas:
+
+- **`enviado`**: salió de verdad (`CORREO_MODO` `api` o `smtp`). La contraseña NO se devuelve: la
+  persona la tiene en su bandeja, y quien la dio de alta no tiene por qué verla.
+- **`sin_canal`**: este ambiente no manda correo (`archivo`, `silencio`). Todo como antes: la
+  contraseña se devuelve UNA vez y la pantalla la muestra. No se escribe un `.eml` con ella, porque
+  en un servidor sería una contraseña en claro, guardada, en el NAS.
+- **`fallo`**: había canal y no se pudo (el servicio no contestó, rechazó el envío). Igual que
+  `sin_canal`, y la pantalla avisa en rojo que el correo no salió.
+
+La respuesta del alta lleva `correoEnviado` y `correoMotivo`; `contrasenaTemporal` solo viene si el
+correo NO salió. El alta deja el evento `USER_CREATED` en la bitácora (HU06 CA-1 y CA-7: el usuario
+creado, su rol, quién lo dio de alta y qué pasó con su correo; nunca la contraseña). El script de
+bootstrap imprime la contraseña SIEMPRE, salga o no el correo: es el respaldo de quien lo corre.
+
+**La contraseña viaja por correo, como dibuja el diseño** (y, con `api`, por el servicio de ART).
+Por eso el cuerpo jamás se registra, y por eso la cuenta nace obligada a cambiarla en el primer
+acceso. El botón «Reenviar invitación» (HU06 CA-6) llama a `invitaciones.reenviar` por HTTP (ver abajo).
+
+**La contraseña temporal CADUCA (HU06 CA-5, desde el 2026-10-13).** Sirve `TOKEN_ACTIVACION_HORAS`
+(48 por default; admite fracciones —`0.01` es menos de un minuto, para probar sin esperar dos
+días— y `0` apaga la caducidad) a partir del alta o de la última reemisión. Pasado ese tiempo,
+entrar con ella —aunque sea la correcta— da **403 `activacion_vencida`** (el front lleva a «Tu enlace
+de activación ha caducado»), no cuenta como intento fallido ni bloquea (queda `EXPIRED` en la bitácora
+de intentos) y se dice DESPUÉS de verificar la contraseña: a una equivocada se le sigue diciendo
+`credenciales`. Quien entró a tiempo y no terminó tampoco puede completar el primer acceso
+(`POST /auth/contrasena` da el mismo 403 y le cierra las sesiones). Aplica a todos los que dan de alta
+en pantalla, el administrador de una organización incluido; **NO** a los administradores de
+plataforma (su alta es por línea de comandos y no habría quien les generara un acceso nuevo desde
+pantalla) ni a quien ya puso su contraseña. Ojo al desplegar: las cuentas que ya estaban pendientes
+y tengan más de 48 horas caducan en cuanto se despliega.
+
+**Reemitir la contraseña** (`reenviar_invitacion.py --email x@y.com`, o `invitaciones.reenviar`): a una
+cuenta que SIGUE en su primer acceso le genera una contraseña temporal NUEVA, invalida la anterior y
+las sesiones que se hubieran abierto con ella, levanta los bloqueos, empieza otra vez las horas de
+vigencia y le manda la bienvenida. Imprime la contraseña siempre. Deja el evento `INVITATION_REISSUED`
+en la bitácora. A quien ya hizo su primer acceso se le niega: para eso está «Olvidé mi contraseña».
+Es lo que se usa para quien dejó caducar su acceso; desde el 2026-10-13 también por pantalla (siguiente
+párrafo). El script sigue sirviendo para el administrador de plataforma, que no tiene quién se lo reenvíe.
+
+**«Reenviar invitación» por pantalla (HU06 CA-6, 2026-10-13):** dos endpoints, el mismo servicio.
+`POST /usuarios/{guid}/reenviar-invitacion` (administrador de la organización, sobre un usuario de la
+suya) y `POST /organizaciones/{guid}/usuarios/{usuario}/reenviar-invitacion` (administrador de
+plataforma, sobre un usuario de esa organización: es quien le reenvía el acceso al ADMINISTRADOR de una
+organización, que no tiene a nadie por encima en la suya). Sin cuerpo. La respuesta es la del alta:
+`usuario` (el renglón del listado, ya actualizado) más `correoEnviado`, y `contrasenaTemporal` UNA vez
+solo si el correo no salió (`correoMotivo`: `sin_canal` o `fallo`). Se niega con 409 `ya_activa` (ya hizo
+su primer acceso) o 409 `desactivada` (reactívala antes: a una cuenta desactivada no se le manda nada);
+`invitaciones.por_que_no_reenviar` decide ambos. 404 si el usuario no es de esa organización. Queda
+`INVITATION_REISSUED` con el administrador responsable. La respuesta no se guarda en caché
+(`Cache-Control: no-store`: puede llevar una contraseña).
+
+Para que la pantalla pinte «Pendiente» y «Caducada», cada renglón del listado trae
+`debeCambiarContrasena` y `accesoVencido` (pendiente Y ya pasaron las horas; HU06 CA-5).
+
+Y `sesionActiva` (2026-10-14): ¿tiene una sesión sin cerrar y sin vencer? Cerrar una sesión (HU05) no
+cambia el estatus —la cuenta sigue activa y puede volver a entrar—, así que sin este dato la pantalla se
+veía igual antes y después de «Cerrar sesión». Sale de `usuarios.tiene_sesion`; una sesión sin fecha de
+vencimiento legible se toma por vencida, igual que al canjear el refresh. Con la base hará falta que
+`uspGetTenantUsers` (NEX-336) lo devuelva (p. ej. `hasActiveSession`): no está en lo pedido.
+
+Se prueba en `verificar_invitaciones.py` (la plantilla, el servicio, las altas por HTTP con un canal
+simulado, el script de bootstrap, la caducidad con el reloj movido y la reemisión) y, en el navegador,
+con `probar-correo-bienvenida.mjs`, `probar-activacion-caducada.mjs` y `probar-reenviar-invitacion.mjs`.
+
+### El JWT de acceso y la sesión cerrada (HU05)
+
+**Dos etapas, las dos HECHAS (la 1ª el 2026-10-12, la 2ª el 2026-10-13).** Cerrar
+una sesión —voluntaria (HU05 CA-1), forzada (HU05 CA-4), por restablecer la
+contraseña (HU10 CA-7) o por desactivar la cuenta— revoca la sesión. Hasta el
+2026-10-12 eso solo impedía RENOVAR: el **JWT de acceso** ya emitido seguía
+valiendo hasta que venciera (`AUTH_ACCESO_MIN`, 15 minutos; medido: 897 de 900
+segundos), también para ESCRIBIR y para páginas de administrador. Lo más grave que
+se midió: con el JWT de un administrador al que se le forzó el cierre se podía
+crear un usuario, hacerlo administrador, y ese usuario tenía una sesión de 7 días
+que sobrevivía al cierre.
+
+**1ª etapa (2026-10-12): lo que valida este back.** Los tres guards que validan un
+Bearer (`_usuario_del_bearer`, `_admin_de_organizacion`, `_exigir_admin_plataforma`)
+comprueban, en la misma lectura del registro (`usuarios.por_guid_y_sesion`), que la
+sesión del `sid` del JWT siga viva. Si no, **401 `sesion_cerrada`**; el front, al
+verlo en las pantallas de Usuarios y Organizaciones, borra las cookies y manda al
+login con `?volver=`. Una sesión está viva si existe, es de ese usuario y no está
+revocada por ningún motivo; `ROTATED` cuenta como revocada (al renovar se emite una
+sesión nueva con su propio JWT, y el front solo renueva cuando el anterior ya
+venció: si algún día renovara por anticipado, `verificar_auth.py` 4c lo detecta).
+Una sesión que no existe en el registro, o que es de OTRA persona, tampoco vale
+(ante la duda, se rechaza). Una cuenta **desactivada** sigue recibiendo su 403
+`desactivada`, que se comprueba antes.
+
+**2ª etapa (2026-10-13): lo que decide solo el front.** Las rutas que decide solo el
+front —bandeja, llaves, webhooks, archivos, procesadores: unas veinte rutas `/api`—
+mandan al back solo la llave de servicio, no el Bearer, y las protege el guard de
+`hooks.server.ts`. Ese guard verificaba el JWT con `jose` y nada más, así que
+aceptaba el de una sesión cerrada (o de una cuenta desactivada) hasta que venciera.
+Ahora, además, le pregunta a este back `GET /auth/sesion` con el JWT como Bearer. Si
+la respuesta es `cerrada`, `desactivada` o `inexistente`, tira las cookies: las
+pantallas van al login (o a "Tu cuenta se encuentra desactivada") y las rutas `/api/*`
+contestan 401 `sesion_cerrada` (o 403 `desactivada`). Lo que hay que saber:
+
+- **Una respuesta definitiva es un 200 con `estado`.** Un 401 o un 503 (también el del
+  almacén caído) quieren decir que no se pudo contestar, y el guard no lo toma como
+  sesión muerta: es una CONSULTA, no un intento de acceso.
+- **Se deja pasar si el back no contesta** (caído, mal configurado, sin esta ruta o más
+  lento que el tope de 2 s): un back con problemas no debe dejar a todo el mundo fuera
+  de la app. Solo se rechaza con una respuesta explícita. Mientras el back no conteste,
+  un cierre de sesión no se nota en esas rutas —igual que antes de la 2ª etapa—; lo que
+  pasa por el back lo sigue rechazando él. Queda un aviso en el log del front
+  (`[sesion] /auth/sesion ...: se deja pasar`). **Orden de despliegue: el back
+  primero.** Con el front nuevo y el back viejo la consulta da 404 y la protección queda
+  apagada sin más señal que ese aviso; después de desplegar hay que comprobar, con un
+  JWT real, que `GET /auth/sesion` responde 200 `viva`.
+- **La respuesta se guarda 3 segundos por sesión** en el front
+  (`VIGENCIA_COMPROBACION_MS`): es lo máximo que tarda en notarse un cierre en esas
+  rutas, a cambio de no preguntar en cada petición (como mucho una vez cada 3 s por
+  sesión; la bandeja sola consulta cada 10 s). Si no se pudo saber, se recuerda 1.5 s,
+  para que un back colgado no haga esperar su tope a cada petición. La clave es persona
+  + sesión, y un JWT sin `sid` no se acepta (el back tampoco). Quien llega con el
+  refresh viejo dentro de la gracia de la renovación (ver abajo) también pasa por esta
+  pregunta, con el JWT nuevo: un cierre no se cuela por ahí.
+- **Para que preguntar tan seguido fuera viable hubo que arreglar el registro
+  provisional.** `usuarios._indice()` releía y repasaba `usuarios.jsonl` completo en
+  CADA llamada. Ahora se guarda mientras el archivo no cambie (su "firma": ruta, inodo,
+  tamaño y fecha; el registro es de solo agregar, y lo que agrega otro proceso, como
+  `bootstrap_admin.py`, también se nota por el tamaño; una edición EN SITIO del mismo
+  tamaño solo se nota por la fecha de modificación, y si cae en el mismo tick del reloj
+  ni así: contradice el contrato del registro), y el repaso es lineal:
+  antes cada revocación recorría todas las sesiones (20 mil eventos con 10 mil
+  sesiones: de 1.4 a 2.2 s; ahora, de 12 a 60 ms). El índice se comparte entre quienes
+  lo consultan y no se modifica; lo que sale hacia afuera (`_publico`) son copias.
+  **Lo que NO resuelve:** tras CADA escritura (login, renovación, cierre)
+  la siguiente consulta reconstruye todo, bajo el candado global del registro. Medido
+  por los revisores: 78 ms con 10 mil renglones, 0.4 s con 100 mil y 3.6 s con 500 mil.
+  Pasado ~2 s el guard deja pasar sin comprobar, y el back avisa en el log cuando una
+  reconstrucción tarda más de 0.5 s (`verificar_auth.py` 4j). Con unas 50 personas activas son unos 3 mil
+  renglones al día: es cuestión de meses. La salida es la base, no más caché.
+- **Hoy `GET /auth/sesion` contesta `usuarios.por_guid_y_sesion` sobre ese registro, y
+  con la base NO bastará con cambiar ese módulo.** `security.uspGetSession` (NEX-319)
+  busca por el hash del refresh, y el JWT trae el `sid`, no ese hash: hace falta una
+  consulta por (persona, sesión) que NO está en lo pedido al DBA. Está propuesta en
+  `docs/solicitudes-dba.md` (6.2, `uspGetSessionStatus`) y falta pedirla. Se hizo sin
+  esperar al DBA porque el registro provisional lo permite; el guard del front no
+  cambia cuando llegue.
+- **Renovar la sesión sin perderla (mismo día).** Revisándolo aparecieron dos defectos
+  de fondo que esta etapa volvía más visibles. (1) En el front, varias peticiones con el
+  mismo refresh renovaban cada una por su cuenta: un refresh es de un solo uso, así que
+  el back rechazaba a las demás y esos rechazos tiraban las cookies recién emitidas.
+  Ahora comparten UNA renovación (`renovarSesion`, con una gracia de 5 s para las que
+  salieron con el refresh viejo, contada desde que el back CONTESTA: con un back lento
+  de 6 s la gracia no se gasta esperando, y mientras la llamada está en curso nadie la
+  reemplaza) y solo un rechazo EXPLÍCITO del back (401 `sesion_invalida` o
+  `sesion_vencida`) tira las cookies: un 5xx, un timeout o el back caído las conservan y
+  contestan 503. Si el front se rinde (30 s) justo después de que el back canjeó el
+  refresh, la persona tiene que volver a entrar: su sesión nueva queda huérfana y vence
+  sola. (2) En el back, `/auth/refresh` comprobaba, revocaba y creaba la sucesora en
+  tres pasos sueltos: de un refresh podían salir varias sesiones vivas (de ocho
+  peticiones a la vez, entre cinco y ocho según la ronda) y un cierre forzado a medias
+  dejaba una sucesora viva. Ahora es un solo paso atómico (`usuarios.rotar_sesion`), y el login
+  revalida, bajo el mismo candado, que la contraseña verificada siga siendo la vigente
+  y la cuenta siga activa (`crear_sesion(hash_verificado=...)`).
+- **El cambio de contraseña revalida igual (2ª revisión, 2026-10-13).** Las dos
+  verificaciones con argon2 del cambio se hacen fuera del candado. Si en esa ventana el
+  dueño restablecía la contraseña (lo que cierra TODAS las sesiones), el cambio de la
+  sesión ya cerrada la pisaba: quien tuviera una sesión robada recuperaba la cuenta él
+  solo (reproducido por HTTP). Ahora `fijar_contrasena(..., sesion_guid=...,
+  hash_verificado=...)` comprueba, bajo el candado, que esa sesión siga viva y que la
+  contraseña verificada siga siendo la vigente: si no, 401 `sesion_cerrada` o 401
+  `actual_incorrecta` (otro dispositivo la cambió mientras tanto) y no escribe nada. Y un
+  login que se rechaza en la revalidación ya no queda anotado como acierto: cuenta como
+  contraseña mala (con sus `intentosRestantes`) o como cuenta desactivada.
+- **Lo que queda abierto.** (a) `POST /auth/logout` lee la sesión por su refresh y la
+  revoca después, en dos pasos: si una renovación canjea ESE refresh en medio, la sesión
+  sucesora sigue abierta (no se guarda de quién viene). Con el front compartiendo la
+  renovación, la ventana es de milisegundos. (b) El canje son dos escrituras: si falla
+  la segunda (el disco, el NAS), la sesión queda cerrada y la persona debe entrar de
+  nuevo; nunca quedan dos vivas. (c) `rotar_sesion`, `crear_sesion(hash_verificado)` y
+  `fijar_contrasena(sesion_guid, hash_verificado)` valen por el candado de UN proceso:
+  con la base cada una debe ir en una transacción o ser un SP propio
+  (`docs/solicitudes-dba.md`, 6.2).
+
+Se prueba en `verificar_auth.py` (4e el endpoint, 4f la caché, 4g el repaso lineal
+contra el cuadrático de antes con 300 registros al azar, 4h el canje atómico, 4i el
+cableado POR HTTP —login, refresh y cambio de contraseña ante carreras—, 4j el aviso de
+las reconstrucciones lentas), `verificar_usuarios.py` (8c, el escenario del
+administrador cerrado a la fuerza), `verificar_organizaciones.py` (6b) y, en el
+navegador, con `probar-sesion-cerrada-front.mjs` y `probar-renovacion.mjs` (en la
+suite) y `probar-guard-renovacion.mjs` y `probar-sesion-sin-back.mjs` (a mano, con el
+build de producción).
+
+**Lo que NO cubre.** Los claims del JWT (`rol`, `tnt`) se leen al emitirlo: cambiar el
+rol de alguien (HU07) o moverlo de organización se nota hasta que renueva (15 minutos
+como máximo). Eso no es la sesión y no se tocó.
+
+## Organizaciones (Sprint 1 · HU02, desde el 2026-10-07)
+
+`routers/organizaciones.py` + `servicios/tenants_registro.py`. Verificación:
+`verificar_organizaciones.py`.
+
+**Dónde viven.** En el registro provisional `tenants.jsonl`, NO en
+`security.tenants` — que ya existe, con su `uspCreateTenant`. La razón es
+práctica: **dev no tiene base de datos** (`SQLSERVER_HOST` vacío a propósito),
+así que contra SQL esta pantalla no se podría ni probar. El contrato del
+módulo imita al de los SPs; cuando haya base dev, cambia ese archivo y nada
+más.
+
+**Quién puede.** Solo el administrador de plataforma: además de la llave de
+servicio, cada endpoint exige que el Bearer sea de alguien con
+`isPlatformAdmin`. La llave la tiene el front entero, así que sola no
+distingue quién pide.
+
+| Ruta | Qué hace |
+|---|---|
+| `GET /organizaciones/` | listado, con los datos de su administrador |
+| `GET /organizaciones/coincidencias?nombre=` | el aviso del alta: qué organizaciones se llaman igual (`ID encontrado`) y qué slug se asignaría (`ID asignado`) |
+| `POST /organizaciones/` | crea la organización **y la cuenta de su administrador** y le manda su bienvenida por correo (`correoEnviado`); devuelve `contrasenaTemporal` UNA vez SOLO si el correo no salió (`correoMotivo`). 409 `correo_registrado` |
+| `GET /organizaciones/{guid}/usuarios` | sus usuarios, con la misma forma que el listado de su administrador (`GET /usuarios/`): número de orden, nombre, rol EN esa organización, estado y fecha de alta |
+| `POST /organizaciones/{guid}/usuarios/{usuario}/reenviar-invitacion` | HU06 CA-6: lo mismo que el de `/usuarios`, pero lo ejecuta el administrador de plataforma sobre un usuario de esa organización (sobre todo su administrador). 404 si no es de ella |
+| `POST /organizaciones/{guid}/usuarios/{usuario}/cerrar-sesion` | HU05 CA-4: el administrador de plataforma le cierra TODAS las sesiones a un usuario de esa organización. Ver «Desactivar, reactivar y cerrar sesión» |
+
+**Nombre, slug y código.** El nombre se puede repetir; el slug no. Al segundo
+"Seguros Monterrey" le toca `seguros-monterrey-1`, que es el "ID asignado" que
+anuncia el diseño. El código (`NEX-00001`) sigue una secuencia.
+
+## Usuarios de una organización (Sprint 1 · HU06 y HU07, desde el 2026-10-07)
+
+`routers/usuarios.py` + `servicios/roles.py`. Verificación:
+`verificar_usuarios.py`.
+
+**Quién puede**: el administrador de la organización (membresía con rol
+`ADMIN`). Opera siempre sobre SU organización, la del JWT — nunca recibe el
+tenant por parámetro, para que nadie toque la de al lado cambiando un id.
+
+| Ruta | Qué hace |
+|---|---|
+| `GET /usuarios/` | los de mi organización, numerados (001, 002…) y con el nombre del rol resuelto |
+| `GET /usuarios/roles` | el catálogo que se puede asignar |
+| `POST /usuarios/` | alta con rol y bienvenida por correo (`correoEnviado`); devuelve `contrasenaTemporal` UNA vez SOLO si el correo no salió (`correoMotivo`). 409 `correo_registrado` |
+| `POST /usuarios/{guid}` | HU07: cambia datos y rol. El correo no se toca |
+
+**Los roles salen del DISEÑO, no de la base**: Supervisor, Analista, Operador,
+Compliance Officer, Auditor y Viewer, con la descripción exacta que la
+pantalla muestra. `security.roles` tiene otros cuatro (ADMIN, CONFIGURATOR,
+REVIEWER, QUERY) de antes del diseño; hay que pedirle al DBA que siembre estos
+seis. `ADMIN` existe aparte: es el administrador, nace con la organización
+(HU02) y no se ofrece en el selector.
+
+**Dos reglas que encierra el router**: nadie puede asignarse `ADMIN` desde el
+selector, y un administrador no puede quitarse a sí mismo ese rol (dejaría la
+organización sin quien la administre).
+
+El JWT lleva ahora `tnt` (su organización) y `rol`, para que el front sepa qué
+ofrecer sin preguntar en cada pantalla.
+
+### Desactivar, reactivar y cerrar sesión (HU05, HU08, HU09 — 2026-10-07)
+
+Dos endpoints más en `/usuarios`, con las mismas reglas de permiso (solo el
+administrador de la organización, solo sobre la suya):
+
+| Ruta | Qué hace |
+|---|---|
+| `POST /usuarios/{guid}/estado` | `{activo, motivo}`. Desactivar cierra TODAS sus sesiones y deja de poder entrar; reactivar le devuelve el acceso con su misma contraseña |
+| `POST /usuarios/{guid}/reenviar-invitacion` | HU06 CA-6, sin cuerpo: contraseña temporal NUEVA (la anterior deja de servir), bienvenida otra vez y el mismo contrato que el alta (`correoEnviado`; `contrasenaTemporal` solo si el correo no salió). 409 `ya_activa` / `desactivada` |
+| `POST /usuarios/{guid}/cerrar-sesion` | `{motivo}`. Revoca TODAS sus sesiones (no podrá renovar) sin desactivarlo: puede volver a entrar. Deja un evento `FORCED_LOGOUT` ANTES de cerrar (si no se puede escribir, no se cierra nada). Esta ruta es la del administrador de una organización, sobre usuarios de la suya; el Super Admin recibe 403 aquí porque no tiene organización (la suya cuelga de `/organizaciones`, abajo). Su JWT deja de valer en este back al instante (401 `sesion_cerrada`). |
+
+El **motivo es obligatorio** en los dos y queda en el registro con quién lo
+hizo: es lo que vuelve auditable que a alguien se le quitó el acceso. Nadie
+puede desactivarse a sí mismo ni cerrar su propia sesión desde aquí (para eso
+está el menú de su cuenta), y desactivar dos veces responde 409 `sin_cambio`
+en vez de fingir que hizo algo.
+
+**El administrador de plataforma también puede cerrar sesiones** (2026-10-12;
+el criterio CA-4 dice «Admin de organización o Super Admin»):
+`POST /organizaciones/{guid}/usuarios/{usuario}/cerrar-sesion`, con el mismo
+cuerpo `{motivo}` y las mismas reglas —motivo obligatorio, `FORCED_LOGOUT`
+escrito ANTES de cerrar, no a sí mismo—, y una más: el usuario tiene que ser
+MIEMBRO de la organización de la URL (404 si no, y 404 si la organización no
+existe). Las dos rutas llaman a `usuarios.forzar_cierre`, así que dejan
+exactamente el mismo rastro; el evento lleva `actor`: `ADMIN_PLATAFORMA` o
+`ADMIN_ORGANIZACION`. El administrador de una organización recibe 403
+`sin_permiso` en la ruta de plataforma. **Desactivar** sigue siendo solo del
+administrador de la organización. Lo que NO existe: cerrarle la sesión a OTRO
+administrador de plataforma (no pertenece a ninguna organización donde
+listarlo).
+
+### Retirar una cuenta: borrado lógico (2026-10-13)
+
+No hay pantalla ni endpoint para borrar usuarios: ninguna historia de Sprint 1 lo pide, y desactivar (HU08) deja el correo
+ocupado. Lo que hay es un script para quien administra el servidor:
+
+```
+venv/bin/python retirar_cuenta.py --email a@b.com --email c@d.com --motivo "Cuentas de prueba"             # simula
+venv/bin/python retirar_cuenta.py --email a@b.com --email c@d.com --motivo "Cuentas de prueba" --confirmar  # lo hace
+```
+
+Sin `--confirmar` NO toca nada: dice qué cuenta es (administrador de plataforma, rol y organización, si ya hizo su primer
+acceso) y si se negaría. Con él, a cada cuenta: se le cierran las sesiones, se apagan sus enlaces pendientes, deja de
+existir para el login, los listados y los JWT (un token suyo que todavía no vence recibe «el usuario ya no existe»), **su
+correo queda libre para darse de alta otra vez** (como una cuenta NUEVA, con otro guid) y queda el evento `USER_DELETED`
+con el correo, el motivo y quién lo hizo. Es LÓGICO: el registro es de solo agregar y no se borra ningún renglón, así que el
+rastro de lo que esa cuenta hizo se queda. No se puede deshacer desde aquí.
+
+Se niega a retirar al **último administrador de plataforma activo**, y al **administrador de una organización** salvo con
+`--forzar` (la organización queda sin administrador; el listado de organizaciones lo tolera y muestra la tarjeta sin
+administrador). En la base esto será `security.users.isDeleted` (ya existe en el diccionario, con el índice único de correo
+que lo ignora), y ese día este script cambia por el SP; todavía no se le ha pedido a Charlie. Se prueba en
+`verificar_retiro.py`.
+
+### Mi perfil (HU12, HU13 — 2026-10-07)
+
+`POST /auth/perfil` actualiza los datos de QUIEN LLAMA: nombre, apellido
+paterno y materno, teléfono y los datos de recuperación (correo y teléfono).
+`GET /auth/yo` los devuelve todos.
+
+Guardar cambios deja el evento `PROFILE_UPDATED` en la bitácora de auditoría
+(**HU12 CA-6, 2026-10-14**): la persona, la sesión desde la que se guardó, la
+hora y `campos`, la lista de los **nombres** de los campos que cambiaron
+(`nombre`, `apellidoPaterno`, `apellidoMaterno`, `telefono`,
+`correoRecuperacion`, `telefonoRecuperacion`). Nunca los valores: son datos
+personales y ya viven en el registro de usuarios. Se compara lo que QUEDÓ
+guardado con lo de antes, no lo que se mandó, así que el mismo correo escrito con
+espacios y mayúsculas no cuenta como cambio; si no cambió nada, no hay evento;
+un guardado rechazado (sin nombre, correo de recuperación inválido) tampoco lo
+deja. Se prueba en `verificar_auth.py`, sección 6b.
+
+Lo que **no** se toca ahí: el correo con el que inicia sesión (es su identidad)
+y su rol (lo mueve quien administra su organización). El cambio de contraseña
+desde la sesión es `POST /auth/contrasena` con `actual`, que ya existía. Con
+motivo `CHANGE` (**HU13 CA-4, 2026-10-14**) se cierran las sesiones de los
+**OTROS dispositivos** y se conserva la de quien lo hace: si la contraseña vieja
+estaba comprometida, quien la tuviera deja de entrar, y la dueña no se queda
+fuera de su pantalla. Hasta el 2026-10-13 `CHANGE` no cerraba ninguna, y una
+sesión robada seguía viva con la contraseña vieja. La respuesta trae
+`otrasSesionesCerradas` (cuántas) y `sesionesCerradas: false`; con el primer
+acceso (`FIRST_LOGIN`) y la recuperación (`RESET`) se siguen cerrando TODAS, la
+actual incluida (`sesionesCerradas: true`). Cada cambio desde una sesión deja el
+evento `PASSWORD_CHANGED` en la bitácora de auditoría (la persona, la sesión
+desde la que se cambió y cuántas se cerraron; **nunca** la contraseña ni su
+hash), también cuando no había otras que cerrar. Un cambio rechazado (actual
+incorrecta, nueva igual a la actual, confirmación distinta, política) no cierra
+nada ni deja evento. Las otras sesiones se cierran ANTES de escribir la
+contraseña: si el almacén falla a la mitad, no queda la contraseña nueva con las
+viejas sesiones abiertas. Se prueba en `verificar_auth.py`, sección 4k.
+
+Los apellidos se guardan **separados** (`apellidoPaterno`, `apellidoMaterno`),
+como los pide el diseño y como los tiene `security.users` (lastName,
+secondLastName). Los usuarios creados antes solo tienen `apellidos`: se parten
+al leerlos (`usuarios.separar_nombre`), sin migrar nada.
+
+**Datos de recuperación del administrador de una organización (2026-10-14).** El alta de la organización los pide bajo «tu
+cuenta», pero se guardaban solo en la organización: Mi perfil del administrador los mostraba vacíos. Ahora `POST /organizaciones/`
+también los guarda en SU usuario, y a los administradores anteriores se les leen de los de su organización mientras no hayan
+guardado los suyos (`usuarios._heredar_recuperacion`; si los borran en su perfil, quedan borrados). Se prueba en
+`verificar_organizaciones.py`, sección 6.
+
+**Desde el 2026-10-14 los formularios de alta piden Nombre(s), Apellido paterno (obligatorio) y Apellido materno** y los mandan
+en `apellidoPaterno`/`apellidoMaterno` (usuarios) o `adminApellidoPaterno`/`adminApellidoMaterno` (organizaciones): se guardan
+tal cual, sin adivinar. Lo de abajo es el respaldo para quien manda el nombre completo junto (la API directa) y para las cuentas
+anteriores. **Antes el formulario traía UN campo «nombre completo»** (el diseño no los separaba) y mandaba `apellidos` vacío. Hasta el 2026-10-14 todo se guardaba en `nombre` y «Mi perfil» mostraba el
+nombre entero con los apellidos en «—». Ahora `usuarios.separar_nombre` lo parte como se escribe en México: las **dos últimas
+unidades** son el apellido paterno y el materno, con sus partículas («De la Cruz», «Del Valle», «Ortega y Gasset» cuentan como
+UNA unidad) y lo anterior son los nombres: «Cesar Boris Hernandez Alvarado» → Cesar Boris / Hernandez / Alvarado. Con dos
+palabras, la segunda es el paterno; con una, solo hay nombre; siempre queda al menos un nombre. Con `apellidos` explícitos se
+respetan (el materno es todo lo que sigue al primero). Es una heurística —no puede saber si «María José Pérez» son dos nombres y
+un apellido—: la persona lo corrige en su perfil, y **editar a un usuario con el mismo nombre completo que mostró el listado no
+lo deshace**. Las cuentas y las ediciones de antes se separan igual al leerlas. El listado, la confirmación y el JWT siguen
+diciendo el nombre completo; el correo de bienvenida saluda solo con los nombres. Se prueba en `verificar_usuarios.py`, sección 3b.
+
+## Aislamiento entre organizaciones (Sprint 1 · HU11, desde el 2026-10-14)
+
+Dos organizaciones no se ven entre sí: ni sus datos ni sus archivos, ni siquiera para saber si lo del otro existe. Hay dos
+redes, y la segunda es de esta API.
+
+### La segunda red: ya no se le cree al front
+
+La primera red está en el front: el BFF saca el `tenant` de la organización de la **sesión** (`tenantDe`, en
+`src/lib/server/nexus.ts`) y nunca del navegador. Era lo único que había. Un olvido ahí —y lo hubo: `/api/archivos` tomaba el
+`tenant` del formulario que arma el navegador, así que cualquiera con sesión podía subir al prefijo de otra organización— y
+una organización leía o escribía en otra, porque este back se creía el `tenant` que el front le mandara.
+
+Desde el 2026-10-14 las rutas con `tenant` exigen **también el JWT de la persona** (el BFF lo reenvía junto con la llave de
+servicio) y `servicios/aislamiento.py` comprueba, contra el registro y no contra los claims del JWT (que pueden tener
+minutos), que esa persona pueda operar en ese tenant:
+
+- Si pertenece a una organización, **solo en la suya** (su membresía, con el guid exacto).
+- El **administrador de plataforma**, que no pertenece a ninguna, opera en el *espacio de plataforma*: cualquier tenant que
+  **no** sea el guid de una organización (`demo`, el heredado `csi`…). **Nunca** en el de una organización: para eso están las
+  rutas `/organizaciones/…`. El guid se compara sin espacios en los extremos y sin distinguir mayúsculas, porque el almacén
+  recorta el tenant y un montaje que no distingue mayúsculas llevaría `ABC…` al directorio de `abc…`: escribirlo así no es un
+  rodeo.
+- Sin Bearer: 401 `sin_sesion`. Con una sesión cerrada: 401 `sesion_cerrada`. Con la cuenta desactivada: 403 `desactivada`.
+  Igual que el resto de las rutas que piden persona.
+
+| Ruta | Qué comprueba |
+|---|---|
+| `GET /bandeja/`, `POST /bandeja/{id}/retirar`, `POST /bandeja/` (con la llave de servicio) | el `tenant` que se manda |
+| `GET/POST /llaves/`, `POST /llaves/{id}/revocar`, `GET /llaves/{id}/metricas` | el `tenant` que se manda |
+| `/webhooks/…` (las nueve: alta, lista, estado, eliminar, validar, editar, eventos, métricas, intentos) | el `tenant` que se manda |
+| `POST /archivos/` | el `tenant` del formulario |
+| `GET /archivos/{ruta}` | el primer segmento de la ruta (`{tenant}/aa/bb/sha256`) |
+| `/usuarios/{guid}…` | que el usuario sea de la organización del administrador (ya se comprobaba; ahora además se anota) |
+
+**No** pasa por aquí `POST /bandeja/` con una **API Key de cliente**: el tenant sale de la llave y no hay persona. Tampoco
+`/ia/*`, `/procesadores/*` ni `/organizaciones/*` (esas piden su propio rol).
+
+### Qué se contesta (CA-4 y CA-5)
+
+- **Un tenant que no es tuyo**: 403 `sin_acceso` con «No tienes acceso a esa organización.» —no nombra nada de la otra—.
+- **Algo que existe pero es de otra organización** (un webhook, una llave, una entrada de la bandeja, un archivo, un usuario):
+  un 404 **idéntico** al de algo que no existe (mismo estado y mismo cuerpo; `verificar_aislamiento.py` los compara byte por
+  byte). Quien lo intentó no aprende si existe. Los mensajes ya no dicen «o es de otro cliente».
+- **Un fallo del almacén**: 503 con un mensaje fijo («El servicio no está disponible en este momento…»). El texto del sistema
+  —rutas del servidor, nombres de los registros, que llevan el guid de la organización— va al log, no a la respuesta
+  (`routers/errores.py`; antes lo devolvían tal cual `routers/auth.py`, `organizaciones.py` y `usuarios.py`).
+
+### Qué se anota (CA-6)
+
+Cada intento deja `CROSS_TENANT_ACCESS` en la bitácora de auditoría: `usuarioGuid`, `sesionGuid`, `tenantsDelActor` (las
+organizaciones a las que pertenece; vacío para el administrador de plataforma), qué pidió (`tenantPedido`, `recurso`,
+`recursoId`) y por dónde se detectó (`via`: `tenant` si mandó un tenant ajeno, `id` si pidió por id algo de otra
+organización, `ruta` si pidió un archivo bajo el prefijo de otra; `sesionGuid` va vacío cuando el intento se detecta en las
+rutas de `/usuarios`, cuyo guard no lleva la sesión). La anotación **nunca cambia la respuesta**: si la bitácora
+falla, se avisa en el log y el rechazo se da igual. No cuentan como cruce: un id inventado (no existe en ningún lado), faltar
+la sesión (es otro error) ni lo heredado de abajo.
+
+### Lo heredado: el prefijo `csi`
+
+Los ejemplos documentales de la configuración se guardaban TODOS bajo el prefijo fijo `csi`, para cualquiera. Ese prefijo
+sigue en el almacén (`PREFIJOS_HEREDADOS` en `servicios/aislamiento.py`): lo lee el administrador de plataforma; **quien
+pertenece a una organización recibe el 404 de siempre**, sin que cuente como intento cruzado (es su propio apuntador viejo, no un
+ataque). Los ejemplos nuevos van bajo el tenant de la sesión. Consecuencia: los ejemplos que una organización guardó antes
+bajo `csi` dejan de cargarse para sus usuarios (el front pinta el hueco de siempre); si hace falta recuperarlos, se mueven los
+objetos a su carpeta o se vuelven a subir.
+
+Los archivos se sirven con `Cache-Control: private`: una caché compartida (un proxy, una CDN) no debe poder entregárselo a
+quien no pasó por esta comprobación.
+
+### Límites conocidos (decididos el 2026-10-14)
+
+- **`/procesadores/*`** son recursos globales de Document AI, no de una organización: cualquier sesión del front los ve. No
+  se aíslan en esta pasada; cuando haya un procesador por organización habrá que atarlos a ella.
+- **`/documentos/*`** (SQL, hoy sin montar porque la base no existe) usan `tenant_id` entero y no pasan por esta red: se
+  rediseñan con el DBA.
+- **Los roles no se aplican** en bandeja, llaves ni webhooks: cualquier miembro puede emitir llaves o registrar webhooks de SU
+  organización. No es de HU11 (aísla organizaciones, no personas dentro de una); queda anotado.
+- La bitácora es el registro provisional (`.registro/auditoria.jsonl`); `CROSS_TENANT_ACCESS` pasa a la tabla de auditoría
+  con los demás eventos cuando exista.
+
+### Verificarlo
+
+`verificar_aislamiento.py` (offline, como los demás): dos organizaciones con su administrador y lo suyo (webhook, llave,
+entrada, archivo, usuario); la sesión de la segunda intenta, por **cada** ruta que recibe un tenant o un id, llegar a lo de la
+primera, y se comprueba que no ve nada, que no se toca nada, que ninguna respuesta lleva un dato de la otra, que lo ajeno se
+contesta como lo que no existe y que cada intento queda anotado. Es la prueba de seguridad multi-tenant del criterio CA-3.
+
+Los otros `verificar_*` que llaman a estas rutas con la llave de servicio (`verificar_bandeja.py`, `verificar_subida.py`,
+`verificar_llaves_cliente.py`, `verificar_webhooks.py`) usan `verificacion_comun.cliente_con_sesion_de_plataforma`: un cliente
+de prueba que hace lo que hace el BFF, agregar el Bearer de un administrador de plataforma a toda petición con la llave de
+servicio.
+
+## Descartar documentos de la bandeja (2026-10-15)
+
+«Descartar» es `POST /bandeja/{id}/retirar` con `motivo=descartado`, y ahora además:
+
+- **`detalle`** (opcional, hasta 500 caracteres): el porqué que escribe la persona. Se guarda sin espacios sobrantes en el evento
+  `retiro` de la bandeja y en la auditoría. Más de 500: 422.
+- **Solo ciertos roles**: administrador de la organización, supervisor, analista y operador (`roles.PUEDEN_DESCARTAR`), y el
+  administrador de plataforma en su espacio. Compliance, auditor y viewer reciben **403 `sin_permiso`** («Tu rol no puede descartar
+  documentos.»), que se contesta ANTES de mirar si la entrada existe: quien no puede no aprende nada de la bandeja. Se lee del
+  registro, no del JWT. **Es una decisión de producto mía, pendiente de confirmar con César**: el diseño de los roles no dice quién
+  descarta. Retirar por `pipeline` no cambió (no se restringe por rol).
+- **`DOCUMENT_DISCARDED`** en la bitácora de auditoría: `usuarioGuid`, `sesionGuid`, `tenant`, `entradaId`, `nombreOriginal`,
+  `sha256`, `canal` y `detalle`. Se escribe DESPUÉS de retirar (el retiro es atómico); si la bitácora falla se avisa en el log y no
+  se le dice a la persona que no se descartó, igual que `CROSS_TENANT_ACCESS`.
+- **No se borra nada del almacén**: los bytes se comparten por contenido y borrar sería peligroso sin conteo de referencias. Descartar
+  es reversible a nivel de datos (el archivo y la entrada siguen en los registros), pero todavía NO hay pantalla para recuperar.
+- Solo aplica a lo que vive en el servidor (lo que llegó por la API). Lo subido a mano está en la memoria de la pestaña: se quita
+  de la lista y no deja rastro (no hay registro donde dejarlo) hasta que lo ingerido por la interfaz también se guarde en el servidor.
+
+**Consultar lo descartado** (2026-10-15): `GET /bandeja/?tenant=…&estado=descartados` trae lo descartado, del más reciente al más viejo,
+con `descartadaEn` y su `detalle`; sin `estado` (o `estado=pendientes`) es lo de siempre. Cualquier rol de la organización puede
+consultarlo: ver no destruye nada. Es lo que alimenta el filtro «Descartado» de la bandeja (la «sección de descartados» del Figma);
+el front lo trae solo cuando ese filtro está puesto. Otro valor de `estado`: 422.
+
+Se prueba en `verificar_descartar.py` (36 comprobaciones; 9 mutaciones del descarte muertas).
+
+## Tipos documentales: el catálogo vive en el servidor, por organización (2026-10-15)
+
+Hasta hoy la biblioteca de Configuración (tipos, campos, estado, el procesador de Document AI de cada uno, historial de
+versiones, ejemplos recortados) vivía en el `localStorage` de **cada navegador**. Ahora vive aquí, **por organización**:
+`servicios/tipos_documentales.py` (registro provisional, `tipos-documentales.jsonl` dentro de `.registro/`) y
+`routers/tipos_documentales.py`.
+
+| Ruta | Qué hace |
+|---|---|
+| `GET /tipos-documentales/?tenant=` | Los tipos de la organización (borradores, activos y archivados), en su orden. |
+| `PUT /tipos-documentales/{id}` | Crea (`revision: 0`) o guarda (`revision: n`) el tipo completo. |
+| `PUT /tipos-documentales/orden` | Guarda el orden de la biblioteca de la organización. |
+| `DELETE /tipos-documentales/{id}?tenant=` | Lo quita (no toca Google: el front borra antes el procesador con `/procesadores`). |
+
+Piden la llave de servicio **y** el JWT de la persona (HU11): leer los de otra organización es 403 `sin_acceso` y un id ajeno
+responde 404 igual que uno que no existe.
+
+**Dos personas editando lo mismo.** Cada tipo lleva una `revision`. Guardar exige la que se editó; si otra persona guardó antes,
+es un 409 `conflicto` con `revisionActual` y no se pisa nada. Crear con un id que ya existe —en esta organización o en
+otra— también es 409.
+
+**Ids.** Los inventa el cliente (`tipo-` + 32 hexadecimales). Tienen que ser únicos en TODAS las organizaciones, porque el
+clasificador es global y nombra cada categoría con el id.
+
+**Auditoría.** Crear, borrar, cambiar de estado y calibrar dejan `DOCUMENT_TYPE_CREATED`, `DOCUMENT_TYPE_DELETED`,
+`DOCUMENT_TYPE_STATE_CHANGED` y `DOCUMENT_TYPE_CALIBRATED`, con quién y de qué organización. Guardar a secas, no.
+
+### El clasificador sale de este registro
+
+`POST /procesadores/clasificador/sincronizar` **ya no recibe cuerpo**: arma las categorías con los tipos `activo` de TODAS las
+organizaciones, leídos del registro (antes los mandaba el navegador, y el último que sincronizaba pisaba a los demás). Por eso
+lo que cambia de estado hay que **guardarlo antes** de llamar. `POST /procesadores/clasificador/asegurar` compara lo que Google
+tiene (nombre y descripción de cada categoría) con el registro y sincroniza solo si difieren; el front lo llama una vez por
+sesión, antes de clasificar.
+
+### Procesadores huérfanos
+
+Al pasar el catálogo al servidor sin migrar lo de cada computadora, los extractores que esas pruebas crearon en Google quedaron
+sin dueño. `limpiar_procesadores_huerfanos.py` los lista (solo lectura) y, con `--borrar`, borra ÚNICAMENTE los que ningún tipo
+señala —ni como vigente, ni en su historial—, pidiendo escribir BORRAR. Nunca toca el clasificador, el extractor de INE del
+`.env` ni lo que no se llame `nexusdoc--…`. Se corre en el servidor (necesita las credenciales de Google y el almacén).
+
+### Límites conocidos
+
+- **No distingue roles**: quien opera en la organización lee y escribe sus tipos, como en llaves y webhooks. El catálogo de roles
+  de HU07 no tiene uno que configure; cuando lo haya, se exige aquí.
+- **`/procesadores/*` y `/ia/extraer` siguen sin comprobar la organización** (lo vio HU11): quien tiene la llave de servicio y un
+  `procesadorId` puede usarlo. Falta ligarlos al registro.
+- **Un tipo en edición sale del clasificador** (`crearNuevaVersion` lo pasa a `borrador`): mientras alguien edita el «INE» de su
+  organización, el clasificador deja de conocerlo en la siguiente sincronización. Es lo de siempre, pero ahora el clasificador es
+  de todos.
+- **El archivo crece con cada guardado** (cada uno escribe el tipo entero). Con el uso de hoy basta; el remedio es compactarlo o
+  la base.
+- **Los ejemplos subidos** (`/archivos`, bajo el prefijo de cada organización) que ya estaban en el almacén sin tipo que los
+  señale quedan ahí: no se borran.
+
+### Verificarlo
+
+```
+.venv/Scripts/python verificar_tipos_documentales.py
+```
+
+Offline: crear, ver desde otra persona, 409 por revisión, aislamiento, validación, orden, auditoría, clasificador sin cuerpo con
+los activos de las dos organizaciones, `asegurar`, y qué procesadores quedarían huérfanos.
+
+## Administradores de plataforma desde Nexus Monitor (2026-10-20)
+
+Un administrador de plataforma no se da de alta desde NexusDoc sino desde fuera, por quien opera el sistema. Eso eran tres scripts
+en una terminal del servidor (`bootstrap_admin.py`, `reenviar_invitacion.py`, `retirar_cuenta.py`); ahora Nexus Monitor (el
+proyecto hermano, la herramienta del operador) lo hace desde una pantalla con estas rutas, que usan los MISMOS servicios. Los
+scripts siguen sirviendo: `routers/admins_plataforma.py`.
+
+| Ruta | Qué hace |
+|---|---|
+| `GET /admins-plataforma/` | Los que existen, con su estado (`pendiente`, `activo`, `inactivo`), su último acceso y si tienen sesión. Los retirados ya no salen. |
+| `POST /admins-plataforma/` | Crea uno con contraseña temporal y le manda la bienvenida (`enviarCorreo: false` equivale a `--sin-correo`). Devuelve la contraseña SIEMPRE, y `correo`: `enviado`, `sin_canal`, `fallo` u `omitido`. Un correo repetido: 409. |
+| `POST /admins-plataforma/{guid}/reenviar-invitacion` | Regenera la contraseña temporal de quien no ha hecho su primer acceso (la anterior deja de servir). Quien ya entró: 409 `ya_hizo_su_primer_acceso`. |
+| `DELETE /admins-plataforma/{guid}?motivo=` | Lo retira (borrado lógico; su correo queda libre). El motivo es obligatorio. Al último administrador activo no se le retira: 409 `ultimo_superadmin`. |
+
+**Se toca solo a administradores de PLATAFORMA**: una cuenta de una organización responde 404 como si no existiera, así que Monitor no
+sirve para administrar usuarios ajenos. Crear, regenerar y retirar dejan `USER_CREATED`, `INVITATION_REISSUED` y `USER_DELETED` con
+`actor: "monitor"` y qué pasó con el correo; nunca la contraseña.
+
+### ⚠️ Sin protección extra (decisión del usuario, 2026-10-20: «sin protección extra por ahora»)
+
+Estas rutas piden SOLO la llave de servicio, como `/esquema` o `/procesos`: no hay un JWT de persona (Monitor no tiene login) ni una
+llave de administración aparte. **Quien tenga la llave de servicio y llegue al puerto del back puede crear un administrador de
+plataforma** —la cuenta con más poder del sistema—, y quien abra Monitor desde la VPN, también. Antes de esto, crear uno exigía tener
+acceso al servidor. Para cerrarlo después: una `ADMIN_PLATAFORMA_LLAVE` en el `.env` que estas rutas exijan en un encabezado (y que
+Monitor pida tecleada en cada acción), y apagar las rutas si no está puesta. Al promover esto a `main`, las rutas quedan activas en
+producción.
+
+```
+.venv/Scripts/python verificar_admins_plataforma.py
+```
+
+Offline, con el correo simulado: crear (con y sin canal, con fallo y omitido), contraseña que sirve y obliga a cambiarse, listar con
+estados, regenerar, retirar con motivo y sin retirar al último, solo cuentas de plataforma, sin llave nada, y la bitácora sin
+contraseñas. Se probó rompiendo 15 reglas a propósito: las 15 se detectan.
+
+## Procesos: el motor de reglas guarda su dibujo, por organización (2026-10-20)
+
+Un **proceso** es un conjunto de reglas y corre sobre un **expediente** (un conjunto de documentos). Se arma en un lienzo del front:
+los tipos documentales de la organización son sus entradas, las reglas son operadores (igual, distinto, contiene, mayor, menor;
+cantidad, suma, alguno, todos y unicos, que trabajan con **listas**; existe, que pregunta si el expediente trae un documento; y, o, no,
+implica), un **valor fijo** es un dato que se escribe en el lienzo (el «2» de «más de 2 socios») y los cables llevan un campo, el documento
+entero (el punto `@documento` de un tipo, solo para `existe`), un valor fijo o el resultado de una regla a la entrada de un operador. Aquí solo se
+**guarda ese dibujo**: `servicios/procesos.py` (registro provisional, `procesos.jsonl` dentro de `.registro/`) y `routers/procesos.py`.
+**Todavía no hay un motor que corra los procesos sobre un expediente de verdad**: el back no interpreta las reglas, solo
+comprueba que el dibujo esté entero.
+
+| Ruta | Qué hace |
+|---|---|
+| `GET /procesos/?tenant=` | Los procesos de la organización, en el orden de su creación. |
+| `PUT /procesos/{id}` | Crea (`revision: 0`) o guarda (`revision: n`) el proceso completo. |
+| `DELETE /procesos/{id}?tenant=` | Lo quita. |
+
+Piden la llave de servicio **y** el JWT de la persona (HU11), igual que los tipos documentales: leer los de otra organización es 403
+`sin_acceso` y un id ajeno responde 404 igual que uno que no existe. Crear con un id que ya existe —en esta organización o en otra—
+es 409; **dos personas editando lo mismo**: guardar exige la `revision` que se editó y, si otra persona guardó antes, es un 409
+`conflicto` con `revisionActual`, sin pisar nada.
+
+**Qué es un proceso guardado:** `nombre` (hasta 200), `descripcion`, `nodos` y `aristas`. Cada nodo es `{id, type, position, data}`
+con `type` `tipo-documental` (`data.tipoId`), `operador` (`data.operador` y los valores de ejemplo `a` y `b`, de hasta 5000
+caracteres porque el ejemplo de una lista son varios renglones) o `constante` (`data.familia` —`texto`, `numero`, `fecha` o
+`booleano`— y `data.valor`, de hasta 500); cada cable, `{id,
+source, sourceHandle, target, targetHandle}`. Se rechazan con 400: un id que no sea `proceso-…`, un nodo de un tipo inventado o sin
+posición, posiciones que no son números o pasan de un millón, ids de nodo o de cable repetidos, un cable que une un nodo que no
+existe, más de 300 nodos o 600 cables, y más de 1 MB. **Lo que se guarda sale limpio**: del nodo y del cable solo lo que el lienzo
+usa (la librería manda también medidas y banderas de selección); lo demás que mande la pantalla (por ejemplo la vista) se conserva
+en `datos`. `revision`, `creadoPor`, `creadoEn`, `modificadoPor`, `modificadoEn` y `tenant` los pone el servidor y no se pueden forzar.
+
+**Auditoría.** Crear y borrar dejan `PROCESS_CREATED` y `PROCESS_DELETED` (quién, qué organización, `procesoId`, `nombre`); guardar a
+secas, no: mover un nodo o escribir un valor de ejemplo son muchos guardados y no cambian lo que el proceso ES. El rastro no lleva el
+dibujo.
+
+**Límites conocidos:** no distingue roles (quien opera en la organización lee y escribe sus procesos); borrar un tipo documental no
+avisa a los procesos que lo usan (el lienzo muestra «Tipo documental no disponible»); el archivo crece con cada guardado.
+
+### Verificarlo
+
+```
+.venv/Scripts/python verificar_procesos.py
+```
+
+Offline: crear, ver desde otra persona, 409 por revisión, aislamiento entre organizaciones, validación del dibujo, que lo guardado
+salga limpio, listas de ejemplo largas y valores fijos, auditoría y corte a media escritura. Se probó rompiendo 22 reglas del
+servicio y del router a propósito: las 22 se detectan.
+
+## Grupos de campos y forma del resultado de la extracción (2026-10-16)
+
+Pedido para las **actas constitutivas**: ahí un dato no es un valor suelto sino una *fila* de varios (un accionista = nombre +
+acciones + monto). Un campo de un tipo documental puede ser ahora un **grupo**:
+
+- **El esquema** (`servicios/esquema.py`, `esquema_desde_campos`): un campo con `tipoDato: "grupo"` y `subcampos: [...]` se declara
+  como lo declara Google en el procesador de INE para `domicilio`: la Property apunta por nombre a un EntityType auxiliar con
+  `baseTypes: ["object"]` y sus propias `properties`. Con `cardinalidad: "multiple"` la Property es `*_MULTIPLE` (una instancia por
+  fila). **Un solo nivel**: los subcampos son campos sueltos (no otro grupo). Un grupo sin subcampos no se puede declarar:
+  `POST /procesadores/activar` responde 422 con el nombre del grupo.
+- **El resultado** (`servicios/ia.py`, `_extraer_entidades`): antes el diccionario se llenaba por nombre y de varias entidades del
+  mismo tipo **solo sobrevivía la última** (de tres socios quedaba uno). Ahora un campo que el esquema declara múltiple sale
+  **siempre como lista** (aunque haya aparecido una vez), y un grupo múltiple como **lista de filas** con sus subcampos en el
+  orden del esquema (Google los devuelve en orden alfabético); un grupo único (domicilio) sigue siendo un diccionario. Un campo
+  único que llegó repetido se queda con la aparición de mayor confianza (antes, la última).
+- **Qué se repite y qué es obligatorio sale del esquema que el procesador tiene EN GOOGLE** (`procesadores.estructura_del_procesador`,
+  lectura que no cobra, con memoria de 5 minutos que `activar` invalida): la respuesta de Document AI no dice si un campo se repite.
+  Funciona igual para el procesador de INE. Si no se puede leer, la extracción sigue y aplana por lo que llegó.
+- **`_metadata.campos_ausentes`**: lo obligatorio que no salió, como rutas (`capital_social`; `accionistas` si el grupo
+  obligatorio no trae ninguna fila; `accionistas[2].nombre` si la fila 2 salió sin ese subcampo, que casi siempre es una instancia
+  espuria que el modelo sacó de otra parte del documento). Lista vacía = se revisó y no faltó nada; **sin la clave = no se pudo leer
+  el esquema** (no se sabe).
+
+Lo que se midió con un acta real de 10 páginas: un grupo entrega cada fila con sus datos **juntos** (cada accionista con SUS
+acciones y SU monto, que con listas paralelas salían desordenadas), pero el modelo también saca filas de más: una «accionista» de la
+cláusula del capital y ~30 «cargos» de todo el texto legal. Por eso se señalan en vez de esconderse.
+
+**Límites**: la confianza no distingue lo bueno de lo malo (ver `docs/` del front, medición del acta); una fila que cruza una
+página se parte en dos (el subcampo que cae en la otra página sale en otra fila); los subcampos no pueden ser lista ni grupo.
+
+### Un error que vale la pena recordar
+
+El 2026-10-15 el commit de «tipos documentales en el servidor» borró por accidente `POST /procesadores/activar` y el ayudante
+`_mensaje_para`: un parche cortó «todo lo que hay entre A y B» y entre A y B estaba la ruta. Se desplegó y la activación en dev dio
+«Method Not Allowed» hasta que se restauró (2026-10-16). Nada lo atrapó porque ninguna prueba tocaba esa ruta. Ahora
+`verificar_procesadores.py` vigila el **inventario de rutas** (si falta una, o sobra una, se pone en rojo), la activación y la
+traducción de errores.
+
+### Verificarlo
+
+```
+.venv/Scripts/python verificar_esquema.py              # el esquema con grupos y la lectura de su estructura
+.venv/Scripts/python verificar_extraccion_generica.py  # listas, filas, ausentes, confianza
+.venv/Scripts/python verificar_procesadores.py         # rutas, activar con grupos, errores, memoria de la estructura
+```
+
+## Documentos largos: extracción por bloques de páginas (2026-10-16)
+
+Document AI rechaza en línea un documento de **más de 15 páginas** («Document pages exceed the limit: 15 got 20») y un acta
+constitutiva ronda las 20. `POST /ia/extraer` ahora procesa esos documentos **por bloques de páginas** y une el resultado, hasta
+`EXTRACCION_MAX_PAGINAS` (20 por default). Un documento de 15 páginas o menos sigue como siempre: una sola llamada.
+
+**Lo que se midió contra Google antes de construirlo** (procesador de prueba, PDF de 20 páginas armado con el acta de 10 dos veces):
+
+- El rechazo llega en ~2 s, **no se cobra**, y trae cuántas páginas tiene el archivo:
+  `details[].metadata = {"page_limit": "15", "pages": "20"}` (`reason: PAGE_LIMIT_EXCEEDED`). No hace falta abrir el PDF ni una
+  librería para contar páginas.
+- `processOptions.individualPageSelector.pages` **esquiva el tope**: pidiendo solo las páginas 11 a 20 de un PDF de 20, Google
+  contestó bien y cobró diez.
+- `document.pages[].pageNumber` viene **absoluto** (11…20), pero las entidades apuntan **por índice** dentro de esa lista
+  (`pageRefs[].page` = 0…9, y Google omite `page` cuando es 0). `ia._pagina_de` traduce con la lista de páginas del bloque.
+- De punta a punta, por el camino del producto: 20 páginas en 13 s (los dos bloques corren a la vez), 21 páginas cobradas
+  (US$0.63), 117 campos, ninguno apuntando al renglón de OCR de otra página.
+
+**Cómo funciona** (`servicios/ia.py` orquesta; `servicios/bloques.py` es lógica pura, sin red):
+
+1. Se intenta el documento entero, como siempre. Si Google lo rechaza por largo, el rechazo dice cuántas páginas tiene.
+2. Más páginas que `EXTRACCION_MAX_PAGINAS` → 422 «El documento tiene 25 páginas y el máximo que se procesa es 20», **sin procesar
+   (ni cobrar) nada**.
+3. `planear_bloques`: el menor número de bloques, **parejos** (20 páginas con tope 15 son 11 + 10, no 15 + 5) y con **una página de
+   solape**: una cláusula o una fila de tabla que cruza el corte sale completa en alguno de los dos bloques.
+4. Cada bloque se pide con `individualPageSelector` (hasta 3 a la vez). Un bloque que falla por algo pasajero (`servicio`, `cuota`)
+   se repite **una** vez; lo que es del documento (`archivo_ilegible`) no. **Todo o nada**: si un bloque falla, falla la extracción
+   —entregar el documento sin un pedazo, callado, sería peor—, y los demás bloques se cancelan. Todo el trabajo tiene el tope de
+   `IA_TIMEOUT` (504 si no termina), por debajo de los 130 s que espera el front.
+5. Se unen los resultados como si el documento hubiera pasado entero: páginas del documento (no del bloque), una sola capa de OCR,
+   `ocr.page_count` = el total, y `bloque_indice` de cada campo reapuntado a esa capa.
+
+**Cómo se une** (las reglas, para que nadie las redescubra):
+
+- Un campo **único** que salió en varios bloques: gana la **mayor confianza** (empate: el bloque más temprano). Excepción: un valor
+  largo (30+ caracteres) en una página de solape que otro bloque trae completo —su texto lo contiene— se descarta: es el pedazo que
+  el borde del bloque le cortó a la cláusula.
+- Un campo **múltiple**: se concatenan las listas en el orden del documento, sin repetir lo que el solape mostró dos veces.
+- Un **grupo** múltiple: se concatenan las filas, y la fila que dos bloques vieron (la del solape) se une en una sola con las columnas
+  de los dos. «La misma entidad» = misma página, mismo texto y casi la misma caja (la caja no sale idéntica entre dos llamadas).
+- `_metadata.campos_ausentes` se calcula sobre lo ya unido, y `_metadata` agrega `paginas_totales`, `bloques` (`[{desde, hasta}]`) y
+  `paginas_procesadas` (lo que Google cobró: más que el total por las páginas del solape).
+
+**Por qué bloques GRANDES** (medido con el acta real de 10 páginas y el esquema plano de 24 campos): 2 bloques dieron **lo mismo** que el
+documento entero (16/24 exactos, campo por campo igual); 3 bloques de 4 páginas dieron 15/24. Un bloque que no trae el dato igual
+devuelve un candidato para el campo, y a veces con más confianza que el bueno (la confianza no separa lo bueno de lo malo): entre más
+bloques, más candidatos que se pelean un campo único. Por eso `EXTRACCION_PAGINAS_POR_BLOQUE` es 15, el máximo de Google: partir
+más chico no mejora nada y empeora lo que se une.
+
+**Configuración** (`.env`; los defaults sirven y no hay que tocar el del server):
+
+| Variable | Default | Qué hace |
+|---|---|---|
+| `EXTRACCION_MAX_PAGINAS` | 20 | lo más largo que se acepta (política de negocio acordada para las actas); mínimo 15 |
+| `EXTRACCION_PAGINAS_POR_BLOQUE` | 15 | tope de páginas de un bloque (15 es el de Google) |
+| `EXTRACCION_SOLAPE_PAGINAS` | 1 | páginas que cada bloque repite del anterior (cada una se cobra dos veces) |
+
+**Lo que NO cambia ni cubre:**
+
+- `POST /ia/ine` **no** parte nada (`permitir_bloques=False`): una credencial de 20 páginas no es una credencial, y no se paga por
+  procesarla. Responde 422 con los números de Google («tiene 20 páginas y el máximo es 15»).
+- La **clasificación** ya miraba solo las primeras 2 páginas (`PAGINAS_PARA_CLASIFICAR`), así que un acta larga se clasifica igual.
+- Un valor que cruza **tres** páginas sobre un corte puede salir partido (el solape de una página no alcanza para que un bloque lo vea
+  entero). Una tabla o una cláusula típica de acta no llega a eso.
+- La confianza sigue sin separar lo bueno de lo malo: lo que sale mal en un documento entero sale igual de mal por bloques.
+
+**Verificarlo** (sin red):
+
+```
+.venv/Scripts/python verificar_bloques.py            # partir y unir: 53 casos (planear: 150×15×5 combinaciones; filas, OCR)
+.venv/Scripts/python verificar_documentos_largos.py  # el flujo con un Google de mentiras: 66 casos (20 págs, solape, reintentos, tope, tiempo)
+```

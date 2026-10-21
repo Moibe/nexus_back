@@ -17,15 +17,18 @@ import logging
 
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi import APIRouter, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 
-from servicios import llaves_cliente, uso_llaves
+from servicios import aislamiento, llaves_cliente, uso_llaves
 from servicios.almacen import ErrorAlmacen
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Lo mismo se contesta si la llave no existe que si es de otra organización: no se confirma que exista (HU11 CA-5).
+_NO_EXISTE = "Esa API Key no existe."
 
 
 class Emision(BaseModel):
@@ -58,7 +61,8 @@ def _no_disponible(exc: Exception, que: str) -> HTTPException:
         "va al tenant de la llave."
     ),
 )
-def emitir(datos: Emision, response: Response):
+def emitir(datos: Emision, response: Response, authorization: str | None = Header(default=None)):
+    aislamiento.exigir(authorization, datos.tenant, "llave")
     try:
         secret, llave = llaves_cliente.emitir(datos.tenant, datos.nombre, datos.descripcion, datos.dias)
     except ValueError as exc:
@@ -78,7 +82,8 @@ def emitir(datos: Emision, response: Response):
     summary="Listar las API Keys de un cliente",
     description="De la más nueva a la más vieja. Nunca trae el secret ni su hash.",
 )
-def listar(tenant: str = Query(...)):
+def listar(tenant: str = Query(...), authorization: str | None = Header(default=None)):
+    aislamiento.exigir(authorization, tenant, "llave")
     try:
         llaves = llaves_cliente.listar(tenant)
         # "Último uso" en cada tarjeta, como pide el diseño.
@@ -101,7 +106,8 @@ def listar(tenant: str = Query(...)):
         "estaba revocada no es error: responde igual, con la fecha de la primera vez."
     ),
 )
-def revocar(identificador: str, datos: Revocacion):
+def revocar(identificador: str, datos: Revocacion, authorization: str | None = Header(default=None)):
+    actor = aislamiento.exigir(authorization, datos.tenant, "llave")
     try:
         revocada_en = llaves_cliente.revocar(datos.tenant, identificador)
     except ValueError as exc:
@@ -109,10 +115,9 @@ def revocar(identificador: str, datos: Revocacion):
     except ErrorAlmacen as exc:
         raise _no_disponible(exc, f"revocar, tenant={datos.tenant}") from exc
     if revocada_en is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Esa API Key no existe o es de otro cliente.",
-        )
+        if llaves_cliente.existe_en_otro_tenant(datos.tenant, identificador):
+            aislamiento.intento_cruzado(actor, "llave", identificador)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
     logger.info("API Key revocada (id=%s, tenant=%s)", identificador, datos.tenant)
     return {"revocada": True, "revocadaEn": revocada_en}
 
@@ -132,11 +137,20 @@ def revocar(identificador: str, datos: Revocacion):
         "tope semanal es la semana natural en UTC."
     ),
 )
-def metricas(identificador: str, tenant: str = Query(...), desde: datetime = Query(...), hasta: datetime = Query(...)):
+def metricas(
+    identificador: str,
+    tenant: str = Query(...),
+    desde: datetime = Query(...),
+    hasta: datetime = Query(...),
+    authorization: str | None = Header(default=None),
+):
+    actor = aislamiento.exigir(authorization, tenant, "llave")
     try:
         # Solo las llaves del tenant: que no se puedan leer métricas ajenas.
         if not any(l["id"] == identificador for l in llaves_cliente.listar(tenant)):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Esa API Key no existe o es de otro cliente.")
+            if llaves_cliente.existe_en_otro_tenant(tenant, identificador):
+                aislamiento.intento_cruzado(actor, "llave", identificador)
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
         return uso_llaves.metricas(identificador, desde, hasta)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

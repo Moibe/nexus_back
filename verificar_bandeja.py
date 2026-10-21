@@ -25,6 +25,7 @@ os.environ.setdefault("SQLSERVER_HOST", "")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+import verificacion_comun  # noqa: E402  (antes que `app`: fija el secreto de los JWT)
 from app import app  # noqa: E402
 from servicios import almacen  # noqa: E402
 
@@ -75,7 +76,8 @@ def retirar(cliente, id_entrada, motivo="pipeline", tenant="demo"):
 
 
 def main() -> int:
-    c = TestClient(app)
+    # Con la sesión de un administrador de plataforma en cada llamada con la llave de servicio, como hace el BFF (HU11).
+    c = verificacion_comun.cliente_con_sesion_de_plataforma(app, LLAVE)
 
     titulo("1 · Sin llave no se entra")
     rev("subir sin llave da 401", subir(c, con_llave=False).status_code == 401)

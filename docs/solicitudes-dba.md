@@ -1030,3 +1030,174 @@ real va al log.
   dato no existe. Pero es otra plática: mide, no autentica, y escribir en cada
   request tiene su propio costo.
 
+
+## 6. Sprint 1 · Acceso (HU01 Bootstrap del Super Admin, HU03 Login con JWT, HU04 Cambio de contraseña en primer login) — borrador 2026-10-07
+
+Fuente: página "Sprint 1" del Figma (`node-id=2-2`), secciones `92:3242`, `184:7335` y `107:846`; tickets NEX-232, NEX-234 y NEX-235. Decisión de producto (Moisés, 2026-10-07): **sin correo**. Las pantallas a las que llevaría un correo se abren directo; la contraseña temporal del bootstrap se entrega por consola, no por mail.
+
+### 6.0 · Lo que YA existe (leído el 2026-10-07, no supuesto)
+
+- `security.users` (userId, userGuid, email, firstName, secondName, lastName, secondLastName, phoneNumber, emailConfirmed, phoneConfirmed, lastLoginAt, isActive, isDeleted, auditoría). **Sin contraseña ni nada de login.** Solo PK y UQ por userGuid: **no hay índice único por email**.
+- `security.roles` con 4 filas: ADMIN, CONFIGURATOR, REVIEWER, QUERY. (El Figma de HU07 dibuja 6 roles distintos — Supervisor, Compliance Officer, Analista, Operador, Auditor, Viewer —; se resuelve en HU07, no aquí.)
+- `security.tenantMemberships` (tenantId, userId, statusCode varchar(20), joinedAt…) con UQ (tenantId, userId). **Sin rol.**
+- `dbo.uspRegistrarResultadoLogin(@idUsuario uniqueidentifier, @email, @exitoso bit, @platformId int, @tipoAutenticacion varchar(20), @latitude, @longitude, @device, @ipAddress, @userAgent)`: sin VIEW DEFINITION para `usrNexus`; no sabemos en qué tabla escribe. Parece heredado de otro producto.
+- `security.logsEndpoint`: log de peticiones, vacío.
+
+### 6.1 · Reglas que trae el diseño (para que los SPs las encierren)
+
+- **Intentos fallidos:** la alerta dice "después de N intentos más, tu cuenta se bloqueará durante 15 minutos" con N = 4, 3, 2, 1 → **5 intentos**, y la pantalla de bloqueo trae un contador ("Espera 10:05") → **bloqueo de 15 minutos**, temporal, se levanta solo.
+- **Contraseña:** mínimo **12 caracteres**, con mayúscula, minúscula, número y carácter especial. Se valida en el front y en el back; la base solo guarda el hash.
+- **Primer acceso:** el usuario entra con la contraseña temporal y **no puede usar nada** hasta cambiarla (interstitial "Bienvenido" → "Configura tu nueva contraseña" → "Contraseña actualizada" → login de nuevo).
+- **Cuenta desactivada:** el login lo dice con una pantalla propia (no un error genérico).
+- **Super Admin:** no pertenece a un tenant; administra la plataforma (crea organizaciones, HU02).
+
+### 6.2 · Qué le pedimos a la base
+
+Principio: **la base nunca ve una contraseña ni un token**. El back calcula el hash (argon2id) y la base guarda y compara solo hashes; los JWT de acceso no se guardan; los refresh tokens se guardan hasheados (SHA-256) para poder invalidarlos (HU05).
+
+**Tablas (nombres sugeridos, tú decides):**
+
+1. `security.userCredentials` — 1:1 con `users` (o como columnas en `users`, si lo prefieres):
+   - `userId` (PK, FK users)
+   - `passwordHash varchar(255)` — el back manda el string completo de argon2id (`$argon2id$v=19$m=…`), autocontenido.
+   - `mustChangePassword bit` — en 1 al nacer (bootstrap y alta de usuario) y al restablecer (HU10).
+   - `passwordChangedAt datetime2 NULL`
+   - `failedAttempts int NOT NULL DEFAULT 0`
+   - `lockedUntil datetime2 NULL`
+   - auditoría.
+2. `security.sessions` — un renglón por refresh token:
+   - `sessionId`, `sessionGuid`, `userId`, `refreshTokenHash char(64)` (UNIQUE), `issuedAt`, `expiresAt`, `revokedAt NULL`, `revokedReason varchar(40) NULL`, `ipAddress varchar(45)`, `userAgent nvarchar(500)`.
+3. `security.loginAttempts` — bitácora (si `dbo.uspRegistrarResultadoLogin` ya escribe en una tabla equivalente, reusarla y decirnos cuál): `userId NULL` (si el correo no existe), `email`, `succeeded bit`, `attemptedAt`, `ipAddress`, `userAgent`, `failureReason varchar(40)` (`BAD_PASSWORD`, `LOCKED`, `INACTIVE`, `UNKNOWN_EMAIL`), **`originId varchar(64) NULL`** con índice por `(originId, attemptedAt)`. `originId` es un identificador anónimo del navegador (un GUID que el front guarda en cookie); no identifica a nadie y sirve solo para contar intentos — ver el punto 6.
+4. En `security.users`: columna `isPlatformAdmin bit NOT NULL DEFAULT 0` y **índice único filtrado por `email`** (`WHERE isDeleted = 0`), porque el login busca por correo.
+5. En `security.tenantMemberships`: `roleId int FK roles` (lo necesita el JWT para decir qué puede hacer el usuario en el tenant). Si prefieres N roles por membresía, una tabla `membershipRoles`; con uno basta para este sprint.
+6. **Los cinco intentos son de correo O de contraseña** (decisión del 2026-10-09). El contador de `userCredentials` solo puede crecer con la contraseña mala, porque un correo que no existe no tiene renglón donde anotarse; por eso el conteo mixto va por `originId` sobre `loginAttempts`, con el mismo límite y la misma duración (5 y 15 min). Se descartó contar por IP: en la oficina todos salen por la misma y cinco errores de cualquiera bloquearían a todos.
+
+**Stored procedures (en `[security]`):**
+
+| SP | Entrada | Devuelve | Qué encierra |
+|---|---|---|---|
+| `uspBootstrapPlatformAdmin` | `@email, @firstName, @lastName, @passwordHash` | `userGuid` | Crea un super admin (`isPlatformAdmin = 1`, `mustChangePassword = 1`). Puede haber varios: cada llamada crea otro. Solo falla, con mensaje claro, si el correo ya está registrado. |
+| `uspGetUserForLogin` | `@email` | una fila: `userGuid, email, firstName, lastName, isActive, isDeleted, isPlatformAdmin, passwordHash, mustChangePassword, failedAttempts, lockedUntil`; y un segundo result set con sus membresías: `tenantGuid, tenantCode, name, slug, tenantStatusCode, roleCode` | Solo lectura. El back compara el hash; la base no recibe la contraseña. Si el correo no existe, 0 filas (el back responde lo mismo que con contraseña mala, salvo en los textos del diseño que sí distinguen). |
+| `uspGetOriginLockout` | `@originId` | `failedAttempts, lockedUntil` | Los intentos fallidos SEGUIDOS de ese navegador sobre `loginAttempts` (`failureReason` en `BAD_PASSWORD`/`UNKNOWN_EMAIL`; un `succeeded = 1` reinicia la cuenta, y `LOCKED`/`INACTIVE` no cuentan). Misma política que la cuenta: a los **5**, bloqueado **15 min** desde el quinto. Solo lectura. Ver el punto 6 de las tablas. |
+| `uspRecordLoginResult` | `@userGuid, @succeeded bit, @ipAddress, @userAgent, @originId` | `failedAttempts, lockedUntil` | **Aquí vive la política**: si falla, `failedAttempts + 1`; al llegar a **5**, `lockedUntil = SYSDATETIME() + 15 min` y `failedAttempts = 0`; si acierta, `failedAttempts = 0`, `lockedUntil = NULL`, `lastLoginAt = SYSDATETIME()`. Escribe la bitácora. Atómico (UPDLOCK). |
+| `uspSetPassword` | `@userGuid, @passwordHash, @reason varchar(20)` (`FIRST_LOGIN`, `RESET`, `CHANGE`), `@sessionGuid NULL, @expectedPasswordHash NULL` | `ok` | Con `@sessionGuid` y `@expectedPasswordHash` (el cambio desde una sesión, HU13) solo cambia si esa sesión sigue viva y el hash vigente es el esperado; si no, falla sin escribir: es la misma carrera del login, y sin ella un restablecimiento a media petición no impedía que la sesión ya cerrada pusiera su contraseña encima de la del dueño. Guarda el hash, `mustChangePassword = 0`, `passwordChangedAt = now`, `failedAttempts = 0`, `lockedUntil = NULL`. Con `FIRST_LOGIN`/`RESET` además **revoca todas las sesiones** del usuario (`revokedReason = 'PASSWORD_CHANGED'`). **Con `CHANGE` revoca todas MENOS `@sessionGuid`** (HU13 CA-4: «invalida todas las sesiones activas en otros dispositivos, conservando la sesión actual»); sin `@sessionGuid` no hay una que conservar y revoca todas. **Esto difiere de lo entregado en NEX-319**, donde `CHANGE` cierra también la actual: hace falta poder exceptuarla (`@exceptSessionGuid`, o que `@sessionGuid` cumpla las dos funciones). Debe devolver cuántas revocó (`revokedSessions`, ya lo devuelve): el front dice «también cerramos tus otras N sesiones». Sirve a HU04, HU10 y HU13. |
+| `uspCreateSession` | `@userGuid, @refreshTokenHash, @expiresAt, @ipAddress, @userAgent, @expectedPasswordHash NULL` | `sessionGuid` | Alta del refresh token (hasheado). Con `@expectedPasswordHash` (lo manda el login, 2ª revisión de HU05, 2026-10-13) solo crea la sesión si el hash de contraseña vigente de la persona es ESE y la cuenta está activa; si no, falla sin escribir (`THROW` con un código para cada caso). El login verifica la contraseña con argon2 fuera de la base, y sin esta condición un restablecimiento o una desactivación que cayeran en esa ventana (decenas de ms) dejaban nacer una sesión de 7 días con la credencial vieja. |
+| `uspGetSession` | `@refreshTokenHash` | `sessionGuid, userGuid, expiresAt, revokedAt` + los datos de `uspGetUserForLogin` sin el hash | Para renovar el access token. |
+| `uspRevokeSessions` | `@userGuid, @sessionGuid NULL, @reason varchar(40)` | `revoked int` | Una sesión (logout) o todas (HU05 cerrar sesión por un admin, HU08 desactivar). |
+| `uspGetSessionStatus` (**ya pedido en NEX-336** desde la reescritura del 2026-10-14; Charlie aún no lo entrega) | `@userGuid, @sessionGuid` | una fila `sessionGuid, userGuid, expiresAt, revokedAt, isActive` (esta última, de la cuenta), o ninguna si la sesión no existe o no es de esa persona | HU05, 2ª etapa (2026-10-13): lo que contesta `GET /auth/sesion`, que el guard del front consulta una vez cada pocos segundos por sesión abierta con el `sid` del JWT. `uspGetSession` NO sirve: busca por el hash del refresh y el JWT no lo trae. Tiene que ser barata (índice por `sessionGuid`): hoy el registro provisional es un archivo (`usuarios.jsonl`) que se repasa entero tras cada escritura, y con la base se acaba. |
+| `uspRotateSession` (**ya pedido en NEX-336** desde la reescritura del 2026-10-14; Charlie aún no lo entrega) | `@refreshTokenHash, @newRefreshTokenHash, @newExpiresAt, @ipAddress, @userAgent` | `newSessionGuid, userGuid` + los datos de `uspGetUserForLogin` sin el hash; ninguna fila si no se pudo canjear (con el motivo: no existe o ya se canjeó / venció / cuenta desactivada) | HU05 (2ª revisión, 2026-10-13): el canje del refresh, ATÓMICO, en UNA transacción con `UPDLOCK`: comprueba que la sesión de ese hash exista, no esté revocada ni vencida y que la cuenta esté activa; la revoca (`revokedReason = 'ROTATED'`) y crea la sucesora. Un refresh es de UN solo uso. Con tres llamadas sueltas (`uspGetSession` + `uspRevokeSessions` + `uspCreateSession`) dos peticiones simultáneas con el mismo refresh lo canjean las dos: medido sobre el registro provisional, de ocho peticiones a la vez salían entre cinco y ocho sesiones vivas, y un cierre forzado a medias dejaba una sucesora viva. |
+
+Convenciones que ya seguimos con NEX-294/295: GUIDs hacia fuera, enteros solo para relacionar; `THROW 5xxxx` con mensaje claro; `SUSER_SNAME()` en auditoría; `SET ANSI_NULLS ON; SET QUOTED_IDENTIFIER ON;` en el script.
+
+### 6.3 · Lo que NO se le pide (es nuestro)
+
+- Hash de contraseña (argon2id) y verificación: back.
+- Emisión y verificación de JWT (HS256, access de 15 min con `userGuid`, `tenantGuid`, `roleCode`, `isPlatformAdmin`; refresh de 7 días en cookie httpOnly puesta por el BFF del front).
+- Reglas de la contraseña (12 + 4 clases) y el medidor de seguridad: front y back.
+- Textos de las pantallas, contador de 15 minutos, pantalla de cuenta desactivada: front.
+- Correo: no hay. La contraseña temporal del bootstrap se imprime una vez en la consola del back.
+
+### 6.4 · Preguntas para él (solo si cambian el diseño)
+
+1. ¿`dbo.uspRegistrarResultadoLogin` escribe en una tabla que podamos reusar como `loginAttempts`? Si sí, `uspRecordLoginResult` puede llamarla por dentro.
+2. ¿Prefieres las credenciales como columnas de `users` o en tabla aparte? Nosotros la preferimos aparte (una fila de `users` se lee en muchos lados; el hash no debería viajar con ella).
+3. ¿Un tenant `SUSPENDED` deja entrar a sus usuarios? Propuesta: sí entra, pero el JWT lleva el estado y el front bloquea las operaciones; así el admin puede leer. Tú decides.
+
+## 7 · Ingesta · Bandeja de preparación en la base (Épica 3: HU 24, 25 y 27) — CREADO como NEX-377 el 2026-10-15 (asignado a Charlie, NEX Sprint 5)
+
+**Título del ticket:** `Ingesta · Bandeja de preparación: estado del archivo, descarte, y listado con filtros y paginación (HU 24, 25 y 27)`
+
+Texto del ticket NEX-377 (en Jira va sin esta primera frase y con «Preguntas para ti» por «Preguntas para él»). Depende de lo que ya entregó en NEX-294 y NEX-295 (`uspGetOrCreateInboxExpediente` y `uspCreateFile`) y, para la
+auditoría, de `auditEvents` de NEX-336. Mismas convenciones de siempre: esquema y prefijo `usp`, parámetros en camelCase,
+GUIDs hacia fuera, `THROW 5xxxx` con mensaje claro, `SUSER_SNAME()` en auditoría.
+
+### Por qué ahora
+
+La bandeja de preparación es lo primero que ve quien opera: los archivos que llegaron (a mano o por la API de clientes) y todavía
+no pasan al pipeline. Hoy **no vive en la base**: lo que llega por la API está en un registro provisional en archivo en el NAS, y lo
+que se sube a mano solo existe en la memoria del navegador (se pierde al refrescar). Ya construimos del lado nuestro lo que el
+Figma pide: **descartar** documentos (con motivo, rastro y permiso por rol), una **sección de descartados**, **filtros**
+(Estado, Canal y Fecha) y **paginación de 8 en 8**. Funciona, pero filtrando y paginando en el navegador sobre lo que cabe en
+memoria: no escala y no guarda nada. Esto es lo que falta para que viva en la base.
+
+El back va a llamar `uspGetOrCreateInboxExpediente` y `uspCreateFile` por **cada** archivo que entre, por cualquier canal; ya no
+solo por la API.
+
+### Lo que YA existe (leído, no supuesto)
+
+- `[documents].[files]` con `fileId`, `fileGuid`, `tenantId`, `caseId` NOT NULL, `ingestionChannelId`, `storageUri`,
+  `originalFileName`, `mimeType`, `sizeBytes`, `sha256 char(64)`, `pageCount`, `receivedAt`; sin índice único por `(tenantId, sha256)`.
+- `uspGetOrCreateInboxExpediente @tenantGuid` y `uspCreateFile ...` (NEX-294 y NEX-295).
+- Del lado nuestro, el contrato que debe imitar la base: `GET /bandeja/?estado=pendientes|descartados`, `POST /bandeja/{id}/retirar`
+  con `motivo` (`pipeline` | `descartado`) y `detalle`, y el evento de auditoría `DOCUMENT_DISCARDED`.
+
+### 1. Estado del archivo en la bandeja, sin actualizar `files`
+
+`files` es de solo agregar (el diccionario lo dice), así que los cambios de estado van en una tabla de eventos:
+
+`[documents].[fileEvents]`: `fileEventId`, `fileEventGuid`, `fileId` (FK), `eventType varchar(30) NOT NULL`
+(`SENT_TO_PIPELINE`, `DISCARDED`; `RESTORED` reservado, ver preguntas), `occurredAt datetime2 NOT NULL`, `byUserId int NULL`
+(la API no tiene persona), `reason nvarchar(500) NULL` y auditoría. El estado vigente es el último evento; sin eventos, el archivo
+sigue en la bandeja.
+
+### 2. Dos columnas en `files`
+
+- **`validationCode varchar(20) NULL`**: `READY`, `PASSWORD_PROTECTED` o `CORRUPT`; `NULL` = todavía sin revisar. Se escribe al crear el
+  archivo (compatible con solo-agregar). Hoy lo calcula el navegador (huella, protegido con contraseña, corrupto); la HU 23 lo
+  moverá al back, que es quien tiene los bytes, y la base solo lo guarda. Es lo que hace posible filtrar «Listo» y «Pendiente» en
+  la base.
+- **`ingestionSourceRef nvarchar(100) NULL`**: de dónde vino, para trazabilidad (el id de la API Key que lo mandó). Hoy lo guardamos
+  como `llaveId`.
+
+Los dos entran como parámetros opcionales de `uspCreateFile` (`@validationCode`, `@sourceRef`), sin romper a quien ya lo llame.
+
+### 3. Dos índices
+
+- `(tenantId, sha256)` **NO único**: para saber si un archivo es duplicado. Se siguen permitiendo reingresos: el diseño habla de
+  «duplicado procesado de forma explícita» y el aviso nunca bloquea.
+- `(tenantId, receivedAt, fileId)`: para listar y paginar.
+
+### 4. Stored procedures
+
+- **`uspListInboxFiles`** `@tenantGuid, @statuses varchar(100) NULL` (lista separada por comas de `PENDING, READY, DUPLICATE, DISCARDED`),
+  `@channels varchar(100) NULL` (códigos de `ingestionChannels`, separados por comas), `@receivedFrom datetime2 NULL`,
+  `@receivedTo datetime2 NULL` (periodo semiabierto `[desde, hasta)`, instantes con zona, igual que las métricas),
+  `@pageNumber int = 1`, `@pageSize int = 8` (tope 100), `@sortDescending bit = 0`.
+  - Resultado 1, la página: `fileGuid, originalName, mimeType, sizeBytes, sha256, storageUri, ingestionChannel, receivedAt,
+    validationCode, inboxStatus, isDuplicate, discardedAt, discardedReason, sourceRef`.
+  - Resultado 2, una fila: `totalCount` (con los filtros puestos) y `duplicateCount` (de todo el tenant, para la insignia roja del
+    botón «Filtros»).
+  - **`inboxStatus`**, en este orden: `DISCARDED` si el último evento es `DISCARDED`; si no, `PENDING` si `validationCode` es NULL,
+    `PASSWORD_PROTECTED` o `CORRUPT`; si no, `DUPLICATE` si `isDuplicate`; si no, `READY`.
+  - **`isDuplicate`**: existe otro archivo del MISMO tenant con el mismo `sha256`, que llegó antes y que no está descartado.
+  - Lo que ya pasó al pipeline (`SENT_TO_PIPELINE`) no sale. Sin `@statuses` se devuelve la bandeja ACTIVA: todo menos
+    `DISCARDED`. Con `DISCARDED` en la lista, salen también los descartados (es la «sección de descartados»).
+  - Orden por `receivedAt` y `fileId` (el segundo desempata). Una página fuera de rango devuelve 0 filas y el `totalCount` correcto.
+- **`uspDiscardFile`** `@tenantGuid, @fileGuid, @reason nvarchar(500) NULL, @byUserGuid` → `discardedAt`. Agrega el evento
+  `DISCARDED`, **atómico** (`UPDLOCK`): si dos personas descartan lo mismo, una gana y la otra recibe el error. Errores con código
+  propio: no existe en ese tenant, ya está descartado, ya pasó al pipeline. **No borra nada ni toca el archivo del almacén**: se
+  comparte por contenido. Si `auditEvents` ya existe, que escriba ahí `DOCUMENT_DISCARDED` en la MISMA transacción (con quién, qué
+  archivo y el motivo); si no, lo escribimos nosotros con `uspWriteAuditEvent`.
+- **`uspSendFileToPipeline`** `@tenantGuid, @fileGuid, @byUserGuid` → agrega `SENT_TO_PIPELINE`, con las mismas reglas de atomicidad
+  y de errores. Es lo que hoy hace `retirar` con motivo `pipeline`.
+
+### Aislamiento por organización (HU11)
+
+Cada SP recibe `@tenantGuid` y filtra por él **siempre**; un `fileGuid` de otro tenant se contesta como «no existe» (mismo código
+que uno inventado), sin decir que existe. El back ya lo hace; la segunda red es la que vale el día que haya un error nuestro.
+
+### Lo que NO se pide (es nuestro)
+
+- Calcular el hash, revisar si el archivo está protegido o corrupto, guardar los bytes en el almacén.
+- Qué rol puede descartar (lo decide el back).
+- **API Keys de cliente, su uso, los webhooks y sus entregas.** También viven hoy en registros provisionales, pero es otro ticket,
+  más grande: va después de este.
+
+### Preguntas para él
+
+1. ¿`validationCode` como columna de `files` te parece bien, o prefieres una tabla de validaciones aparte? Nos sirve cualquiera
+   mientras `uspListInboxFiles` lo devuelva.
+2. **Recuperar un descartado** (`RESTORED`): el Figma todavía no lo dibuja. Proponemos dejar el tipo de evento reservado y el SP para
+   cuando lo pida el diseño. ¿Algún problema con el nombre?
+3. ¿`OFFSET/FETCH` te parece suficiente para paginar, o prefieres paginación por llave (`receivedAt, fileId`) pensando en tenants con
+   cientos de miles de archivos?

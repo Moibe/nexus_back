@@ -1,0 +1,300 @@
+"""HU06 · Crear usuarios dentro de una organización. HU07 · Su rol.
+
+Quién puede: el **administrador de la organización** (membresía con rol
+`ADMIN`). Opera siempre sobre SU organización, la del JWT: no recibe el tenant
+por parámetro, justamente para que nadie pueda tocar la de al lado cambiando un
+id en la petición.
+
+Al crear un usuario se le manda por correo la bienvenida del diseño, con su usuario y su
+contraseña temporal (`servicios/invitaciones.py`). Si el correo salió, la contraseña NO se devuelve: la
+persona la tiene en su bandeja. Si no salió (este ambiente no manda correo, o el servicio falló), se devuelve
+UNA vez y la pantalla se la muestra al administrador, como antes. Falta lo que caduca a las 48 horas
+(HU06 CA-5) y el reenvío de la invitación (CA-6).
+"""
+
+import logging
+
+from fastapi import APIRouter, Header, HTTPException, Response, status
+from pydantic import BaseModel, Field
+
+from routers.errores import almacen_no_disponible
+from servicios import aislamiento, auth, invitaciones, roles, tenants_registro, usuarios
+from servicios.almacen import ErrorAlmacen
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+
+class NuevoUsuario(BaseModel):
+    nombre: str = Field(max_length=200)
+    apellidos: str = Field(default="", max_length=200)
+    # Los formularios los piden por separado; si vienen, mandan sobre `apellidos` (ver `usuarios.crear_usuario`).
+    apellidoPaterno: str = Field(default="", max_length=100)
+    apellidoMaterno: str = Field(default="", max_length=100)
+    email: str = Field(max_length=254)
+    telefono: str | None = Field(default=None, max_length=25)
+    rol: str = Field(max_length=40)
+
+
+class CambioEstado(BaseModel):
+    activo: bool
+    motivo: str = Field(max_length=500)
+
+
+class CierreSesion(BaseModel):
+    motivo: str = Field(max_length=500)
+
+
+class CambioUsuario(BaseModel):
+    nombre: str = Field(max_length=200)
+    apellidos: str = Field(default="", max_length=200)
+    telefono: str | None = Field(default=None, max_length=25)
+    rol: str = Field(max_length=40)
+
+
+def _error(codigo_http: int, codigo: str, mensaje: str, **extra) -> HTTPException:
+    return HTTPException(status_code=codigo_http, detail={"codigo": codigo, "mensaje": mensaje, **extra})
+
+
+def _admin_de_organizacion(authorization: str | None) -> tuple[dict, str]:
+    """(usuario, guid de su organización) si es administrador de una. Se relee
+    del registro: un JWT emitido hace minutos puede estar desactualizado."""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise _error(status.HTTP_401_UNAUTHORIZED, "sin_sesion", "Falta el token de acceso.")
+    try:
+        claims = auth.verificar_acceso(authorization[7:].strip())
+    except auth.SinConfigurar as exc:
+        raise _error(status.HTTP_503_SERVICE_UNAVAILABLE, "sin_configurar", "El acceso no está configurado.") from exc
+    if not claims:
+        raise _error(status.HTTP_401_UNAUTHORIZED, "sesion_invalida", "El token de acceso no es válido o venció.")
+    try:
+        u, viva = usuarios.por_guid_y_sesion(claims["sub"], claims["sid"])
+    except usuarios.NoEncontrado as exc:
+        raise _error(status.HTTP_401_UNAUTHORIZED, "sesion_invalida", "El usuario ya no existe.") from exc
+    if not u["activo"]:
+        raise _error(status.HTTP_403_FORBIDDEN, "desactivada", "La cuenta está desactivada.")
+    if not viva:
+        # Un JWT cuya sesión ya se cerró no administra a nadie. Es lo que evita que
+        # un administrador al que se le forzó el cierre siga creando usuarios y
+        # ascendiéndolos durante los minutos que le quedan al token (HU05 CA-4).
+        raise _error(status.HTTP_401_UNAUTHORIZED, "sesion_cerrada", "La sesión ya no es válida. Inicia sesión de nuevo.")
+    propia = next((m for m in u["membresias"] if m["rol"] == roles.ADMIN), None)
+    if propia is None:
+        raise _error(
+            status.HTTP_403_FORBIDDEN,
+            "sin_organizacion",
+            "Solo el administrador de una organización puede gestionar a sus usuarios.",
+        )
+    return u, propia["tenantGuid"]
+
+
+@router.get("/roles", summary="Los roles que se pueden asignar")
+def catalogo_de_roles(authorization: str | None = Header(default=None)) -> dict:
+    _admin_de_organizacion(authorization)
+    return {"roles": roles.CATALOGO}
+
+
+@router.get("/", summary="Los usuarios de mi organización")
+def listar(authorization: str | None = Header(default=None)) -> dict:
+    _, tenant = _admin_de_organizacion(authorization)
+    try:
+        lista = usuarios.de_tenant(tenant)
+        organizacion = tenants_registro.por_guid(tenant)
+    except tenants_registro.NoEncontrado as exc:
+        raise _error(status.HTTP_404_NOT_FOUND, "no_existe", "Tu organización ya no existe.") from exc
+    except ErrorAlmacen as exc:
+        raise almacen_no_disponible(exc) from exc
+    return {
+        "organizacion": {"guid": organizacion["guid"], "nombre": organizacion["nombre"]},
+        "usuarios": [usuarios.para_listado(u, tenant, i + 1) for i, u in enumerate(lista)],
+    }
+
+
+@router.post(
+    "/",
+    status_code=status.HTTP_201_CREATED,
+    summary="Crear un usuario en mi organización",
+    description=(
+        "Lo crea con contraseña temporal y le manda por correo su bienvenida con los accesos "
+        "(`correoEnviado`). La contraseña se devuelve UNA vez (`contrasenaTemporal`) SOLO si el correo no "
+        "salió (`correoMotivo`: `sin_canal` si este ambiente no manda correo, `fallo` si el servicio no "
+        "pudo). 409 `correo_registrado` si el correo ya existe."
+    ),
+)
+def crear(datos: NuevoUsuario, response: Response, authorization: str | None = Header(default=None)) -> dict:
+    yo, tenant = _admin_de_organizacion(authorization)
+    response.headers["Cache-Control"] = "no-store"
+    if datos.rol not in roles.ASIGNABLES:
+        raise _error(status.HTTP_400_BAD_REQUEST, "rol_invalido", "Elige un rol de la lista.")
+    if not usuarios.correo_valido(datos.email.strip().lower()):
+        raise _error(status.HTTP_400_BAD_REQUEST, "correo_invalido", "Por favor, ingresa un correo electrónico válido.")
+    try:
+        temporal = auth.contrasena_temporal()
+        creado = usuarios.crear_usuario(
+            email=datos.email,
+            nombre=datos.nombre,
+            apellidos=datos.apellidos,
+            apellido_paterno=datos.apellidoPaterno,
+            apellido_materno=datos.apellidoMaterno,
+            hash_contrasena=auth.hash_de(temporal),
+            telefono=datos.telefono,
+            tenant_guid=tenant,
+            rol=datos.rol,
+        )
+        logger.info("Usuario creado (guid=%s, tenant=%s, rol=%s)", creado["guid"], tenant, datos.rol)
+        lista = usuarios.de_tenant(tenant)
+        posicion = next((i + 1 for i, u in enumerate(lista) if u["guid"] == creado["guid"]), len(lista))
+        resultado = invitaciones.enviar_bienvenida(creado["email"], creado["nombre"], temporal, "usuario")
+        invitaciones.auditar_alta(yo["guid"], creado["guid"], datos.rol, tenant, resultado)
+        return {"usuario": usuarios.para_listado(creado, tenant, posicion), **invitaciones.para_respuesta(resultado, temporal)}
+    except usuarios.YaExiste as exc:
+        raise _error(status.HTTP_409_CONFLICT, "correo_registrado", str(exc)) from exc
+    except ValueError as exc:
+        raise _error(status.HTTP_400_BAD_REQUEST, "datos_invalidos", str(exc)) from exc
+    except ErrorAlmacen as exc:
+        raise almacen_no_disponible(exc) from exc
+
+
+@router.post(
+    "/{guid}",
+    summary="Actualizar un usuario de mi organización (HU07)",
+    description="Cambia sus datos y su rol. El correo no se toca: es con el que entra.",
+)
+def actualizar(guid: str, datos: CambioUsuario, authorization: str | None = Header(default=None)) -> dict:
+    yo, tenant = _admin_de_organizacion(authorization)
+    if datos.rol not in roles.VALIDOS:
+        raise _error(status.HTTP_400_BAD_REQUEST, "rol_invalido", "Elige un rol de la lista.")
+    # Ni siquiera se admite que exista el de otra organización: un administrador no tiene por qué saber quién hay en ella.
+    objetivo = _de_mi_organizacion(guid, tenant, yo)
+    if objetivo["guid"] == yo["guid"] and datos.rol != roles.ADMIN:
+        raise _error(
+            status.HTTP_409_CONFLICT,
+            "no_puedes_degradarte",
+            "No puedes quitarte a ti mismo el rol de administrador.",
+        )
+    try:
+        usuarios.actualizar_datos(guid, datos.nombre, datos.apellidos, datos.telefono)
+        actualizado = usuarios.agregar_membresia(guid, tenant, datos.rol)
+        lista = usuarios.de_tenant(tenant)
+        posicion = next((i + 1 for i, u in enumerate(lista) if u["guid"] == guid), len(lista))
+        logger.info("Usuario actualizado (guid=%s, rol=%s)", guid, datos.rol)
+        return {"usuario": usuarios.para_listado(actualizado, tenant, posicion)}
+    except ValueError as exc:
+        raise _error(status.HTTP_400_BAD_REQUEST, "datos_invalidos", str(exc)) from exc
+    except ErrorAlmacen as exc:
+        raise almacen_no_disponible(exc) from exc
+
+
+def _de_mi_organizacion(guid: str, tenant: str, yo: dict) -> dict:
+    """El usuario, si es de mi organización. Si no, 404 —el mismo que si no existiera: un administrador no tiene por qué
+    enterarse de quién hay en otra— y, si existe pero es de otra, queda anotado el intento (HU11 CA-6)."""
+    try:
+        objetivo = usuarios.por_guid(guid)
+    except usuarios.NoEncontrado as exc:
+        raise _error(status.HTTP_404_NOT_FOUND, "no_existe", "Ese usuario no existe.") from exc
+    if not any(m["tenantGuid"] == tenant for m in objetivo["membresias"]):
+        aislamiento.intento_cruzado(
+            aislamiento.Actor(guid=yo["guid"], tenants=(tenant,), es_admin_plataforma=False, sesion=None), "usuario", guid
+        )
+        raise _error(status.HTTP_404_NOT_FOUND, "no_existe", "Ese usuario no existe.")
+    return objetivo
+
+
+@router.post(
+    "/{guid}/estado",
+    summary="Desactivar o reactivar un usuario (HU08, HU09)",
+    description=(
+        "Al desactivar se cierran todas sus sesiones y deja de poder entrar; el motivo es "
+        "obligatorio y queda registrado. Reactivar le devuelve el acceso con su misma contraseña."
+    ),
+)
+def cambiar_estado(guid: str, datos: CambioEstado, authorization: str | None = Header(default=None)) -> dict:
+    yo, tenant = _admin_de_organizacion(authorization)
+    motivo = datos.motivo.strip()
+    if not motivo:
+        raise _error(status.HTTP_400_BAD_REQUEST, "motivo_requerido", "Escribe el motivo.")
+    objetivo = _de_mi_organizacion(guid, tenant, yo)
+    if objetivo["guid"] == yo["guid"]:
+        raise _error(
+            status.HTTP_409_CONFLICT,
+            "no_a_ti_mismo",
+            "No puedes desactivar tu propia cuenta.",
+        )
+    if objetivo["activo"] == datos.activo:
+        raise _error(
+            status.HTTP_409_CONFLICT,
+            "sin_cambio",
+            "La cuenta ya estaba " + ("activa." if datos.activo else "desactivada."),
+        )
+    try:
+        actualizado = usuarios.cambiar_estado(guid, datos.activo, motivo, yo["guid"])
+        lista = usuarios.de_tenant(tenant)
+        posicion = next((i + 1 for i, u in enumerate(lista) if u["guid"] == guid), len(lista))
+        logger.info("Usuario %s (guid=%s)", "reactivado" if datos.activo else "desactivado", guid)
+        return {"usuario": usuarios.para_listado(actualizado, tenant, posicion)}
+    except ErrorAlmacen as exc:
+        raise almacen_no_disponible(exc) from exc
+
+
+@router.post(
+    "/{guid}/reenviar-invitacion",
+    summary="Reenviar la invitación de un usuario que no ha hecho su primer acceso (HU06 CA-6)",
+    description=(
+        "Le genera una contraseña temporal NUEVA, invalida la anterior (y las sesiones que se hubieran abierto con "
+        "ella), empieza otra vez las horas de vigencia y le manda la bienvenida. Igual que el alta: si el correo "
+        "salió, `contrasenaTemporal` NO viene; si no salió (`correoMotivo`: `sin_canal` o `fallo`), viene UNA vez. "
+        "409 `ya_activa` si ya hizo su primer acceso y 409 `desactivada` si la cuenta está desactivada. Queda como "
+        "`INVITATION_REISSUED`. Sirve también para quien dejó caducar su acceso."
+    ),
+)
+def reenviar_invitacion(guid: str, response: Response, authorization: str | None = Header(default=None)) -> dict:
+    yo, tenant = _admin_de_organizacion(authorization)
+    response.headers["Cache-Control"] = "no-store"
+    objetivo = _de_mi_organizacion(guid, tenant, yo)
+    negativa = invitaciones.por_que_no_reenviar(objetivo)
+    if negativa:
+        raise _error(status.HTTP_409_CONFLICT, *negativa)
+    try:
+        resultado, temporal = invitaciones.reenviar(guid, actor_guid=yo["guid"])
+        lista = usuarios.de_tenant(tenant)
+        posicion = next((i + 1 for i, u in enumerate(lista) if u["guid"] == guid), len(lista))
+        logger.info("Invitación reenviada (guid=%s, resultado=%s)", guid, resultado)
+        return {"usuario": usuarios.para_listado(usuarios.por_guid(guid), tenant, posicion), **invitaciones.para_respuesta(resultado, temporal)}
+    except usuarios.NoPendiente as exc:
+        raise _error(status.HTTP_409_CONFLICT, "ya_activa", "Este usuario ya hizo su primer acceso: no hay invitación que reenviar.") from exc
+    except ErrorAlmacen as exc:
+        raise almacen_no_disponible(exc) from exc
+
+
+@router.post(
+    "/{guid}/cerrar-sesion",
+    summary="Cerrar la sesión de un usuario (HU05)",
+    description=(
+        "Revoca TODAS sus sesiones (refresh tokens): no podrá renovarlas y tendrá que entrar de nuevo. NO lo "
+        "desactiva — su contraseña sigue sirviendo. Su JWT deja de valer al instante en este back (401 "
+        "`sesion_cerrada`) y, en pocos segundos, en lo que decide solo el front (bandeja, llaves, webhooks), que lo "
+        "consulta en `GET /auth/sesion`. El motivo es obligatorio y queda registrado como "
+        "`FORCED_LOGOUT`. Esta ruta es la del administrador de una organización, sobre usuarios de la suya; el "
+        "administrador de plataforma tiene la suya en `/organizaciones/{guid}/usuarios/{usuario}/cerrar-sesion`."
+    ),
+)
+def cerrar_sesion(guid: str, datos: CierreSesion, authorization: str | None = Header(default=None)) -> dict:
+    yo, tenant = _admin_de_organizacion(authorization)
+    motivo = datos.motivo.strip()
+    if not motivo:
+        raise _error(status.HTTP_400_BAD_REQUEST, "motivo_requerido", "Escribe el motivo.")
+    objetivo = _de_mi_organizacion(guid, tenant, yo)
+    if objetivo["guid"] == yo["guid"]:
+        # Para salirse está el menú de la barra; hacerlo desde aquí te echaría
+        # de la pantalla en la que estás trabajando.
+        raise _error(
+            status.HTTP_409_CONFLICT,
+            "no_a_ti_mismo",
+            "Para cerrar tu propia sesión usa el menú de tu cuenta.",
+        )
+    try:
+        cerradas = usuarios.forzar_cierre(guid, motivo, yo["guid"], tenant, usuarios.ACTOR_ADMIN_ORGANIZACION)
+        logger.info("Sesiones cerradas por el administrador (guid=%s, cuantas=%s)", guid, cerradas)
+        return {"cerradas": cerradas}
+    except ErrorAlmacen as exc:
+        raise almacen_no_disponible(exc) from exc

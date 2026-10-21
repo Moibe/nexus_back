@@ -211,6 +211,14 @@ def _publico(webhook: dict, estado: str, validado_en: str | None, fallida_en: st
     }
 
 
+def existe_en_otro_tenant(tenant: str, identificador: str) -> bool:
+    """¿Ese webhook existe y es de OTRO tenant? Solo para anotar un intento cruzado (HU11 CA-6): a quien pidió se le
+    contesta igual que si no existiera."""
+    registrados, _, eliminados, _, _ = _indice()
+    webhook = registrados.get(identificador)
+    return webhook is not None and webhook.get("tenant") != tenant and identificador not in eliminados
+
+
 def _vigente(registrados: dict, eliminados: set, tenant: str, identificador: str) -> dict | None:
     webhook = registrados.get(identificador)
     if webhook is None or webhook.get("tenant") != tenant or identificador in eliminados:

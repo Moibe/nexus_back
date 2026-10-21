@@ -88,6 +88,55 @@ def _descripcion_de(campo: dict) -> str:
     return desc
 
 
+#: El tipo de dato «grupo de campos»: un campo que a su vez trae campos (accionista = nombre + acciones + monto). Con
+#: cardinalidad `multiple` se repite (una persona por renglón de la tabla); con `unico`, aparece una vez (un domicilio).
+TIPO_GRUPO = "grupo"
+
+
+def _nombre_unico(crudo: str, vistos: set[str]) -> str:
+    """El nombre normalizado, con sufijo determinista si ya hay otro igual en el MISMO nivel.
+
+    Dos campos del wizard pueden colapsar al mismo nombre normalizado ("Año" y "ano"). Google rechazaría el esquema entero;
+    mejor un sufijo determinista aquí que un 400 opaco allá."""
+    nombre = normalizar_nombre(crudo)
+    base, n = nombre, 2
+    while nombre in vistos:
+        nombre = f"{base}_{n}"[:64]
+        n += 1
+    vistos.add(nombre)
+    return nombre
+
+
+def _propiedad(campo: dict, nombre: str, tipos_auxiliares: list[dict], prefijo_auxiliar: str = "") -> dict:
+    """La `Property` de un campo que NO es grupo. Si es `lista`, además agrega a `tipos_auxiliares` el EntityType con sus
+    `enumValues` (`prefijo_auxiliar` evita que dos subcampos de grupos distintos con el mismo nombre choquen)."""
+    obligatorio = bool(campo.get("obligatorio"))
+    cardinalidad = "multiple" if campo.get("cardinalidad") == "multiple" else "unico"
+    occurrence = _OCCURRENCE[(obligatorio, cardinalidad)]
+
+    tipo_dato = campo.get("tipoDato", "texto")
+    if tipo_dato == "lista":
+        valores = [v.strip() for v in campo.get("valoresLista", []) if v and v.strip()]
+        nombre_enum = f"{prefijo_auxiliar}{nombre}_valores"[:64]
+        tipos_auxiliares.append(
+            {
+                "name": nombre_enum,
+                "baseTypes": ["string"],
+                "enumValues": {"values": valores},
+            }
+        )
+        value_type = nombre_enum
+    else:
+        value_type = _VALUE_TYPES.get(tipo_dato, "string")
+
+    return {
+        "name": nombre,
+        "valueType": value_type,
+        "occurrenceType": occurrence,
+        "description": _descripcion_de(campo),
+    }
+
+
 def esquema_desde_campos(nombre_tipo: str, descripcion_tipo: str, campos: list[dict]) -> dict:
     """Arma el `DocumentSchema` (forma v1beta3) para un tipo documental.
 
@@ -100,6 +149,16 @@ def esquema_desde_campos(nombre_tipo: str, descripcion_tipo: str, campos: list[d
     propio procesador de INE usa para `domicilio` (un valueType que nombra a
     otro EntityType del mismo esquema): la Property apunta por nombre a un
     EntityType auxiliar que carga los `enumValues`.
+
+    Un campo `grupo` (2026-10-16) usa el MISMO patrón, tal como lo declara el
+    procesador de INE para `domicilio`: la Property apunta por nombre a un
+    EntityType auxiliar con `baseTypes: ["object"]` que trae sus propias
+    `properties` (los subcampos). Con cardinalidad múltiple la Property es
+    `*_MULTIPLE` y cada instancia —un accionista, un cargo— llega como una entidad
+    con sus hijas. Un solo nivel: los subcampos son campos sueltos (texto, número,
+    fecha, moneda, casilla o lista), no otro grupo. Un grupo sin subcampos no se
+    puede declarar (un objeto sin propiedades no dice qué extraer) y se omite;
+    quien llama —`/procesadores/activar`— ya lo rechaza antes con un 422.
     """
     tipo_raiz = "custom_extraction_document_type"
     propiedades: list[dict] = []
@@ -107,40 +166,29 @@ def esquema_desde_campos(nombre_tipo: str, descripcion_tipo: str, campos: list[d
     vistos: set[str] = set()
 
     for campo in campos:
-        nombre = normalizar_nombre(campo.get("nombre", ""))
-        # Dos campos del wizard pueden colapsar al mismo nombre normalizado
-        # ("Año" y "ano"). Google rechazaría el esquema entero; mejor un
-        # sufijo determinista aquí que un 400 opaco allá.
-        base, n = nombre, 2
-        while nombre in vistos:
-            nombre = f"{base}_{n}"[:64]
-            n += 1
-        vistos.add(nombre)
+        nombre = _nombre_unico(campo.get("nombre", ""), vistos)
 
+        if campo.get("tipoDato") != TIPO_GRUPO:
+            propiedades.append(_propiedad(campo, nombre, tipos_auxiliares))
+            continue
+
+        vistos_hijos: set[str] = set()
+        hijos: list[dict] = []
+        for sub in campo.get("subcampos", []):
+            if sub.get("tipoDato") == TIPO_GRUPO:
+                continue  # un solo nivel de anidación
+            hijos.append(_propiedad(sub, _nombre_unico(sub.get("nombre", ""), vistos_hijos), tipos_auxiliares, f"{nombre}_"))
+        if not hijos:
+            continue
+
+        tipos_auxiliares.append({"name": nombre, "displayName": nombre, "baseTypes": ["object"], "properties": hijos})
         obligatorio = bool(campo.get("obligatorio"))
         cardinalidad = "multiple" if campo.get("cardinalidad") == "multiple" else "unico"
-        occurrence = _OCCURRENCE[(obligatorio, cardinalidad)]
-
-        tipo_dato = campo.get("tipoDato", "texto")
-        if tipo_dato == "lista":
-            valores = [v.strip() for v in campo.get("valoresLista", []) if v and v.strip()]
-            nombre_enum = f"{nombre}_valores"[:64]
-            tipos_auxiliares.append(
-                {
-                    "name": nombre_enum,
-                    "baseTypes": ["string"],
-                    "enumValues": {"values": valores},
-                }
-            )
-            value_type = nombre_enum
-        else:
-            value_type = _VALUE_TYPES.get(tipo_dato, "string")
-
         propiedades.append(
             {
                 "name": nombre,
-                "valueType": value_type,
-                "occurrenceType": occurrence,
+                "valueType": nombre,
+                "occurrenceType": _OCCURRENCE[(obligatorio, cardinalidad)],
                 "description": _descripcion_de(campo),
             }
         )
@@ -262,3 +310,36 @@ def esquema_clasificador_desde_tipos(tipos: list[dict]) -> dict:
         "metadata": {"documentSplitter": False},
         "entityTypes": entity_types,
     }
+
+
+def estructura_desde_esquema(esquema: dict) -> dict[str, dict]:
+    """La ESTRUCTURA que declara un `DocumentSchema` de extractor: qué es obligatorio, qué se repite y qué es un grupo.
+
+    `{nombre: {"obligatorio": bool, "multiple": bool, "hijos": {...}}}`, en el orden del esquema; `hijos` solo existe en un
+    grupo (una Property cuyo `valueType` es un EntityType `object` con sus propias `properties`, como el `domicilio` de INE o
+    los grupos de `esquema_desde_campos`) y trae lo mismo, un nivel más abajo. Es PURA: la lee del esquema que ya se bajó de
+    Google (`procesadores.estructura_del_procesador`), así que sirve igual para el esquema de un tipo documental del wizard y
+    para el del procesador de INE, que se armó a mano en la consola.
+
+    Existe porque la RESPUESTA de Document AI no dice si un campo se repite: un campo múltiple con una sola aparición se ve
+    igual que uno único. Sin esto no se puede devolver siempre lista donde la hay, ni saber qué campo obligatorio faltó.
+    """
+    tipos = {t.get("name"): t for t in esquema.get("entityTypes") or []}
+    raiz = tipos.get("custom_extraction_document_type") or next(
+        (t for t in tipos.values() if "document" in (t.get("baseTypes") or []) and t.get("properties")), None
+    )
+    if raiz is None:
+        return {}
+
+    def _de(prop: dict) -> dict:
+        ocurrencia = str(prop.get("occurrenceType") or "OPTIONAL_ONCE")
+        return {"obligatorio": ocurrencia.startswith("REQUIRED"), "multiple": ocurrencia.endswith("MULTIPLE")}
+
+    estructura: dict[str, dict] = {}
+    for prop in raiz.get("properties") or []:
+        definicion = _de(prop)
+        destino = tipos.get(prop.get("valueType"))
+        if destino and destino.get("properties") and "object" in (destino.get("baseTypes") or []):
+            definicion["hijos"] = {hijo["name"]: _de(hijo) for hijo in destino["properties"] if hijo.get("name")}
+        estructura[prop["name"]] = definicion
+    return estructura

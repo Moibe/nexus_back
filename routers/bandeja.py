@@ -38,11 +38,11 @@ síncrono y deben ir al threadpool.
 
 import logging
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile, status
 
 from routers.archivos import guardar_subida
 from seguridad import Identidad, exigir_llave, exigir_llave_o_cliente
-from servicios import bandeja
+from servicios import aislamiento, auditoria, bandeja
 from servicios.almacen import ErrorAlmacen
 from servicios.subidas import normalizar_tipo
 
@@ -117,8 +117,13 @@ def subir_a_bandeja(
         examples=[""],
     ),
     quien: Identidad = Depends(exigir_llave_o_cliente),
+    authorization: str | None = Header(default=None),
 ):
     tenant = _tenant_de(quien, tenant)
+    if quien.tipo == "servicio":
+        # Con la llave del front, el tenant lo dice la petición: se comprueba contra la persona (HU11). Con una API Key de
+        # cliente sale de la llave y no hay persona.
+        aislamiento.exigir(authorization, tenant, "bandeja")
     if normalizar_tipo(archivo.content_type) not in MIME_BANDEJA:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -146,11 +151,19 @@ def subir_a_bandeja(
     dependencies=[Depends(exigir_llave)],
     tags=["Bandeja"],
     summary="Lo que está pendiente en la bandeja",
-    description="Las entradas que llegaron y todavía no pasan al pipeline ni se descartan, de la más vieja a la más nueva.",
+    description=(
+        "Las entradas que llegaron y todavía no pasan al pipeline ni se descartan, de la más vieja a la más nueva. Con "
+        "`estado=descartados`, las que se descartaron (con `descartadaEn` y su `detalle`), de la más reciente a la más vieja."
+    ),
 )
-def listar_bandeja(tenant: str = Query(..., description="Cliente")):
+def listar_bandeja(
+    tenant: str = Query(..., description="Cliente"),
+    estado: str = Query("pendientes", pattern="^(pendientes|descartados)$", description="`pendientes` (lo de siempre) o `descartados`"),
+    authorization: str | None = Header(default=None),
+):
+    aislamiento.exigir(authorization, tenant, "bandeja")
     try:
-        return {"entradas": bandeja.listar_pendientes(tenant)}
+        return {"entradas": bandeja.listar_descartadas(tenant) if estado == "descartados" else bandeja.listar_pendientes(tenant)}
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ErrorAlmacen as exc:
@@ -171,16 +184,47 @@ def retirar_de_bandeja(
     id_entrada: str,
     tenant: str = Form(...),
     motivo: str = Form(..., description="«pipeline» o «descartado»"),
+    detalle: str | None = Form(None, max_length=500, description="Solo al descartar: por qué (opcional, hasta 500 caracteres)"),
+    authorization: str | None = Header(default=None),
 ):
+    actor = aislamiento.exigir(authorization, tenant, "bandeja")
+    descartando = motivo == "descartado"
+    if descartando and not aislamiento.puede_descartar(actor, tenant):
+        # Se contesta ANTES de mirar si la entrada existe: quien no puede descartar no aprende nada de la bandeja.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"codigo": "sin_permiso", "mensaje": "Tu rol no puede descartar documentos."},
+        )
+    detalle = " ".join(detalle.split()) if detalle else None
+    entrada = bandeja.datos_de_entrada(tenant, id_entrada) if descartando else None
     try:
-        retirada = bandeja.retirar(tenant, id_entrada, motivo)
+        retirada = bandeja.retirar(tenant, id_entrada, motivo, detalle)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ErrorAlmacen as exc:
         raise _no_disponible(exc, f"retirar, tenant={tenant}") from exc
     if not retirada:
+        if bandeja.existe_en_otro_tenant(tenant, id_entrada):
+            aislamiento.intento_cruzado(actor, "bandeja", id_entrada)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Esa entrada no está pendiente en la bandeja (no existe o ya salió).",
         )
+    if descartando and entrada:
+        # El descarte ya está hecho (y es atómico): si la bitácora falla, se avisa en el log y no se le dice a la persona que
+        # no se descartó. Es la misma elección que `CROSS_TENANT_ACCESS`.
+        try:
+            auditoria.registrar(
+                auditoria.DOCUMENT_DISCARDED,
+                usuario_guid=actor.guid,
+                sesionGuid=actor.sesion,
+                tenant=tenant,
+                entradaId=id_entrada,
+                nombreOriginal=entrada["nombreOriginal"],
+                sha256=entrada["sha256"],
+                canal=entrada["canal"],
+                **({"detalle": detalle} if detalle else {}),
+            )
+        except (ErrorAlmacen, OSError):
+            logger.exception("No se pudo registrar DOCUMENT_DISCARDED (entrada=%s)", id_entrada)
     return {"retirada": True}

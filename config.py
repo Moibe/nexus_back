@@ -42,7 +42,7 @@ PORT = int(_numero("PORT", 8083))
 # El front (SvelteKit) llama a esta API desde su capa server, no desde el
 # navegador, así que en producción CORS casi no importa. Se deja configurable
 # por si algún día se consume directo desde el browser.
-_origins_env = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:7000,http://127.0.0.1:7000")
+_origins_env = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3400,http://127.0.0.1:3400")
 CORS_ALLOWED_ORIGINS = [o.strip() for o in _origins_env.split(",") if o.strip()]
 
 # ── Dominio público ───────────────────────────────────────────────────────────
@@ -159,6 +159,23 @@ DOCAI_VERSION_CLASIFICADOR = os.getenv("DOCAI_VERSION_CLASIFICADOR", "")
 DOCAI_VERSION_INE = os.getenv("DOCAI_VERSION_INE", "")
 IA_TIMEOUT = _numero("IA_TIMEOUT", 120)
 
+# ── Documentos largos (más de 15 páginas) ─────────────────────────────────────
+# El procesamiento EN LÍNEA de Document AI rechaza un documento de más de 15 páginas ("Document pages exceed the limit: 15 got
+# 20"), y un acta constitutiva ronda las 20. Cuando eso pasa, la extracción se hace por BLOQUES de páginas y se unen los
+# resultados (servicios/bloques.py). Un documento de 15 páginas o menos nunca pasa por aquí.
+#
+# EXTRACCION_MAX_PAGINAS: lo más largo que se acepta. Por encima, se rechaza SIN procesar nada (ni cobrar) con el número de
+#   páginas en el mensaje. Es una política de negocio: 20 es lo que se acordó para las actas (2026-10-16); se sube aquí si
+#   algún día se aceptan más. Cada página extra cuesta lo mismo (US$0.03) y alarga el trabajo, no lo vuelve más arriesgado.
+#   No puede ser menor que 15, porque lo de 15 o menos ni siquiera llega a medirse.
+# EXTRACCION_PAGINAS_POR_BLOQUE: tope de páginas de un bloque (15 es lo que admite Google). Más chico = más bloques y más
+#   cortes, pero cada llamada ve menos páginas a la vez.
+# EXTRACCION_SOLAPE_PAGINAS: páginas que un bloque repite del anterior para que lo que cruza el corte salga completo en uno.
+#   Cada página repetida se cobra dos veces.
+EXTRACCION_MAX_PAGINAS = max(15, int(_numero("EXTRACCION_MAX_PAGINAS", 20)))
+EXTRACCION_PAGINAS_POR_BLOQUE = max(1, min(15, int(_numero("EXTRACCION_PAGINAS_POR_BLOQUE", 15))))
+EXTRACCION_SOLAPE_PAGINAS = max(0, int(_numero("EXTRACCION_SOLAPE_PAGINAS", 1)))
+
 # ── Límite de subida ──────────────────────────────────────────────────────────
 # En el server de CSI la API se expone IP:puerto directo, sin nginx delante (los
 # dominios y el proxy solo se usan en el droplet de DigitalOcean). O sea: no hay
@@ -194,3 +211,182 @@ MAX_SUBIDA_BYTES = int(MAX_SUBIDA_MB * 1024 * 1024)
 # Local (Windows):  C:/Moibe/almacen-nexus
 # Server de CSI:    /mnt/nas/nexus/documentos
 ALMACEN_RUTA = os.getenv("ALMACEN_RUTA", "")
+
+# ── Acceso (Sprint 1: login con JWT) ─────────────────────────────────────────
+# El secreto firma los JWT de acceso; el front lo comparte para verificarlos
+# (y pregunta aparte, en GET /auth/sesion, si la sesión sigue viva). Sin él,
+# /auth/* responde 503. Mínimo 32
+# caracteres: `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
+AUTH_JWT_SECRET = os.getenv("AUTH_JWT_SECRET", "").strip()
+# Vida del JWT de acceso (minutos) y del refresh token (días).
+AUTH_ACCESO_MIN = int(_numero("AUTH_ACCESO_MIN", 15))
+AUTH_REFRESH_DIAS = int(_numero("AUTH_REFRESH_DIAS", 7))
+# La política del diseño: 5 intentos fallidos → 15 minutos de bloqueo. Cuando
+# existan los SPs de NEX-319, vivirá en `uspRecordLoginResult` y esto sobra.
+AUTH_MAX_INTENTOS = int(_numero("AUTH_MAX_INTENTOS", 5))
+AUTH_BLOQUEO_MIN = int(_numero("AUTH_BLOQUEO_MIN", 15))
+
+# ── Correo (Sprint 1: activación y recuperación de contraseña) ───────────────
+# El canal real depende de Soporte TI (qué relay, qué remitente, si la red deja
+# salir el puerto). Para no quedarnos parados, el envío tiene modos:
+#
+#   archivo   (default) deja el correo en `<ALMACEN_RUTA>/correos/`; no toca la
+#             red. Es con lo que se desarrolla y lo que leen las pruebas.
+#   smtp      lo manda de verdad. Necesita al menos CORREO_SMTP_HOST y
+#             CORREO_REMITENTE.
+#   silencio  lo descarta.
+#   api       lo manda por el servicio HTTP de notificaciones de ART Broker (pide
+#             un token y manda el correo). Necesita CORREO_API_URL (solo el host,
+#             en https), CORREO_API_USUARIO y CORREO_API_CONTRASENA. El remitente
+#             lo decide ESE servicio, no CORREO_REMITENTE.
+#
+# El día que TI conteste, esto es lo único que cambia.
+CORREO_MODO = (os.getenv("CORREO_MODO") or "archivo").strip().lower()
+CORREO_REMITENTE = (os.getenv("CORREO_REMITENTE") or "").strip()
+CORREO_SMTP_HOST = (os.getenv("CORREO_SMTP_HOST") or "").strip()
+CORREO_SMTP_PUERTO = int(_numero("CORREO_SMTP_PUERTO", 587))
+CORREO_SMTP_USUARIO = (os.getenv("CORREO_SMTP_USUARIO") or "").strip()
+CORREO_SMTP_CONTRASENA = os.getenv("CORREO_SMTP_CONTRASENA") or ""
+# STARTTLS sobre el puerto normal (587) o SSL directo (465). No los dos.
+CORREO_SMTP_TLS = (os.getenv("CORREO_SMTP_TLS") or "1").strip().lower() in {"1", "true", "si", "sí", "yes"}
+CORREO_SMTP_SSL = (os.getenv("CORREO_SMTP_SSL") or "").strip().lower() in {"1", "true", "si", "sí", "yes"}
+CORREO_TIMEOUT = int(_numero("CORREO_TIMEOUT", 20))
+# Servicio HTTP de notificaciones (modo `api`). Las rutas van fijas en
+# `servicios/correo.py`: entre ambientes solo cambia el host. Credenciales: SOLO
+# en el .env del servidor, nunca en el repo, la documentación ni el log.
+CORREO_API_URL = (os.getenv("CORREO_API_URL") or "").strip().rstrip("/")
+CORREO_API_USUARIO = (os.getenv("CORREO_API_USUARIO") or "").strip()
+CORREO_API_CONTRASENA = os.getenv("CORREO_API_CONTRASENA") or ""
+
+# La URL pública del FRONT, para armar los enlaces que van en los correos. Sin
+# esto no se puede mandar un enlace que alguien pueda abrir.
+#   local: http://localhost:3400 · dev CSI: http://172.10.30.15:3401
+FRONT_URL = (os.getenv("FRONT_URL") or "http://localhost:3400").strip().rstrip("/")
+
+# Vigencia de los enlaces de un solo uso, en horas. Las dos salen del diseño:
+# 48 h para activar una cuenta nueva (HU06) y 1 h para recuperar la contraseña
+# (HU10), que es más corta a propósito porque abre la puerta de una cuenta que
+# ya existe.
+# Cuánto sirve la contraseña temporal del primer acceso (HU06 CA-5), y cuánto dura un enlace de activación. Puede
+# ser fraccionaria (0.01 = menos de un minuto: para probar la caducidad sin esperar dos días); 0 apaga la
+# caducidad del primer acceso.
+TOKEN_ACTIVACION_HORAS = _numero("TOKEN_ACTIVACION_HORAS", 48)
+TOKEN_RECUPERACION_HORAS = int(_numero("TOKEN_RECUPERACION_HORAS", 1))
+
+# Freno a "Olvidé mi contraseña" (HU10). Esa pantalla la abre cualquiera, sin
+# sesión, y cada solicitud puede mandar un correo: sin límite sería una forma de
+# llenarle el buzón a una persona o de gastar el relay de CSI. Los límites
+# cuentan TODAS las solicitudes, existan o no las cuentas (si no, delatarían
+# cuáles existen), y se aplican ANTES de mirar si la cuenta existe. Todo en
+# SEGUNDOS menos lo que dice "por hora".
+RECUPERACION_ESPERA_SEG = int(_numero("RECUPERACION_ESPERA_SEG", 60))          # entre dos solicitudes del MISMO correo
+RECUPERACION_MAX_POR_CORREO_HORA = int(_numero("RECUPERACION_MAX_POR_CORREO_HORA", 5))
+RECUPERACION_MAX_POR_ORIGEN_HORA = int(_numero("RECUPERACION_MAX_POR_ORIGEN_HORA", 5))   # por navegador (cookie)
+# Por IP y global NO dependen de nada que el cliente controle: la cookie del
+# navegador se puede no mandar, la IP del BFF y el total no. La IP va holgada
+# porque detrás del proxy de TI puede ser la de todos.
+RECUPERACION_MAX_POR_IP_HORA = int(_numero("RECUPERACION_MAX_POR_IP_HORA", 30))
+RECUPERACION_MAX_GLOBAL_HORA = int(_numero("RECUPERACION_MAX_GLOBAL_HORA", 200))
+# ¿La pantalla «Recupera tu acceso» le dice a quien teclea un correo que NO tiene cuenta? Sí (por defecto), como dibuja el
+# Figma y como pidió QA el 2026-10-20: «El correo electrónico no existe; por favor ingresa un correo electrónico válido.».
+# Es lo que el criterio CA-2 de HU10 prohibía: con esto, esa pantalla deja de ser neutral y cualquiera puede preguntar si
+# un correo tiene cuenta (el login ya lo hace desde HU03, y esta ruta sigue frenada por los límites de arriba). Poner
+# `RECUPERACION_DICE_SI_EXISTE=0` en el .env devuelve el comportamiento neutral de CA-2 sin tocar código.
+RECUPERACION_DICE_SI_EXISTE = (os.getenv("RECUPERACION_DICE_SI_EXISTE") or "1").strip().lower() not in ("0", "false", "no")
+
+# Contacto de soporte que se imprime al pie de los correos. Vacío = no se
+# imprime el bloque: el diseño trae un correo y un teléfono de ejemplo que NO
+# son nuestros, y mandar datos de contacto falsos en un correo real es peor
+# que no mandarlos.
+CORREO_SOPORTE = (os.getenv("CORREO_SOPORTE") or "").strip()
+CORREO_SOPORTE_TELEFONO = (os.getenv("CORREO_SOPORTE_TELEFONO") or "").strip()
+
+
+# ── Avisos de configuración de producción ─────────────────────────────────────
+# Este proyecto ya se tropezó TRES veces con el mismo molde: una variable cuyo
+# default es correcto en la laptop y equivocado en el servidor, que falla en
+# silencio porque `.env` no viaja por git y `git pull` no la puede traer.
+#
+#   · BODY_SIZE_LIMIT (en el front) — tumbaba toda subida de más de 512 KB, y el
+#     error no mencionaba el tamaño: se diagnosticaba como "archivo corrupto".
+#   · DOCAI_VERSION_INE — sin fijar, Google resolvía su versión "default" y el
+#     mismo archivo devolvía 19 campos en el server contra 20 en local.
+#   · FRONT_URL — su default manda los enlaces de los correos a localhost, o sea
+#     a la máquina de quien RECIBE el correo. El síntoma es "llegó el correo pero
+#     el link no sirve", que no se lee como un problema de configuración.
+#
+# De ahí esta función: al arrancar fuera de `local`, revisa las variables donde
+# quedarse con el default es un error, y avisa.
+#
+# Dos decisiones a propósito:
+#   1. AVISA, no truena. Una app caída por un detalle de configuración es peor
+#      que una app arriba con un WARNING visible. El arranque nunca se bloquea.
+#   2. Devuelve datos, no loguea. Cuando `config` se importa, `configurar_logging`
+#      todavía no corrió, así que un `logger.warning` aquí se perdería o saldría
+#      sin formato. Quien llama (`app.py`) lo loguea en el momento correcto.
+def avisos_de_produccion() -> list[str]:
+    """Variables que se quedaron en un default que no sirve fuera de `local`.
+
+    Cada aviso dice QUÉ pasa, no solo qué falta: un "FRONT_URL vacío" no le
+    dice nada a quien lee el log a las 11 de la noche; "los enlaces de los
+    correos apuntan a la máquina de quien los recibe", sí.
+
+    Lista vacía en `ENVIRONMENT=local`: ahí los defaults son justamente los
+    correctos y avisar sería ruido que enseña a ignorar los avisos.
+    """
+    if ENVIRONMENT.strip().lower() == "local":
+        return []
+
+    avisos: list[str] = []
+
+    if "localhost" in FRONT_URL or "127.0.0.1" in FRONT_URL:
+        avisos.append(
+            f"FRONT_URL={FRONT_URL!r} — los enlaces de activación y de "
+            "recuperación de contraseña apuntarían a la máquina de quien RECIBE "
+            "el correo, no al servidor. Los correos llegan y el link está muerto."
+        )
+
+    if CORREO_MODO in {"archivo", "silencio"}:
+        avisos.append(
+            f"CORREO_MODO={CORREO_MODO!r} — no sale ningún correo de verdad. "
+            "La recuperación de contraseña responde bien pero nadie recibe nada."
+        )
+    elif CORREO_MODO == "api" and not (
+        CORREO_API_URL and CORREO_API_USUARIO and CORREO_API_CONTRASENA
+    ):
+        avisos.append(
+            "CORREO_MODO=api pero falta CORREO_API_URL, _USUARIO o _CONTRASENA — "
+            "el envío va a fallar en cada intento."
+        )
+    elif CORREO_MODO == "smtp" and not CORREO_SMTP_HOST:
+        avisos.append("CORREO_MODO=smtp pero CORREO_SMTP_HOST está vacío.")
+
+    if not AUTH_JWT_SECRET:
+        avisos.append("AUTH_JWT_SECRET vacío — el login responde 503.")
+
+    if not ALMACEN_RUTA:
+        avisos.append("ALMACEN_RUTA vacío — el almacén está apagado y el login no funciona.")
+
+    if not NEXUS_API_KEY:
+        avisos.append(
+            "NEXUS_API_KEY vacía — los endpoints protegidos fallan CERRADOS "
+            "(seguro, pero el front no puede llamarlos)."
+        )
+
+    if not WEBHOOKS_CLAVE_CIFRADO:
+        avisos.append("WEBHOOKS_CLAVE_CIFRADO vacía — el alta de webhooks responde 503.")
+
+    if WEBHOOKS_PERMITIR_LOCAL:
+        avisos.append(
+            "SEGURIDAD: WEBHOOKS_PERMITIR_LOCAL está encendido fuera de local — "
+            "permite registrar webhooks contra localhost del propio servidor."
+        )
+
+    if not DOCAI_VERSION_INE:
+        avisos.append(
+            "DOCAI_VERSION_INE vacía — Google resuelve su versión 'default', que "
+            "puede mover sin aviso; la extracción deja de ser reproducible."
+        )
+
+    return avisos
+

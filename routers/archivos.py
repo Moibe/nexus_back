@@ -31,25 +31,26 @@ eso se descubre meses después, cuando alguien quiere leer el documento.
 
 El lugar exacto donde se enchufa está marcado con un comentario abajo.
 
-## Quién es el `tenant`
+## Quién es el `tenant` y quién puede leer qué (HU11)
 
-Un CLIENTE (decidido el 2026-09-24; ver el docstring del almacén). Hoy llega
-como parámetro porque no hay de dónde deducirlo: las llaves de API todavía no
-están atadas a un tenant. **Eso es provisional y hay que saberlo** — mientras
-siga así, quien tenga la llave puede escribir en el prefijo de cualquier
-cliente cambiando un campo del formulario. Cerrar eso es el paso 10 del plan:
-que el tenant se DEDUZCA de la credencial en vez de que el cliente lo afirme.
+Un CLIENTE (decidido el 2026-09-24; ver el docstring del almacén). Llega como
+parámetro del formulario, pero ya no se le cree al llamador: desde el
+2026-10-14 las dos rutas exigen TAMBIÉN el JWT de la persona (el BFF lo reenvía)
+y comprueban aquí que pueda operar en ese tenant (`servicios/aislamiento.py`).
+Subir a un tenant que no es el tuyo: 403. Leer un archivo cuya ruta empieza por
+el tenant de otro: 404, igual que si no existiera, y queda en la bitácora de
+auditoría como `CROSS_TENANT_ACCESS`.
 
-Mientras tanto, el único llamador real es el front de CSI subiendo sus propios
-documentos de ejemplo, que van bajo el prefijo de operador.
+El único llamador real es el front de CSI subiendo los documentos de ejemplo
+del asistente, que van bajo el tenant de quien los sube.
 """
 
 import logging
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
 
-from servicios import almacen
+from servicios import aislamiento, almacen
 from servicios.almacen import ErrorAlmacen
 from servicios.subidas import (
     MIME_SOPORTADOS,
@@ -144,7 +145,9 @@ def subir_archivo(
     sha256: str | None = Form(
         None, description="Hash que calculó el cliente, para verificar la transferencia"
     ),
+    authorization: str | None = Header(default=None),
 ):
+    aislamiento.exigir(authorization, tenant, "archivo")
     guardado = guardar_subida(archivo, tenant, sha256)
 
     # ── AQUÍ va el registro en `file`, cuando exista el SP ──────────────────
@@ -185,7 +188,12 @@ def leer_archivo(
         "application/octet-stream",
         description="Con qué Content-Type devolverlo. Debe ser uno de los soportados.",
     ),
+    authorization: str | None = Header(default=None),
 ):
+    # Primero, de quién es la ruta: lo demás (el `mime`, si el almacén está o no) no debe contestarle nada a quien no puede
+    # leerla.
+    aislamiento.exigir_ruta(authorization, ruta)
+
     # El `mime` lo manda el cliente, así que NO se devuelve tal cual: se valida
     # contra la misma lista blanca de la subida. Sin esto, cualquiera podría
     # pedir un objeto y hacer que el navegador lo interprete como `text/html`,
@@ -240,9 +248,11 @@ def leer_archivo(
         ) from exc
 
     # Inmutable por definición: el nombre del objeto ES el hash de su contenido,
-    # así que una ruta nunca cambia de bytes. Se puede cachear para siempre.
+    # así que una ruta nunca cambia de bytes. Se puede cachear para siempre, pero
+    # `private`: el archivo es de una organización, y una caché compartida (un
+    # proxy, una CDN) se lo serviría a quien lo pidiera sin pasar por aquí (HU11).
     return Response(
         content=contenido,
         media_type=limpio,
-        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        headers={"Cache-Control": "private, max-age=31536000, immutable"},
     )

@@ -33,6 +33,7 @@ os.environ.setdefault("SQLSERVER_HOST", "")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+import verificacion_comun  # noqa: E402  (antes que `app`: fija el secreto de los JWT)
 from app import app  # noqa: E402
 from servicios import almacen  # noqa: E402
 
@@ -51,8 +52,9 @@ PNG = bytes.fromhex(
 
 def _objetos():
     """Lo que hay en el almacén, SIN contar el centinela — que no es un objeto
-    guardado sino la marca de que la carpeta es el almacén."""
-    return [p for p in RAIZ.rglob("*") if p.is_file() and p.name != almacen.CENTINELA]
+    guardado sino la marca de que la carpeta es el almacén— ni los registros internos de `.registro/` (el de usuarios, donde
+    está el administrador de plataforma con el que habla el verificador)."""
+    return [p for p in RAIZ.rglob("*") if p.is_file() and p.name != almacen.CENTINELA and ".registro" not in p.relative_to(RAIZ).parts]
 
 
 fallos = 0
@@ -87,7 +89,8 @@ def subir(cliente, *, contenido=PNG, mime="image/png", tenant="csi", sha=None, c
 
 
 def main() -> int:
-    cliente = TestClient(app)
+    # Con la sesión de un administrador de plataforma en cada llamada con la llave de servicio, como hace el BFF (HU11).
+    cliente = verificacion_comun.cliente_con_sesion_de_plataforma(app, LLAVE)
 
     titulo("1 · La puerta está cerrada sin llave")
     r = subir(cliente, con_llave=False)

@@ -20,6 +20,7 @@ from config import (
     MAX_SUBIDA_MB,
     PORT,
     SQLSERVER_HOST,
+    avisos_de_produccion,
 )
 from logging_config import configurar_logging
 
@@ -27,6 +28,18 @@ from logging_config import configurar_logging
 # imports (por ejemplo el aviso de que falta el driver ODBC) ya salga con formato.
 configurar_logging()
 logger = logging.getLogger(__name__)
+
+# Variables que se quedaron en un default que no sirve fuera de `local` — ver
+# `config.avisos_de_produccion`. Se evalúa UNA vez, aquí, porque el .env solo se
+# lee al arrancar: revisarlo por request sería gastar en algo que no cambia.
+#
+# Se loguea en el momento correcto (ya con formato y timestamp) y el CONTEO se
+# publica en /health. El detalle NO: este puerto lo alcanza cualquiera en la red
+# de CSI, y una lista de "qué está mal configurado" es justamente lo que no
+# conviene regalar. El conteo basta para saber que hay que ir al log.
+AVISOS_CONFIGURACION = avisos_de_produccion()
+for _aviso in AVISOS_CONFIGURACION:
+    logger.warning("Configuración de producción — %s", _aviso)
 
 # El orden de esta lista define el orden de los grupos en Swagger, y cada
 # entrada le pone descripción al encabezado del grupo.
@@ -43,6 +56,10 @@ TAGS = [
     {
         "name": "Llaves",
         "description": "Emitir, listar y revocar API Keys de cliente. Solo el front.",
+    },
+    {
+        "name": "Tipos documentales",
+        "description": "El catálogo de tipos documentales de cada organización. Solo el front.",
     },
     {
         "name": "Documentos",
@@ -258,10 +275,16 @@ def health():
     # y que el router cargó. NO significa que la base responda — para eso está
     # /health/db. Se expone aquí porque el deploy.sh de webhook-central no hace
     # healthcheck, así que es la forma de ver el estado con un solo curl.
+    #
+    # `avisos_configuracion` es un CONTEO, no la lista: el detalle dice qué
+    # variable está mal puesta y eso no se publica en un puerto que alcanza
+    # cualquiera en la red de CSI. Si no es 0, el detalle está en el log:
+    #   pm2 logs nexus-back-api --lines 40
     return {
         "status": "ok",
         "environment": ENVIRONMENT,
         "documentos_disponible": DOCUMENTOS_DISPONIBLE,
+        "avisos_configuracion": len(AVISOS_CONFIGURACION),
     }
 
 
@@ -366,6 +389,40 @@ app.include_router(
     procesadores_router, prefix="/procesadores", dependencies=[Depends(exigir_llave)]
 )
 
+# Los tipos documentales de cada organización (la biblioteca de Configuración): antes vivían en el localStorage de cada
+# navegador. Como llaves y webhooks, piden la llave de servicio Y el JWT de la persona (HU11).
+from routers.tipos_documentales import router as tipos_documentales_router  # noqa: E402
+
+app.include_router(
+    tipos_documentales_router,
+    prefix="/tipos-documentales",
+    tags=["Tipos documentales"],
+    dependencies=[Depends(exigir_llave)],
+)
+
+# Los procesos de cada organización (el motor de reglas: tipos documentales como entradas y operadores como reglas). Aquí solo se
+# GUARDA el dibujo del lienzo; no hay motor que los corra todavía. Como los tipos documentales: llave de servicio Y JWT (HU11).
+from routers.procesos import router as procesos_router  # noqa: E402
+
+app.include_router(
+    procesos_router,
+    prefix="/procesos",
+    tags=["Procesos"],
+    dependencies=[Depends(exigir_llave)],
+)
+
+# Administradores de plataforma: crearlos, verlos, regenerarles la contraseña y retirarlos. Lo usa Nexus Monitor (la herramienta del
+# operador); antes eran tres scripts en una terminal del servidor. ⚠️ Piden SOLO la llave de servicio: sin llave de administración
+# ni JWT (decisión del usuario, 2026-10-20). Ver el docstring de `routers/admins_plataforma.py`.
+from routers.admins_plataforma import router as admins_plataforma_router  # noqa: E402
+
+app.include_router(
+    admins_plataforma_router,
+    prefix="/admins-plataforma",
+    tags=["Administradores de plataforma"],
+    dependencies=[Depends(exigir_llave)],
+)
+
 # Archivos SÍ se registra siempre, a diferencia de Documentos: no depende de la
 # base, solo del almacén. Si `ALMACEN_RUTA` está vacía el endpoint responde un
 # 503 que NOMBRA la variable que falta — más útil que esconder la ruta y dejar
@@ -396,6 +453,32 @@ app.include_router(llaves_router, prefix="/llaves", dependencies=[Depends(exigir
 from routers.webhooks import router as webhooks_router  # noqa: E402
 
 app.include_router(webhooks_router, prefix="/webhooks", dependencies=[Depends(exigir_llave)])
+
+# Acceso (Sprint 1): login, refresh, logout, cambio de contraseña. Lo llama SOLO
+# la capa server del front, con la llave de servicio; el navegador recibe las
+# cookies del front. Queda fuera del dominio público como todo lo que no es
+# /bandeja (ver HOSTS_PUBLICOS).
+from routers.auth import router as auth_router  # noqa: E402
+
+app.include_router(auth_router, prefix="/auth", tags=["Acceso"], dependencies=[Depends(exigir_llave)])
+
+# Organizaciones (Sprint 1, HU02). Además de la llave de servicio, cada
+# endpoint exige que el Bearer sea de un ADMINISTRADOR DE PLATAFORMA: la llave
+# la tiene el front entero, así que sola no distingue quién pide.
+from routers.organizaciones import router as organizaciones_router  # noqa: E402
+
+app.include_router(
+    organizaciones_router, prefix="/organizaciones", tags=["Organizaciones"], dependencies=[Depends(exigir_llave)]
+)
+
+# Usuarios dentro de una organización (Sprint 1, HU06 y HU07). El permiso lo
+# da la membresía con rol ADMIN, no la llave: cada administrador opera sobre
+# SU organización, la del JWT.
+from routers.usuarios import router as usuarios_router  # noqa: E402
+
+app.include_router(
+    usuarios_router, prefix="/usuarios", tags=["Usuarios"], dependencies=[Depends(exigir_llave)]
+)
 
 # El grupo Documentos se registra solo si hay una base configurada.
 #
@@ -447,6 +530,35 @@ else:
             documentos_router, prefix="/documentos", dependencies=[Depends(exigir_llave)]
         )
         DOCUMENTOS_DISPONIBLE = True
+
+    # Esquema (inventario de tablas) va DENTRO de este mismo bloque y no
+    # arriba con los demás routers, porque arrastra pyodbc por la misma cadena
+    # que documentos: routers.esquema → repositorios.esquema → db.sqlserver.
+    # Registrarlo afuera reintroduciría justo el fallo que el try/except de
+    # aquí evita — un SO sin runtime de ODBC tumbaría la API COMPLETA — y
+    # además publicaría en Swagger un endpoint que, sin SQLSERVER_HOST, solo
+    # sabe responder error.
+    #
+    # Lo consume Nexus Monitor (su pantalla de Tablas). Es de solo lectura y
+    # no devuelve datos de negocio: nombres de tabla y conteos, nada más.
+    try:
+        from routers.esquema import router as esquema_router  # noqa: E402
+    except ImportError as exc:
+        _raiz = (exc.name or "").split(".")[0]
+        if _raiz != "pyodbc" and "odbc" not in str(exc).lower():
+            raise
+        logger.warning(
+            "No se pudo importar el router de esquema: falta el runtime de "
+            "ODBC en este SO (%s). La API arranca SIN /esquema/*.",
+            exc,
+        )
+    else:
+        app.include_router(
+            esquema_router,
+            prefix="/esquema",
+            tags=["Esquema"],
+            dependencies=[Depends(exigir_llave)],
+        )
 
 
 # Al final, con todos los routers ya incluidos: la documentación pública se

@@ -35,8 +35,10 @@ class ErrorDocumentAI(RuntimeError):
     al respecto, que es la única distinción que le sirve:
 
       - `limite_paginas`  el documento excede el tope del procesamiento en
-                          línea (15 páginas, 30 sin imágenes) → hay que
-                          recortarlo o procesarlo de otra forma
+                          línea (15 páginas, 30 sin imágenes) y no se pudo
+                          procesar por bloques (o es más largo que
+                          `EXTRACCION_MAX_PAGINAS`, ver `servicios/bloques.py`)
+                          → hay que recortarlo
       - `cuota`           se agotó la cuota de páginas por minuto → esperar
       - `archivo_ilegible` PDF corrupto/truncado/con contraseña, o imagen que
                           no se puede decodificar → conseguir otro archivo
@@ -47,7 +49,19 @@ class ErrorDocumentAI(RuntimeError):
     no supuestos — ver `_motivo_de` en `servicios/ia.py`.
     """
 
-    def __init__(self, mensaje: str, status_code: int, motivo: str):
+    def __init__(
+        self,
+        mensaje: str,
+        status_code: int,
+        motivo: str,
+        paginas: int | None = None,
+        limite: int | None = None,
+    ):
         super().__init__(mensaje)
         self.status_code = status_code
         self.motivo = motivo
+        # Solo con `limite_paginas`: cuántas páginas tiene el documento y cuál es el máximo que aplicó. Google las trae en
+        # `details[].metadata` del error; sin ellas no se sabe en cuántos bloques partir (`servicios.ia`) ni qué decirle a la
+        # persona (`routers.ia`: «El documento tiene 25 páginas y el máximo es 20»).
+        self.paginas = paginas
+        self.limite = limite
