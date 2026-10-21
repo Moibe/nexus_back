@@ -1781,8 +1781,9 @@ contraseñas. Se probó rompiendo 15 reglas a propósito: las 15 se detectan.
 
 Un **proceso** es un conjunto de reglas y corre sobre un **expediente** (un conjunto de documentos). Se arma en un lienzo del front:
 los tipos documentales de la organización son sus entradas, las reglas son operadores (igual, distinto, contiene, mayor, menor;
-cantidad, suma, alguno, todos y unicos, que trabajan con **listas**; y, o, no), un **valor fijo** es un dato que se escribe en el lienzo
-(el «2» de «más de 2 socios») y los cables llevan un campo, un valor fijo o el resultado de una regla a la entrada de un operador. Aquí solo se
+cantidad, suma, alguno, todos y unicos, que trabajan con **listas**; existe, que pregunta si el expediente trae un documento; y, o, no,
+implica), un **valor fijo** es un dato que se escribe en el lienzo (el «2» de «más de 2 socios») y los cables llevan un campo, el documento
+entero (el punto `@documento` de un tipo, solo para `existe`), un valor fijo o el resultado de una regla a la entrada de un operador. Aquí solo se
 **guarda ese dibujo**: `servicios/procesos.py` (registro provisional, `procesos.jsonl` dentro de `.registro/`) y `routers/procesos.py`.
 **Todavía no hay un motor que corra los procesos sobre un expediente de verdad**: el back no interpreta las reglas, solo
 comprueba que el dibujo esté entero.

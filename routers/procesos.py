@@ -1,7 +1,7 @@
 """Dominio: procesos — el motor de reglas de cada organización (ver `servicios/procesos.py`).
 
 Un proceso es un conjunto de reglas que corre sobre un expediente: se arma en el lienzo del front con los tipos documentales de la
-organización como entradas y operadores (igual, distinto, contiene, mayor, menor, y, o, no) como reglas. Aquí solo se GUARDA ese
+organización como entradas y operadores (igual, distinto, contiene, mayor, menor, listas, existe, y, o, no, implica) como reglas. Aquí solo se GUARDA ese
 dibujo: todavía no hay un motor que corra los procesos sobre un expediente de verdad.
 
 Todas las rutas van detrás de la llave de servicio y exigen TAMBIÉN el JWT de la persona (HU11): el tenant lo manda la petición y se

@@ -4,9 +4,11 @@
 
 Un proceso es un conjunto de reglas y corre sobre un EXPEDIENTE (un conjunto de documentos). Se arma en un lienzo: los tipos
 documentales de la organización son sus entradas (nodos de tipo `tipo-documental`), las reglas son operadores (nodos de tipo
-`operador`: igual, distinto, contiene, mayor, menor; cantidad, suma, alguno, todos y unicos, que trabajan con LISTAS; y, o, no),
+`operador`: igual, distinto, contiene, mayor, menor; cantidad, suma, alguno, todos y unicos, que trabajan con LISTAS; existe, que
+pregunta si el expediente trae un documento; y, o, no, implica),
 un `constante` es un valor fijo que se escribe en el lienzo (por ejemplo el «2» de «más de 2 socios») y los cables llevan un campo,
-un valor fijo o el resultado de una regla a la entrada de un operador.
+el documento entero (el punto `@documento` de un tipo, solo para `existe`), un valor fijo o el resultado de una regla a la entrada
+de un operador. Para «existe», la muestra `a` es el ejemplo elegido (`si` o `no`).
 
 Guardado, un proceso es su `nombre`, su `descripcion` y el dibujo: `nodos` y `aristas`. Es lo mismo que maneja el lienzo del
 front, así que el back lo trata como una caja y NO interpreta las reglas: no sabe qué es «igual» ni qué campo es de qué tipo

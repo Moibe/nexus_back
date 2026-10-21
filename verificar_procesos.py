@@ -326,6 +326,30 @@ try:
     rev("y se puede volver a guardar encima", r.status_code == 200 and r.json()["revision"] == 2, r.text[:120])
     c.delete(f"/procesos/{p5}", params={"tenant": org_a}, headers=cab(a_admin))
 
+    titulo("8c · «Existe documento» e «Implica»: el back las guarda como cualquier operador y respeta el punto del documento")
+    con_doc = proceso("Si hay constancia, su RFC debe coincidir")
+    con_doc["nodos"] += [
+        nodo_op("operador-2", "existe", "si", "", x=700, y=400),
+        nodo_op("operador-3", "implica", x=1000, y=200),
+    ]
+    con_doc["aristas"] += [
+        cable("tipo-const", "@documento", "operador-2", "a"),
+        cable("operador-2", "resultado", "operador-3", "a"),
+        cable("operador-1", "resultado", "operador-3", "b"),
+    ]
+    p6 = nuevo_id()
+    r = guardar(a_admin, org_a, p6, con_doc, 0)
+    rev("un proceso con «Existe documento» e «Implica» se guarda", r.status_code == 200, r.text[:200])
+    d = r.json()["datos"]
+    existe = next(n for n in d["nodos"] if n["id"] == "operador-2")
+    implica = next(n for n in d["nodos"] if n["id"] == "operador-3")
+    rev("«Existe documento» guarda cuál es y el ejemplo elegido (sí/no) en `a`", existe["data"] == {"operador": "existe", "a": "si", "b": ""}, str(existe))
+    rev("«Implica» guarda cuál es y nada más", implica["data"] == {"operador": "implica", "a": "", "b": ""}, str(implica))
+    rev("el cable que sale del punto «@documento» del tipo se conserva tal cual", any(a["source"] == "tipo-const" and a["sourceHandle"] == "@documento" and a["target"] == "operador-2" and a["targetHandle"] == "a" for a in d["aristas"]), str(d["aristas"]))
+    leido = next(p for p in listar(a_admin, org_a).json()["procesos"] if p["id"] == p6)
+    rev("lo que se lee de vuelta es lo mismo que se guardó", leido["datos"]["nodos"] == d["nodos"] and leido["datos"]["aristas"] == d["aristas"])
+    c.delete(f"/procesos/{p6}", params={"tenant": org_a}, headers=cab(a_admin))
+
     titulo("9 · Un proceso vacío y uno con cables a un punto sin nombre")
     p4 = nuevo_id()
     r = guardar(a_admin, org_a, p4, {"nombre": "Vacío", "nodos": [], "aristas": []}, 0)
