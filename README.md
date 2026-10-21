@@ -1083,6 +1083,15 @@ las conozca; NEX-241):
    no cierra del todo la enumeración. Es una decisión de producto para las dos
    pantallas juntas.
 
+   **Revertido a pedido de QA el 2026-10-20** (incidencia HU10 CA4: «al ingresar un correo que no está registrado
+   debería mandar la notificación en letras rojas "El correo electrónico no existe…"»). Con
+   `RECUPERACION_DICE_SI_EXISTE` encendida —el valor por defecto— `/auth/recuperacion/solicitar` contesta
+   `404 correo_no_existe` cuando el correo no tiene cuenta, y la pantalla dibuja el error del Figma. Una cuenta
+   desactivada o sin primer acceso sigue recibiendo el 200 neutral. La solicitud se anota igual (`SIN_CUENTA`) y los
+   límites de abajo se aplican antes. **Es una decisión de producto con costo de seguridad**: con ella cualquiera puede
+   preguntar si un correo tiene cuenta (el login ya lo permitía). Para volver a CA-2 basta
+   `RECUPERACION_DICE_SI_EXISTE=0` en el `.env` y reiniciar; `verificar_recuperacion.py` prueba los dos modos.
+
 2. **CA-9 se resuelve en el servidor.** Una cuenta que nunca ha entrado no recibe
    enlace de recuperación, pero la pantalla le responde lo mismo que a todos; lo
    que cambia es el correo, que le dice que termine su primer acceso. Además es

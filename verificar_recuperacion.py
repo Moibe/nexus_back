@@ -38,6 +38,9 @@ os.environ["NEXUS_API_KEY"] = SERVICIO
 os.environ["AUTH_JWT_SECRET"] = "secreto-de-prueba-de-al-menos-32-caracteres-xx"
 os.environ["CORREO_MODO"] = "archivo"
 os.environ["FRONT_URL"] = "http://localhost:3400"
+# Todo el script prueba el modo neutral del criterio CA-2; el modo que le dice a quien pregunta que ese correo no tiene
+# cuenta (el predeterminado desde el 2026-10-20, a pedido de QA) se prueba en el bloque 19 prendiendo la bandera.
+os.environ["RECUPERACION_DICE_SI_EXISTE"] = "0"
 os.environ.setdefault("SQLSERVER_HOST", "")
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -396,6 +399,32 @@ try:
     codigos = [solicitar(f"g{i}@ejemplo.com", ip=f"198.51.100.{i}").status_code for i in range(6)]
     rev("global: tras 4 en la plataforma, 429 (protege al relay)", codigos == [200, 200, 200, 200, 429, 429], str(codigos))
     config.RECUPERACION_MAX_GLOBAL_HORA = 10000
+
+    titulo("19 · QA 2026-10-20: con RECUPERACION_DICE_SI_EXISTE encendida, un correo sin cuenta recibe el error del Figma")
+    config.RECUPERACION_DICE_SI_EXISTE = True
+    limpiar_correos()
+    r_no = solicitar("fantasma@ejemplo.com", ip="203.0.113.77")
+    rev("correo sin cuenta: 404", r_no.status_code == 404, r_no.text)
+    detalle = (r_no.json().get("detail") or {}) if r_no.status_code == 404 else {}
+    rev("con el código `correo_no_existe`", detalle.get("codigo") == "correo_no_existe", r_no.text)
+    rev("y el texto literal del Figma",
+        detalle.get("mensaje") == "El correo electrónico no existe; por favor ingresa un correo electrónico válido.", r_no.text)
+    rev("sin mandar ningún correo", len(correos()) == 0, str(len(correos())))
+    r_si = solicitar("dora@ejemplo.com", ip="203.0.113.78")
+    rev("una cuenta desactivada sigue recibiendo la respuesta neutral (la cuenta existe)",
+        r_si.status_code == 200 and r_si.json().get("mensaje") == MENSAJE_NEUTRO, r_si.text)
+    r_pablo = solicitar("pablo@ejemplo.com", ip="203.0.113.79")
+    rev("igual la que no ha hecho su primer acceso", r_pablo.status_code == 200, r_pablo.text)
+    eventos_sc = [
+        json.loads(l)
+        for l in (RAIZ / ".registro" / "auditoria.jsonl").read_text(encoding="utf-8").splitlines()
+        if l.strip()
+    ]
+    rev("la solicitud sin cuenta SE ANOTÓ igual (SIN_CUENTA)",
+        any(e.get("accion") == "PASSWORD_RESET_REQUESTED" and e.get("resultado") == "SIN_CUENTA" for e in eventos_sc))
+    config.RECUPERACION_DICE_SI_EXISTE = False
+    r_neutro = solicitar("fantasma@ejemplo.com", ip="203.0.113.80")
+    rev("apagada la bandera, vuelve el 200 neutral de CA-2", r_neutro.status_code == 200, r_neutro.text)
 
     titulo("18 · Nada de lo anterior rompió el login")
     rev("Ana entra con su contraseña vigente", login("ana@ejemplo.com", CONTRASENA_NUEVA).status_code == 200)

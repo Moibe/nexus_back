@@ -287,6 +287,12 @@ RECUPERACION_MAX_POR_ORIGEN_HORA = int(_numero("RECUPERACION_MAX_POR_ORIGEN_HORA
 # porque detrás del proxy de TI puede ser la de todos.
 RECUPERACION_MAX_POR_IP_HORA = int(_numero("RECUPERACION_MAX_POR_IP_HORA", 30))
 RECUPERACION_MAX_GLOBAL_HORA = int(_numero("RECUPERACION_MAX_GLOBAL_HORA", 200))
+# ¿La pantalla «Recupera tu acceso» le dice a quien teclea un correo que NO tiene cuenta? Sí (por defecto), como dibuja el
+# Figma y como pidió QA el 2026-10-20: «El correo electrónico no existe; por favor ingresa un correo electrónico válido.».
+# Es lo que el criterio CA-2 de HU10 prohibía: con esto, esa pantalla deja de ser neutral y cualquiera puede preguntar si
+# un correo tiene cuenta (el login ya lo hace desde HU03, y esta ruta sigue frenada por los límites de arriba). Poner
+# `RECUPERACION_DICE_SI_EXISTE=0` en el .env devuelve el comportamiento neutral de CA-2 sin tocar código.
+RECUPERACION_DICE_SI_EXISTE = (os.getenv("RECUPERACION_DICE_SI_EXISTE") or "1").strip().lower() not in ("0", "false", "no")
 
 # Contacto de soporte que se imprime al pie de los correos. Vacío = no se
 # imprime el bloque: el diseño trae un correo y un teléfono de ejemplo que NO

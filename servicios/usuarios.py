@@ -1191,15 +1191,18 @@ def cambiar_estado(guid: str, activo: bool, motivo: str | None = None, por: str 
         if guid not in usuarios:
             raise NoEncontrado(guid)
         en = _ahora().isoformat(timespec="seconds")
-        registro.agregar(
-            ARCHIVO,
-            {"evento": "estado", "guid": guid, "activo": activo, "motivo": motivo, "por": por, "en": en},
-        )
+        # Primero se cierran las sesiones y DESPUÉS se marca la cuenta como desactivada (QA, HU08: «se tiene que cerrar
+        # primero la sesión y después desactivarlo»). Los dos renglones se escriben bajo el mismo candado, así que nadie
+        # ve la cuenta desactivada con una sesión viva, pero el registro ya cuenta la historia en ese orden.
         if not activo:
             registro.agregar(
                 ARCHIVO,
                 {"evento": "sesion_revocada", "guid": guid, "sesionGuid": None, "motivo": "DEACTIVATED", "en": en},
             )
+        registro.agregar(
+            ARCHIVO,
+            {"evento": "estado", "guid": guid, "activo": activo, "motivo": motivo, "por": por, "en": en},
+        )
     return por_guid(guid)
 
 

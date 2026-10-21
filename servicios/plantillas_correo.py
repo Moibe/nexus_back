@@ -55,42 +55,65 @@ def _soporte() -> list[str]:
     return lineas
 
 
+# Colores de la plantilla `Mail | Ne | P1` del Figma, medidos de la captura que compartió QA (2026-10-20). Los clientes de
+# correo no entienden variables CSS ni casi nada moderno: todo va en línea y la estructura es una tabla de ancho fijo.
+_AZUL_MARCA = "#4268fb"
+_MARINO = "#03031f"
+
+
 def _abrir_html(titulo: str, subtitulo: str) -> str:
+    """El encabezado del diseño (franja marino con el logo, el título en blanco y el subtítulo), la franja azul que
+    hace de la fotografía de carpetas y la tarjeta blanca donde empieza el texto. `_pie_html` cierra todo."""
     return (
-        '<div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;color:#1f2937;line-height:1.5">'
-        f'<h1 style="font-size:24px;margin:24px 0 8px">{escape(titulo)}</h1>'
-        f'<p style="color:#6b7280;margin:0 0 24px">{escape(subtitulo)}</p>'
+        '<div style="background:#f1f4f9;padding:24px 12px;font-family:Arial,Helvetica,sans-serif;color:#1f2937;'
+        'line-height:1.5">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        'style="max-width:640px;margin:0 auto"><tr><td>'
+        f'<div style="background:{_MARINO};padding:28px 32px 32px;text-align:center;border-radius:12px 12px 0 0">'
+        '<p style="margin:0 0 24px"><span style="display:inline-block;width:30px;height:30px;line-height:30px;'
+        f'border-radius:8px;background:{_AZUL_MARCA};color:#ffffff;font-weight:bold;font-size:16px;'
+        'vertical-align:middle">N</span><span style="color:#ffffff;font-size:20px;font-weight:bold;'
+        'vertical-align:middle;margin-left:8px">NexusDoc</span></p>'
+        f'<h1 style="font-size:28px;line-height:1.25;margin:0 0 12px;color:#ffffff">{escape(titulo)}</h1>'
+        f'<p style="font-size:14px;margin:0;color:#d5dcec">{escape(subtitulo)}</p></div>'
+        # La fotografía del diseño no es nuestra: una franja con el azul de la marca ocupa su lugar.
+        f'<div style="height:96px;background:{_AZUL_MARCA};'
+        'background:linear-gradient(100deg,#c6dcf7 0%,#6f98ee 45%,#1c3fd2 100%)"></div>'
+        '<div style="background:#ffffff;padding:32px 32px 8px">'
     )
 
 
 def _parrafo_html(texto: str) -> str:
-    return f'<p style="margin:0 0 16px">{escape(texto)}</p>'
+    return f'<p style="margin:0 0 16px;font-size:14px">{escape(texto)}</p>'
 
 
 def _boton_html(enlace: str, boton: str) -> str:
     return (
         f'<p style="margin:24px 0"><a href="{escape(enlace, quote=True)}" '
-        'style="background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 24px;'
-        f'border-radius:8px;display:inline-block;font-weight:bold">{escape(boton)}</a></p>'
+        f'style="background:{_AZUL_MARCA};color:#ffffff;text-decoration:none;padding:16px 24px;'
+        f'border-radius:8px;display:inline-block;font-weight:bold;font-size:16px">{escape(boton)} &#8599;</a></p>'
         '<p style="font-size:12px;color:#6b7280;margin:0 0 16px">Si el botón no abre, copia y pega '
         f'este enlace en tu navegador:<br><span style="word-break:break-all">{escape(enlace)}</span></p>'
     )
 
 
 def _pie_html() -> str:
-    """Soporte (si hay), firma, aviso de seguridad y pie. Cierra el `div` que abre `_abrir_html`."""
+    """Soporte (si hay) y firma, y el pie del diseño: aviso de seguridad sobre marino y la pleca azul con los derechos.
+    Cierra los elementos que abre `_abrir_html`."""
     partes = []
     soporte = _soporte()
     if soporte:
-        partes.append('<p style="margin:0 0 16px">' + "<br>".join(escape(s) for s in soporte) + "</p>")
-    partes.append('<p style="margin:24px 0 0">' + "<br>".join(escape(s) for s in _FIRMA) + "</p>")
+        partes.append('<p style="margin:0 0 16px;font-size:14px">' + "<br>".join(escape(s) for s in soporte) + "</p>")
+    partes.append('<p style="margin:24px 0 24px;font-size:14px">' + "<br>".join(escape(s) for s in _FIRMA) + "</p>")
     partes.append(
-        '<hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0">'
-        '<p style="font-size:12px;color:#6b7280;margin:0 0 8px">' + "<br>".join(escape(s) for s in _SEGURIDAD) + "</p>"
-        f'<p style="font-size:12px;color:#6b7280;margin:0 0 8px">{escape(_AUTOMATICO)}</p>'
-        f'<p style="font-size:12px;color:#6b7280;margin:0">{escape(_DERECHOS)}</p>'
+        "</div>"  # la tarjeta blanca
+        f'<div style="background:{_MARINO};padding:28px 32px;color:#ffffff;font-size:12px">'
+        '<p style="margin:0 0 12px;color:#ffffff">' + "<br>".join(escape(s) for s in _SEGURIDAD) + "</p>"
+        f'<p style="margin:0;color:#d5dcec">{escape(_AUTOMATICO)}</p></div>'
+        f'<div style="background:{_AZUL_MARCA};padding:16px 32px;color:#ffffff;font-size:12px;'
+        f'border-radius:0 0 12px 12px">{escape(_DERECHOS)}</div>'
+        "</td></tr></table></div>"
     )
-    partes.append("</div>")
     return "".join(partes)
 
 

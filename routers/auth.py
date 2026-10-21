@@ -656,8 +656,10 @@ def cambiar_contrasena(datos: CambioContrasena, authorization: str | None = Head
     "/recuperacion/solicitar",
     summary="Pedir un enlace para recuperar la contraseña (HU10)",
     description=(
-        "Responde SIEMPRE lo mismo (`MENSAJE_NEUTRO`) si el correo tiene forma de correo, exista la cuenta o no. "
-        "Errores: `correo_invalido` (400), `demasiados_intentos` (429). Si la cuenta existe, está activa y ya "
+        "Responde lo mismo (`MENSAJE_NEUTRO`) si el correo tiene forma de correo y no le dice nada de la cuenta, salvo que "
+        "no exista: ahí contesta `correo_no_existe` (404) mientras `RECUPERACION_DICE_SI_EXISTE` esté encendida (por "
+        "defecto; con `=0` vuelve a contestar neutral, CA-2). "
+        "Errores: `correo_invalido` (400), `correo_no_existe` (404), `demasiados_intentos` (429). Si la cuenta existe, está activa y ya "
         "completó su primer acceso, manda el enlace al correo principal; si no, no manda enlace."
     ),
 )
@@ -698,6 +700,15 @@ def solicitar_recuperacion(datos: SolicitudRecuperacion, response: Response, seg
             ip=ip,
             resultado=resultado,
         )
+        if resultado == "SIN_CUENTA" and config.RECUPERACION_DICE_SI_EXISTE:
+            # Se anotó arriba como siempre; solo cambia lo que se le contesta a quien preguntó. Es el estado de error del
+            # Figma («Recuperar contraseña 3») y el CA4 de QA: ver `config.RECUPERACION_DICE_SI_EXISTE`.
+            logger.info("Recuperación solicitada (resultado=%s)", resultado)
+            raise _error(
+                status.HTTP_404_NOT_FOUND,
+                "correo_no_existe",
+                "El correo electrónico no existe; por favor ingresa un correo electrónico válido.",
+            )
         if envio is not None:
             segundo_plano.add_task(_enviar_en_segundo_plano, u["email"], *envio)
         logger.info("Recuperación solicitada (resultado=%s)", resultado)
