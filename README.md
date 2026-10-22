@@ -1651,6 +1651,29 @@ Los otros `verificar_*` que llaman a estas rutas con la llave de servicio (`veri
 de prueba que hace lo que hace el BFF, agregar el Bearer de un administrador de plataforma a toda petición con la llave de
 servicio.
 
+## Quién administra: el rol (NEX-472, 2026-10-22)
+
+La auditoría de caja negra de QA (NEX-470) encontró que las rutas de API Keys, webhooks y procesos solo comprobaban que la persona
+**perteneciera a la organización**: un Auditor podía leer y crear API Keys y webhooks. Ahora piden además un rol que administre:
+`roles.PUEDEN_ADMINISTRAR` = Administrador y Supervisor, más el administrador de plataforma en su espacio. Propuesta de producto,
+**pendiente de confirmar con César**; si cambia, cambia ese conjunto (y su espejo en el front, `src/lib/usuarios/permisos.ts`).
+
+- **Qué rutas lo piden** (`aislamiento.exigir_administrar`): TODAS las de `/llaves`, TODAS las de `/webhooks` salvo `POST /webhooks/eventos`,
+  TODAS las de `/procesos`, y los **cambios** de `/tipos-documentales` (guardar, ordenar, borrar).
+- **Qué sigue abierto a cualquier rol de la organización**: leer la biblioteca de tipos documentales (`GET /tipos-documentales/`: el
+  pipeline la carga para clasificar) y `POST /webhooks/eventos` (lo dispara el front cuando quien OPERA el pipeline ve terminar un
+  documento). También la bandeja, los archivos y todo lo que ya existía sin rol.
+- **Qué responde**: 403 `sin_permiso` con «Tu rol no puede administrar esto.» (no dice qué rol sí puede). El aislamiento va primero:
+  quien no es de la organización recibe `sin_acceso` y su `CROSS_TENANT_ACCESS`, no `sin_permiso`.
+- **Rastro**: cada rechazo deja `ROLE_DENIED` en la bitácora (quién, organización, qué intentó, con qué roles cuenta). El rol se lee
+  del registro, no del JWT (que dura 15 minutos): un descenso de rol surte efecto de inmediato.
+- **Sigue sin rol**: `/procesadores/*` y `/ia/extraer` (ver más abajo) y la clasificación/extracción del pipeline.
+
+`verificar_roles.py` (offline): una organización con una persona de cada rol y TODAS las rutas probadas por petición directa; que lo
+rechazado no cambie nada en el servidor; que lo del pipeline siga abierto; el `ROLE_DENIED`; y que el aislamiento siga primero.
+Los demás `verificar_*` que creaban una segunda persona como Operador/Analista para editar (`verificar_procesos.py`,
+`verificar_tipos_documentales.py`, `verificar_aislamiento.py`) se ajustaron a esta regla.
+
 ## Descartar documentos de la bandeja (2026-10-15)
 
 «Descartar» es `POST /bandeja/{id}/retirar` con `motivo=descartado`, y ahora además:

@@ -58,6 +58,8 @@ def _anotar(accion: str, actor: aislamiento.Actor, tenant: str, tipo_id: str, **
     description="Todos los de la organización —borradores, activos y archivados—, en el orden que ella les dio.",
 )
 def listar(tenant: str = Query(..., description="La organización"), authorization: str | None = Header(default=None)):
+    # LEER la biblioteca sigue abierto a todo el que opera en la organización (el pipeline la necesita para clasificar); lo que pide
+    # el rol de administración son los cambios (NEX-472).
     aislamiento.exigir(authorization, tenant, "tipo_documental")
     try:
         return {"tipos": registro_tipos.listar(tenant)}
@@ -72,7 +74,7 @@ def listar(tenant: str = Query(..., description="La organización"), authorizati
     description="Guarda el orden en que la organización quiere ver sus tipos. Los ids que no son suyos se ignoran.",
 )
 def ordenar(entrada: Orden, authorization: str | None = Header(default=None)):
-    actor = aislamiento.exigir(authorization, entrada.tenant, "tipo_documental")
+    actor = aislamiento.exigir_administrar(authorization, entrada.tenant, "tipo_documental")
     try:
         registro_tipos.ordenar(entrada.tenant, entrada.ids, actor.guid)
     except ErrorAlmacen as exc:
@@ -91,7 +93,7 @@ def ordenar(entrada: Orden, authorization: str | None = Header(default=None)):
     ),
 )
 def guardar(tipo_id: str, entrada: Guardado, authorization: str | None = Header(default=None)):
-    actor = aislamiento.exigir(authorization, entrada.tenant, "tipo_documental")
+    actor = aislamiento.exigir_administrar(authorization, entrada.tenant, "tipo_documental")
     try:
         tipo, previo = registro_tipos.guardar(entrada.tenant, tipo_id, entrada.datos, entrada.revision, actor.guid)
     except registro_tipos.TipoInvalido as exc:
@@ -130,7 +132,7 @@ def guardar(tipo_id: str, entrada: Guardado, authorization: str | None = Header(
     description="Lo quita de la organización. No borra su procesador en Document AI: eso se hace aparte, ANTES, con `/procesadores`.",
 )
 def borrar(tipo_id: str, tenant: str = Query(...), authorization: str | None = Header(default=None)):
-    actor = aislamiento.exigir(authorization, tenant, "tipo_documental")
+    actor = aislamiento.exigir_administrar(authorization, tenant, "tipo_documental")
     try:
         quitado = registro_tipos.eliminar(tenant, tipo_id, actor.guid)
     except registro_tipos.NoEncontrado as exc:

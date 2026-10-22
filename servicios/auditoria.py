@@ -48,6 +48,10 @@ PROFILE_UPDATED = "PROFILE_UPDATED"
 # (`tenantsDelActor`), qué pidió (`tenantPedido`, `recurso`, `recursoId`), por qué camino lo detectó (`via`: `tenant`, `id` o
 # `ruta`) y la sesión. Lo que se le contesta a quien lo intentó es siempre lo mismo que si no existiera.
 CROSS_TENANT_ACCESS = "CROSS_TENANT_ACCESS"
+# NEX-472: alguien con sesión de una organización, SIN el rol que pide la ruta, intentó administrar algo (una API Key, un webhook, un
+# proceso, la biblioteca de tipos documentales). Lleva quién (`usuarioGuid`, `sesionGuid`), de qué organización (`tenant`), qué
+# intentó (`recurso`) y con qué roles cuenta en ella (`roles`). La respuesta es un 403 `sin_permiso`.
+ROLE_DENIED = "ROLE_DENIED"
 # HU05 (cerrar sesión). Hasta el 2026-10-12 estos dos no tenían nombre propio:
 # el cierre voluntario solo dejaba un `sesion_revocada` en `usuarios.jsonl` y el
 # forzado un `cierre_forzado`. Los datos siempre se guardaron; faltaba el
@@ -83,7 +87,7 @@ DOCUMENT_TYPE_CALIBRATED = "DOCUMENT_TYPE_CALIBRATED"
 PROCESS_CREATED = "PROCESS_CREATED"
 PROCESS_DELETED = "PROCESS_DELETED"
 
-ACCIONES = frozenset({PROCESS_CREATED, PROCESS_DELETED, DOCUMENT_TYPE_CREATED, DOCUMENT_TYPE_DELETED, DOCUMENT_TYPE_STATE_CHANGED, DOCUMENT_TYPE_CALIBRATED, DOCUMENT_DISCARDED, PASSWORD_RESET_REQUESTED, PASSWORD_RESET_COMPLETED, PASSWORD_CHANGED, FIRST_LOGIN_PASSWORD_CHANGED, PROFILE_UPDATED, CROSS_TENANT_ACCESS, LOGOUT, FORCED_LOGOUT, USER_CREATED, INVITATION_REISSUED, USER_DELETED})
+ACCIONES = frozenset({ROLE_DENIED, PROCESS_CREATED, PROCESS_DELETED, DOCUMENT_TYPE_CREATED, DOCUMENT_TYPE_DELETED, DOCUMENT_TYPE_STATE_CHANGED, DOCUMENT_TYPE_CALIBRATED, DOCUMENT_DISCARDED, PASSWORD_RESET_REQUESTED, PASSWORD_RESET_COMPLETED, PASSWORD_CHANGED, FIRST_LOGIN_PASSWORD_CHANGED, PROFILE_UPDATED, CROSS_TENANT_ACCESS, LOGOUT, FORCED_LOGOUT, USER_CREATED, INVITATION_REISSUED, USER_DELETED})
 
 
 def _ahora() -> datetime:

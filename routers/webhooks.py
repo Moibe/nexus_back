@@ -112,7 +112,7 @@ def _sin_cifrado(exc: Exception) -> HTTPException:
     ),
 )
 def registrar(datos: Alta, response: Response, authorization: str | None = Header(default=None)):
-    aislamiento.exigir(authorization, datos.tenant, "webhook")
+    aislamiento.exigir_administrar(authorization, datos.tenant, "webhook")
     try:
         secret, webhook = webhooks_cliente.registrar(datos.tenant, datos.url, datos.eventos)
     except webhooks_cliente.Duplicado as exc:
@@ -138,7 +138,7 @@ def registrar(datos: Alta, response: Response, authorization: str | None = Heade
     description="Del más nuevo al más viejo. Nunca trae el secret ni su cifrado.",
 )
 def listar(tenant: str = Query(...), authorization: str | None = Header(default=None)):
-    aislamiento.exigir(authorization, tenant, "webhook")
+    aislamiento.exigir_administrar(authorization, tenant, "webhook")
     try:
         return {"webhooks": webhooks_cliente.listar(tenant)}
     except ValueError as exc:
@@ -154,7 +154,7 @@ def listar(tenant: str = Query(...), authorization: str | None = Header(default=
     description="Pedir el estado que ya tiene no es error: responde igual y no escribe nada.",
 )
 def cambiar_estado(identificador: str, datos: CambioDeEstado, authorization: str | None = Header(default=None)):
-    actor = aislamiento.exigir(authorization, datos.tenant, "webhook")
+    actor = aislamiento.exigir_administrar(authorization, datos.tenant, "webhook")
     try:
         webhook = webhooks_cliente.cambiar_estado(datos.tenant, identificador, datos.estado)
     except ValueError as exc:
@@ -179,7 +179,7 @@ def cambiar_estado(identificador: str, datos: CambioDeEstado, authorization: str
     ),
 )
 def eliminar(identificador: str, datos: Baja, authorization: str | None = Header(default=None)):
-    actor = aislamiento.exigir(authorization, datos.tenant, "webhook")
+    actor = aislamiento.exigir_administrar(authorization, datos.tenant, "webhook")
     try:
         existia = webhooks_cliente.eliminar(datos.tenant, identificador)
     except ValueError as exc:
@@ -209,7 +209,7 @@ def eliminar(identificador: str, datos: Baja, authorization: str | None = Header
     ),
 )
 def validar(identificador: str, datos: Validacion, authorization: str | None = Header(default=None)):
-    actor = aislamiento.exigir(authorization, datos.tenant, "webhook")
+    actor = aislamiento.exigir_administrar(authorization, datos.tenant, "webhook")
     try:
         objetivo = webhooks_cliente.para_validar(datos.tenant, identificador)
     except ValueError as exc:
@@ -265,6 +265,7 @@ def validar(identificador: str, datos: Validacion, authorization: str | None = H
     ),
 )
 def recibir_aviso(datos: Aviso, authorization: str | None = Header(default=None)):
+    # Sin rol de administración: lo dispara el front cuando QUIEN OPERA el pipeline ve terminar un documento (NEX-472).
     actor = aislamiento.exigir(authorization, datos.tenant, "webhook")
     try:
         resultado = entregas_webhooks.avisar(datos.tenant, datos.tipo, datos.entradaId, datos.tipoDocumental, datos.motivo)
@@ -307,7 +308,7 @@ def metricas(
     hasta: datetime = Query(...),
     authorization: str | None = Header(default=None),
 ):
-    actor = aislamiento.exigir(authorization, tenant, "webhook")
+    actor = aislamiento.exigir_administrar(authorization, tenant, "webhook")
     try:
         if not any(w["id"] == identificador for w in webhooks_cliente.listar(tenant)):
             raise _no_existe(actor, tenant, identificador)
@@ -335,7 +336,7 @@ def historial(
     limite: int = Query(50, ge=1, le=200),
     authorization: str | None = Header(default=None),
 ):
-    actor = aislamiento.exigir(authorization, tenant, "webhook")
+    actor = aislamiento.exigir_administrar(authorization, tenant, "webhook")
     try:
         if not any(w["id"] == identificador for w in webhooks_cliente.listar(tenant)):
             raise _no_existe(actor, tenant, identificador)
@@ -357,7 +358,7 @@ def historial(
     ),
 )
 def editar(identificador: str, datos: Edicion, authorization: str | None = Header(default=None)):
-    actor = aislamiento.exigir(authorization, datos.tenant, "webhook")
+    actor = aislamiento.exigir_administrar(authorization, datos.tenant, "webhook")
     try:
         webhook = webhooks_cliente.editar(datos.tenant, identificador, datos.url, datos.eventos)
     except webhooks_cliente.Duplicado as exc:

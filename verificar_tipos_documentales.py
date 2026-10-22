@@ -113,7 +113,8 @@ try:
     bearer_super = con_primer_acceso("super@ejemplo.com", temporal_super, "Cobre-Lento-Azul-47!")
     org_a, a_admin = crear_organizacion(bearer_super, "Alfa", "rita@ejemplo.com", "Rumbo-Sereno-Azul-47!")
     org_b, b_admin = crear_organizacion(bearer_super, "Beta", "beto@ejemplo.com", "Rumbo-Sereno-Rojo-48!")
-    r = c.post("/usuarios/", json={"nombre": "Omar", "apellidoPaterno": "Operador", "email": "omar@ejemplo.com", "rol": "OPERADOR"}, headers=cab(a_admin))
+    # Supervisor y no Operador: desde NEX-472 (2026-10-22) solo Administrador y Supervisor editan esto (`verificar_roles.py` prueba al resto).
+    r = c.post("/usuarios/", json={"nombre": "Omar", "apellidoPaterno": "Supervisor", "email": "omar@ejemplo.com", "rol": "SUPERVISOR"}, headers=cab(a_admin))
     assert r.status_code == 201, r.text
     a_otra = con_primer_acceso("omar@ejemplo.com", r.json()["contrasenaTemporal"], "Cielo-Abierto-Verde-52!")
     guid_rita = usuarios.para_login("rita@ejemplo.com")["guid"]
