@@ -1742,6 +1742,10 @@ sin dueño. `limpiar_procesadores_huerfanos.py` los lista (solo lectura) y, con 
 señala —ni como vigente, ni en su historial—, pidiendo escribir BORRAR. Nunca toca el clasificador, el extractor de INE del
 `.env` ni lo que no se llame `nexusdoc--…`. Se corre en el servidor (necesita las credenciales de Google y el almacén).
 
+`--antes-de AAAA-MM-DD` es un corte de seguridad: solo borra los huérfanos creados ANTES de esa fecha y lista aparte (sin tocar) los
+más recientes. Hay que usarlo cuando el registro que lee el script pueda no ser el de todos los ambientes que comparten el proyecto de
+Google: lo creado antes del 2026-10-15 (cuando el catálogo pasó al servidor) no puede tener dueño en ningún registro.
+
 ### Límites conocidos
 
 - **No distingue roles**: quien opera en la organización lee y escribe sus tipos, como en llaves y webhooks. El catálogo de roles

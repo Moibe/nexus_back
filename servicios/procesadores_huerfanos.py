@@ -15,7 +15,12 @@ versiones, ni como la versión que se está editando. Nunca lo son:
 - cualquier procesador cuyo nombre NO empiece con `nexusdoc--`: no es de la aplicación.
 """
 
+import re
+from datetime import date
+
 PREFIJO_EXTRACTOR = "nexusdoc--"
+
+_FECHA = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def clasificar(procesadores: list[dict], con_dueno: dict[str, dict], protegidos: set[str]) -> dict[str, list[dict]]:
@@ -29,3 +34,25 @@ def clasificar(procesadores: list[dict], con_dueno: dict[str, dict], protegidos:
         else:
             reparto["huerfanos"].append(p)
     return reparto
+
+
+def fecha_de_corte(texto: str) -> str:
+    """`AAAA-MM-DD` real o ValueError: la fecha se compara como texto contra el `createTime` de Google, así que no admite otro formato."""
+    if not _FECHA.match(texto):
+        raise ValueError(f"«{texto}» no es una fecha AAAA-MM-DD")
+    date.fromisoformat(texto)
+    return texto
+
+
+def anteriores_a(procesadores: list[dict], fecha: str) -> tuple[list[dict], list[dict]]:
+    """Parte los procesadores en (creados ANTES de `fecha`, el resto). El día de `fecha` ya cuenta como «el resto».
+
+    Sirve de corte de seguridad al borrar: lo creado antes de que el catálogo pasara al servidor no puede tener dueño ahí, y lo creado
+    después sí podría (otro ambiente, otra persona), así que no se toca. Sin `creado` no se sabe cuándo nació: queda en «el resto»."""
+    fecha_de_corte(fecha)
+    viejos: list[dict] = []
+    resto: list[dict] = []
+    for p in procesadores:
+        creado = (p.get("creado") or "")[:10]
+        (viejos if creado and creado < fecha else resto).append(p)
+    return viejos, resto

@@ -315,6 +315,36 @@ try:
         sorted(p["id"] for p in rep["protegidos"]) == ["ajeno", "clas-1", "proc-ine-legado"], str(rep["protegidos"]))
     rev("cada procesador está en UNA sola lista", sum(len(v) for v in rep.values()) == len(en_google))
 
+    titulo("12b · Corte por fecha al borrar huérfanos (`--antes-de`)")
+    viejos, resto = procesadores_huerfanos.anteriores_a(
+        [
+            {"id": "a", "creado": "2026-10-14T23:59:59.999Z"},
+            {"id": "b", "creado": "2026-10-15T00:00:00Z"},
+            {"id": "c", "creado": "2026-10-15T22:03:51.673Z"},
+            {"id": "d", "creado": ""},
+            {"id": "e"},
+            {"id": "f", "creado": "2026-09-02T18:27:38Z"},
+        ],
+        "2026-10-15",
+    )
+    rev("solo cuenta lo creado ANTES de la fecha", [p["id"] for p in viejos] == ["a", "f"], str(viejos))
+    rev("el día del corte ya es «reciente» y no se toca", {"b", "c"} <= {p["id"] for p in resto}, str(resto))
+    rev("sin fecha de creación no se arriesga: queda con lo reciente", {"d", "e"} <= {p["id"] for p in resto} and len(viejos) + len(resto) == 6, str(resto))
+    rev("el corte se aplica a los huérfanos del reparto: el de 2026-09-10 cae antes del 15-oct y no antes del 10-sep",
+        [p["id"] for p in procesadores_huerfanos.anteriores_a(rep["huerfanos"], "2026-10-15")[0]] == ["proc-compu-de-pepe"]
+        and procesadores_huerfanos.anteriores_a(rep["huerfanos"], "2026-09-10")[0] == [])
+
+    def rechaza(texto: str) -> bool:
+        try:
+            procesadores_huerfanos.fecha_de_corte(texto)
+        except ValueError:
+            return True
+        return False
+
+    rev("la fecha de corte exige AAAA-MM-DD real",
+        procesadores_huerfanos.fecha_de_corte("2026-10-15") == "2026-10-15"
+        and all(rechaza(t) for t in ("", "15/10/2026", "2026-10-1", "20261015", "2026-13-45", "2026-02-30", "ayer")))
+
     titulo("13 · Resiste un corte a media escritura")
     ruta = RAIZ / ".registro" / "tipos-documentales.jsonl"
     with open(ruta, "ab") as f:
