@@ -168,6 +168,35 @@ def exigir_administrar(authorization: str | None, tenant: str, recurso: str) -> 
     return actor
 
 
+def puede_organizar(actor: Actor, tenant: str) -> bool:
+    """¿Su rol en ESA organización permite organizar documentos en expedientes? (`roles.PUEDEN_ORGANIZAR`). El administrador de
+    plataforma sí, en su espacio (que es lo único donde `exigir` lo deja operar)."""
+    if actor.es_admin_plataforma:
+        return True
+    return any(r in roles.PUEDEN_ORGANIZAR for r in _roles_en(actor, tenant))
+
+
+def exigir_organizar(authorization: str | None, tenant: str, recurso: str) -> Actor:
+    """`exigir` y, además, que el rol de la persona pueda organizar documentos en expedientes. Igual que `exigir_administrar`: quien
+    no es de la organización recibe 403 `sin_acceso`; quien sí lo es pero tiene un rol de solo consulta recibe 403 `sin_permiso` y
+    queda `ROLE_DENIED` en la bitácora, sin decir qué rol sí puede."""
+    actor = exigir(authorization, tenant, recurso)
+    if not puede_organizar(actor, tenant):
+        try:
+            auditoria.registrar(
+                auditoria.ROLE_DENIED,
+                usuario_guid=actor.guid,
+                sesionGuid=actor.sesion,
+                tenant=tenant,
+                recurso=recurso,
+                roles=_roles_en(actor, tenant),
+            )
+        except (ErrorAlmacen, OSError) as exc:
+            logger.warning("No se pudo registrar el ROLE_DENIED en la bitácora de auditoría: %s", exc)
+        raise _error(status.HTTP_403_FORBIDDEN, "sin_permiso", "Tu rol no puede organizar documentos en expedientes.")
+    return actor
+
+
 def intento_cruzado(actor: Actor, recurso: str, recurso_id: str | None = None, tenant_pedido: str | None = None, via: str = "id") -> None:
     """Anota `CROSS_TENANT_ACCESS`. No levanta nada: es un rastro, no una decisión (ver el docstring del módulo)."""
     try:

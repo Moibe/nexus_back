@@ -1804,6 +1804,31 @@ Offline, con el correo simulado: crear (con y sin canal, con fallo y omitido), c
 estados, regenerar, retirar con motivo y sin retirar al último, solo cuentas de plataforma, sin llave nada, y la bitácora sin
 contraseñas. Se probó rompiendo 15 reglas a propósito: las 15 se detectan.
 
+## Expedientes y documentos: el documento nace al entrar, el expediente los reúne (2026-10-24)
+
+Un **documento** nace cuando entra al sistema (hoy, por `POST /bandeja/`) y existe por sí mismo; un **expediente** es un conjunto de
+documentos con un nombre. Un documento puede estar en **ningún** expediente (el «void»), en **uno** o en **varios**. El modelo completo,
+sus decisiones y lo que falta están en [`docs/modelo-entidades.md`](docs/modelo-entidades.md).
+
+| Ruta | Qué hace | Quién |
+|---|---|---|
+| `GET /expedientes/?tenant=` | los expedientes de la organización, cada uno con su `totalDocumentos` | cualquiera que opere en ella |
+| `GET /expedientes/{id}?tenant=` | el expediente con sus documentos completos, en el orden en que se agregaron | ídem |
+| `GET /expedientes/documentos?tenant=&sin_expediente=` | los documentos y los expedientes en que está cada uno; `true` = solo el void, `false` = solo los organizados | ídem |
+| `POST /expedientes/` `{tenant, nombre}` | crea un expediente vacío (201) | `roles.PUEDEN_ORGANIZAR` |
+| `PUT /expedientes/{id}/documentos/{documento_id}?tenant=` | mete un documento; idempotente (`agregado: false` si ya estaba) | ídem |
+| `DELETE /expedientes/{id}/documentos/{documento_id}?tenant=` | lo saca; el documento NO se borra y, si era su último expediente, vuelve al void | ídem |
+
+Todas piden la llave de servicio **y** el JWT de la persona (HU11); un id de otra organización responde 404 como si no existiera. Crear, meter y
+sacar dejan `CASE_CREATED`, `CASE_DOCUMENT_ADDED` y `CASE_DOCUMENT_REMOVED` en la bitácora. Los roles de solo consulta (Compliance, Auditor y
+Viewer) reciben 403 `sin_permiso` al intentar organizar (propuesta de producto, pendiente de confirmar con César).
+
+`POST /bandeja/` no cambia para quien sube, salvo que la entrada trae además su `documentoId`. Los documentos viven en
+`.registro/documentos-{tenant}.jsonl` y los expedientes en `.registro/expedientes-{tenant}.jsonl`. La ruta de documentos cuelga de
+`/expedientes` y no de `/documentos` porque ese prefijo ya es del grupo que habla con SQL Server.
+
+Verificarlo, offline: `venv/bin/python verificar_expedientes.py`.
+
 ## Procesos: el motor de reglas guarda su dibujo, por organización (2026-10-20)
 
 Un **proceso** es un conjunto de reglas y corre sobre un **expediente** (un conjunto de documentos). Se arma en un lienzo del front:
