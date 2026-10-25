@@ -14,7 +14,8 @@ ejemplo) no: son muchos guardados y no cambian lo que el proceso ES.
 
 ## Lo que NO hace todavía
 
-- **No distingue roles.** Cualquier persona que pueda operar en la organización lee y escribe sus procesos.
+- **Solo los roles que administran** (`roles.PUEDEN_ADMINISTRAR`: Administrador y Supervisor, más el administrador de plataforma) leen y
+  escriben procesos; cualquier otro rol de la organización recibe 403 `sin_permiso` (NEX-472, 2026-10-22).
 - **No interpreta las reglas** ni las corre: las guarda tal cual, comprobando solo que el dibujo esté entero.
 """
 
@@ -55,7 +56,7 @@ def _anotar(accion: str, actor: aislamiento.Actor, tenant: str, proceso_id: str,
     description="Todos los procesos de la organización, en el orden de su creación.",
 )
 def listar(tenant: str = Query(..., description="La organización"), authorization: str | None = Header(default=None)):
-    aislamiento.exigir(authorization, tenant, "proceso")
+    aislamiento.exigir_administrar(authorization, tenant, "proceso")
     try:
         return {"procesos": registro_procesos.listar(tenant)}
     except ErrorAlmacen as exc:
@@ -73,7 +74,7 @@ def listar(tenant: str = Query(..., description="La organización"), authorizati
     ),
 )
 def guardar(proceso_id: str, entrada: Guardado, authorization: str | None = Header(default=None)):
-    actor = aislamiento.exigir(authorization, entrada.tenant, "proceso")
+    actor = aislamiento.exigir_administrar(authorization, entrada.tenant, "proceso")
     try:
         proceso, previo = registro_procesos.guardar(entrada.tenant, proceso_id, entrada.datos, entrada.revision, actor.guid)
     except registro_procesos.ProcesoInvalido as exc:
@@ -104,7 +105,7 @@ def guardar(proceso_id: str, entrada: Guardado, authorization: str | None = Head
     description="Lo quita de la organización.",
 )
 def borrar(proceso_id: str, tenant: str = Query(...), authorization: str | None = Header(default=None)):
-    actor = aislamiento.exigir(authorization, tenant, "proceso")
+    actor = aislamiento.exigir_administrar(authorization, tenant, "proceso")
     try:
         quitado = registro_procesos.eliminar(tenant, proceso_id, actor.guid)
     except registro_procesos.NoEncontrado as exc:

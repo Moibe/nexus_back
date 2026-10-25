@@ -98,8 +98,9 @@ def main() -> int:
     rev("responde 201", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
     e = r.json()
     print(f"    {e}")
-    campos = {"id", "tenant", "rutaRelativa", "sha256", "tamanoBytes", "mime", "nombreOriginal", "canal", "llaveId", "recibidoEn"}
-    rev("trae lo que pedirá uspCreateFile (para el backfill)", set(e) == campos, str(set(e) ^ campos))
+    # `documentoId` es el vínculo con el documento que nace junto con la entrada (`servicios/documentos.py`).
+    campos = {"id", "documentoId", "tenant", "rutaRelativa", "sha256", "tamanoBytes", "mime", "nombreOriginal", "canal", "llaveId", "recibidoEn"}
+    rev("trae lo que pedirá uspCreateFile (para el backfill), más el `documentoId` de su documento", set(e) == campos, str(set(e) ^ campos))
     rev("canal API", e.get("canal") == "API")
     rev("el archivo SÍ está en el almacén", (RAIZ / e["rutaRelativa"]).is_file())
     estado, lista = pendientes(c)

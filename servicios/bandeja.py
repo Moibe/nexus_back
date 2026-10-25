@@ -20,13 +20,18 @@ Un registro de solo agregar por tenant, `bandeja-{tenant}.jsonl` (ver
 `servicios/registro.py`, que tiene los detalles de escritura, cortes y
 concurrencia): cada línea es un evento, `entrada` o `retiro`, y lo pendiente es
 lo que entró y no ha salido.
+
+## Cada entrada es también un documento
+
+Al entrar, la entrada crea su **documento** (`servicios/documentos.py`) y guarda su `documentoId`. La entrada es pasajera (sale de la
+bandeja al pasar al pipeline o al descartarse); el documento no: es lo que después se organiza en expedientes (`servicios/expedientes.py`).
 """
 
 import re
 import uuid
 from datetime import datetime, timezone
 
-from servicios import almacen, registro
+from servicios import almacen, documentos, registro
 
 CANALES = {"API", "MANUAL"}
 MOTIVOS_RETIRO = {"pipeline", "descartado"}
@@ -59,9 +64,13 @@ def registrar_entrada(
     """
     if canal not in CANALES:
         raise ValueError(f"Canal de ingesta inválido: {canal!r}")
+    # El documento NACE aquí, al entrar al sistema, y antes que la entrada: si fallara la entrada quedaría un documento sin expediente
+    # (permanente y sin daño); al revés quedaría una entrada pendiente que no es un documento. `documentoId` las une.
+    documento = documentos.nacer(tenant, guardado, mime, nombre_original, canal, llave_id)
     entrada = {
         "evento": "entrada",
         "id": uuid.uuid4().hex,
+        "documentoId": documento["id"],
         "tenant": tenant,
         "rutaRelativa": guardado["rutaRelativa"],
         "sha256": guardado["hash"],

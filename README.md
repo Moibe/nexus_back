@@ -1651,6 +1651,29 @@ Los otros `verificar_*` que llaman a estas rutas con la llave de servicio (`veri
 de prueba que hace lo que hace el BFF, agregar el Bearer de un administrador de plataforma a toda petición con la llave de
 servicio.
 
+## Quién administra: el rol (NEX-472, 2026-10-22)
+
+La auditoría de caja negra de QA (NEX-470) encontró que las rutas de API Keys, webhooks y procesos solo comprobaban que la persona
+**perteneciera a la organización**: un Auditor podía leer y crear API Keys y webhooks. Ahora piden además un rol que administre:
+`roles.PUEDEN_ADMINISTRAR` = Administrador y Supervisor, más el administrador de plataforma en su espacio. Propuesta de producto,
+**pendiente de confirmar con César**; si cambia, cambia ese conjunto (y su espejo en el front, `src/lib/usuarios/permisos.ts`).
+
+- **Qué rutas lo piden** (`aislamiento.exigir_administrar`): TODAS las de `/llaves`, TODAS las de `/webhooks` salvo `POST /webhooks/eventos`,
+  TODAS las de `/procesos`, y los **cambios** de `/tipos-documentales` (guardar, ordenar, borrar).
+- **Qué sigue abierto a cualquier rol de la organización**: leer la biblioteca de tipos documentales (`GET /tipos-documentales/`: el
+  pipeline la carga para clasificar) y `POST /webhooks/eventos` (lo dispara el front cuando quien OPERA el pipeline ve terminar un
+  documento). También la bandeja, los archivos y todo lo que ya existía sin rol.
+- **Qué responde**: 403 `sin_permiso` con «Tu rol no puede administrar esto.» (no dice qué rol sí puede). El aislamiento va primero:
+  quien no es de la organización recibe `sin_acceso` y su `CROSS_TENANT_ACCESS`, no `sin_permiso`.
+- **Rastro**: cada rechazo deja `ROLE_DENIED` en la bitácora (quién, organización, qué intentó, con qué roles cuenta). El rol se lee
+  del registro, no del JWT (que dura 15 minutos): un descenso de rol surte efecto de inmediato.
+- **Sigue sin rol**: `/procesadores/*` y `/ia/extraer` (ver más abajo) y la clasificación/extracción del pipeline.
+
+`verificar_roles.py` (offline): una organización con una persona de cada rol y TODAS las rutas probadas por petición directa; que lo
+rechazado no cambie nada en el servidor; que lo del pipeline siga abierto; el `ROLE_DENIED`; y que el aislamiento siga primero.
+Los demás `verificar_*` que creaban una segunda persona como Operador/Analista para editar (`verificar_procesos.py`,
+`verificar_tipos_documentales.py`, `verificar_aislamiento.py`) se ajustaron a esta regla.
+
 ## Descartar documentos de la bandeja (2026-10-15)
 
 «Descartar» es `POST /bandeja/{id}/retirar` con `motivo=descartado`, y ahora además:
@@ -1719,6 +1742,10 @@ sin dueño. `limpiar_procesadores_huerfanos.py` los lista (solo lectura) y, con 
 señala —ni como vigente, ni en su historial—, pidiendo escribir BORRAR. Nunca toca el clasificador, el extractor de INE del
 `.env` ni lo que no se llame `nexusdoc--…`. Se corre en el servidor (necesita las credenciales de Google y el almacén).
 
+`--antes-de AAAA-MM-DD` es un corte de seguridad: solo borra los huérfanos creados ANTES de esa fecha y lista aparte (sin tocar) los
+más recientes. Hay que usarlo cuando el registro que lee el script pueda no ser el de todos los ambientes que comparten el proyecto de
+Google: lo creado antes del 2026-10-15 (cuando el catálogo pasó al servidor) no puede tener dueño en ningún registro.
+
 ### Límites conocidos
 
 - **No distingue roles**: quien opera en la organización lee y escribe sus tipos, como en llaves y webhooks. El catálogo de roles
@@ -1776,6 +1803,37 @@ producción.
 Offline, con el correo simulado: crear (con y sin canal, con fallo y omitido), contraseña que sirve y obliga a cambiarse, listar con
 estados, regenerar, retirar con motivo y sin retirar al último, solo cuentas de plataforma, sin llave nada, y la bitácora sin
 contraseñas. Se probó rompiendo 15 reglas a propósito: las 15 se detectan.
+
+## Expedientes y documentos: el documento nace al entrar, el expediente los reúne (2026-10-24)
+
+Un **documento** nace cuando entra al sistema (hoy, por `POST /bandeja/`) y existe por sí mismo. Un **tipo de expediente** («expediente médico»,
+«expediente de un choque») es la clase; un **expediente** es una instancia de un tipo —la carpeta de UN paciente, de UN choque— y reúne los
+documentos de ese caso. Un documento puede estar en **ningún** expediente (el «void»), en **uno** o en **varios**. El modelo completo, sus
+decisiones y lo que falta están en [`docs/modelo-entidades.md`](docs/modelo-entidades.md).
+
+| Ruta | Qué hace | Quién |
+|---|---|---|
+| `GET /tipos-expediente/?tenant=` | los tipos de la organización, cada uno con su esquema (`tiposDocumentales`, con id y nombre) y su `totalExpedientes` | cualquiera que opere en ella |
+| `GET /tipos-expediente/{id}?tenant=` | un tipo, su esquema y cuántos expedientes tiene | ídem |
+| `PUT /tipos-expediente/{id}/esquema` `{tenant, tiposDocumentales}` | reemplaza el esquema por esa lista ordenada de tipos documentales de la misma organización (sin repetidos, hasta 50); idempotente (`cambiado: false` si es la misma); `[]` lo deja sin esquema. **Describe, no restringe:** los expedientes de ese tipo siguen recibiendo cualquier documento | `roles.PUEDEN_ADMINISTRAR` |
+| `POST /tipos-expediente/` `{tenant, nombre}` | crea un tipo (201); el nombre es único por organización, sin distinguir mayúsculas ni espacios de más: uno repetido da 409 `ya_existe` | `roles.PUEDEN_ADMINISTRAR` |
+| `GET /expedientes/?tenant=&tipo=` | los expedientes de la organización, cada uno con su `tipo` y su `totalDocumentos`; con `tipo`, solo los de ese tipo | cualquiera que opere en ella |
+| `GET /expedientes/{id}?tenant=` | el expediente con sus documentos completos, en el orden en que se agregaron | ídem |
+| `GET /expedientes/documentos?tenant=&sin_expediente=` | los documentos y los expedientes en que está cada uno; `true` = solo el void, `false` = solo los organizados | ídem |
+| `POST /expedientes/` `{tenant, nombre, tipoId}` | crea un expediente vacío (201) como instancia de ese tipo, que debe ser de la misma organización (si no, 404) | `roles.PUEDEN_ORGANIZAR` |
+| `PUT /expedientes/{id}/documentos/{documento_id}?tenant=` | mete un documento; idempotente (`agregado: false` si ya estaba) | ídem |
+| `DELETE /expedientes/{id}/documentos/{documento_id}?tenant=` | lo saca; el documento NO se borra y, si era su último expediente, vuelve al void | ídem |
+
+Todas piden la llave de servicio **y** el JWT de la persona (HU11); un id de otra organización responde 404 como si no existiera. Crear, meter y
+sacar dejan `CASE_CREATED` (con el tipo), `CASE_DOCUMENT_ADDED` y `CASE_DOCUMENT_REMOVED` en la bitácora, crear un tipo deja `CASE_TYPE_CREATED` y cambiar su esquema deja `CASE_TYPE_SCHEMA_CHANGED` (con el esquema antes y después; no se repite si no cambió).
+Los roles de solo consulta (Compliance, Auditor y Viewer) reciben 403 `sin_permiso` al intentar organizar; Analista y Operador organizan pero no
+crean tipos (propuesta de producto, pendiente de confirmar con César).
+
+`POST /bandeja/` no cambia para quien sube, salvo que la entrada trae además su `documentoId`. Los documentos viven en
+`.registro/documentos-{tenant}.jsonl`, los expedientes en `.registro/expedientes-{tenant}.jsonl` y los tipos en `.registro/tipos-expediente-{tenant}.jsonl`. La ruta de documentos cuelga de
+`/expedientes` y no de `/documentos` porque ese prefijo ya es del grupo que habla con SQL Server.
+
+Verificarlo, offline: `venv/bin/python verificar_expedientes.py`.
 
 ## Procesos: el motor de reglas guarda su dibujo, por organización (2026-10-20)
 

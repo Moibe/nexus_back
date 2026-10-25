@@ -74,6 +74,20 @@ CATALOGO: list[dict[str, str]] = [
 #: pendiente de confirmar con César; el administrador de plataforma siempre puede (en su espacio).
 PUEDEN_DESCARTAR = frozenset({ADMIN, "SUPERVISOR", "ANALISTA", "OPERADOR"})
 
+#: Los roles que pueden ADMINISTRAR lo que se configura para que un tercero use NexusDoc y lo que define cómo se procesa: API Keys,
+#: webhooks, procesos (motor de reglas) y la biblioteca de tipos documentales (crear, cambiar, ordenar, borrar). Antes del 2026-10-22
+#: bastaba con pertenecer a la organización: un Auditor podía crear una API Key o un webhook (hallazgo NEX-472 de la auditoría de QA).
+#: LEER la biblioteca de tipos documentales sigue abierto a todo el que opera en la organización: el pipeline la necesita para
+#: clasificar. Es una propuesta de producto (Administrador y Supervisor), pendiente de confirmar con César; el administrador de
+#: plataforma siempre puede (en su espacio).
+PUEDEN_ADMINISTRAR = frozenset({ADMIN, "SUPERVISOR"})
+
+#: Los roles que pueden ORGANIZAR documentos en expedientes: crear un expediente y meter o sacar documentos de él. Son los que trabajan
+#: la bandeja (como `PUEDEN_DESCARTAR`): compliance, auditor y viewer son de consulta y no mueven el trabajo de otro. LEER expedientes
+#: queda abierto a todo el que opera en la organización. Propuesta de producto, pendiente de confirmar con César; el administrador de
+#: plataforma siempre puede (en su espacio).
+PUEDEN_ORGANIZAR = frozenset({ADMIN, "SUPERVISOR", "ANALISTA", "OPERADOR"})
+
 ASIGNABLES = frozenset(r["codigo"] for r in CATALOGO)
 #: Todos los que puede llevar una membresía, incluido el administrador.
 VALIDOS = ASIGNABLES | {ADMIN}

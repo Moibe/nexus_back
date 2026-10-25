@@ -411,6 +411,27 @@ app.include_router(
     dependencies=[Depends(exigir_llave)],
 )
 
+# Los tipos de expediente de cada organización («expediente médico», «expediente de un choque»): la clase de la que salen los expedientes.
+from routers.tipos_expediente import router as tipos_expediente_router  # noqa: E402
+
+app.include_router(
+    tipos_expediente_router,
+    prefix="/tipos-expediente",
+    tags=["Tipos de expediente"],
+    dependencies=[Depends(exigir_llave)],
+)
+
+# Los expedientes de cada organización: conjuntos de documentos. Un documento puede estar en ninguno (el void), en uno o en varios. Los
+# documentos nacen al entrar por la bandeja (`servicios/bandeja.py`); aquí se organizan. Como procesos: llave de servicio Y JWT (HU11).
+from routers.expedientes import router as expedientes_router  # noqa: E402
+
+app.include_router(
+    expedientes_router,
+    prefix="/expedientes",
+    tags=["Expedientes"],
+    dependencies=[Depends(exigir_llave)],
+)
+
 # Administradores de plataforma: crearlos, verlos, regenerarles la contraseña y retirarlos. Lo usa Nexus Monitor (la herramienta del
 # operador); antes eran tres scripts en una terminal del servidor. ⚠️ Piden SOLO la llave de servicio: sin llave de administración
 # ni JWT (decisión del usuario, 2026-10-20). Ver el docstring de `routers/admins_plataforma.py`.

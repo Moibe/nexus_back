@@ -2,6 +2,12 @@
 
     .venv/Scripts/python limpiar_procesadores_huerfanos.py              # solo LISTA, no toca nada
     .venv/Scripts/python limpiar_procesadores_huerfanos.py --borrar     # los borra, pidiendo confirmación
+    .venv/Scripts/python limpiar_procesadores_huerfanos.py --borrar --antes-de 2026-10-15
+                                                                         # borra solo los huérfanos creados ANTES de esa fecha
+
+`--antes-de AAAA-MM-DD` es el corte de seguridad: un huérfano más reciente se lista pero no se borra. Úsalo cuando el registro que
+lee el script pueda no ser el de todos los ambientes (dev y prod) que comparten el proyecto de Google: lo creado antes de que el
+catálogo pasara al servidor (2026-10-15) no puede tener dueño en ningún registro.
 
 Por qué existe: ver `servicios/procesadores_huerfanos.py`. Es el paso 5 de la centralización de tipos documentales
 (2026-10-15): al pasar el catálogo al servidor sin migrar lo que había en cada computadora, los extractores que esas pruebas
@@ -35,6 +41,12 @@ def _linea(p: dict) -> str:
 async def main() -> int:
     parser = argparse.ArgumentParser(description="Lista o borra los procesadores de Document AI sin dueño.")
     parser.add_argument("--borrar", action="store_true", help="Borra los huérfanos (pide confirmación).")
+    parser.add_argument(
+        "--antes-de",
+        metavar="AAAA-MM-DD",
+        type=procesadores_huerfanos.fecha_de_corte,
+        help="Solo borra los huérfanos creados ANTES de esa fecha; los más recientes se listan y no se tocan.",
+    )
     args = parser.parse_args()
 
     try:
@@ -58,9 +70,19 @@ async def main() -> int:
     print(f"\nProtegidos ({len(reparto['protegidos'])}) — no se tocan:")
     for p in reparto["protegidos"]:
         print(_linea(p))
-    print(f"\nHuérfanos ({len(reparto['huerfanos'])}) — nadie los señala:")
-    for p in reparto["huerfanos"]:
-        print(_linea(p))
+    a_borrar = reparto["huerfanos"]
+    if args.antes_de:
+        a_borrar, recientes = procesadores_huerfanos.anteriores_a(reparto["huerfanos"], args.antes_de)
+        print(f"\nHuérfanos creados antes de {args.antes_de} ({len(a_borrar)}) — los que se borrarían:")
+        for p in a_borrar:
+            print(_linea(p))
+        print(f"\nHuérfanos de {args.antes_de} en adelante ({len(recientes)}) — NO se tocan (revísalos a mano):")
+        for p in recientes:
+            print(_linea(p))
+    else:
+        print(f"\nHuérfanos ({len(a_borrar)}) — nadie los señala:")
+        for p in a_borrar:
+            print(_linea(p))
 
     # Los que el registro dice tener y Google no: el tipo apunta a algo que ya no existe.
     en_google_ids = {p["id"] for p in en_google}
@@ -73,14 +95,14 @@ async def main() -> int:
     if not args.borrar:
         print("\n(Solo se listó. Con --borrar se borran los huérfanos.)")
         return 0
-    if not reparto["huerfanos"]:
+    if not a_borrar:
         print("\nNo hay huérfanos que borrar.")
         return 0
-    if input(f"\nSe van a BORRAR {len(reparto['huerfanos'])} procesadores, sin vuelta atrás. Escribe BORRAR para continuar: ").strip() != "BORRAR":
+    if input(f"\nSe van a BORRAR {len(a_borrar)} procesadores, sin vuelta atrás. Escribe BORRAR para continuar: ").strip() != "BORRAR":
         print("Cancelado: no se borró nada.")
         return 0
     fallos = 0
-    for p in reparto["huerfanos"]:
+    for p in a_borrar:
         try:
             await procesadores.eliminar_procesador(p["id"])
             print(f"  borrado  {p['id']}")

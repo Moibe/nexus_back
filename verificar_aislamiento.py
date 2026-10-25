@@ -300,7 +300,9 @@ try:
     r = c.get("/bandeja/", params={"tenant": B["guid"]}, headers=cab(extra["accessToken"]))
     rev("con una sesión cerrada (el JWT todavía vale): 401 sesion_cerrada", r.status_code == 401 and r.json()["detail"]["codigo"] == "sesion_cerrada", r.text[:120])
     mara_b = entrar(B["usuario_correo"], B["usuario_temp"])["accessToken"]
-    r = c.get("/webhooks/", params={"tenant": B["guid"]}, headers=cab(mara_b))
+    # Desde NEX-472 (2026-10-22) los webhooks son de quien administra: una Analista ya no los lee ni en SU organización (eso lo
+    # prueba `verificar_roles.py`). Aquí se mide el aislamiento, así que lo suyo se lee por una ruta que su rol sí tiene: la bandeja.
+    r = c.get("/bandeja/", params={"tenant": B["guid"]}, headers=cab(mara_b))
     rev("un usuario de B (no administrador) ve lo de SU organización", r.status_code == 200, str(r.status_code))
     antes = len(cruzados())
     r = c.get("/webhooks/", params={"tenant": A["guid"]}, headers=cab(mara_b))

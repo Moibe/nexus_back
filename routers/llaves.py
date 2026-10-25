@@ -62,7 +62,7 @@ def _no_disponible(exc: Exception, que: str) -> HTTPException:
     ),
 )
 def emitir(datos: Emision, response: Response, authorization: str | None = Header(default=None)):
-    aislamiento.exigir(authorization, datos.tenant, "llave")
+    aislamiento.exigir_administrar(authorization, datos.tenant, "llave")
     try:
         secret, llave = llaves_cliente.emitir(datos.tenant, datos.nombre, datos.descripcion, datos.dias)
     except ValueError as exc:
@@ -83,7 +83,7 @@ def emitir(datos: Emision, response: Response, authorization: str | None = Heade
     description="De la más nueva a la más vieja. Nunca trae el secret ni su hash.",
 )
 def listar(tenant: str = Query(...), authorization: str | None = Header(default=None)):
-    aislamiento.exigir(authorization, tenant, "llave")
+    aislamiento.exigir_administrar(authorization, tenant, "llave")
     try:
         llaves = llaves_cliente.listar(tenant)
         # "Último uso" en cada tarjeta, como pide el diseño.
@@ -107,7 +107,7 @@ def listar(tenant: str = Query(...), authorization: str | None = Header(default=
     ),
 )
 def revocar(identificador: str, datos: Revocacion, authorization: str | None = Header(default=None)):
-    actor = aislamiento.exigir(authorization, datos.tenant, "llave")
+    actor = aislamiento.exigir_administrar(authorization, datos.tenant, "llave")
     try:
         revocada_en = llaves_cliente.revocar(datos.tenant, identificador)
     except ValueError as exc:
@@ -144,7 +144,7 @@ def metricas(
     hasta: datetime = Query(...),
     authorization: str | None = Header(default=None),
 ):
-    actor = aislamiento.exigir(authorization, tenant, "llave")
+    actor = aislamiento.exigir_administrar(authorization, tenant, "llave")
     try:
         # Solo las llaves del tenant: que no se puedan leer métricas ajenas.
         if not any(l["id"] == identificador for l in llaves_cliente.listar(tenant)):
