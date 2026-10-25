@@ -9,9 +9,16 @@ comprueba contra el registro, igual que en tipos documentales, procesos y expedi
 ## Quién puede qué
 
 - **Leer** (listar, ver un tipo): cualquiera que opere en la organización, porque quien organiza expedientes necesita elegir el tipo.
-- **Crear** un tipo y **definir su esquema**: `roles.PUEDEN_ADMINISTRAR` (Administrador y Supervisor), igual que la biblioteca de tipos
-  documentales y los procesos: un tipo define cómo se arman los expedientes de la organización, no es trabajo de cada expediente. Propuesta de
-  producto, pendiente de confirmar con César; los demás roles reciben 403 `sin_permiso`.
+- **Crear**, **renombrar** y **borrar** un tipo y **definir su esquema**: `roles.PUEDEN_ADMINISTRAR` (Administrador y Supervisor), igual que la
+  biblioteca de tipos documentales y los procesos: un tipo define cómo se arman los expedientes de la organización, no es trabajo de cada
+  expediente. Propuesta de producto, pendiente de confirmar con César; los demás roles reciben 403 `sin_permiso`.
+
+## Renombrar y borrar
+
+Renombrar deja el `id` y los expedientes ven el nombre nuevo solos; el nombre sigue siendo único (otro tipo con ese nombre: 409 `ya_existe`; las
+mayúsculas o los espacios del propio nombre sí se pueden cambiar). Borrar solo se puede si el tipo NO tiene expedientes: con expedientes, 409
+`con_expedientes` (con cuántos), porque todo expediente es instancia de un tipo y no puede quedar sin él. Un tipo borrado responde 404 como uno
+que nunca existió, y su nombre queda libre.
 
 ## El esquema describe, no restringe
 
@@ -21,13 +28,14 @@ documentos están así: ninguno guarda aún su tipo documental).
 
 ## Qué se anota (auditoría)
 
-`CASE_TYPE_CREATED` al crear un tipo y `CASE_TYPE_SCHEMA_CHANGED` al cambiar su esquema (con el esquema `antes` y `despues`), con quién lo hizo.
-Definir el mismo esquema que ya tenía no repite el rastro.
+`CASE_TYPE_CREATED` al crear un tipo, `CASE_TYPE_SCHEMA_CHANGED` al cambiar su esquema (con el esquema `antes` y `despues`), `CASE_TYPE_RENAMED` al
+renombrarlo (con el nombre `antes` y `despues`) y `CASE_TYPE_DELETED` al borrarlo, con quién lo hizo. Repetir el mismo esquema o el mismo nombre no
+repite el rastro.
 
 ## Lo que NO hace todavía
 
-No renombra ni borra tipos. No asigna un tipo documental a cada documento (ni hay cómo saber qué falta de un esquema en un expediente): eso
-viene después, con la clasificación guardada en el documento.
+No borra un tipo que tiene expedientes (no hay cómo borrar ni mover expedientes). No asigna un tipo documental a cada documento (ni hay cómo
+saber qué falta de un esquema en un expediente): eso viene después, con la clasificación guardada en el documento.
 """
 
 import logging
@@ -70,8 +78,17 @@ class NuevoEsquema(BaseModel):
     )
 
 
+class NuevoNombre(BaseModel):
+    tenant: str = Field(..., description="La organización a la que pertenece el tipo")
+    nombre: str = Field(..., description="El nombre nuevo del tipo de expediente (hasta 200 caracteres)")
+
+
 def _con_total(tipo: dict, cuenta: dict[str, int], nombres: dict[str, str | None]) -> dict:
     return {**tipos_expediente.con_esquema_resuelto(tipo, nombres), "totalExpedientes": cuenta.get(tipo["id"], 0)}
+
+
+def _nombre_repetido() -> HTTPException:
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"codigo": "ya_existe", "mensaje": "Ya hay un tipo de expediente con ese nombre."})
 
 
 @router.get(
@@ -107,10 +124,7 @@ def crear(entrada: NuevoTipo, authorization: str | None = Header(default=None)):
     try:
         creado = tipos_expediente.crear(entrada.tenant, entrada.nombre, actor.guid)
     except tipos_expediente.NombreRepetido as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"codigo": "ya_existe", "mensaje": "Ya hay un tipo de expediente con ese nombre."},
-        ) from exc
+        raise _nombre_repetido() from exc
     except tipos_expediente.TipoInvalido as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ValueError as exc:
@@ -170,3 +184,64 @@ def definir_esquema(tipo_id: str, entrada: NuevoEsquema, authorization: str | No
     if cambiado:
         _anotar(auditoria.CASE_TYPE_SCHEMA_CHANGED, actor, entrada.tenant, tipoId=tipo_id, nombre=tipo["nombre"], antes=anterior, despues=tipo["tiposDocumentales"])
     return {"cambiado": cambiado, "tipo": _con_total(tipo, cuenta, nombres)}
+
+
+@router.patch(
+    "/{tipo_id}",
+    tags=["Tipos de expediente"],
+    summary="Renombrar un tipo de expediente",
+    description=(
+        "Le cambia el nombre al tipo; su `id` no cambia y sus expedientes ven el nombre nuevo. El nombre sigue siendo único en la organización, "
+        "sin distinguir mayúsculas ni espacios de más: otro tipo con ese nombre responde 409 `ya_existe` (cambiar solo las mayúsculas del propio "
+        "nombre sí se puede). Idempotente: con el mismo nombre responde `cambiado: false` y no hace nada."
+    ),
+)
+def renombrar(tipo_id: str, entrada: NuevoNombre, authorization: str | None = Header(default=None)):
+    actor = aislamiento.exigir_administrar(authorization, entrada.tenant, "tipo de expediente")
+    try:
+        tipo, anterior = tipos_expediente.renombrar(entrada.tenant, tipo_id, entrada.nombre, actor.guid)
+        cuenta = expedientes.contar_por_tipo(entrada.tenant)
+        nombres = tipos_expediente.nombres_de_tipos_documentales(entrada.tenant)
+    except tipos_expediente.NoEncontrado as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE) from exc
+    except tipos_expediente.NombreRepetido as exc:
+        raise _nombre_repetido() from exc
+    except tipos_expediente.TipoInvalido as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ErrorAlmacen as exc:
+        raise almacen_no_disponible(exc) from exc
+    cambiado = tipo["nombre"] != anterior
+    if cambiado:
+        _anotar(auditoria.CASE_TYPE_RENAMED, actor, entrada.tenant, tipoId=tipo_id, antes=anterior, despues=tipo["nombre"])
+    return {"cambiado": cambiado, "tipo": _con_total(tipo, cuenta, nombres)}
+
+
+@router.delete(
+    "/{tipo_id}",
+    tags=["Tipos de expediente"],
+    summary="Borrar un tipo de expediente",
+    description=(
+        "Borra el tipo y libera su nombre. Solo se puede si NO tiene expedientes: todo expediente es instancia de un tipo y no puede quedar sin "
+        "él; con expedientes responde 409 `con_expedientes` y cuántos tiene. Un tipo borrado responde 404 como uno que nunca existió."
+    ),
+)
+def borrar(tipo_id: str, tenant: str = Query(..., description="La organización"), authorization: str | None = Header(default=None)):
+    actor = aislamiento.exigir_administrar(authorization, tenant, "tipo de expediente")
+    try:
+        borrado = tipos_expediente.borrar(tenant, tipo_id, actor.guid, lambda: expedientes.contar_por_tipo(tenant).get(tipo_id, 0))
+    except tipos_expediente.NoEncontrado as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE) from exc
+    except tipos_expediente.TipoConExpedientes as exc:
+        cuantos = f"{exc.total} expediente" if exc.total == 1 else f"{exc.total} expedientes"
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"codigo": "con_expedientes", "mensaje": f"Este tipo de expediente tiene {cuantos}: no se puede borrar mientras los tenga.", "total": exc.total},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ErrorAlmacen as exc:
+        raise almacen_no_disponible(exc) from exc
+    _anotar(auditoria.CASE_TYPE_DELETED, actor, tenant, tipoId=tipo_id, nombre=borrado["nombre"])
+    return {"borrado": True}

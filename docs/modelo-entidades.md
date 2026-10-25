@@ -23,8 +23,13 @@ La **clase** de la que salen los expedientes: «expediente médico», «expedien
 | `tiposDocumentales` | el **esquema**: lista ordenada, sin repetidos (hasta 50), de ids de tipos documentales de la misma organización; vacía al crear |
 | `creadoPor`, `creadoEn` | quién y cuándo |
 
-Dos eventos: `crear` y `esquema` (la lista completa, que reemplaza a la anterior; no se escribe nada si la lista es la misma). Todavía no se renombra
-ni se borra. El esquema **describe y no restringe** (ver abajo); lo que falta de un tipo (qué procesos le corren) se agrega cuando haga falta.
+Cuatro eventos: `crear`, `esquema` (la lista completa, que reemplaza a la anterior; no se escribe nada si la lista es la misma), `renombrar` (el nombre
+nuevo; nada si, ya limpio, es el mismo) y `borrar`. El esquema **describe y no restringe** (ver abajo); lo que falta de un tipo (qué procesos le corren)
+se agrega cuando haga falta.
+
+**Renombrar** deja el `id`: los expedientes guardan el id de su tipo y ven el nombre nuevo sin tocarlos. **Borrar** solo se puede si el tipo **no tiene
+expedientes** (409 `con_expedientes`): todo expediente es instancia de un tipo y no puede quedar sin él. La cuenta y el borrado ocurren con el mismo
+candado que crear un expediente, así que ninguno se cuela en medio. El tipo borrado se comporta como uno que nunca existió (404) y su nombre queda libre.
 
 ### `documento` — `servicios/documentos.py`, `documentos-{tenant}.jsonl`
 
@@ -96,8 +101,11 @@ erDiagram
 - **2026-10-24 · propuesta mía, pendiente de confirmar con César:** solo `roles.PUEDEN_ORGANIZAR` (Administrador, Supervisor, Analista y Operador)
   crean expedientes y meten o sacan documentos; Compliance, Auditor y Viewer solo leen. Los **tipos** de expediente los crea quien administra
   (`roles.PUEDEN_ADMINISTRAR`: Administrador y Supervisor), como la biblioteca de tipos documentales y los procesos; todos los roles los leen.
-- **2026-10-24 · propuesta mía:** el nombre de un tipo es único por organización (sin distinguir mayúsculas ni espacios de más), porque todavía no
-  se pueden renombrar ni borrar y un repetido por error no tendría arreglo. Si no se quiere, se quita la comprobación.
+- **2026-10-24 · propuesta mía:** el nombre de un tipo es único por organización (sin distinguir mayúsculas ni espacios de más), porque un catálogo con
+  dos «Expediente médico» no sirve. Si no se quiere, se quita la comprobación.
+- **2026-10-24 · Moisés:** los tipos de expediente se pueden **renombrar y borrar**. **Decisión mía al implementarlo, por confirmar:** un tipo **con
+  expedientes no se borra** (409 `con_expedientes`), porque borrarlo dejaría expedientes sin clase o habría que destruirlos con él; renombrar sí es libre.
+  Cuando haya cómo mover o borrar expedientes, esto se puede aflojar (por ejemplo, borrar el tipo junto con sus expedientes tras una confirmación fuerte).
 
 ## Lo que todavía no existe
 
@@ -105,7 +113,7 @@ erDiagram
 - **Lo que sale del procesamiento** (OCR, clasificación, campos extraídos): hoy no se guarda en el servidor.
 - **La carga manual del front** no crea documentos todavía: solo nacen los que entran por la bandeja de la API.
 - **Del expediente:** renombrarlo, borrarlo, un estado, un folio o una referencia externa del cliente (la que mandaría quien sube por la API).
-- **Del tipo de expediente:** renombrarlo o borrarlo (y qué pasa con sus expedientes), y qué procesos del motor de reglas le corren: hoy un proceso corre
+- **Del tipo de expediente:** borrar uno que ya tiene expedientes (hoy se rechaza), y qué procesos del motor de reglas le corren: hoy un proceso corre
   «sobre un expediente» sin saber de qué tipo.
 - **El tipo documental de cada documento.** Hoy ningún documento lo guarda (todos están «sin tipo documental»). Con la clasificación guardada en el
   documento —la haga el clasificador o una persona— el expediente podría mostrar qué partes de su esquema están cubiertas y cuáles faltan.

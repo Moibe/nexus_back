@@ -18,8 +18,19 @@ Un tipo documental que se borra de la biblioteca después queda en el esquema co
 
 ## Nombre
 
-Único por organización, sin distinguir mayúsculas ni espacios de más: un catálogo con dos «Expediente médico» no sirve, y como todavía no se
-pueden renombrar ni borrar, un repetido por error no tendría arreglo. Es una propuesta mía; si no se quiere, se quita la comprobación.
+Único por organización, sin distinguir mayúsculas ni espacios de más: un catálogo con dos «Expediente médico» no sirve. Es una propuesta mía; si
+no se quiere, se quita la comprobación.
+
+## Renombrar y borrar
+
+**Renombrar** cambia el nombre y deja el `id`: los expedientes guardan el id de su tipo, así que ven el nombre nuevo sin tocarlos. El nombre sigue
+siendo único: otro tipo no puede llamarse igual, pero el tipo SÍ puede cambiarse solo las mayúsculas o los espacios de su propio nombre (no se
+repite consigo mismo). Un nombre que, ya limpio, es el que tenía, no escribe nada.
+
+**Borrar** solo se puede si el tipo NO tiene expedientes (`TipoConExpedientes`): todo expediente es instancia de un tipo, y borrarlo dejaría carpetas
+sin clase —o habría que borrarlas con él—. Hasta que haya cómo mover o borrar expedientes, un tipo con expedientes no desaparece. La cuenta y el
+borrado ocurren con el MISMO candado que crear un expediente, así que un expediente de ese tipo no se cuela entre una cosa y la otra. Borrar
+libera el nombre; los eventos del tipo se quedan en el archivo (es de solo agregar) y el id no se reutiliza.
 
 ## Qué decide el servidor
 
@@ -27,13 +38,14 @@ El `id` (`tipo-expediente-` + 32 hexadecimales), `creadoPor` y `creadoEn`. El no
 
 ## Cómo se guarda
 
-Un archivo de solo agregar por organización, `tipos-expediente-{tenant}.jsonl` (ver `servicios/registro.py`), con dos eventos: `crear` y `esquema`
-(la lista completa de tipos documentales, que reemplaza a la anterior). El estado vigente se arma doblando el archivo. Un id de otra organización
-no existe en su archivo y se contesta como uno que no existe.
+Un archivo de solo agregar por organización, `tipos-expediente-{tenant}.jsonl` (ver `servicios/registro.py`), con cuatro eventos: `crear`, `esquema`
+(la lista completa de tipos documentales, que reemplaza a la anterior), `renombrar` (el nombre nuevo) y `borrar`. El estado vigente se arma
+doblando el archivo. Un id de otra organización no existe en su archivo y se contesta como uno que no existe.
 """
 
 import re
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from servicios import almacen, registro, tipos_documentales
@@ -59,6 +71,14 @@ class NombreRepetido(Exception):
     def __init__(self, existente: str):
         super().__init__("nombre repetido")
         self.existente = existente
+
+
+class TipoConExpedientes(Exception):
+    """El tipo tiene expedientes y por eso no se puede borrar. `total` es cuántos tiene."""
+
+    def __init__(self, total: int):
+        super().__init__("tipo con expedientes")
+        self.total = total
 
 
 def _nombre(tenant: str) -> str:
@@ -88,6 +108,10 @@ def _doblar(tenant: str) -> dict[str, dict]:
             tipos[e["id"]] = {"id": e["id"], "nombre": e["nombre"], "tiposDocumentales": [], "creadoPor": e.get("por"), "creadoEn": e.get("en")}
         elif op == "esquema" and e.get("id") in tipos and isinstance(e.get("tiposDocumentales"), list):
             tipos[e["id"]]["tiposDocumentales"] = [i for i in e["tiposDocumentales"] if isinstance(i, str)]
+        elif op == "renombrar" and isinstance(e.get("id"), str) and e["id"] in tipos and isinstance(e.get("nombre"), str):
+            tipos[e["id"]]["nombre"] = e["nombre"]
+        elif op == "borrar" and isinstance(e.get("id"), str):
+            tipos.pop(e["id"], None)
     return tipos
 
 
@@ -107,6 +131,44 @@ def crear(tenant: str, nombre: object, por: str) -> dict:
                 raise NombreRepetido(t["id"])
         registro.agregar(_nombre(tenant), {"op": "crear", "id": tipo_id, "tenant": tenant, "nombre": limpio, "por": por, "en": en})
     return {"id": tipo_id, "nombre": limpio, "tiposDocumentales": [], "creadoPor": por, "creadoEn": en}
+
+
+def renombrar(tenant: str, tipo_id: object, nombre: object, por: str) -> tuple[dict, str]:
+    """Le cambia el nombre a un tipo y lo devuelve junto con el nombre ANTERIOR; si el nombre (ya limpio) es el que tenía, no escribe nada.
+
+    `TipoInvalido` si el nombre no sirve, `NoEncontrado` si el tipo no es de esa organización y `NombreRepetido` si OTRO tipo ya se llama así
+    (cambiarse solo las mayúsculas o los espacios del propio nombre sí se puede: el tipo no se repite consigo mismo)."""
+    limpio = _limpiar_nombre(nombre)
+    with registro.candado:
+        tipos = _doblar(tenant)
+        actual = tipos.get(tipo_id) if isinstance(tipo_id, str) and _RE_ID.match(tipo_id) else None
+        if actual is None:
+            raise NoEncontrado(tipo_id)
+        for t in tipos.values():
+            if t["id"] != actual["id"] and _clave(t["nombre"]) == _clave(limpio):
+                raise NombreRepetido(t["id"])
+        anterior = actual["nombre"]
+        if limpio != anterior:
+            registro.agregar(_nombre(tenant), {"op": "renombrar", "id": tipo_id, "tenant": tenant, "nombre": limpio, "por": por, "en": _ahora()})
+        return {**actual, "nombre": limpio}, anterior
+
+
+def borrar(tenant: str, tipo_id: object, por: str, cuantos_expedientes: Callable[[], int]) -> dict:
+    """Borra un tipo SIN expedientes y lo devuelve como estaba (para anotar qué se borró).
+
+    `NoEncontrado` si no es de esa organización; `TipoConExpedientes` si todavía tiene: todo expediente es instancia de un tipo, así que uno con
+    expedientes no puede desaparecer. `cuantos_expedientes` cuenta los de ESTE tipo y se llama con el candado puesto, el mismo con que
+    `expedientes.crear` comprueba el tipo: un expediente nuevo no se cuela entre la cuenta y el borrado. (Es una función porque `expedientes`
+    importa este módulo y no al revés.)"""
+    with registro.candado:
+        actual = _doblar(tenant).get(tipo_id) if isinstance(tipo_id, str) and _RE_ID.match(tipo_id) else None
+        if actual is None:
+            raise NoEncontrado(tipo_id)
+        total = cuantos_expedientes()
+        if total:
+            raise TipoConExpedientes(total)
+        registro.agregar(_nombre(tenant), {"op": "borrar", "id": tipo_id, "tenant": tenant, "por": por, "en": _ahora()})
+        return actual
 
 
 def definir_esquema(tenant: str, tipo_id: object, tipos_documentales_ids: object, por: str) -> tuple[dict, list[str]]:

@@ -127,6 +127,14 @@ def esquema(bearer: str, tenant: str, tipo: str, lista):
     return c.put(f"/tipos-expediente/{tipo}/esquema", json={"tenant": tenant, "tiposDocumentales": lista}, headers=cab(bearer))
 
 
+def renombrar_tipo(bearer: str, tenant: str, tipo: str, nombre):
+    return c.patch(f"/tipos-expediente/{tipo}", json={"tenant": tenant, "nombre": nombre}, headers=cab(bearer))
+
+
+def borrar_tipo(bearer: str, tenant: str, tipo: str):
+    return c.delete(f"/tipos-expediente/{tipo}", params={"tenant": tenant}, headers=cab(bearer))
+
+
 def exps_de_tipo(bearer: str, tenant: str, tipo: str) -> list[str]:
     return [e["id"] for e in c.get("/expedientes/", params={"tenant": tenant, "tipo": tipo}, headers=cab(bearer)).json()["expedientes"]]
 
@@ -611,6 +619,147 @@ try:
     rev("sin que cambie el peso de la primera", peso(a_admin, org_a, otro) == tam[grande] and peso(a_admin, org_a, pesado) == 0)
     eventos_exp = [json.loads(x) for x in ruta.read_text(encoding="utf-8").splitlines() if x.strip().endswith("}")]
     rev("el peso no se guarda: ningún evento del registro lo lleva", all("tamanoBytes" not in e and "totalDocumentos" not in e for e in eventos_exp))
+
+    titulo("16 · Renombrar y borrar un tipo de expediente")
+    t1 = crear_tipo(a_admin, org_a, "Tipo de prueba").json()["id"]
+    t2 = crear_tipo(a_admin, org_a, "Otro tipo de prueba").json()["id"]
+    orden_antes = [t["id"] for t in listar_tipos(a_admin, org_a).json()["tipos"]]
+    creado_en_t1 = ver_tipo(a_admin, org_a, t1).json()["creadoEn"]
+    inexistente_t = "tipo-expediente-" + "0" * 32
+
+    def nombre_de(tipo: str, bearer: str = a_admin, tenant: str = org_a):
+        r = ver_tipo(bearer, tenant, tipo)
+        return r.json()["nombre"] if r.status_code == 200 else None
+
+    def eventos_de_tipos(op: str) -> list[dict]:
+        ruta_t = RAIZ / ".registro" / f"tipos-expediente-{org_a}.jsonl"
+        return [e for e in (json.loads(x) for x in ruta_t.read_text(encoding="utf-8").splitlines() if x.strip()) if e["op"] == op]
+
+    # ---------------------------------------------------------------- renombrar
+    esperados_t1: list[tuple[str, str]] = []  # (antes, despues) de los cambios REALES del nombre de t1
+    r = renombrar_tipo(a_admin, org_a, t1, "  Tipo   renombrado ")
+    j = r.json()
+    rev("renombrar: 200, `cambiado: true` y el nombre sale limpio", r.status_code == 200 and j["cambiado"] is True and j["tipo"]["nombre"] == "Tipo renombrado", r.text[:200])
+    esperados_t1.append(("Tipo de prueba", "Tipo renombrado"))
+    rev("el tipo conserva su id, su fecha de creación y su conteo", j["tipo"]["id"] == t1 and j["tipo"]["creadoEn"] == creado_en_t1 and j["tipo"]["totalExpedientes"] == 0 and "tiposDocumentales" in j["tipo"], str(j))
+    rev("al pedirlo ya tiene el nombre nuevo, y la lista sigue en el orden de creación", nombre_de(t1) == "Tipo renombrado" and [t["id"] for t in listar_tipos(a_admin, org_a).json()["tipos"]] == orden_antes)
+    n_renombres = len(auditoria("CASE_TYPE_RENAMED"))
+    for mismo in ("Tipo renombrado", "  Tipo     renombrado  "):
+        r = renombrar_tipo(a_admin, org_a, t1, mismo)
+        rev(f"ponerle el mismo nombre («{mismo.strip()}», con otros espacios): 200 `cambiado: false`", r.status_code == 200 and r.json()["cambiado"] is False, r.text[:150])
+    rev("y no escribe nada ni repite el rastro", len(auditoria("CASE_TYPE_RENAMED")) == n_renombres and len([e for e in eventos_de_tipos("renombrar") if e["id"] == t1]) == 1)
+    r = renombrar_tipo(a_admin, org_a, t1, "TIPO RENOMBRADO")
+    rev("cambiarle solo las mayúsculas a su PROPIO nombre sí se puede (no se repite consigo mismo)", r.status_code == 200 and r.json()["cambiado"] is True and r.json()["tipo"]["nombre"] == "TIPO RENOMBRADO", r.text[:150])
+    esperados_t1.append(("Tipo renombrado", "TIPO RENOMBRADO"))
+    for repetido in ("tipo   renombrado", "Tipo RENOMBRADO", "TIPO RENOMBRADO"):
+        r = renombrar_tipo(a_admin, org_a, t2, repetido)
+        rev(f"ponerle a OTRO tipo «{repetido}» (sin distinguir mayúsculas ni espacios): 409 ya_existe", r.status_code == 409 and r.json()["detail"]["codigo"] == "ya_existe", r.text[:150])
+    rev("el rechazado no cambió su nombre", nombre_de(t2) == "Otro tipo de prueba")
+    for malo, que in (("", "vacío"), ("   ", "solo espacios"), ("x" * 201, "de 201 caracteres"), ("a\u0000b", "con un carácter de control")):
+        r = renombrar_tipo(a_admin, org_a, t1, malo)
+        rev(f"un nombre {que} se rechaza (400)", r.status_code == 400, f"{r.status_code} {r.text[:100]}")
+    rev("un nombre que ni es texto se rechaza", renombrar_tipo(a_admin, org_a, t1, 123).status_code in (400, 422))
+    rev("lo rechazado no cambió nada", nombre_de(t1) == "TIPO RENOMBRADO")
+    r = renombrar_tipo(a_admin, org_a, t1, "y" * 200)
+    rev("uno de exactamente 200 caracteres sí cabe", r.status_code == 200 and len(r.json()["tipo"]["nombre"]) == 200)
+    esperados_t1.append(("TIPO RENOMBRADO", "y" * 200))
+    renombrar_tipo(a_admin, org_a, t1, "Tipo renombrado")
+    esperados_t1.append(("y" * 200, "Tipo renombrado"))
+
+    r_no = renombrar_tipo(a_admin, org_a, inexistente_t, "Algo")
+    rev("renombrar uno que no existe: 404", r_no.status_code == 404 and "tipo de expediente" in r_no.text, r_no.text[:150])
+    rev("uno con un id que ni tiene forma de id: 404", renombrar_tipo(a_admin, org_a, "cualquier-cosa", "Algo").status_code == 404)
+    r = renombrar_tipo(a_admin, org_a, tipo_b, "Colado")
+    rev("renombrar un tipo de OTRA organización con SU tenant: 404, igual que uno que no existe", r.status_code == 404 and r.json() == r_no.json(), r.text[:150])
+    r = renombrar_tipo(b_admin, org_a, t1, "Colado")
+    rev("poniendo el tenant de la ajena: 403 sin_acceso", r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_acceso", r.text[:150])
+    r = renombrar_tipo(b_admin, org_b, t1, "Colado")
+    rev("la otra organización con el id de la primera: 404, y ningún nombre cambió", r.status_code == 404 and nombre_de(t1) == "Tipo renombrado" and nombre_de(tipo_b, b_admin, org_b) == "Expediente médico", r.text[:150])
+
+    r = renombrar_tipo(P["SUPERVISOR"], org_a, t2, "Renombrado por el supervisor")
+    rev("el Supervisor (que administra) también renombra", r.status_code == 200 and nombre_de(t2) == "Renombrado por el supervisor", r.text[:150])
+    denegados_antes = len(auditoria("ROLE_DENIED"))
+    for rol in ["ANALISTA", "OPERADOR"] + SOLO_LEEN:
+        r = renombrar_tipo(P[rol], org_a, t1, f"Por {rol}")
+        rev(f"{rol}: renombrar un tipo da 403 sin_permiso", r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_permiso", r.text[:150])
+    nuevos_denegados = [x for x in auditoria("ROLE_DENIED")[denegados_antes:] if x.get("recurso") == "tipo de expediente"]
+    rev("lo denegado no cambió nada, y cada rechazo dejó `ROLE_DENIED`", nombre_de(t1) == "Tipo renombrado" and len(nuevos_denegados) == 5, str(len(nuevos_denegados)))
+    rev("mientras un tipo se llama así, no se puede crear otro con ese nombre", crear_tipo(a_admin, org_a, "Renombrado por el supervisor").status_code == 409)
+    renombrar_tipo(a_admin, org_a, t2, "Otro nombre del segundo")
+    rev("al renombrarlo, su nombre anterior queda libre: se puede crear otro con él", crear_tipo(a_admin, org_a, "Renombrado por el supervisor").status_code == 201)
+
+    exp_t1 = crear(a_admin, org_a, "Con tipo renombrable", tipo=t1).json()["id"]
+    r = renombrar_tipo(a_admin, org_a, t1, "Tipo renombrado dos")
+    esperados_t1.append(("Tipo renombrado", "Tipo renombrado dos"))
+    en_lista = next(e for e in listar(a_admin, org_a).json()["expedientes"] if e["id"] == exp_t1)
+    rev("el expediente de ese tipo ve el nombre nuevo (abierto y en la lista) sin tocarlo", ver(a_admin, org_a, exp_t1).json()["tipo"] == {"id": t1, "nombre": "Tipo renombrado dos"} and en_lista["tipo"] == {"id": t1, "nombre": "Tipo renombrado dos"}, str(en_lista))
+    rev("y el tipo sigue contando su expediente", r.json()["tipo"]["totalExpedientes"] == 1 and ver_tipo(a_admin, org_a, t1).json()["totalExpedientes"] == 1, r.text[:200])
+    cambios_t1 = [(x.get("antes"), x.get("despues")) for x in auditoria("CASE_TYPE_RENAMED") if x.get("tipoId") == t1]
+    rev("`CASE_TYPE_RENAMED` lleva el nombre ANTES y DESPUÉS, uno por cada cambio real (ni por repetidos ni por rechazados)", cambios_t1 == esperados_t1, f"{cambios_t1} != {esperados_t1}")
+    primero = next(x for x in auditoria("CASE_TYPE_RENAMED") if x.get("tipoId") == t1)
+    rev("y quién lo hizo y en qué organización", primero.get("usuarioGuid") == guid_rita and primero.get("tenant") == org_a, str(primero))
+    renombres_t1 = [e for e in eventos_de_tipos("renombrar") if e["id"] == t1]
+    rev("cada renombre guardado tiene exactamente sus campos, y hay uno por cada cambio real", renombres_t1 and all(set(e) == {"op", "id", "tenant", "nombre", "por", "en"} and e["tenant"] == org_a for e in renombres_t1) and [e["nombre"] for e in renombres_t1] == [d for _, d in esperados_t1], str(renombres_t1[:1]))
+
+    # ---------------------------------------------------------------- borrar
+    r = borrar_tipo(a_admin, org_a, t1)
+    det = r.json().get("detail", {}) if r.status_code == 409 else {}
+    rev("borrar un tipo que TIENE expedientes: 409 con_expedientes, con cuántos", r.status_code == 409 and det.get("codigo") == "con_expedientes" and det.get("total") == 1 and "1 expediente" in det.get("mensaje", ""), r.text[:200])
+    rev("el tipo y su expediente siguen como estaban, y no queda rastro de borrado", nombre_de(t1) == "Tipo renombrado dos" and ver(a_admin, org_a, exp_t1).json()["tipo"]["id"] == t1 and not [x for x in auditoria("CASE_TYPE_DELETED") if x.get("tipoId") == t1])
+
+    n_borrados = len(auditoria("CASE_TYPE_DELETED"))
+    nombre_t2 = nombre_de(t2)
+    r = borrar_tipo(a_admin, org_a, t2)
+    rev("borrar un tipo SIN expedientes: 200 `borrado: true`", r.status_code == 200 and r.json() == {"borrado": True}, r.text[:150])
+    rev("ya no existe: ni al pedirlo (404) ni en la lista", ver_tipo(a_admin, org_a, t2).status_code == 404 and t2 not in [t["id"] for t in listar_tipos(a_admin, org_a).json()["tipos"]])
+    rev("su nombre queda libre: se puede crear otro con él", crear_tipo(a_admin, org_a, nombre_t2).status_code == 201)
+    rev("borrarlo otra vez: 404, y no repite el rastro", borrar_tipo(a_admin, org_a, t2).status_code == 404 and len(auditoria("CASE_TYPE_DELETED")) == n_borrados + 1)
+    borrados = [x for x in auditoria("CASE_TYPE_DELETED") if x.get("tipoId") == t2]
+    rev("`CASE_TYPE_DELETED` dice quién, dónde y cuál (con su nombre)", len(borrados) == 1 and borrados[0].get("usuarioGuid") == guid_rita and borrados[0].get("tenant") == org_a and borrados[0].get("nombre") == nombre_t2, str(borrados))
+    eventos_borrar = [e for e in eventos_de_tipos("borrar") if e["id"] == t2]
+    rev("el borrado guardado tiene exactamente sus campos", len(eventos_borrar) == 1 and set(eventos_borrar[0]) == {"op", "id", "tenant", "por", "en"} and eventos_borrar[0]["tenant"] == org_a, str(eventos_borrar))
+    rev("con un tipo borrado, crear un expediente, definirle esquema o renombrarlo dan 404", crear(a_admin, org_a, "De un borrado", tipo=t2).status_code == 404 and esquema(a_admin, org_a, t2, []).status_code == 404 and renombrar_tipo(a_admin, org_a, t2, "Revivir").status_code == 404)
+
+    r_no = borrar_tipo(a_admin, org_a, inexistente_t)
+    rev("borrar uno que no existe: 404", r_no.status_code == 404 and "tipo de expediente" in r_no.text, r_no.text[:150])
+    rev("uno con un id que ni tiene forma de id: 404", borrar_tipo(a_admin, org_a, "cualquier-cosa").status_code == 404)
+    r = borrar_tipo(a_admin, org_a, tipo_b)
+    rev("borrar un tipo de OTRA organización con SU tenant: 404, igual que uno que no existe, y no se borra", r.status_code == 404 and r.json() == r_no.json() and nombre_de(tipo_b, b_admin, org_b) == "Expediente médico", r.text[:150])
+    rev("poniendo el tenant de la ajena: 403 sin_acceso", borrar_tipo(b_admin, org_a, t1).status_code == 403)
+    rev("la otra organización con el id de la primera: 404, y el tipo sigue ahí", borrar_tipo(b_admin, org_b, t1).status_code == 404 and nombre_de(t1) is not None)
+
+    t3 = crear_tipo(a_admin, org_a, "Para borrar por rol").json()["id"]
+    denegados_antes = len(auditoria("ROLE_DENIED"))
+    for rol in ["ANALISTA", "OPERADOR"] + SOLO_LEEN:
+        r = borrar_tipo(P[rol], org_a, t3)
+        rev(f"{rol}: borrar un tipo da 403 sin_permiso", r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_permiso", r.text[:150])
+    nuevos_denegados = [x for x in auditoria("ROLE_DENIED")[denegados_antes:] if x.get("recurso") == "tipo de expediente"]
+    rev("lo denegado no borró nada, y cada rechazo dejó `ROLE_DENIED`", nombre_de(t3) == "Para borrar por rol" and len(nuevos_denegados) == 5, str(len(nuevos_denegados)))
+    rev("el Supervisor (que administra) sí borra, y queda su `CASE_TYPE_DELETED`", borrar_tipo(P["SUPERVISOR"], org_a, t3).status_code == 200 and nombre_de(t3) is None and len([x for x in auditoria("CASE_TYPE_DELETED") if x.get("tipoId") == t3]) == 1)
+
+    # ---------------------------------------------------------------- carreras
+    ids_carrera = [crear_tipo(a_admin, org_a, f"Carrera de renombres {i}").json()["id"] for i in range(8)]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        codigos = list(pool.map(lambda t: renombrar_tipo(a_admin, org_a, t, "Nombre disputado").status_code, ids_carrera))
+    rev("ocho renombres a la vez al MISMO nombre: solo uno lo logra (el nombre es único)", codigos.count(200) == 1 and codigos.count(409) == 7, str(codigos))
+    rev("y queda exactamente un tipo con ese nombre", [t["nombre"] for t in listar_tipos(a_admin, org_a).json()["tipos"]].count("Nombre disputado") == 1)
+
+    rondas = []
+    for ronda in range(6):
+        carrera = crear_tipo(a_admin, org_a, f"Carrera de borrado {ronda}").json()["id"]
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            borrando = pool.submit(lambda: borrar_tipo(a_admin, org_a, carrera).status_code)
+            creando = [pool.submit(lambda i=i: crear(a_admin, org_a, f"Carrera {ronda}-{i}", tipo=carrera).status_code) for i in range(6)]
+            codigo_borrado, codigos_creados = borrando.result(), [f.result() for f in creando]
+        quedan = [e for e in listar(a_admin, org_a).json()["expedientes"] if e["tipo"] and e["tipo"]["id"] == carrera]
+        rondas.append((codigo_borrado, codigos_creados.count(201), len(quedan)))
+    rev("borrar un tipo mientras se crean expedientes de él: o se borra y NO se coló ninguno, o no se borra y hay los que se crearon (nada intermedio)", all((b == 200 and n == 0 and q == 0) or (b == 409 and n >= 1 and q == n) for b, n, q in rondas), str(rondas))
+    huerfanos = [e["id"] for e in listar(a_admin, org_a).json()["expedientes"] if not e["tipo"] or e["tipo"]["nombre"] is None]
+    rev("y ningún expediente quedó con un tipo que ya no existe", huerfanos == [], str(huerfanos))
+    cuenta_real: dict[str, int] = {}
+    for e in listar(a_admin, org_a).json()["expedientes"]:
+        cuenta_real[e["tipo"]["id"]] = cuenta_real.get(e["tipo"]["id"], 0) + 1
+    rev("el conteo de cada tipo coincide con sus expedientes", all(t["totalExpedientes"] == cuenta_real.get(t["id"], 0) for t in listar_tipos(a_admin, org_a).json()["tipos"]))
 finally:
     shutil.rmtree(RAIZ, ignore_errors=True)
 
