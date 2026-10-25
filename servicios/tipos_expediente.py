@@ -13,25 +13,28 @@ Un tipo de expediente puede tener VARIOS TIPOS DOCUMENTALES de su misma organiza
 esquema: «un expediente médico lleva una receta, un estudio de laboratorio…». Es una lista ordenada, sin repetidos, y es DESCRIPTIVA: **no limita
 los archivos que un expediente puede recibir**. Cualquier documento entra a cualquier expediente; los que no encajan con el esquema simplemente
 quedan «sin tipo documental». Hoy ningún documento guarda su tipo documental (la clasificación se hace en el navegador y no se persiste), así
-que todos están en ese caso: asignarle uno a cada documento será otra entidad y otro paso. El esquema se reemplaza completo (`definir_esquema`).
+que todos están en ese caso: asignarle uno a cada documento será otra entidad y otro paso. El esquema se reemplaza completo (`editar`).
 Un tipo documental que se borra de la biblioteca después queda en el esquema como un id sin nombre, a la vista, hasta que alguien lo quite.
 
 **El esquema se define AL CREAR el tipo** (pedido de producto, 2026-10-25): `crear` exige al menos un tipo documental, así que ningún tipo nuevo
-nace sin esquema, y lo valida igual que `definir_esquema` (sin repetidos, hasta `MAX_ESQUEMA`, todos de esa organización). El tipo y su esquema
-se guardan en UN solo evento `crear`: o queda el tipo con su esquema o no queda nada, nunca un tipo a medias. Reemplazarlo después sigue siendo
-`definir_esquema`, que no se tocó y todavía acepta una lista vacía. Los tipos creados antes de la regla, sin esquema, siguen como estaban: su
-evento `crear` no trae `tiposDocumentales` y se lee como una lista vacía.
+nace sin esquema (sin repetidos, hasta `MAX_ESQUEMA`, todos de esa organización). El tipo y su esquema se guardan en UN solo evento `crear`: o
+queda el tipo con su esquema o no queda nada, nunca un tipo a medias. **Y se puede cambiar después** (`editar`, también del mismo día): la lista
+nueva reemplaza a la anterior y pide lo mismo que al crear, de modo que un esquema NUNCA se deja vacío. Los tipos creados antes de la regla, sin
+esquema, siguen como estaban —su evento `crear` no trae `tiposDocumentales` y se lee como una lista vacía— hasta que alguien les ponga uno.
 
 ## Nombre
 
 Único por organización, sin distinguir mayúsculas ni espacios de más: un catálogo con dos «Expediente médico» no sirve. Es una propuesta mía; si
 no se quiere, se quita la comprobación.
 
-## Renombrar y borrar
+## Editar y borrar
 
-**Renombrar** cambia el nombre y deja el `id`: los expedientes guardan el id de su tipo, así que ven el nombre nuevo sin tocarlos. El nombre sigue
-siendo único: otro tipo no puede llamarse igual, pero el tipo SÍ puede cambiarse solo las mayúsculas o los espacios de su propio nombre (no se
-repite consigo mismo). Un nombre que, ya limpio, es el que tenía, no escribe nada.
+**Editar** cambia el nombre y/o el esquema en una sola llamada (`editar`) y deja el `id`: los expedientes guardan el id de su tipo, así que ven el
+nombre nuevo sin tocarlos, y cambiar el esquema no toca los documentos de sus expedientes (describe, no restringe). El nombre sigue siendo único:
+otro tipo no puede llamarse igual, pero el tipo SÍ puede cambiarse solo las mayúsculas o los espacios de su propio nombre (no se repite consigo
+mismo). Todo se comprueba antes de escribir: si algo falla, no cambia ni el nombre ni el esquema. Lo que, ya limpio, es lo que había, no escribe nada.
+Si cambian los dos van DOS eventos seguidos, con el candado puesto: una caída justo entre ellos dejaría el nombre nuevo con el esquema anterior
+(un tipo válido) y repetir la edición lo completa; a diferencia de `crear`, ahí no hay un estado que la regla prohíba.
 
 **Borrar** solo se puede si el tipo NO tiene expedientes (`TipoConExpedientes`): todo expediente es instancia de un tipo, y borrarlo dejaría carpetas
 sin clase —o habría que borrarlas con él—. Hasta que haya cómo mover o borrar expedientes, un tipo con expedientes no desaparece. La cuenta y el
@@ -174,24 +177,46 @@ def crear(tenant: str, nombre: object, tipos_documentales_ids: object, por: str)
     return {"id": tipo_id, "nombre": limpio, "tiposDocumentales": list(ids), "creadoPor": por, "creadoEn": en}
 
 
-def renombrar(tenant: str, tipo_id: object, nombre: object, por: str) -> tuple[dict, str]:
-    """Le cambia el nombre a un tipo y lo devuelve junto con el nombre ANTERIOR; si el nombre (ya limpio) es el que tenía, no escribe nada.
+def editar(tenant: str, tipo_id: object, nombre: object, tipos_documentales_ids: object, por: str) -> tuple[dict, str, list[str]]:
+    """Cambia el nombre y/o el esquema de un tipo en una sola llamada y devuelve `(el tipo como quedó, el nombre ANTERIOR, el esquema ANTERIOR)`.
 
-    `TipoInvalido` si el nombre no sirve, `NoEncontrado` si el tipo no es de esa organización y `NombreRepetido` si OTRO tipo ya se llama así
-    (cambiarse solo las mayúsculas o los espacios del propio nombre sí se puede: el tipo no se repite consigo mismo)."""
-    limpio = _limpiar_nombre(nombre)
+    Lo que viene como `None` no se toca, y al menos uno de los dos tiene que venir (`TipoInvalido`). El nombre se limpia y no puede repetir el de
+    OTRO tipo (`NombreRepetido`; cambiarse solo las mayúsculas o los espacios del propio nombre sí se puede: el tipo no se repite consigo mismo).
+    El esquema REEMPLAZA al anterior y pide, como al crear, al menos un tipo documental, sin repetidos, hasta `MAX_ESQUEMA` y todos de esa
+    organización (`TipoInvalido`; uno de otra se contesta igual que uno que no existe). `NoEncontrado` si el tipo no es de esa organización.
+
+    TODO se comprueba antes de escribir nada, con el candado puesto: si el nombre repite el de otro tipo o un tipo documental no existe, no cambia
+    ni lo uno ni lo otro. Lo que ya estaba igual no escribe nada (el nombre ya limpio, o la misma lista en el mismo orden). Si cambian los dos
+    son dos eventos seguidos (`renombrar` y luego `esquema`)."""
+    if nombre is None and tipos_documentales_ids is None:
+        raise TipoInvalido("Indica qué cambiar: el nombre o los tipos documentales.")
+    limpio = _limpiar_nombre(nombre) if nombre is not None else None
+    ids = _validar_esquema(tipos_documentales_ids) if tipos_documentales_ids is not None else None
+    if ids is not None and not ids:
+        raise TipoInvalido("Un tipo de expediente necesita al menos un tipo documental en su esquema.")
     with registro.candado:
         tipos = _doblar(tenant)
         actual = tipos.get(tipo_id) if isinstance(tipo_id, str) and _RE_ID.match(tipo_id) else None
         if actual is None:
             raise NoEncontrado(tipo_id)
-        for t in tipos.values():
-            if t["id"] != actual["id"] and _clave(t["nombre"]) == _clave(limpio):
-                raise NombreRepetido(t["id"])
-        anterior = actual["nombre"]
-        if limpio != anterior:
-            registro.agregar(_nombre(tenant), {"op": "renombrar", "id": tipo_id, "tenant": tenant, "nombre": limpio, "por": por, "en": _ahora()})
-        return {**actual, "nombre": limpio}, anterior
+        if limpio is not None:
+            for t in tipos.values():
+                if t["id"] != actual["id"] and _clave(t["nombre"]) == _clave(limpio):
+                    raise NombreRepetido(t["id"])
+        if ids is not None:
+            _comprobar_que_existen(tenant, ids)
+        nombre_anterior = actual["nombre"]
+        esquema_anterior = list(actual["tiposDocumentales"])
+        en = _ahora()
+        if limpio is not None and limpio != nombre_anterior:
+            registro.agregar(_nombre(tenant), {"op": "renombrar", "id": tipo_id, "tenant": tenant, "nombre": limpio, "por": por, "en": en})
+        if ids is not None and ids != esquema_anterior:
+            registro.agregar(_nombre(tenant), {"op": "esquema", "id": tipo_id, "tenant": tenant, "tiposDocumentales": ids, "por": por, "en": en})
+        return (
+            {**actual, "nombre": nombre_anterior if limpio is None else limpio, "tiposDocumentales": esquema_anterior if ids is None else list(ids)},
+            nombre_anterior,
+            esquema_anterior,
+        )
 
 
 def borrar(tenant: str, tipo_id: object, por: str, cuantos_expedientes: Callable[[], int]) -> dict:
@@ -210,24 +235,6 @@ def borrar(tenant: str, tipo_id: object, por: str, cuantos_expedientes: Callable
             raise TipoConExpedientes(total)
         registro.agregar(_nombre(tenant), {"op": "borrar", "id": tipo_id, "tenant": tenant, "por": por, "en": _ahora()})
         return actual
-
-
-def definir_esquema(tenant: str, tipo_id: object, tipos_documentales_ids: object, por: str) -> tuple[dict, list[str]]:
-    """Reemplaza el esquema de un tipo por esa lista de tipos documentales (ids, en ese orden). Devuelve `(el tipo como quedó, el esquema
-    ANTERIOR)`; si la lista es la misma que ya tenía, no escribe nada.
-
-    `NoEncontrado` si el tipo no es de esa organización; `TipoInvalido` si no es una lista de textos, si trae repetidos o de más, o si alguno no
-    es un tipo documental de esa organización (uno de otra se contesta igual que uno que no existe)."""
-    ids = _validar_esquema(tipos_documentales_ids)
-    with registro.candado:
-        actual = _doblar(tenant).get(tipo_id) if isinstance(tipo_id, str) and _RE_ID.match(tipo_id) else None
-        if actual is None:
-            raise NoEncontrado(tipo_id)
-        _comprobar_que_existen(tenant, ids)
-        anterior = list(actual["tiposDocumentales"])
-        if ids != anterior:
-            registro.agregar(_nombre(tenant), {"op": "esquema", "id": tipo_id, "tenant": tenant, "tiposDocumentales": ids, "por": por, "en": _ahora()})
-        return {**actual, "tiposDocumentales": list(ids)}, anterior
 
 
 def nombres_de_tipos_documentales(tenant: str) -> dict[str, str | None]:

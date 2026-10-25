@@ -20,14 +20,17 @@ La **clase** de la que salen los expedientes: «expediente médico», «expedien
 | `id` | `tipo-expediente-` + 32 hexadecimales; lo pone el servidor |
 | `tenant` | la organización dueña |
 | `nombre` | texto libre, hasta 200 caracteres; **único por organización** sin distinguir mayúsculas ni espacios de más |
-| `tiposDocumentales` | el **esquema**: lista ordenada, sin repetidos (hasta 50), de ids de tipos documentales de la misma organización; **al crear el tipo se pide al menos uno** (los que se crearon antes de esa regla pueden estar vacíos) |
+| `tiposDocumentales` | el **esquema**: lista ordenada, sin repetidos (hasta 50), de ids de tipos documentales de la misma organización; **al crear el tipo se pide al menos uno, y editarlo nunca lo deja vacío** (los que se crearon antes de esa regla pueden estar vacíos hasta que alguien les ponga uno) |
 | `creadoPor`, `creadoEn` | quién y cuándo |
 
 Cuatro eventos: `crear` (con el esquema inicial, en un solo evento), `esquema` (la lista completa, que reemplaza a la anterior; no se escribe nada si la
 lista es la misma), `renombrar` (el nombre nuevo; nada si, ya limpio, es el mismo) y `borrar`. El esquema **describe y no restringe** (ver abajo); lo que falta de un tipo (qué procesos le corren)
 se agrega cuando haga falta.
 
-**Renombrar** deja el `id`: los expedientes guardan el id de su tipo y ven el nombre nuevo sin tocarlos. **Borrar** solo se puede si el tipo **no tiene
+**Editar** (`PATCH`) cambia el nombre, el esquema o los dos en una llamada y deja el `id`: los expedientes guardan el id de su tipo y ven el nombre nuevo
+sin tocarlos, y cambiar el esquema no toca los documentos de sus expedientes. Todo se comprueba antes de escribir (si el nombre se repite o un tipo
+documental no existe, no cambia ni lo uno ni lo otro); si cambian los dos van **dos eventos seguidos** con el candado puesto (`renombrar` y luego `esquema`),
+y una caída justo entre ellos dejaría el nombre nuevo con el esquema anterior —un tipo válido— y repetir la edición lo completa. **Borrar** solo se puede si el tipo **no tiene
 expedientes** (409 `con_expedientes`): todo expediente es instancia de un tipo y no puede quedar sin él. La cuenta y el borrado ocurren con el mismo
 candado que crear un expediente, así que ninguno se cuela en medio. El tipo borrado se comporta como uno que nunca existió (404) y su nombre queda libre.
 
@@ -109,9 +112,14 @@ erDiagram
 
 - **2026-10-25 · Moisés:** un tipo de expediente puede tener **varios** tipos documentales y ese conjunto es su **esquema**; **al crear el tipo hay que
   definirle qué tipos documentales tendrá**. **Decisiones mías al implementarlo, por confirmar:** (1) la regla es de nexus_back y no solo de la pantalla:
-  `POST /tipos-expediente/` pide al menos un tipo documental (lista vacía, repetidos o uno que no existe: 400); (2) `PUT /{id}/esquema` no se tocó y
-  todavía acepta una lista vacía, y los tipos que ya existían sin esquema siguen así; (3) el esquema inicial va en el mismo evento `crear` y no deja además
-  un `CASE_TYPE_SCHEMA_CHANGED`, así no hay un tipo a medias si algo se cae entre dos escrituras.
+  `POST /tipos-expediente/` pide al menos un tipo documental (lista vacía, repetidos o uno que no existe: 400); (2) los tipos que ya existían sin esquema
+  siguen así; (3) el esquema inicial va en el mismo evento `crear` y no deja además un `CASE_TYPE_SCHEMA_CHANGED`, así no hay un tipo a medias si algo se
+  cae entre dos escrituras. *(El punto de `PUT /{id}/esquema` aceptando una lista vacía se revirtió el mismo día, ver la decisión siguiente.)*
+- **2026-10-25 · Moisés:** «un tipo de expediente ya creado debe poder ser editable». **Decisiones mías al implementarlo, por confirmar:** (1) `PATCH
+  /tipos-expediente/{id}` edita el nombre, el esquema o los dos en una sola llamada y comprueba todo antes de escribir; (2) **un esquema nunca se deja
+  vacío**: editar pide lo mismo que crear (al menos un tipo documental), así que `PUT /{id}/esquema` con `[]` ahora da 400 (antes lo aceptaba); (3) un tipo
+  anterior a la regla, sin esquema, **puede renombrarse sin ponerle uno** por la API, pero la pantalla le pide elegir uno para guardar; (4) cada cosa que
+  cambia deja su propia anotación (`CASE_TYPE_RENAMED`, `CASE_TYPE_SCHEMA_CHANGED`); (5) si cambian los dos van dos eventos seguidos (ver arriba).
 
 ## Lo que todavía no existe
 
@@ -119,7 +127,7 @@ erDiagram
 - **Lo que sale del procesamiento** (OCR, clasificación, campos extraídos): hoy no se guarda en el servidor.
 - **La carga manual del front** no crea documentos todavía: solo nacen los que entran por la bandeja de la API.
 - **Del expediente:** renombrarlo, borrarlo, un estado, un folio o una referencia externa del cliente (la que mandaría quien sube por la API).
-- **Del tipo de expediente:** borrar uno que ya tiene expedientes (hoy se rechaza), cambiar el esquema de uno ya creado desde la pantalla (la ruta `PUT` existe; la pantalla solo lo define al crear), y qué procesos del motor de reglas le corren: hoy un proceso corre
+- **Del tipo de expediente:** borrar uno que ya tiene expedientes (hoy se rechaza), y qué procesos del motor de reglas le corren: hoy un proceso corre
   «sobre un expediente» sin saber de qué tipo.
 - **El tipo documental de cada documento.** Hoy ningún documento lo guarda (todos están «sin tipo documental»). Con la clasificación guardada en el
   documento —la haga el clasificador o una persona— el expediente podría mostrar qué partes de su esquema están cubiertas y cuáles faltan.

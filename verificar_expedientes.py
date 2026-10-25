@@ -12,7 +12,10 @@ Lo que se prueba:
   CON SU ESQUEMA (al menos un tipo documental: sin ninguno, repetidos, inexistentes o de otra organización se rechaza y no crea nada);
   lo crean quienes administran y lo leen todos; todo expediente nace de un tipo de su organización, es su instancia, y se filtra y cuenta por tipo;
 - el ESQUEMA de un tipo (los tipos documentales que lo describen) se reemplaza completo, en orden, sin repetidos y solo con tipos documentales de
-  la misma organización; DESCRIBE Y NO RESTRINGE: los expedientes de un tipo con esquema siguen recibiendo cualquier documento;
+  la misma organización, y nunca se deja vacío; DESCRIBE Y NO RESTRINGE: los expedientes de un tipo con esquema siguen recibiendo cualquier documento;
+- EDITAR un tipo ya creado (`PATCH`): el nombre, el esquema o los dos en una llamada, con lo que cambió de verdad en la respuesta y en el rastro; si algo
+  se rechaza (nombre repetido, esquema vacío o con un tipo documental que no existe) no cambia NI LA MITAD; un tipo anterior a la regla (sin esquema)
+  se puede renombrar sin ponerle uno; ocho ediciones simultáneas no mezclan esquemas;
 - un expediente se crea con un nombre limpio (y dos pueden llamarse igual); los nombres que no sirven se rechazan;
 - un documento puede estar en VARIOS expedientes a la vez; meterlo dos veces no repite nada; sacarlo de su último expediente lo devuelve
   al void sin borrarlo; el orden es el de entrada;
@@ -138,6 +141,11 @@ def esquema(bearer: str, tenant: str, tipo: str, lista):
 
 def renombrar_tipo(bearer: str, tenant: str, tipo: str, nombre):
     return c.patch(f"/tipos-expediente/{tipo}", json={"tenant": tenant, "nombre": nombre}, headers=cab(bearer))
+
+
+def editar_tipo(bearer: str, tenant: str, tipo: str, **campos):
+    """PATCH de un tipo con el cuerpo que se diga: `nombre`, `tiposDocumentales` o los dos."""
+    return c.patch(f"/tipos-expediente/{tipo}", json={"tenant": tenant, **campos}, headers=cab(bearer))
 
 
 def borrar_tipo(bearer: str, tenant: str, tipo: str):
@@ -582,6 +590,8 @@ try:
         rev(f"un esquema {que}: 400", r.status_code == 400, f"{r.status_code} {r.text[:120]}")
     ajeno = esquema(a_admin, org_a, tipo_a, [td_b])
     rev("uno de OTRA organización se contesta igual que uno que no existe", ajeno.status_code == 400 and ajeno.json() == sin_existir.json(), f"{ajeno.text} | {sin_existir.text}")
+    vacio = esquema(a_admin, org_a, tipo_a, [])
+    rev("un esquema VACÍO también: 400 que pide al menos un tipo documental (como al crear), y el anterior se queda", vacio.status_code == 400 and "al menos un tipo documental" in vacio.text and ver_tipo(a_admin, org_a, tipo_a).json() == estado_antes, f"{vacio.status_code} {vacio.text[:150]}")
     rev("un esquema que no es una lista: 422", c.put(f"/tipos-expediente/{tipo_a}/esquema", json={"tenant": org_a, "tiposDocumentales": "uno"}, headers=cab(a_admin)).status_code == 422)
     rev("sin `tiposDocumentales`: 422", c.put(f"/tipos-expediente/{tipo_a}/esquema", json={"tenant": org_a}, headers=cab(a_admin)).status_code == 422)
     rev("lo rechazado no cambió nada", ver_tipo(a_admin, org_a, tipo_a).json() == estado_antes)
@@ -619,9 +629,9 @@ try:
     suelto = subir(a_admin, org_a, "foto-suelta.pdf", pdf(77)).json()["documentoId"]
     r = meter(a_admin, org_a, e1, suelto)
     rev("a un expediente cuyo tipo TIENE esquema le entra cualquier documento: el esquema no restringe", r.status_code == 200 and r.json()["agregado"] is True and suelto in ids_docs_de(a_admin, org_a, e1), r.text[:200])
-    rev("y a uno cuyo tipo NO tiene esquema también", meter(a_admin, org_a, ec1, suelto).json()["agregado"] is True)
-    definir(a_admin, [])
-    rev("quitarle el esquema al tipo NO toca los documentos de sus expedientes", ver_a() == [] and ids_docs_de(a_admin, org_a, e1) == docs_de_e1 + [suelto])
+    rev("y a uno de OTRO tipo, con otro esquema, también", meter(a_admin, org_a, ec1, suelto).json()["agregado"] is True)
+    definir(a_admin, [td_acta])
+    rev("cambiarle el esquema al tipo NO toca los documentos de sus expedientes", ver_a() == [(td_acta, "Acta constitutiva")] and ids_docs_de(a_admin, org_a, e1) == docs_de_e1 + [suelto])
     definir(a_admin, [td_ine, td_rec])
 
     r = c.delete(f"/tipos-documentales/{td_rec}", params={"tenant": org_a}, headers=cab(a_admin))
@@ -781,7 +791,7 @@ try:
     rev("`CASE_TYPE_DELETED` dice quién, dónde y cuál (con su nombre)", len(borrados) == 1 and borrados[0].get("usuarioGuid") == guid_rita and borrados[0].get("tenant") == org_a and borrados[0].get("nombre") == nombre_t2, str(borrados))
     eventos_borrar = [e for e in eventos_de_tipos("borrar") if e["id"] == t2]
     rev("el borrado guardado tiene exactamente sus campos", len(eventos_borrar) == 1 and set(eventos_borrar[0]) == {"op", "id", "tenant", "por", "en"} and eventos_borrar[0]["tenant"] == org_a, str(eventos_borrar))
-    rev("con un tipo borrado, crear un expediente, definirle esquema o renombrarlo dan 404", crear(a_admin, org_a, "De un borrado", tipo=t2).status_code == 404 and esquema(a_admin, org_a, t2, []).status_code == 404 and renombrar_tipo(a_admin, org_a, t2, "Revivir").status_code == 404)
+    rev("con un tipo borrado, crear un expediente, definirle esquema, renombrarlo o editarlo dan 404", crear(a_admin, org_a, "De un borrado", tipo=t2).status_code == 404 and esquema(a_admin, org_a, t2, [td_ine]).status_code == 404 and renombrar_tipo(a_admin, org_a, t2, "Revivir").status_code == 404 and editar_tipo(a_admin, org_a, t2, nombre="Revivir", tiposDocumentales=[td_ine]).status_code == 404)
 
     r_no = borrar_tipo(a_admin, org_a, inexistente_t)
     rev("borrar uno que no existe: 404", r_no.status_code == 404 and "tipo de expediente" in r_no.text, r_no.text[:150])
@@ -823,6 +833,141 @@ try:
     for e in listar(a_admin, org_a).json()["expedientes"]:
         cuenta_real[e["tipo"]["id"]] = cuenta_real.get(e["tipo"]["id"], 0) + 1
     rev("el conteo de cada tipo coincide con sus expedientes", all(t["totalExpedientes"] == cuenta_real.get(t["id"], 0) for t in listar_tipos(a_admin, org_a).json()["tipos"]))
+
+    titulo("17 · Editar un tipo ya creado: el nombre y el esquema, juntos o por separado")
+    td_domicilio = crear_tipo_documental(a_admin, org_a, "Comprobante de domicilio")
+    ed = crear_tipo(a_admin, org_a, "Para editar", [td_ine]).json()["id"]
+    ed_otro = crear_tipo(a_admin, org_a, "Otro para editar", [td_base_a]).json()["id"]
+    creado_en_ed = ver_tipo(a_admin, org_a, ed).json()["creadoEn"]
+
+    def forma(tipo: str, bearer: str = a_admin, tenant: str = org_a):
+        """`(nombre, ids de su esquema)` del tipo, como lo ve quien lo pide."""
+        j = ver_tipo(bearer, tenant, tipo).json()
+        return j["nombre"], [x["id"] for x in j["tiposDocumentales"]]
+
+    def eventos_de(tipo: str) -> list[dict]:
+        ruta_t = RAIZ / ".registro" / f"tipos-expediente-{org_a}.jsonl"
+        return [e for e in (json.loads(x) for x in ruta_t.read_text(encoding="utf-8").splitlines() if x.strip()) if e["id"] == tipo]
+
+    def ops_de(tipo: str) -> list[str]:
+        return [e["op"] for e in eventos_de(tipo)]
+
+    def rastro(accion: str, tipo: str) -> list[tuple]:
+        return [(x.get("antes"), x.get("despues")) for x in auditoria(accion) if x.get("tipoId") == tipo]
+
+    def banderas(r) -> tuple:
+        j = r.json()
+        return j["cambiado"], j["nombreCambiado"], j["esquemaCambiado"]
+
+    # ---------------------------------------------------------------- lo que sí cambia
+    r = editar_tipo(a_admin, org_a, ed, nombre="  Editado   completo ", tiposDocumentales=[td_acta, td_domicilio])
+    j = r.json()
+    rev("editar el nombre Y el esquema en una llamada: 200 y cada bandera dice lo que cambió", r.status_code == 200 and banderas(r) == (True, True, True), r.text[:250])
+    rev("el tipo vuelve con el nombre limpio y el esquema nuevo, con el nombre de cada tipo documental y en el orden dado", j["tipo"]["nombre"] == "Editado completo" and [(x["id"], x["nombre"]) for x in j["tipo"]["tiposDocumentales"]] == [(td_acta, "Acta constitutiva"), (td_domicilio, "Comprobante de domicilio")], str(j))
+    rev("conserva su id, su fecha de creación y su conteo", j["tipo"]["id"] == ed and j["tipo"]["creadoEn"] == creado_en_ed and j["tipo"]["totalExpedientes"] == 0, str(j))
+    rev("al pedirlo y al listarlo ya es así", forma(ed) == ("Editado completo", [td_acta, td_domicilio]) and next(t for t in listar_tipos(a_admin, org_a).json()["tipos"] if t["id"] == ed)["nombre"] == "Editado completo")
+    rev("se guardan DOS eventos seguidos: el nombre y luego el esquema", ops_de(ed) == ["crear", "renombrar", "esquema"], str(ops_de(ed)))
+    rev("y el rastro anota cada cosa, una vez, con su antes y su después", rastro("CASE_TYPE_RENAMED", ed) == [("Para editar", "Editado completo")] and rastro("CASE_TYPE_SCHEMA_CHANGED", ed) == [([td_ine], [td_acta, td_domicilio])], f"{rastro('CASE_TYPE_RENAMED', ed)} {rastro('CASE_TYPE_SCHEMA_CHANGED', ed)}")
+    anotados = [x for accion in ("CASE_TYPE_RENAMED", "CASE_TYPE_SCHEMA_CHANGED") for x in auditoria(accion) if x.get("tipoId") == ed]
+    rev("las dos anotaciones dicen quién y en qué organización", len(anotados) == 2 and all(x.get("usuarioGuid") == guid_rita and x.get("tenant") == org_a for x in anotados), str(anotados))
+
+    r = editar_tipo(a_admin, org_a, ed, tiposDocumentales=[td_domicilio, td_acta])
+    rev("editar SOLO el esquema (aquí, el orden): el nombre no se toca y las banderas lo dicen", r.status_code == 200 and banderas(r) == (True, False, True) and forma(ed) == ("Editado completo", [td_domicilio, td_acta]), r.text[:250])
+    rev("deja un evento `esquema` y una anotación de esquema, y ninguna de nombre", ops_de(ed) == ["crear", "renombrar", "esquema", "esquema"] and len(rastro("CASE_TYPE_SCHEMA_CHANGED", ed)) == 2 and len(rastro("CASE_TYPE_RENAMED", ed)) == 1)
+
+    r = editar_tipo(a_admin, org_a, ed, nombre="Editado solo el nombre")
+    rev("editar SOLO el nombre: el esquema no se toca y las banderas lo dicen", r.status_code == 200 and banderas(r) == (True, True, False) and forma(ed) == ("Editado solo el nombre", [td_domicilio, td_acta]), r.text[:250])
+    rev("deja un evento `renombrar` y una anotación de nombre, y ninguna de esquema", ops_de(ed) == ["crear", "renombrar", "esquema", "esquema", "renombrar"] and len(rastro("CASE_TYPE_RENAMED", ed)) == 2 and len(rastro("CASE_TYPE_SCHEMA_CHANGED", ed)) == 2)
+
+    ops_antes = list(ops_de(ed))
+    r = editar_tipo(a_admin, org_a, ed, nombre="  Editado   solo el nombre ", tiposDocumentales=[td_domicilio, td_acta])
+    rev("mandar lo mismo que ya tiene (con otros espacios en el nombre): 200 y ninguna bandera", r.status_code == 200 and banderas(r) == (False, False, False), r.text[:250])
+    rev("y no escribe nada ni repite el rastro", ops_de(ed) == ops_antes and len(rastro("CASE_TYPE_RENAMED", ed)) == 2 and len(rastro("CASE_TYPE_SCHEMA_CHANGED", ed)) == 2)
+
+    # ---------------------------------------------------------------- lo que no se acepta: nada cambia, ni la mitad
+    r_nada = c.patch(f"/tipos-expediente/{ed}", json={"tenant": org_a}, headers=cab(a_admin))
+    r_nulos = editar_tipo(a_admin, org_a, ed, nombre=None, tiposDocumentales=None)
+    rev("sin decir qué cambiar (ni nombre ni esquema, o los dos en null): 400 que lo explica", r_nada.status_code == 400 and r_nulos.status_code == 400 and "qué cambiar" in r_nada.text, f"{r_nada.text[:120]} | {r_nulos.text[:120]}")
+
+    forma_antes, rastro_antes = forma(ed), (rastro("CASE_TYPE_RENAMED", ed), rastro("CASE_TYPE_SCHEMA_CHANGED", ed))
+    sin_existir_ed = editar_tipo(a_admin, org_a, ed, nombre="Nunca", tiposDocumentales=["tipo-" + "0" * 32])
+    rev("un nombre nuevo con un tipo documental que no existe en el esquema: 400", sin_existir_ed.status_code == 400 and "no existe" in sin_existir_ed.text, f"{sin_existir_ed.status_code} {sin_existir_ed.text[:120]}")
+    ajeno_ed = editar_tipo(a_admin, org_a, ed, nombre="Nunca", tiposDocumentales=[td_b])
+    rev("…o con uno de OTRA organización: 400, y se contesta igual que uno que no existe", ajeno_ed.status_code == 400 and ajeno_ed.json() == sin_existir_ed.json(), f"{ajeno_ed.text[:120]} | {sin_existir_ed.text[:120]}")
+    for cuerpo, que, codigos in (
+        ({"nombre": "Nunca", "tiposDocumentales": []}, "un nombre nuevo con el esquema VACÍO", (400,)),
+        ({"nombre": "Nunca", "tiposDocumentales": [td_ine, td_ine]}, "un nombre nuevo con un tipo documental repetido en el esquema", (400,)),
+        ({"nombre": "Otro para editar", "tiposDocumentales": [td_ine]}, "un esquema nuevo con el nombre que ya tiene OTRO tipo", (409,)),
+        ({"nombre": "   ", "tiposDocumentales": [td_ine]}, "un esquema nuevo con un nombre que no sirve", (400,)),
+        ({"nombre": "Nunca", "tiposDocumentales": "uno"}, "un esquema que no es una lista", (422,)),
+        ({"nombre": "Nunca", "tiposDocumentales": [1, 2]}, "un esquema de cosas que no son texto", (422,)),
+        ({"nombre": 123, "tiposDocumentales": [td_ine]}, "un nombre que ni es texto", (400, 422)),
+    ):
+        r = editar_tipo(a_admin, org_a, ed, **cuerpo)
+        rev(f"{que}: {' o '.join(map(str, codigos))}", r.status_code in codigos, f"{r.status_code} {r.text[:120]}")
+    vacio_ed = editar_tipo(a_admin, org_a, ed, tiposDocumentales=[])
+    rev("el esquema vacío SOLO (sin nombre) también: 400 que pide al menos un tipo documental", vacio_ed.status_code == 400 and "al menos un tipo documental" in vacio_ed.text, vacio_ed.text[:150])
+    tope_ed = tipos_expediente.MAX_ESQUEMA
+    try:
+        tipos_expediente.MAX_ESQUEMA = 2
+        r = editar_tipo(a_admin, org_a, ed, nombre="Nunca", tiposDocumentales=[td_ine, td_acta, td_domicilio])
+        rev("un esquema por encima del tope (con tipos reales): 400 que dice cuál es", r.status_code == 400 and "hasta 2" in r.text, f"{r.status_code} {r.text[:120]}")
+    finally:
+        tipos_expediente.MAX_ESQUEMA = tope_ed
+    rev("NADA de lo rechazado cambió nada, ni la mitad: ni el nombre ni el esquema (todo se comprueba antes de escribir), ni dejó eventos ni rastro", forma(ed) == forma_antes and ops_de(ed) == ops_antes and (rastro("CASE_TYPE_RENAMED", ed), rastro("CASE_TYPE_SCHEMA_CHANGED", ed)) == rastro_antes and nombre_de(ed_otro) == "Otro para editar", f"{forma(ed)} {forma_antes}")
+
+    # ---------------------------------------------------------------- 404 y aislamiento
+    inexistente_ed = editar_tipo(a_admin, org_a, "tipo-expediente-" + "0" * 32, nombre="Algo", tiposDocumentales=[td_ine])
+    rev("editar uno que no existe: 404", inexistente_ed.status_code == 404 and "tipo de expediente" in inexistente_ed.text, inexistente_ed.text[:150])
+    rev("uno con un id que ni tiene forma de id: 404", editar_tipo(a_admin, org_a, "cualquier-cosa", nombre="Algo", tiposDocumentales=[td_ine]).status_code == 404)
+    r = editar_tipo(a_admin, org_a, tipo_b, nombre="Colado", tiposDocumentales=[td_ine])
+    rev("el tipo de OTRA organización con SU tenant: 404, igual que uno que no existe", r.status_code == 404 and r.json() == inexistente_ed.json(), r.text[:150])
+    r = editar_tipo(b_admin, org_a, ed, nombre="Colado", tiposDocumentales=[td_b])
+    rev("poniendo el tenant de la ajena: 403 sin_acceso", r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_acceso", r.text[:150])
+    r = editar_tipo(b_admin, org_b, ed, nombre="Colado", tiposDocumentales=[td_b])
+    rev("la otra organización con el id de la primera: 404, y nada cambió ni allá ni acá", r.status_code == 404 and forma(ed) == forma_antes and forma(tipo_b, b_admin, org_b)[0] == "Expediente médico", r.text[:150])
+
+    # ---------------------------------------------------------------- quién edita
+    denegados_antes = len(auditoria("ROLE_DENIED"))
+    for rol in ["ANALISTA", "OPERADOR"] + SOLO_LEEN:
+        r = editar_tipo(P[rol], org_a, ed, nombre=f"Por {rol}", tiposDocumentales=[td_ine])
+        rev(f"{rol}: editar un tipo da 403 sin_permiso", r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_permiso", r.text[:150])
+    nuevos_denegados = [x for x in auditoria("ROLE_DENIED")[denegados_antes:] if x.get("recurso") == "tipo de expediente"]
+    rev("lo denegado no cambió nada, y cada rechazo dejó `ROLE_DENIED`", forma(ed) == forma_antes and len(nuevos_denegados) == 5, str(len(nuevos_denegados)))
+    r = editar_tipo(P["SUPERVISOR"], org_a, ed, nombre="Editado por el supervisor", tiposDocumentales=[td_acta])
+    rev("el Supervisor (que administra) también edita, las dos cosas a la vez", r.status_code == 200 and banderas(r) == (True, True, True) and forma(ed) == ("Editado por el supervisor", [td_acta]), r.text[:200])
+
+    # ---------------------------------------------------------------- con expedientes
+    exp_ed = crear(a_admin, org_a, "Con tipo editable", tipo=ed).json()["id"]
+    doc_ed = subir(a_admin, org_a, "editable.pdf", pdf(171)).json()["documentoId"]
+    meter(a_admin, org_a, exp_ed, doc_ed)
+    r = editar_tipo(a_admin, org_a, ed, nombre="Editado con expediente", tiposDocumentales=[td_ine, td_domicilio, td_acta])
+    rev("editar un tipo que YA tiene expedientes se puede, y conserva su conteo", r.status_code == 200 and banderas(r) == (True, True, True) and r.json()["tipo"]["totalExpedientes"] == 1, r.text[:200])
+    rev("sus expedientes ven el nombre nuevo, siguen siendo de ese tipo y conservan sus documentos (el esquema describe, no restringe)", ver(a_admin, org_a, exp_ed).json()["tipo"] == {"id": ed, "nombre": "Editado con expediente"} and ids_docs_de(a_admin, org_a, exp_ed) == [doc_ed])
+
+    # ---------------------------------------------------------------- un tipo de ANTES de la regla (sin esquema)
+    legado = "tipo-expediente-" + "b" * 32
+    registro.agregar(f"tipos-expediente-{org_a}.jsonl", {"op": "crear", "id": legado, "tenant": org_a, "nombre": "Anterior a la regla", "por": "x", "en": "2026-10-24T00:00:00Z"})
+    rev("un tipo de ANTES de la regla (su evento no trae esquema) se lee sin esquema", forma(legado) == ("Anterior a la regla", []))
+    r = renombrar_tipo(a_admin, org_a, legado, "Anterior renombrado")
+    rev("renombrarlo, sin tocar el esquema, se puede: no le exige uno", r.status_code == 200 and banderas(r) == (True, True, False) and forma(legado) == ("Anterior renombrado", []), r.text[:200])
+    r = editar_tipo(a_admin, org_a, legado, nombre="Anterior con esquema", tiposDocumentales=[td_ine])
+    rev("y ponerle esquema por primera vez, junto con el nombre, también", r.status_code == 200 and banderas(r) == (True, True, True) and forma(legado) == ("Anterior con esquema", [td_ine]), r.text[:200])
+    rev("pero ya con esquema, no se le puede dejar vacío", editar_tipo(a_admin, org_a, legado, tiposDocumentales=[]).status_code == 400 and forma(legado)[1] == [td_ine])
+    borrar_tipo(a_admin, org_a, legado)
+
+    # ---------------------------------------------------------------- carrera
+    esquemas_carrera = [[td_ine], [td_acta], [td_domicilio], [td_ine, td_acta], [td_acta, td_ine], [td_domicilio, td_ine], [td_ine, td_domicilio], [td_acta, td_domicilio]]
+    previos = len([e for e in eventos_de(ed) if e["op"] == "esquema"])
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        respuestas = list(pool.map(lambda lista: editar_tipo(a_admin, org_a, ed, tiposDocumentales=lista), esquemas_carrera))
+    rev("ocho ediciones del esquema a la vez: todas responden 200", all(r.status_code == 200 for r in respuestas), str([r.status_code for r in respuestas]))
+    escritos = [e["tiposDocumentales"] for e in eventos_de(ed) if e["op"] == "esquema"][previos:]
+    rev("queda UNO de los esquemas pedidos, entero (nunca una mezcla), y es el último que se escribió", forma(ed)[1] in esquemas_carrera and bool(escritos) and escritos[-1] == forma(ed)[1], f"{forma(ed)[1]} {escritos}")
+    rev("y cada cambio que dijo ser real dejó exactamente un evento, ni uno más", sum(1 for r in respuestas if r.json()["esquemaCambiado"]) == len(escritos), f"{[r.json()['esquemaCambiado'] for r in respuestas]} {len(escritos)}")
+
+    de_ed = eventos_de(ed)
+    rev("cada evento que dejó la edición tiene exactamente sus campos", all(set(e) == {"op", "id", "tenant", "nombre", "por", "en"} for e in de_ed if e["op"] == "renombrar") and all(set(e) == {"op", "id", "tenant", "tiposDocumentales", "por", "en"} for e in de_ed if e["op"] == "esquema") and all(e["tenant"] == org_a for e in de_ed), str(de_ed[-2:]))
 finally:
     shutil.rmtree(RAIZ, ignore_errors=True)
 
