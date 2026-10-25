@@ -572,6 +572,45 @@ try:
     de_esquema = [e for e in eventos_tipos if e["op"] == "esquema"]
     rev("cada cambio de esquema guardado tiene exactamente sus campos", bool(de_esquema) and all(set(e) == {"op", "id", "tenant", "tiposDocumentales", "por", "en"} and e["tenant"] == org_a for e in de_esquema), str(de_esquema[:1]))
     rev("y se guarda un evento por cada cambio real, ni uno más", len(de_esquema) == len(esperados), f"{len(de_esquema)} eventos, {len(esperados)} cambios")
+
+    titulo("15 · Cuánto pesa un expediente: la suma de sus documentos, calculada al consultar")
+
+    def peso(bearer: str, tenant: str, exp: str) -> int:
+        return next(e for e in listar(bearer, tenant).json()["expedientes"] if e["id"] == exp)["tamanoBytes"]
+
+    chico = subir(a_admin, org_a, "chico.pdf", pdf(88)).json()["documentoId"]
+    grande = subir(a_admin, org_a, "grande.pdf", pdf(89) + b"x" * 5000).json()["documentoId"]
+    tam = {d["id"]: d["tamanoBytes"] for d in docs(a_admin, org_a).json()["documentos"]}
+    rev("los dos documentos nuevos pesan distinto (si no, una suma equivocada pasaría inadvertida)", tam[chico] == len(pdf(88)) and tam[grande] == len(pdf(89)) + 5000 and tam[chico] != tam[grande], str((tam[chico], tam[grande])))
+    alta = crear(a_admin, org_a, "Con peso").json()
+    pesado = alta["id"]
+    rev("al crearlo, el expediente pesa 0: lo dice el alta, la lista y el expediente entero", alta["tamanoBytes"] == 0 and peso(a_admin, org_a, pesado) == 0 and ver(a_admin, org_a, pesado).json()["tamanoBytes"] == 0, str(alta))
+    meter(a_admin, org_a, pesado, chico)
+    rev("con un documento adentro pesa lo que pesa ese", peso(a_admin, org_a, pesado) == tam[chico], f"{peso(a_admin, org_a, pesado)} != {tam[chico]}")
+    meter(a_admin, org_a, pesado, grande)
+    rev("con los dos pesa la suma", peso(a_admin, org_a, pesado) == tam[chico] + tam[grande], f"{peso(a_admin, org_a, pesado)} != {tam[chico] + tam[grande]}")
+    rev("la lista y el expediente entero dicen lo mismo", ver(a_admin, org_a, pesado).json()["tamanoBytes"] == peso(a_admin, org_a, pesado) and meter(a_admin, org_a, pesado, grande).json()["expediente"]["tamanoBytes"] == tam[chico] + tam[grande])
+    rev("meter otra vez el mismo documento no lo cuenta dos veces", peso(a_admin, org_a, pesado) == tam[chico] + tam[grande])
+    otro = crear(a_admin, org_a, "Otro con peso").json()["id"]
+    meter(a_admin, org_a, otro, grande)
+    rev("el mismo documento en OTRO expediente pesa completo ahí y no cambia el peso del primero", peso(a_admin, org_a, otro) == tam[grande] and peso(a_admin, org_a, pesado) == tam[chico] + tam[grande])
+    sacar(a_admin, org_a, pesado, chico)
+    rev("sacar un documento resta SU peso, no el del otro", peso(a_admin, org_a, pesado) == tam[grande], f"{peso(a_admin, org_a, pesado)} != {tam[grande]}")
+    rev("y el documento sacado sigue existiendo con su mismo peso (no se borró)", {d["id"]: d["tamanoBytes"] for d in docs(a_admin, org_a).json()["documentos"]}[chico] == tam[chico])
+    sacar(a_admin, org_a, pesado, grande)
+    rev("sin documentos vuelve a pesar 0", peso(a_admin, org_a, pesado) == 0)
+    rev("y sacar de uno no toca el peso del otro", peso(a_admin, org_a, otro) == tam[grande])
+    for e in listar(a_admin, org_a).json()["expedientes"]:
+        suma = sum(d["tamanoBytes"] for d in ver(a_admin, org_a, e["id"]).json()["documentos"])
+        rev(f"«{e['nombre'][:30]}»: el peso de la lista es la suma de lo que muestra al abrirlo ({suma} B)", e["tamanoBytes"] == suma and isinstance(e["tamanoBytes"], int), f"{e['tamanoBytes']} != {suma}")
+    doc_b = subir(b_admin, org_b, "de-beta.pdf", pdf(90) + b"y" * 300).json()["documentoId"]
+    exp_b = crear(b_admin, org_b, "Peso de Beta").json()["id"]
+    rev("la otra organización parte de 0, aunque la primera ya tenga documentos", peso(b_admin, org_b, exp_b) == 0)
+    meter(b_admin, org_b, exp_b, doc_b)
+    rev("y pesa solo lo suyo", peso(b_admin, org_b, exp_b) == len(pdf(90)) + 300, str(peso(b_admin, org_b, exp_b)))
+    rev("sin que cambie el peso de la primera", peso(a_admin, org_a, otro) == tam[grande] and peso(a_admin, org_a, pesado) == 0)
+    eventos_exp = [json.loads(x) for x in ruta.read_text(encoding="utf-8").splitlines() if x.strip().endswith("}")]
+    rev("el peso no se guarda: ningún evento del registro lo lleva", all("tamanoBytes" not in e and "totalDocumentos" not in e for e in eventos_exp))
 finally:
     shutil.rmtree(RAIZ, ignore_errors=True)
 

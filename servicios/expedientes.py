@@ -21,6 +21,11 @@ La pertenencia es una entidad propia —en el modelo de tablas, `expediente_docu
 El `id` (`expediente-` + 32 hexadecimales), `creadoPor` y `creadoEn`. El nombre se limpia (espacios de más) y tiene tope de 200
 caracteres. Dos expedientes pueden llamarse igual: un mismo cliente puede tener dos solicitudes.
 
+## Lo que se calcula al consultar
+
+`totalDocumentos` (cuántos tiene) y `tamanoBytes` (cuánto pesan, la suma de sus documentos) no se guardan: salen de doblar el registro y
+de leer los documentos cada vez. Un documento que viaja de un expediente a otro, o sale, no obliga a reescribir nada.
+
 ## Cómo se guarda
 
 Un archivo de solo agregar por organización, `expedientes-{tenant}.jsonl` (ver `servicios/registro.py`), con tres eventos: `crear`,
@@ -107,7 +112,11 @@ def _tipo_de(e: dict, tipos: dict[str, dict]) -> dict | None:
     return {"id": tipo_id, "nombre": tipo["nombre"] if tipo else None}
 
 
-def _resumen(e: dict, tipos: dict[str, dict]) -> dict:
+def _documentos_por_id(tenant: str) -> dict[str, dict]:
+    return {d["id"]: d for d in documentos.listar(tenant)}
+
+
+def _resumen(e: dict, tipos: dict[str, dict], por_id: dict[str, dict]) -> dict:
     return {
         "id": e["id"],
         "nombre": e["nombre"],
@@ -115,12 +124,13 @@ def _resumen(e: dict, tipos: dict[str, dict]) -> dict:
         "creadoPor": e["creadoPor"],
         "creadoEn": e["creadoEn"],
         "totalDocumentos": len(e["documentos"]),
+        # Se calcula al consultar, no se guarda: un documento cambia de expediente sin que el expediente se reescriba.
+        "tamanoBytes": sum(por_id[i].get("tamanoBytes") or 0 for i in e["documentos"] if i in por_id),
     }
 
 
-def _detalle(tenant: str, e: dict, tipos: dict[str, dict]) -> dict:
-    por_id = {d["id"]: d for d in documentos.listar(tenant)}
-    return {**_resumen(e, tipos), "documentos": [por_id[i] for i in e["documentos"] if i in por_id]}
+def _detalle(e: dict, tipos: dict[str, dict], por_id: dict[str, dict]) -> dict:
+    return {**_resumen(e, tipos, por_id), "documentos": [por_id[i] for i in e["documentos"] if i in por_id]}
 
 
 def crear(tenant: str, nombre: object, por: str, tipo_id: object) -> dict:
@@ -134,16 +144,17 @@ def crear(tenant: str, nombre: object, por: str, tipo_id: object) -> dict:
         if tipo is None:
             raise TipoNoEncontrado(tipo_id)
         registro.agregar(_nombre(tenant), {"op": "crear", "id": expediente_id, "tenant": tenant, "nombre": limpio, "tipo": tipo["id"], "por": por, "en": en})
-    return {"id": expediente_id, "nombre": limpio, "tipo": {"id": tipo["id"], "nombre": tipo["nombre"]}, "creadoPor": por, "creadoEn": en, "totalDocumentos": 0}
+    return {"id": expediente_id, "nombre": limpio, "tipo": {"id": tipo["id"], "nombre": tipo["nombre"]}, "creadoPor": por, "creadoEn": en, "totalDocumentos": 0, "tamanoBytes": 0}
 
 
 def listar(tenant: str, tipo_id: str | None = None) -> list[dict]:
-    """Los expedientes de UNA organización, en el orden de su creación, cada uno con su tipo y cuántos documentos tiene. Con `tipo_id`,
-    solo los de ese tipo (un tipo que no existe no tiene ninguno)."""
+    """Los expedientes de UNA organización, en el orden de su creación, cada uno con su tipo, cuántos documentos tiene y cuánto pesan en
+    total. Con `tipo_id`, solo los de ese tipo (un tipo que no existe no tiene ninguno)."""
     with registro.candado:
         expedientes = _doblar(tenant)
         tipos = _tipos(tenant)
-    return [_resumen(e, tipos) for e in expedientes.values() if tipo_id is None or e["tipo"] == tipo_id]
+        por_id = _documentos_por_id(tenant)
+    return [_resumen(e, tipos, por_id) for e in expedientes.values() if tipo_id is None or e["tipo"] == tipo_id]
 
 
 def contar_por_tipo(tenant: str) -> dict[str, int]:
@@ -163,7 +174,7 @@ def obtener(tenant: str, expediente_id: str) -> dict | None:
         return None
     with registro.candado:
         e = _doblar(tenant).get(expediente_id)
-        return _detalle(tenant, e, _tipos(tenant)) if e else None
+        return _detalle(e, _tipos(tenant), _documentos_por_id(tenant)) if e else None
 
 
 def agregar_documento(tenant: str, expediente_id: str, documento_id: str, por: str) -> bool:

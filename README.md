@@ -1817,8 +1817,8 @@ decisiones y lo que falta están en [`docs/modelo-entidades.md`](docs/modelo-ent
 | `GET /tipos-expediente/{id}?tenant=` | un tipo, su esquema y cuántos expedientes tiene | ídem |
 | `PUT /tipos-expediente/{id}/esquema` `{tenant, tiposDocumentales}` | reemplaza el esquema por esa lista ordenada de tipos documentales de la misma organización (sin repetidos, hasta 50); idempotente (`cambiado: false` si es la misma); `[]` lo deja sin esquema. **Describe, no restringe:** los expedientes de ese tipo siguen recibiendo cualquier documento | `roles.PUEDEN_ADMINISTRAR` |
 | `POST /tipos-expediente/` `{tenant, nombre}` | crea un tipo (201); el nombre es único por organización, sin distinguir mayúsculas ni espacios de más: uno repetido da 409 `ya_existe` | `roles.PUEDEN_ADMINISTRAR` |
-| `GET /expedientes/?tenant=&tipo=` | los expedientes de la organización, cada uno con su `tipo` y su `totalDocumentos`; con `tipo`, solo los de ese tipo | cualquiera que opere en ella |
-| `GET /expedientes/{id}?tenant=` | el expediente con sus documentos completos, en el orden en que se agregaron | ídem |
+| `GET /expedientes/?tenant=&tipo=` | los expedientes de la organización, cada uno con su `tipo`, su `totalDocumentos` y su `tamanoBytes` (lo que pesan sus documentos juntos; se calcula al consultar); con `tipo`, solo los de ese tipo | cualquiera que opere en ella |
+| `GET /expedientes/{id}?tenant=` | el expediente (con los mismos totales) y sus documentos completos, en el orden en que se agregaron | ídem |
 | `GET /expedientes/documentos?tenant=&sin_expediente=` | los documentos y los expedientes en que está cada uno; `true` = solo el void, `false` = solo los organizados | ídem |
 | `POST /expedientes/` `{tenant, nombre, tipoId}` | crea un expediente vacío (201) como instancia de ese tipo, que debe ser de la misma organización (si no, 404) | `roles.PUEDEN_ORGANIZAR` |
 | `PUT /expedientes/{id}/documentos/{documento_id}?tenant=` | mete un documento; idempotente (`agregado: false` si ya estaba) | ídem |
