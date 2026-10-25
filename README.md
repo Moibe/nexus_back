@@ -1806,25 +1806,31 @@ contraseñas. Se probó rompiendo 15 reglas a propósito: las 15 se detectan.
 
 ## Expedientes y documentos: el documento nace al entrar, el expediente los reúne (2026-10-24)
 
-Un **documento** nace cuando entra al sistema (hoy, por `POST /bandeja/`) y existe por sí mismo; un **expediente** es un conjunto de
-documentos con un nombre. Un documento puede estar en **ningún** expediente (el «void»), en **uno** o en **varios**. El modelo completo,
-sus decisiones y lo que falta están en [`docs/modelo-entidades.md`](docs/modelo-entidades.md).
+Un **documento** nace cuando entra al sistema (hoy, por `POST /bandeja/`) y existe por sí mismo. Un **tipo de expediente** («expediente médico»,
+«expediente de un choque») es la clase; un **expediente** es una instancia de un tipo —la carpeta de UN paciente, de UN choque— y reúne los
+documentos de ese caso. Un documento puede estar en **ningún** expediente (el «void»), en **uno** o en **varios**. El modelo completo, sus
+decisiones y lo que falta están en [`docs/modelo-entidades.md`](docs/modelo-entidades.md).
 
 | Ruta | Qué hace | Quién |
 |---|---|---|
-| `GET /expedientes/?tenant=` | los expedientes de la organización, cada uno con su `totalDocumentos` | cualquiera que opere en ella |
+| `GET /tipos-expediente/?tenant=` | los tipos de la organización, cada uno con su esquema (`tiposDocumentales`, con id y nombre) y su `totalExpedientes` | cualquiera que opere en ella |
+| `GET /tipos-expediente/{id}?tenant=` | un tipo, su esquema y cuántos expedientes tiene | ídem |
+| `PUT /tipos-expediente/{id}/esquema` `{tenant, tiposDocumentales}` | reemplaza el esquema por esa lista ordenada de tipos documentales de la misma organización (sin repetidos, hasta 50); idempotente (`cambiado: false` si es la misma); `[]` lo deja sin esquema. **Describe, no restringe:** los expedientes de ese tipo siguen recibiendo cualquier documento | `roles.PUEDEN_ADMINISTRAR` |
+| `POST /tipos-expediente/` `{tenant, nombre}` | crea un tipo (201); el nombre es único por organización, sin distinguir mayúsculas ni espacios de más: uno repetido da 409 `ya_existe` | `roles.PUEDEN_ADMINISTRAR` |
+| `GET /expedientes/?tenant=&tipo=` | los expedientes de la organización, cada uno con su `tipo` y su `totalDocumentos`; con `tipo`, solo los de ese tipo | cualquiera que opere en ella |
 | `GET /expedientes/{id}?tenant=` | el expediente con sus documentos completos, en el orden en que se agregaron | ídem |
 | `GET /expedientes/documentos?tenant=&sin_expediente=` | los documentos y los expedientes en que está cada uno; `true` = solo el void, `false` = solo los organizados | ídem |
-| `POST /expedientes/` `{tenant, nombre}` | crea un expediente vacío (201) | `roles.PUEDEN_ORGANIZAR` |
+| `POST /expedientes/` `{tenant, nombre, tipoId}` | crea un expediente vacío (201) como instancia de ese tipo, que debe ser de la misma organización (si no, 404) | `roles.PUEDEN_ORGANIZAR` |
 | `PUT /expedientes/{id}/documentos/{documento_id}?tenant=` | mete un documento; idempotente (`agregado: false` si ya estaba) | ídem |
 | `DELETE /expedientes/{id}/documentos/{documento_id}?tenant=` | lo saca; el documento NO se borra y, si era su último expediente, vuelve al void | ídem |
 
 Todas piden la llave de servicio **y** el JWT de la persona (HU11); un id de otra organización responde 404 como si no existiera. Crear, meter y
-sacar dejan `CASE_CREATED`, `CASE_DOCUMENT_ADDED` y `CASE_DOCUMENT_REMOVED` en la bitácora. Los roles de solo consulta (Compliance, Auditor y
-Viewer) reciben 403 `sin_permiso` al intentar organizar (propuesta de producto, pendiente de confirmar con César).
+sacar dejan `CASE_CREATED` (con el tipo), `CASE_DOCUMENT_ADDED` y `CASE_DOCUMENT_REMOVED` en la bitácora, crear un tipo deja `CASE_TYPE_CREATED` y cambiar su esquema deja `CASE_TYPE_SCHEMA_CHANGED` (con el esquema antes y después; no se repite si no cambió).
+Los roles de solo consulta (Compliance, Auditor y Viewer) reciben 403 `sin_permiso` al intentar organizar; Analista y Operador organizan pero no
+crean tipos (propuesta de producto, pendiente de confirmar con César).
 
 `POST /bandeja/` no cambia para quien sube, salvo que la entrada trae además su `documentoId`. Los documentos viven en
-`.registro/documentos-{tenant}.jsonl` y los expedientes en `.registro/expedientes-{tenant}.jsonl`. La ruta de documentos cuelga de
+`.registro/documentos-{tenant}.jsonl`, los expedientes en `.registro/expedientes-{tenant}.jsonl` y los tipos en `.registro/tipos-expediente-{tenant}.jsonl`. La ruta de documentos cuelga de
 `/expedientes` y no de `/documentos` porque ese prefijo ya es del grupo que habla con SQL Server.
 
 Verificarlo, offline: `venv/bin/python verificar_expedientes.py`.

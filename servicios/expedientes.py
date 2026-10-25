@@ -2,8 +2,10 @@
 
 ## Qué es un expediente
 
-Un expediente es un conjunto de documentos (el motor de reglas corre un proceso sobre uno: `servicios/procesos.py`). Por ahora solo tiene
-un `nombre`; estado, folio o una referencia del cliente se agregan cuando haya una necesidad real, no antes.
+Un expediente es un conjunto de documentos (el motor de reglas corre un proceso sobre uno: `servicios/procesos.py`) y es una INSTANCIA de un
+tipo de expediente (`servicios/tipos_expediente.py`): el tipo «expediente médico» es la clase y el expediente de UN paciente es la carpeta
+con SUS documentos. Todo expediente nace de un tipo de su misma organización. Además del tipo solo tiene un `nombre`; estado, folio o una
+referencia del cliente se agregan cuando haya una necesidad real, no antes.
 
 ## Documentos y expedientes: muchos a muchos
 
@@ -30,7 +32,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 
-from servicios import almacen, documentos, registro
+from servicios import almacen, documentos, registro, tipos_expediente
 
 MAX_NOMBRE = 200
 #: Tope de documentos por expediente: un expediente normal tiene unas decenas; esto es para que un cliente descontrolado no lo infle.
@@ -45,6 +47,10 @@ class ExpedienteInvalido(ValueError):
 
 class NoEncontrado(LookupError):
     """No hay tal expediente EN ESA organización (o no existe: no se distingue)."""
+
+
+class TipoNoEncontrado(LookupError):
+    """No hay tal tipo de expediente EN ESA organización (o no existe: no se distingue)."""
 
 
 class DocumentoNoEncontrado(LookupError):
@@ -76,7 +82,7 @@ def _doblar(tenant: str) -> dict[str, dict]:
     for e in registro.eventos(_nombre(tenant)):
         op = e.get("op")
         if op == "crear" and isinstance(e.get("id"), str) and isinstance(e.get("nombre"), str):
-            expedientes[e["id"]] = {"id": e["id"], "nombre": e["nombre"], "creadoPor": e.get("por"), "creadoEn": e.get("en"), "documentos": []}
+            expedientes[e["id"]] = {"id": e["id"], "nombre": e["nombre"], "tipo": e.get("tipo"), "creadoPor": e.get("por"), "creadoEn": e.get("en"), "documentos": []}
         elif op in ("agregar", "quitar"):
             exp, doc = expedientes.get(e.get("expediente")), e.get("documento")
             if exp is None or not isinstance(doc, str):
@@ -88,30 +94,67 @@ def _doblar(tenant: str) -> dict[str, dict]:
     return expedientes
 
 
-def _resumen(e: dict) -> dict:
-    return {"id": e["id"], "nombre": e["nombre"], "creadoPor": e["creadoPor"], "creadoEn": e["creadoEn"], "totalDocumentos": len(e["documentos"])}
+def _tipos(tenant: str) -> dict[str, dict]:
+    return {t["id"]: t for t in tipos_expediente.listar(tenant)}
 
 
-def _detalle(tenant: str, e: dict) -> dict:
+def _tipo_de(e: dict, tipos: dict[str, dict]) -> dict | None:
+    """El tipo del expediente como lo ve quien consulta: su `id` y su `nombre`. `None` si el expediente no lleva tipo."""
+    tipo_id = e.get("tipo")
+    if tipo_id is None:
+        return None
+    tipo = tipos.get(tipo_id)
+    return {"id": tipo_id, "nombre": tipo["nombre"] if tipo else None}
+
+
+def _resumen(e: dict, tipos: dict[str, dict]) -> dict:
+    return {
+        "id": e["id"],
+        "nombre": e["nombre"],
+        "tipo": _tipo_de(e, tipos),
+        "creadoPor": e["creadoPor"],
+        "creadoEn": e["creadoEn"],
+        "totalDocumentos": len(e["documentos"]),
+    }
+
+
+def _detalle(tenant: str, e: dict, tipos: dict[str, dict]) -> dict:
     por_id = {d["id"]: d for d in documentos.listar(tenant)}
-    return {**_resumen(e), "documentos": [por_id[i] for i in e["documentos"] if i in por_id]}
+    return {**_resumen(e, tipos), "documentos": [por_id[i] for i in e["documentos"] if i in por_id]}
 
 
-def crear(tenant: str, nombre: object, por: str) -> dict:
-    """Crea un expediente vacío y lo devuelve. `ExpedienteInvalido` si el nombre no sirve."""
+def crear(tenant: str, nombre: object, por: str, tipo_id: object) -> dict:
+    """Crea un expediente vacío DE ESE TIPO y lo devuelve. `ExpedienteInvalido` si el nombre no sirve y `TipoNoEncontrado` si el tipo no es de
+    esa organización (o no existe)."""
     limpio = _limpiar_nombre(nombre)
     expediente_id = f"expediente-{uuid.uuid4().hex}"
     en = _ahora()
     with registro.candado:
-        registro.agregar(_nombre(tenant), {"op": "crear", "id": expediente_id, "tenant": tenant, "nombre": limpio, "por": por, "en": en})
-    return {"id": expediente_id, "nombre": limpio, "creadoPor": por, "creadoEn": en, "totalDocumentos": 0}
+        tipo = tipos_expediente.obtener(tenant, tipo_id)
+        if tipo is None:
+            raise TipoNoEncontrado(tipo_id)
+        registro.agregar(_nombre(tenant), {"op": "crear", "id": expediente_id, "tenant": tenant, "nombre": limpio, "tipo": tipo["id"], "por": por, "en": en})
+    return {"id": expediente_id, "nombre": limpio, "tipo": {"id": tipo["id"], "nombre": tipo["nombre"]}, "creadoPor": por, "creadoEn": en, "totalDocumentos": 0}
 
 
-def listar(tenant: str) -> list[dict]:
-    """Los expedientes de UNA organización, en el orden de su creación, cada uno con cuántos documentos tiene."""
+def listar(tenant: str, tipo_id: str | None = None) -> list[dict]:
+    """Los expedientes de UNA organización, en el orden de su creación, cada uno con su tipo y cuántos documentos tiene. Con `tipo_id`,
+    solo los de ese tipo (un tipo que no existe no tiene ninguno)."""
     with registro.candado:
         expedientes = _doblar(tenant)
-    return [_resumen(e) for e in expedientes.values()]
+        tipos = _tipos(tenant)
+    return [_resumen(e, tipos) for e in expedientes.values() if tipo_id is None or e["tipo"] == tipo_id]
+
+
+def contar_por_tipo(tenant: str) -> dict[str, int]:
+    """Cuántos expedientes tiene cada tipo de esa organización: `{tipo_id: n}` (los tipos sin expedientes no aparecen)."""
+    with registro.candado:
+        expedientes = _doblar(tenant)
+    cuenta: dict[str, int] = {}
+    for e in expedientes.values():
+        if e["tipo"]:
+            cuenta[e["tipo"]] = cuenta.get(e["tipo"], 0) + 1
+    return cuenta
 
 
 def obtener(tenant: str, expediente_id: str) -> dict | None:
@@ -120,7 +163,7 @@ def obtener(tenant: str, expediente_id: str) -> dict | None:
         return None
     with registro.candado:
         e = _doblar(tenant).get(expediente_id)
-        return _detalle(tenant, e) if e else None
+        return _detalle(tenant, e, _tipos(tenant)) if e else None
 
 
 def agregar_documento(tenant: str, expediente_id: str, documento_id: str, por: str) -> bool:
