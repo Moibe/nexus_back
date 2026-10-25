@@ -4,17 +4,23 @@
 
 Es la CLASE de la que salen los expedientes: «expediente médico», «expediente de un choque». Se crea una vez; cada expediente de ese tipo es una
 INSTANCIA: la carpeta de UN paciente, de UN choque, con SUS documentos (`servicios/expedientes.py`). El tipo no guarda documentos: los guardan
-sus expedientes. Por ahora solo tiene un `nombre`; lo que contiene un tipo (qué tipos documentales espera, qué procesos le corren) se agrega
-cuando haga falta, no antes.
+sus expedientes. Tiene un `nombre` y un esquema (los tipos documentales que lo describen); lo demás (qué procesos le corren) se agrega cuando
+haga falta, no antes.
 
 ## Esquema: qué documentos describe (sin restringir)
 
-A un tipo de expediente se le pueden asignar TIPOS DOCUMENTALES de su misma organización (`servicios/tipos_documentales.py`) para describir su
+Un tipo de expediente puede tener VARIOS TIPOS DOCUMENTALES de su misma organización (`servicios/tipos_documentales.py`), y ese conjunto es su
 esquema: «un expediente médico lleva una receta, un estudio de laboratorio…». Es una lista ordenada, sin repetidos, y es DESCRIPTIVA: **no limita
 los archivos que un expediente puede recibir**. Cualquier documento entra a cualquier expediente; los que no encajan con el esquema simplemente
 quedan «sin tipo documental». Hoy ningún documento guarda su tipo documental (la clasificación se hace en el navegador y no se persiste), así
 que todos están en ese caso: asignarle uno a cada documento será otra entidad y otro paso. El esquema se reemplaza completo (`definir_esquema`).
 Un tipo documental que se borra de la biblioteca después queda en el esquema como un id sin nombre, a la vista, hasta que alguien lo quite.
+
+**El esquema se define AL CREAR el tipo** (pedido de producto, 2026-10-25): `crear` exige al menos un tipo documental, así que ningún tipo nuevo
+nace sin esquema, y lo valida igual que `definir_esquema` (sin repetidos, hasta `MAX_ESQUEMA`, todos de esa organización). El tipo y su esquema
+se guardan en UN solo evento `crear`: o queda el tipo con su esquema o no queda nada, nunca un tipo a medias. Reemplazarlo después sigue siendo
+`definir_esquema`, que no se tocó y todavía acepta una lista vacía. Los tipos creados antes de la regla, sin esquema, siguen como estaban: su
+evento `crear` no trae `tiposDocumentales` y se lee como una lista vacía.
 
 ## Nombre
 
@@ -38,9 +44,10 @@ El `id` (`tipo-expediente-` + 32 hexadecimales), `creadoPor` y `creadoEn`. El no
 
 ## Cómo se guarda
 
-Un archivo de solo agregar por organización, `tipos-expediente-{tenant}.jsonl` (ver `servicios/registro.py`), con cuatro eventos: `crear`, `esquema`
-(la lista completa de tipos documentales, que reemplaza a la anterior), `renombrar` (el nombre nuevo) y `borrar`. El estado vigente se arma
-doblando el archivo. Un id de otra organización no existe en su archivo y se contesta como uno que no existe.
+Un archivo de solo agregar por organización, `tipos-expediente-{tenant}.jsonl` (ver `servicios/registro.py`), con cuatro eventos: `crear` (con el
+esquema inicial en `tiposDocumentales`), `esquema` (la lista completa de tipos documentales, que reemplaza a la anterior), `renombrar` (el nombre
+nuevo) y `borrar`. El estado vigente se arma doblando el archivo. Un id de otra organización no existe en su archivo y se contesta como uno que no
+existe.
 """
 
 import re
@@ -105,7 +112,15 @@ def _doblar(tenant: str) -> dict[str, dict]:
     for e in registro.eventos(_nombre(tenant)):
         op = e.get("op")
         if op == "crear" and isinstance(e.get("id"), str) and isinstance(e.get("nombre"), str):
-            tipos[e["id"]] = {"id": e["id"], "nombre": e["nombre"], "tiposDocumentales": [], "creadoPor": e.get("por"), "creadoEn": e.get("en")}
+            # Los tipos creados antes de que el esquema se pidiera al crear no traen `tiposDocumentales`: se leen sin esquema.
+            esquema = e.get("tiposDocumentales")
+            tipos[e["id"]] = {
+                "id": e["id"],
+                "nombre": e["nombre"],
+                "tiposDocumentales": [i for i in esquema if isinstance(i, str)] if isinstance(esquema, list) else [],
+                "creadoPor": e.get("por"),
+                "creadoEn": e.get("en"),
+            }
         elif op == "esquema" and e.get("id") in tipos and isinstance(e.get("tiposDocumentales"), list):
             tipos[e["id"]]["tiposDocumentales"] = [i for i in e["tiposDocumentales"] if isinstance(i, str)]
         elif op == "renombrar" and isinstance(e.get("id"), str) and e["id"] in tipos and isinstance(e.get("nombre"), str):
@@ -120,17 +135,43 @@ def _clave(nombre: str) -> str:
     return nombre.casefold()
 
 
-def crear(tenant: str, nombre: object, por: str) -> dict:
-    """Crea un tipo de expediente y lo devuelve. `TipoInvalido` si el nombre no sirve, `NombreRepetido` si ya hay uno igual."""
+def _validar_esquema(ids: object) -> list[str]:
+    """El esquema como lista de ids. `TipoInvalido` si no es una lista de textos, si trae de más o si trae repetidos."""
+    if not isinstance(ids, list) or any(not isinstance(i, str) for i in ids):
+        raise TipoInvalido("El esquema debe ser una lista de tipos documentales.")
+    if len(ids) > MAX_ESQUEMA:
+        raise TipoInvalido(f"Un tipo de expediente admite hasta {MAX_ESQUEMA} tipos documentales.")
+    if len(set(ids)) != len(ids):
+        raise TipoInvalido("Hay un tipo documental repetido en el esquema.")
+    return list(ids)
+
+
+def _comprobar_que_existen(tenant: str, ids: list[str]) -> None:
+    """`TipoInvalido` si alguno no es un tipo documental de esa organización (uno de otra se contesta igual que uno que no existe)."""
+    existentes = {t["id"] for t in tipos_documentales.listar(tenant)}
+    if any(i not in existentes for i in ids):
+        raise TipoInvalido("Uno de los tipos documentales no existe en esta organización.")
+
+
+def crear(tenant: str, nombre: object, tipos_documentales_ids: object, por: str) -> dict:
+    """Crea un tipo de expediente CON su esquema y lo devuelve.
+
+    Todo tipo nace con los tipos documentales que lo describen: al menos uno, sin repetidos, hasta `MAX_ESQUEMA` y todos de esa organización
+    (`TipoInvalido` si no es así; una lista vacía también se rechaza). `TipoInvalido` si el nombre no sirve y `NombreRepetido` si ya hay uno igual.
+    El tipo y su esquema van en UN solo evento: no queda un tipo sin esquema por una caída entre dos escrituras."""
     limpio = _limpiar_nombre(nombre)
+    ids = _validar_esquema(tipos_documentales_ids)
+    if not ids:
+        raise TipoInvalido("Un tipo de expediente necesita al menos un tipo documental en su esquema.")
     tipo_id = f"tipo-expediente-{uuid.uuid4().hex}"
     en = _ahora()
     with registro.candado:
         for t in _doblar(tenant).values():
             if _clave(t["nombre"]) == _clave(limpio):
                 raise NombreRepetido(t["id"])
-        registro.agregar(_nombre(tenant), {"op": "crear", "id": tipo_id, "tenant": tenant, "nombre": limpio, "por": por, "en": en})
-    return {"id": tipo_id, "nombre": limpio, "tiposDocumentales": [], "creadoPor": por, "creadoEn": en}
+        _comprobar_que_existen(tenant, ids)
+        registro.agregar(_nombre(tenant), {"op": "crear", "id": tipo_id, "tenant": tenant, "nombre": limpio, "tiposDocumentales": ids, "por": por, "en": en})
+    return {"id": tipo_id, "nombre": limpio, "tiposDocumentales": list(ids), "creadoPor": por, "creadoEn": en}
 
 
 def renombrar(tenant: str, tipo_id: object, nombre: object, por: str) -> tuple[dict, str]:
@@ -177,20 +218,12 @@ def definir_esquema(tenant: str, tipo_id: object, tipos_documentales_ids: object
 
     `NoEncontrado` si el tipo no es de esa organización; `TipoInvalido` si no es una lista de textos, si trae repetidos o de más, o si alguno no
     es un tipo documental de esa organización (uno de otra se contesta igual que uno que no existe)."""
-    ids = tipos_documentales_ids
-    if not isinstance(ids, list) or any(not isinstance(i, str) for i in ids):
-        raise TipoInvalido("El esquema debe ser una lista de tipos documentales.")
-    if len(ids) > MAX_ESQUEMA:
-        raise TipoInvalido(f"Un tipo de expediente admite hasta {MAX_ESQUEMA} tipos documentales.")
-    if len(set(ids)) != len(ids):
-        raise TipoInvalido("Hay un tipo documental repetido en el esquema.")
+    ids = _validar_esquema(tipos_documentales_ids)
     with registro.candado:
         actual = _doblar(tenant).get(tipo_id) if isinstance(tipo_id, str) and _RE_ID.match(tipo_id) else None
         if actual is None:
             raise NoEncontrado(tipo_id)
-        existentes = {t["id"] for t in tipos_documentales.listar(tenant)}
-        if any(i not in existentes for i in ids):
-            raise TipoInvalido("Uno de los tipos documentales no existe en esta organización.")
+        _comprobar_que_existen(tenant, ids)
         anterior = list(actual["tiposDocumentales"])
         if ids != anterior:
             registro.agregar(_nombre(tenant), {"op": "esquema", "id": tipo_id, "tenant": tenant, "tiposDocumentales": ids, "por": por, "en": _ahora()})

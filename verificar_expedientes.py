@@ -8,7 +8,8 @@ Lo que se prueba:
 
 - un documento NACE al entrar por la bandeja, queda en el «void» (sin ningún expediente), conserva lo que se sabe de cómo llegó, sobrevive a
   que su entrada se retire de la bandeja, y subir dos veces el mismo archivo da dos documentos;
-- un TIPO de expediente («expediente médico», «de un choque») se crea con nombre único por organización (sin distinguir mayúsculas ni espacios);
+- un TIPO de expediente («expediente médico», «de un choque») se crea con nombre único por organización (sin distinguir mayúsculas ni espacios) y
+  CON SU ESQUEMA (al menos un tipo documental: sin ninguno, repetidos, inexistentes o de otra organización se rechaza y no crea nada);
   lo crean quienes administran y lo leen todos; todo expediente nace de un tipo de su organización, es su instancia, y se filtra y cuenta por tipo;
 - el ESQUEMA de un tipo (los tipos documentales que lo describen) se reemplaza completo, en orden, sin repetidos y solo con tipos documentales de
   la misma organización; DESCRIBE Y NO RESTRINGE: los expedientes de un tipo con esquema siguen recibiendo cualquier documento;
@@ -40,7 +41,7 @@ os.environ.setdefault("SQLSERVER_HOST", "")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app import app  # noqa: E402
-from servicios import auth, bandeja, documentos, expedientes, llaves_cliente, roles, tipos_expediente, usuarios  # noqa: E402
+from servicios import auth, bandeja, documentos, expedientes, llaves_cliente, registro, roles, tipos_expediente, usuarios  # noqa: E402
 
 fallos = 0
 PDF = b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n"
@@ -103,8 +104,16 @@ def crear(bearer: str, tenant: str, nombre, tipo=TIPO_DE_ESTA_ORG):
     return c.post("/expedientes/", json=cuerpo, headers=cab(bearer))
 
 
-def crear_tipo(bearer: str, tenant: str, nombre):
-    return c.post("/tipos-expediente/", json={"tenant": tenant, "nombre": nombre}, headers=cab(bearer))
+#: Tipos documentales de cada organización (se llenan en el montaje): todo tipo de expediente se crea con al menos uno.
+TIPOS_DOC: dict[str, list[str]] = {}
+POR_OMISION = object()
+
+
+def crear_tipo(bearer: str, tenant: str, nombre, tipos_doc=POR_OMISION):
+    """Crea un tipo de expediente. Sin `tipos_doc`, con el primer tipo documental de esa organización; con `None`, sin mandar el campo."""
+    lista = [TIPOS_DOC[tenant][0]] if tipos_doc is POR_OMISION else tipos_doc
+    cuerpo = {"tenant": tenant, "nombre": nombre, **({"tiposDocumentales": lista} if lista is not None else {})}
+    return c.post("/tipos-expediente/", json=cuerpo, headers=cab(bearer))
 
 
 def listar_tipos(bearer: str, tenant: str):
@@ -193,14 +202,25 @@ try:
         assert r.status_code == 201, r.text
         P[rol] = con_primer_acceso(correo, r.json()["contrasenaTemporal"], "Cielo-Abierto-Verde-52!")
     rev("hay dos organizaciones y una persona por cada uno de los 6 roles", org_a != org_b and all(P.values()) and len(P) == 6)
+    td_base_a = crear_tipo_documental(a_admin, org_a, "Documento base")
+    td_extra_a = crear_tipo_documental(a_admin, org_a, "Documento extra")
+    td_tercero_a = crear_tipo_documental(a_admin, org_a, "Documento tercero")
+    td_base_b = crear_tipo_documental(b_admin, org_b, "Documento base de Beta")
+    TIPOS_DOC.update({org_a: [td_base_a, td_extra_a, td_tercero_a], org_b: [td_base_b]})
 
-    titulo("0b · Tipos de expediente: la clase de la que salen los expedientes")
+    titulo("0b · Tipos de expediente: la clase de la que salen los expedientes, cada uno con su esquema")
     r = crear_tipo(a_admin, org_a, "  Expediente   médico ")
     rev("crear un tipo: 201", r.status_code == 201, r.text[:200])
     t = r.json()
     rev("el nombre sale limpio y lo demás lo pone el servidor", t["nombre"] == "Expediente médico" and t["id"].startswith("tipo-expediente-") and len(t["id"]) == 16 + 32 and t["creadoPor"] == guid_rita and t["creadoEn"] and t["totalExpedientes"] == 0, str(t))
+    rev("nace con el esquema que se le dio, con el id y el nombre de cada tipo documental", t["tiposDocumentales"] == [{"id": td_base_a, "nombre": "Documento base"}], str(t))
     tipo_a = t["id"]
-    tipo_a2 = crear_tipo(a_admin, org_a, "Expediente de un choque").json()["id"]
+    nombres_td = {td_base_a: "Documento base", td_extra_a: "Documento extra", td_tercero_a: "Documento tercero"}
+    lista_choque = sorted([td_extra_a, td_base_a], reverse=True)  # un orden que NO es el alfabético de los ids: si se ordenara al guardar, se notaría
+    r = crear_tipo(a_admin, org_a, "Expediente de un choque", lista_choque)
+    rev("un tipo puede llevar VARIOS tipos documentales, y se conserva el orden en que se dieron", r.status_code == 201 and [x["id"] for x in r.json()["tiposDocumentales"]] == lista_choque, r.text[:200])
+    tipo_a2 = r.json()["id"]
+    rev("al verlo y al listarlo trae ese mismo esquema, con los nombres", [(x["id"], x["nombre"]) for x in ver_tipo(a_admin, org_a, tipo_a2).json()["tiposDocumentales"]] == [(i, nombres_td[i]) for i in lista_choque] and next(x for x in listar_tipos(a_admin, org_a).json()["tipos"] if x["id"] == tipo_a2)["tiposDocumentales"] == r.json()["tiposDocumentales"])
     r = crear_tipo(b_admin, org_b, "Expediente médico")
     rev("el MISMO nombre en OTRA organización sí se puede (el nombre es único por organización)", r.status_code == 201, r.text[:200])
     tipo_b = r.json()["id"]
@@ -226,6 +246,43 @@ try:
     puestos = [x for x in auditoria("CASE_TYPE_CREATED") if x.get("tipoId") == tipo_a]
     rev("`CASE_TYPE_CREATED` dice quién, dónde y cuál", len(puestos) == 1 and puestos[0].get("usuarioGuid") == guid_rita and puestos[0].get("tenant") == org_a and puestos[0].get("nombre") == "Expediente médico", str(puestos))
     rev("y no se anotó nada por los rechazados", len(auditoria("CASE_TYPE_CREATED")) == 5)
+
+    titulo("0c · El esquema se pide al crear: sin él, o con uno que no sirve, no se crea nada")
+    n_tipos = len(listar_tipos(a_admin, org_a).json()["tipos"])
+    n_creados = len(auditoria("CASE_TYPE_CREATED"))
+    r = crear_tipo(a_admin, org_a, "Sin esquema", None)
+    rev("sin el campo `tiposDocumentales`: 422", r.status_code == 422, f"{r.status_code} {r.text[:120]}")
+    r = crear_tipo(a_admin, org_a, "Con esquema vacío", [])
+    rev("con una lista VACÍA: 400 que pide al menos un tipo documental", r.status_code == 400 and "al menos un tipo documental" in r.text, f"{r.status_code} {r.text[:150]}")
+    rev("con algo que no es una lista: 422", crear_tipo(a_admin, org_a, "Esquema de texto", "uno").status_code == 422)
+    rev("con una lista de cosas que no son texto: 422", crear_tipo(a_admin, org_a, "Esquema de números", [1, 2]).status_code == 422)
+    r = crear_tipo(a_admin, org_a, "Con repetidos", [td_base_a, td_base_a])
+    rev("con un tipo documental repetido: 400", r.status_code == 400 and "repetido" in r.text, f"{r.status_code} {r.text[:150]}")
+    sin_existir = crear_tipo(a_admin, org_a, "Con uno inexistente", ["tipo-" + "0" * 32])
+    rev("con un tipo documental que no existe: 400", sin_existir.status_code == 400 and "no existe" in sin_existir.text, f"{sin_existir.status_code} {sin_existir.text[:150]}")
+    ajeno = crear_tipo(a_admin, org_a, "Con uno ajeno", [td_base_b])
+    rev("con uno de OTRA organización: 400, y se contesta igual que uno que no existe (no dice de quién es)", ajeno.status_code == 400 and ajeno.json() == sin_existir.json(), f"{ajeno.text[:120]} | {sin_existir.text[:120]}")
+    rev("con uno bueno y uno malo: 400, y no se crea con el bueno", crear_tipo(a_admin, org_a, "Mitad y mitad", [td_base_a, "tipo-" + "0" * 32]).status_code == 400)
+    rev("con un nombre que no sirve, aunque el esquema sea bueno: 400", crear_tipo(a_admin, org_a, "   ", [td_base_a]).status_code == 400)
+    r = crear_tipo(a_admin, org_a, "Expediente médico", [td_extra_a])
+    rev("con un nombre repetido, aunque el esquema sea bueno: 409 ya_existe", r.status_code == 409 and r.json()["detail"]["codigo"] == "ya_existe", r.text[:150])
+    tope_esq = tipos_expediente.MAX_ESQUEMA
+    try:
+        tipos_expediente.MAX_ESQUEMA = 2
+        r = crear_tipo(a_admin, org_a, "Con demasiados", [td_base_a, td_extra_a, td_tercero_a])
+        rev("con más tipos documentales que el tope: 400 que dice cuál es", r.status_code == 400 and "hasta 2" in r.text, f"{r.status_code} {r.text[:150]}")
+    finally:
+        tipos_expediente.MAX_ESQUEMA = tope_esq
+    rev("nada de lo rechazado creó un tipo ni dejó rastro de creación", len(listar_tipos(a_admin, org_a).json()["tipos"]) == n_tipos and len(auditoria("CASE_TYPE_CREATED")) == n_creados)
+    creado_choque = [x for x in auditoria("CASE_TYPE_CREATED") if x.get("tipoId") == tipo_a2]
+    rev("`CASE_TYPE_CREATED` lleva el esquema con el que nació, en su orden", len(creado_choque) == 1 and creado_choque[0].get("tiposDocumentales") == lista_choque, str(creado_choque))
+    rev("y el esquema inicial NO deja además un `CASE_TYPE_SCHEMA_CHANGED`: es parte de la creación", auditoria("CASE_TYPE_SCHEMA_CHANGED") == [])
+    registro.agregar("tipos-expediente-verificacion-legado.jsonl", {"op": "crear", "id": "tipo-expediente-" + "a" * 32, "tenant": "verificacion-legado", "nombre": "Anterior a la regla", "por": "x", "en": "2026-10-24T00:00:00Z"})
+    try:
+        leidos = [t["tiposDocumentales"] for t in tipos_expediente.listar("verificacion-legado")]
+    except Exception as exc:  # noqa: BLE001 — lo que se prueba es justo que NO truene
+        leidos = f"truena: {exc!r}"
+    rev("un tipo creado ANTES de esta regla (su evento no trae esquema) se lee sin esquema y sin romper nada", leidos == [[]], str(leidos))
 
     titulo("1 · Un documento NACE al entrar, y nace en el void")
     r1 = subir(a_admin, org_a, "acta.pdf", pdf(1))
@@ -480,7 +537,7 @@ try:
     rev("ocho peticiones a la vez para crear el MISMO tipo: solo una lo crea (el nombre es único)", codigos.count(201) == 1 and codigos.count(409) == 7, str(codigos))
 
     eventos_tipos = [json.loads(x) for x in (RAIZ / ".registro" / f"tipos-expediente-{org_a}.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
-    rev("cada tipo guardado tiene exactamente los campos de la entidad", eventos_tipos and all(set(e) == {"op", "id", "tenant", "nombre", "por", "en"} and e["op"] == "crear" and e["tenant"] == org_a for e in eventos_tipos), str(eventos_tipos[:1]))
+    rev("cada tipo guardado tiene exactamente los campos de la entidad (con su esquema), en UN solo evento `crear`", eventos_tipos and all(set(e) == {"op", "id", "tenant", "nombre", "tiposDocumentales", "por", "en"} and e["op"] == "crear" and e["tenant"] == org_a and e["tiposDocumentales"] for e in eventos_tipos), str(eventos_tipos[:1]))
     crear_exp = [e for e in (json.loads(x) for x in ruta.read_text(encoding="utf-8").splitlines() if x.strip().endswith("}")) if e["op"] == "crear"]
     rev("y cada expediente guardado lleva el id de su tipo", crear_exp and all(set(e) == {"op", "id", "tenant", "nombre", "tipo", "por", "en"} and e["tipo"].startswith("tipo-expediente-") for e in crear_exp), str(crear_exp[:1]))
     tipos_de_b = (RAIZ / ".registro" / f"tipos-expediente-{org_b}.jsonl").read_text(encoding="utf-8")
@@ -503,7 +560,7 @@ try:
         return r
 
     ver_a = lambda: [(x["id"], x["nombre"]) for x in ver_tipo(a_admin, org_a, tipo_a).json()["tiposDocumentales"]]  # noqa: E731
-    rev("un tipo de expediente nuevo nace sin esquema", ver_a() == [] and all(t["tiposDocumentales"] == [] for t in listar_tipos(a_admin, org_a).json()["tipos"]))
+    rev("un tipo de expediente nace con el esquema con el que se creó: ninguno quedó sin esquema", ver_a() == [(td_base_a, "Documento base")] and all(t["tiposDocumentales"] for t in listar_tipos(a_admin, org_a).json()["tipos"]))
     r = definir(a_admin, [td_ine, td_acta])
     rev("definir el esquema: 200 y `cambiado: true`", r.status_code == 200 and r.json()["cambiado"] is True, r.text[:200])
     rev("el tipo trae su esquema con el id y el nombre de cada tipo documental, en ese orden", r.json()["tipo"]["tiposDocumentales"] == [{"id": td_ine, "nombre": "INE"}, {"id": td_acta, "nombre": "Acta constitutiva"}], str(r.json()))
@@ -621,6 +678,12 @@ try:
     rev("el peso no se guarda: ningún evento del registro lo lleva", all("tamanoBytes" not in e and "totalDocumentos" not in e for e in eventos_exp))
 
     titulo("16 · Renombrar y borrar un tipo de expediente")
+    try:
+        tipos_expediente.MAX_ESQUEMA = 2
+        r = crear_tipo(a_admin, org_a, "En el tope del esquema", [td_base_a, td_extra_a])
+        rev("justo con el tope de tipos documentales, un tipo sí se crea", r.status_code == 201 and len(r.json()["tiposDocumentales"]) == 2, f"{r.status_code} {r.text[:150]}")
+    finally:
+        tipos_expediente.MAX_ESQUEMA = tope_esq
     t1 = crear_tipo(a_admin, org_a, "Tipo de prueba").json()["id"]
     t2 = crear_tipo(a_admin, org_a, "Otro tipo de prueba").json()["id"]
     orden_antes = [t["id"] for t in listar_tipos(a_admin, org_a).json()["tipos"]]

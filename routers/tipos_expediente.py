@@ -22,15 +22,18 @@ que nunca existió, y su nombre queda libre.
 
 ## El esquema describe, no restringe
 
-Un tipo de expediente puede llevar tipos documentales de la misma organización que describen lo que se espera de sus expedientes. NO limita
-lo que un expediente recibe: cualquier documento entra a cualquier expediente, y los que no encajan quedan «sin tipo documental» (hoy todos los
-documentos están así: ninguno guarda aún su tipo documental).
+Un tipo de expediente puede tener VARIOS tipos documentales de la misma organización, y ese conjunto es su esquema: describe lo que se espera de
+sus expedientes. NO limita lo que un expediente recibe: cualquier documento entra a cualquier expediente, y los que no encajan quedan «sin tipo
+documental» (hoy todos los documentos están así: ninguno guarda aún su tipo documental).
+
+**Se define al crear el tipo** (`POST /` lo exige: al menos un tipo documental, 400 si la lista viene vacía, repetida, con uno que no existe o de
+otra organización; sin el campo, 422). Después se reemplaza completo con `PUT /{id}/esquema`, que no cambió y todavía acepta una lista vacía.
 
 ## Qué se anota (auditoría)
 
-`CASE_TYPE_CREATED` al crear un tipo, `CASE_TYPE_SCHEMA_CHANGED` al cambiar su esquema (con el esquema `antes` y `despues`), `CASE_TYPE_RENAMED` al
-renombrarlo (con el nombre `antes` y `despues`) y `CASE_TYPE_DELETED` al borrarlo, con quién lo hizo. Repetir el mismo esquema o el mismo nombre no
-repite el rastro.
+`CASE_TYPE_CREATED` al crear un tipo (con su esquema en `tiposDocumentales`; el esquema inicial NO deja además un `CASE_TYPE_SCHEMA_CHANGED`),
+`CASE_TYPE_SCHEMA_CHANGED` al cambiar su esquema después (con el esquema `antes` y `despues`), `CASE_TYPE_RENAMED` al renombrarlo (con el nombre
+`antes` y `despues`) y `CASE_TYPE_DELETED` al borrarlo, con quién lo hizo. Repetir el mismo esquema o el mismo nombre no repite el rastro.
 
 ## Lo que NO hace todavía
 
@@ -57,6 +60,13 @@ _NO_EXISTE = "Ese tipo de expediente no existe."
 class NuevoTipo(BaseModel):
     tenant: str = Field(..., description="La organización a la que pertenece el tipo")
     nombre: str = Field(..., description="Cómo se llama el tipo de expediente, por ejemplo «Expediente médico» (hasta 200 caracteres)")
+    tiposDocumentales: list[str] = Field(
+        ...,
+        description=(
+            "Los ids de los tipos documentales (de la biblioteca de la misma organización) que forman el esquema del tipo, en el orden en que "
+            "se muestran. Es obligatorio: al menos uno, sin repetidos y hasta 50."
+        ),
+    )
 
 
 def _anotar(accion: str, actor: aislamiento.Actor, tenant: str, **datos) -> None:
@@ -115,14 +125,16 @@ def listar(tenant: str = Query(..., description="La organización"), authorizati
     tags=["Tipos de expediente"],
     summary="Crear un tipo de expediente",
     description=(
-        "Crea un tipo con ese nombre. El nombre es único en la organización, sin distinguir mayúsculas ni espacios de más: uno repetido "
-        "responde 409 `ya_existe`."
+        "Crea un tipo con ese nombre y su esquema: todo tipo se crea con al menos un tipo documental de la misma organización (sin repetidos, "
+        "hasta 50); sin ninguno responde 400. El esquema es DESCRIPTIVO: no limita los archivos que sus expedientes pueden recibir. El nombre es "
+        "único en la organización, sin distinguir mayúsculas ni espacios de más: uno repetido responde 409 `ya_existe`."
     ),
 )
 def crear(entrada: NuevoTipo, authorization: str | None = Header(default=None)):
     actor = aislamiento.exigir_administrar(authorization, entrada.tenant, "tipo de expediente")
     try:
-        creado = tipos_expediente.crear(entrada.tenant, entrada.nombre, actor.guid)
+        creado = tipos_expediente.crear(entrada.tenant, entrada.nombre, entrada.tiposDocumentales, actor.guid)
+        nombres = tipos_expediente.nombres_de_tipos_documentales(entrada.tenant)
     except tipos_expediente.NombreRepetido as exc:
         raise _nombre_repetido() from exc
     except tipos_expediente.TipoInvalido as exc:
@@ -131,8 +143,8 @@ def crear(entrada: NuevoTipo, authorization: str | None = Header(default=None)):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ErrorAlmacen as exc:
         raise almacen_no_disponible(exc) from exc
-    _anotar(auditoria.CASE_TYPE_CREATED, actor, entrada.tenant, tipoId=creado["id"], nombre=creado["nombre"])
-    return _con_total(creado, {}, {})
+    _anotar(auditoria.CASE_TYPE_CREATED, actor, entrada.tenant, tipoId=creado["id"], nombre=creado["nombre"], tiposDocumentales=creado["tiposDocumentales"])
+    return _con_total(creado, {}, nombres)
 
 
 @router.get(
