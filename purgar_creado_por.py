@@ -1,6 +1,8 @@
 """Purga de VERDAD lo que crearon unos administradores de plataforma que ya se retiraron.
 
     .venv/Scripts/python purgar_creado_por.py --listar-retirados
+    .venv/Scripts/python purgar_creado_por.py --listar-organizaciones
+    .venv/Scripts/python purgar_creado_por.py --todas --conservar GUID --conservar GUID            (simulación)
     .venv/Scripts/python purgar_creado_por.py --email a@yopmail.com --email b@hotmail.com            (simulación)
     .venv/Scripts/python purgar_creado_por.py --email a@yopmail.com --email b@hotmail.com --confirmar
 
@@ -19,6 +21,9 @@ La bitácora guarda en cada `USER_CREATED` quién dio de alta a quién (`actor`)
   - De cada organización: tipos documentales, tipos de expediente, expedientes, documentos y su bandeja, procesos, API Keys,
     webhooks (y sus entregas), el uso de las llaves, los enlaces de un solo uso de esas personas, la carpeta de archivos
     `{almacén}/{organización}/` y sus renglones de la bitácora de auditoría.
+
+Con `--todas` se purgan TODAS las organizaciones menos las que se indiquen con `--conservar GUID` (míralas con
+`--listar-organizaciones`), con todas sus personas; los administradores de plataforma vivos nunca se tocan.
 
 Se niega si alguno de los retirados SIGUE existiendo (retíralo antes), si alguna de las personas a borrar es un administrador de
 plataforma que sigue vivo, o si una persona a borrar tiene membresía en una organización que NO se purga (avisa; con `--forzar`
@@ -116,7 +121,25 @@ def listar_retirados() -> int:
     return 0
 
 
-def construir_plan(correos: list[str], tenants_extra: list[str], forzar: bool) -> Plan:
+def listar_organizaciones() -> int:
+    personas, _ = _estado_de_cuentas()
+    miembros: dict[str, list[str]] = {}
+    for _, e in _leer("usuarios.jsonl"):
+        if e and e.get("evento") == "membresia" and isinstance(e.get("guid"), str) and isinstance(e.get("tenantGuid"), str):
+            if e["guid"] not in miembros.setdefault(e["tenantGuid"], []):
+                miembros[e["tenantGuid"]].append(e["guid"])
+    hay = False
+    for _, e in _leer("tenants.jsonl"):
+        if e and e.get("evento") == "creada":
+            hay = True
+            admin = personas.get(e.get("adminGuid") or "", {}).get("email", "(sin administrador)")
+            print(f"  {e.get('codigo', ''):10} {e.get('nombre', ''):32} admin: {admin:40} personas: {len(miembros.get(e['guid'], [])):3}  {e['guid']}")
+    if not hay:
+        print("  No hay organizaciones en el registro.")
+    return 0
+
+
+def construir_plan(correos: list[str], tenants_extra: list[str], forzar: bool, todas: bool = False, conservar: tuple = ()) -> Plan:
     personas, eliminadas = _estado_de_cuentas()
     por_correo = {_normalizar(p.get("email", "")): g for g, p in personas.items()}
 
@@ -132,6 +155,13 @@ def construir_plan(correos: list[str], tenants_extra: list[str], forzar: bool) -
     # Quién dio de alta a quién y en qué organización.
     altas = [e for _, e in _leer("auditoria.jsonl") if e and e.get("accion") == "USER_CREATED"]
     tenants = {t for t in tenants_extra}
+    if todas:
+        existentes = {e["guid"] for _, e in _leer("tenants.jsonl") if e and e.get("evento") == "creada" and isinstance(e.get("guid"), str)}
+        for g in conservar:
+            if g not in existentes:
+                raise SystemExit(f"--conservar {g}: no es una organización del registro (míralas con --listar-organizaciones).")
+        tenants |= existentes - set(conservar)
+        altas = []
     for e in altas:
         if e.get("actor") in retirados and isinstance(e.get("tenantGuid"), str):
             tenants.add(e["tenantGuid"])
@@ -343,6 +373,9 @@ def ejecutar(plan: Plan, motivo: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Purga lo que crearon administradores de plataforma ya retirados. Sin --confirmar solo simula.")
     parser.add_argument("--listar-retirados", action="store_true", help="Muestra los administradores de plataforma retirados y sale.")
+    parser.add_argument("--listar-organizaciones", action="store_true", help="Muestra las organizaciones (código, nombre, administrador, personas, guid) y sale.")
+    parser.add_argument("--todas", action="store_true", help="Purga TODAS las organizaciones menos las de --conservar.")
+    parser.add_argument("--conservar", action="append", default=[], help="Guid de una organización que NO se purga con --todas. Se puede repetir.")
     parser.add_argument("--email", action="append", default=[], help="Correo de un administrador YA retirado. Se puede repetir.")
     parser.add_argument("--tenant", action="append", default=[], help="Guid de una organización más a purgar (si no quedó atribuida). Se puede repetir.")
     parser.add_argument("--motivo", default="Depuración de datos de prueba", help="Queda en la bitácora.")
@@ -353,10 +386,15 @@ def main() -> int:
         almacen._exigir_raiz_montada()
         if args.listar_retirados:
             return listar_retirados()
-        if not args.email:
-            print("Falta --email (o usa --listar-retirados).", file=sys.stderr)
+        if args.listar_organizaciones:
+            return listar_organizaciones()
+        if args.conservar and not args.todas:
+            print("--conservar solo se usa con --todas.", file=sys.stderr)
             return 2
-        plan = construir_plan(args.email, args.tenant, args.forzar)
+        if not args.email and not args.todas:
+            print("Falta --email, --todas o --listar-retirados / --listar-organizaciones.", file=sys.stderr)
+            return 2
+        plan = construir_plan(args.email, args.tenant, args.forzar, args.todas, tuple(args.conservar))
     except ErrorAlmacen as exc:
         print(f"Almacén no disponible: {exc}", file=sys.stderr)
         return 2

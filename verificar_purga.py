@@ -151,6 +151,26 @@ try:
     codigo, texto = correr("--email", "a@yopmail.com", "--email", "b@hotmail.com", "--forzar", "--confirmar")
     rev("una segunda corrida se niega (ya no aparecen en el registro) y no cambia nada", codigo == 2 and "no aparece" in texto and instantanea() == antes, texto)
     rev("OrgK sigue intacta tras la segunda", tenants_registro.por_guid(tk)["nombre"] == "OrgK")
+
+    titulo("6 · --todas menos las que se conservan")
+    de_x = organizacion("OrgX", K, "admin.x@ejemplo.com")
+    de_y = organizacion("OrgY", K, "admin.y@ejemplo.com")
+    tx, ty = de_x["org"]["guid"], de_y["org"]["guid"]
+    codigo, texto = correr("--listar-organizaciones")
+    rev("lista las organizaciones con su administrador y su guid", all(n in texto for n in ("OrgK", "OrgX", "OrgY", "admin.k@ejemplo.com", tk)), texto)
+    codigo, texto = correr("--todas", "--conservar", "no-es-una-organizacion")
+    rev("se niega si lo que se conserva no existe", codigo == 2 and "no es una organización" in texto, texto)
+    codigo, texto = correr("--conservar", tk)
+    rev("--conservar sin --todas se niega", codigo == 2, texto)
+    antes = instantanea()
+    codigo, texto = correr("--todas", "--conservar", tk)
+    rev("la simulación lista OrgX y OrgY y no OrgK, y no cambia nada", codigo == 0 and "OrgX" in texto and "OrgY" in texto and "organización OrgK" not in texto and instantanea() == antes, texto)
+    codigo, texto = correr("--todas", "--conservar", tk, "--confirmar")
+    rev("--confirmar sale con 0", codigo == 0, texto)
+    rev("OrgX y OrgY ya no existen, ni sus personas ni sus carpetas", not (RAIZ / tx).exists() and not (RAIZ / ty).exists() and usuarios.para_login("admin.x@ejemplo.com") is None and usuarios.para_login("miembro.orgy@ejemplo.com") is None and tx not in contenido("tenants.jsonl") and ty not in contenido("tenants.jsonl"))
+    rev("OrgK sigue con todo y el superadmin que queda también", tenants_registro.por_guid(tk)["nombre"] == "OrgK" and (RAIZ / tk).is_dir() and usuarios.para_login("admin.k@ejemplo.com") is not None and usuarios.para_login("kept@grupocsi.com") is not None)
+    codigo, texto = correr("--todas")
+    rev("--todas sin conservar nada borraría OrgK pero JAMÁS al superadmin vivo (simulación)", codigo == 0 and "kept@grupocsi.com" not in texto, texto)
 finally:
     import shutil
 
