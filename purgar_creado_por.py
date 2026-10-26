@@ -156,11 +156,17 @@ def construir_plan(correos: list[str], tenants_extra: list[str], forzar: bool, t
     altas = [e for _, e in _leer("auditoria.jsonl") if e and e.get("accion") == "USER_CREATED"]
     tenants = {t for t in tenants_extra}
     if todas:
-        existentes = {e["guid"] for _, e in _leer("tenants.jsonl") if e and e.get("evento") == "creada" and isinstance(e.get("guid"), str)}
+        creadas = [e for _, e in _leer("tenants.jsonl") if e and e.get("evento") == "creada" and isinstance(e.get("guid"), str)]
+        existentes = {e["guid"] for e in creadas}
+        por_codigo = {str(e.get("codigo", "")).upper(): e["guid"] for e in creadas}
+        guardar = set()
         for g in conservar:
-            if g not in existentes:
+            # Se acepta el guid o el código (NEX-00004).
+            destino = g if g in existentes else por_codigo.get(g.strip().upper())
+            if destino is None:
                 raise SystemExit(f"--conservar {g}: no es una organización del registro (míralas con --listar-organizaciones).")
-        tenants |= existentes - set(conservar)
+            guardar.add(destino)
+        tenants |= existentes - guardar
         altas = []
     for e in altas:
         if e.get("actor") in retirados and isinstance(e.get("tenantGuid"), str):
@@ -375,7 +381,7 @@ def main() -> int:
     parser.add_argument("--listar-retirados", action="store_true", help="Muestra los administradores de plataforma retirados y sale.")
     parser.add_argument("--listar-organizaciones", action="store_true", help="Muestra las organizaciones (código, nombre, administrador, personas, guid) y sale.")
     parser.add_argument("--todas", action="store_true", help="Purga TODAS las organizaciones menos las de --conservar.")
-    parser.add_argument("--conservar", action="append", default=[], help="Guid de una organización que NO se purga con --todas. Se puede repetir.")
+    parser.add_argument("--conservar", action="append", default=[], help="Guid o código (NEX-00004) de una organización que NO se purga con --todas. Se puede repetir.")
     parser.add_argument("--email", action="append", default=[], help="Correo de un administrador YA retirado. Se puede repetir.")
     parser.add_argument("--tenant", action="append", default=[], help="Guid de una organización más a purgar (si no quedó atribuida). Se puede repetir.")
     parser.add_argument("--motivo", default="Depuración de datos de prueba", help="Queda en la bitácora.")

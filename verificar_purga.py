@@ -160,6 +160,8 @@ try:
     rev("lista las organizaciones con su administrador y su guid", all(n in texto for n in ("OrgK", "OrgX", "OrgY", "admin.k@ejemplo.com", tk)), texto)
     codigo, texto = correr("--todas", "--conservar", "no-es-una-organizacion")
     rev("se niega si lo que se conserva no existe", codigo == 2 and "no es una organización" in texto, texto)
+    codigo, texto = correr("--todas", "--conservar", tenants_registro.por_guid(tk)["codigo"].lower())
+    rev("--conservar acepta el código de la organización (en minúsculas también)", codigo == 0 and "organización OrgK" not in texto and "OrgX" in texto, texto)
     codigo, texto = correr("--conservar", tk)
     rev("--conservar sin --todas se niega", codigo == 2, texto)
     antes = instantanea()
