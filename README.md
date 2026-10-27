@@ -405,7 +405,7 @@ SPs del DBA; solo cambian `servicios/bandeja.py` y
 
 **Un tenant por organización** (desde el 2026-10-09, HU11). El front saca el tenant de la organización de la
 sesión (`tenantDe`); el administrador de plataforma, que no tiene organización, opera en el espacio de plataforma:
-`NEXUS_TENANT` en el `.env` del front (default `demo`). Y desde el 2026-10-14 este back no se fía de ese cálculo: ver
+`NEXUS_TENANT` en el `.env` del front (default `plataforma`; hasta el 2026-10-26 era `demo`). Y desde el 2026-10-14 este back no se fía de ese cálculo: ver
 «Aislamiento entre organizaciones», al final.
 
 **El dominio de los clientes** es `nexus-doc-api.buzzword.com.mx` (proxy de
@@ -1577,7 +1577,7 @@ minutos), que esa persona pueda operar en ese tenant:
 
 - Si pertenece a una organización, **solo en la suya** (su membresía, con el guid exacto).
 - El **administrador de plataforma**, que no pertenece a ninguna, opera en el *espacio de plataforma*: cualquier tenant que
-  **no** sea el guid de una organización (`demo`, el heredado `csi`…). **Nunca** en el de una organización: para eso están las
+  **no** sea el guid de una organización (`plataforma`, antes `demo`; el heredado `csi`…). **Nunca** en el de una organización: para eso están las
   rutas `/organizaciones/…`. El guid se compara sin espacios en los extremos y sin distinguir mayúsculas, porque el almacén
   recorta el tenant y un montaje que no distingue mayúsculas llevaría `ABC…` al directorio de `abc…`: escribirlo así no es un
   rodeo.
@@ -1744,7 +1744,7 @@ nombres y descripciones de los tipos de cada cliente quedaban a la vista de todo
 
 - el de una organización se llama `nexusdoc-clasificador--{guid}` en Google y su id queda en `clasificadores.jsonl`; **se crea la
   primera vez que se sincroniza** (al activar su primer tipo), no al darla de alta;
-- el del espacio de plataforma (cualquier tenant que no es una organización: `demo`) sigue siendo el de siempre, el del `.env`
+- el del espacio de plataforma (cualquier tenant que no es una organización: `plataforma`, antes `demo`) sigue siendo el de siempre, el del `.env`
   (`DOCAI_CLASIFICADOR_ID`, `nexusdoc-clasificador`), así que no hubo que migrar nada;
 - el id se guarda y no se busca por nombre en cada llamada (Document AI no filtra `processors.list`); por nombre EXACTO solo se busca la
   primera vez —para adoptar el que un intento anterior dejó a medias— o si el procesador se borró a mano (se vuelve a crear);
@@ -1792,6 +1792,27 @@ Offline: crear, ver desde otra persona, 409 por revisión, aislamiento, validaci
 los activos de CADA organización, `asegurar`, y qué procesadores quedarían huérfanos. `verificar_clasificadores.py` pone un Google falso
 y comprueba el registro, crear/reutilizar/adoptar/recrear el clasificador de cada organización, el candado, que clasificar use el de quien
 pide y que las rutas pidan organización y sesión.
+
+## El espacio de plataforma se llama `plataforma` (2026-10-26)
+
+El espacio donde opera el administrador de plataforma (el que no es de ninguna organización) se llamaba `demo`, un nombre que parecía el de una
+empresa de mentira. Ahora es `plataforma`: lo fija el front (`NEXUS_TENANT`, `src/lib/server/nexus.ts`), y el back no sabe de ese nombre (para él
+es «cualquier tenant que no es una organización»). Cambiar el nombre en el front NO alcanza: lo que el espacio ya tenía está guardado bajo el
+nombre viejo. `renombrar_tenant.py` lo pasa CONSERVÁNDOLO:
+
+```
+.venv/Scripts/python renombrar_tenant.py                 # simulación de demo → plataforma
+.venv/Scripts/python renombrar_tenant.py --confirmar
+.venv/Scripts/python renombrar_tenant.py --de plataforma --a demo --confirmar     # lo deshace
+```
+
+Respalda `.registro/`, cambia el tenant de los renglones de ese espacio en los registros compartidos (tipos documentales, procesos, llaves,
+webhooks, entregas), reescribe las rutas de archivo que llevan su nombre (`demo/ab/cd/<sha256>` → `plataforma/…`: bandeja, documentos y los
+ejemplos de cada tipo documental), renombra sus registros propios (`bandeja-`, `documentos-`, `expedientes-`, `tipos-expediente-`) y su carpeta
+del almacén, y deja `PLATFORM_TENANT_RENAMED` en la bitácora. La bitácora NO se reescribe (es evidencia de solo agregar). Se niega si el origen o el
+destino es el guid de una organización o si el destino ya tiene datos. Los procesadores de Google no dependen del nombre del tenant, así que siguen
+siendo los mismos. Orden al desplegar: primero el front con el default nuevo, después correr el script; entre una cosa y otra el administrador de
+plataforma ve el espacio vacío. Verificación offline: `verificar_renombre_tenant.py`.
 
 ## Administradores de plataforma desde Nexus Monitor (2026-10-20)
 
