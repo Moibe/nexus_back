@@ -30,7 +30,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from config import DOCAI_CLASIFICADOR_ID, DOCAI_PROCESADOR_INE  # noqa: E402
-from servicios import procesadores, procesadores_huerfanos, tipos_documentales  # noqa: E402
+from servicios import procesadores, procesadores_huerfanos, tenants_registro, tipos_documentales  # noqa: E402
 from servicios.almacen import ErrorAlmacen  # noqa: E402
 
 
@@ -61,7 +61,12 @@ async def main() -> int:
         return 1
 
     protegidos = {i for i in (DOCAI_CLASIFICADOR_ID, DOCAI_PROCESADOR_INE) if i}
-    reparto = procesadores_huerfanos.clasificar(en_google, con_dueno, protegidos)
+    try:
+        organizaciones = {t["guid"] for t in tenants_registro.listar()}
+    except ErrorAlmacen as exc:
+        print(f"No se pudo leer el registro de organizaciones: {exc}", file=sys.stderr)
+        return 1
+    reparto = procesadores_huerfanos.clasificar(en_google, con_dueno, protegidos, organizaciones)
 
     print(f"Procesadores nexusdoc en Google: {len(en_google)}")
     print(f"\nCon dueño ({len(reparto['con_dueno'])}) — no se tocan:")

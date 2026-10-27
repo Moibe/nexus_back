@@ -1721,26 +1721,47 @@ responde 404 igual que uno que no existe.
 es un 409 `conflicto` con `revisionActual` y no se pisa nada. Crear con un id que ya existe —en esta organización o en
 otra— también es 409.
 
-**Ids.** Los inventa el cliente (`tipo-` + 32 hexadecimales). Tienen que ser únicos en TODAS las organizaciones, porque el
-clasificador es global y nombra cada categoría con el id.
+**Ids.** Los inventa el cliente (`tipo-` + 32 hexadecimales). Tienen que ser únicos en TODAS las organizaciones, porque el id
+nombra cada categoría del clasificador y cada procesador en Google, y el registro lo busca sin mirar el tenant.
 
 **Auditoría.** Crear, borrar, cambiar de estado y calibrar dejan `DOCUMENT_TYPE_CREATED`, `DOCUMENT_TYPE_DELETED`,
 `DOCUMENT_TYPE_STATE_CHANGED` y `DOCUMENT_TYPE_CALIBRATED`, con quién y de qué organización. Guardar a secas, no.
 
-### El clasificador sale de este registro
+### El clasificador sale de este registro, y es de cada organización
 
-`POST /procesadores/clasificador/sincronizar` **ya no recibe cuerpo**: arma las categorías con los tipos `activo` de TODAS las
-organizaciones, leídos del registro (antes los mandaba el navegador, y el último que sincronizaba pisaba a los demás). Por eso
-lo que cambia de estado hay que **guardarlo antes** de llamar. `POST /procesadores/clasificador/asegurar` compara lo que Google
-tiene (nombre y descripción de cada categoría) con el registro y sincroniza solo si difieren; el front lo llama una vez por
-sesión, antes de clasificar.
+`POST /procesadores/clasificador/sincronizar?tenant=` **no recibe cuerpo**: arma las categorías con los tipos `activo` de ESA
+organización, leídos del registro (antes los mandaba el navegador, y el último que sincronizaba pisaba a los demás). Por eso lo que
+cambia de estado hay que **guardarlo antes** de llamar. `POST /procesadores/clasificador/asegurar?tenant=` compara lo que Google
+tiene (nombre y descripción de cada categoría) con el registro y sincroniza solo si difieren —o lo crea, si la organización todavía
+no tiene—; el front lo llama una vez por sesión, antes de clasificar. `GET /procesadores/clasificador?tenant=` es el diagnóstico (404
+si no tiene). Piden la llave de servicio **y** el JWT de la persona (HU11): sincronizar y ver, el rol que administra; asegurar y
+clasificar (`POST /ia/clasificar?tenant=`), cualquiera de la organización. Quien no es de ella recibe 403 `sin_acceso`, y el
+administrador de plataforma solo toca el clasificador de SU espacio, nunca el de una organización.
+
+**Un clasificador por organización (2026-10-26).** Hasta entonces era UNO para todo el sistema, con los tipos activos de todas: un
+documento de una organización podía caer en un tipo de otra, lo que una guardaba cambiaba el clasificador de las demás y los
+nombres y descripciones de los tipos de cada cliente quedaban a la vista de todos en el esquema. Ahora (`servicios/clasificadores.py`):
+
+- el de una organización se llama `nexusdoc-clasificador--{guid}` en Google y su id queda en `clasificadores.jsonl`; **se crea la
+  primera vez que se sincroniza** (al activar su primer tipo), no al darla de alta;
+- el del espacio de plataforma (cualquier tenant que no es una organización: `demo`) sigue siendo el de siempre, el del `.env`
+  (`DOCAI_CLASIFICADOR_ID`, `nexusdoc-clasificador`), así que no hubo que migrar nada;
+- el id se guarda y no se busca por nombre en cada llamada (Document AI no filtra `processors.list`); por nombre EXACTO solo se busca la
+  primera vez —para adoptar el que un intento anterior dejó a medias— o si el procesador se borró a mano (se vuelve a crear);
+- dos sincronizaciones a la vez de la misma organización crean un solo clasificador (candado por tenant);
+- clasificar sin clasificador es un 409 con una frase que se puede mostrar («Tu organización todavía no tiene clasificador…»).
+
+Los límites de Google no estorban: no hay tope de procesadores por proyecto, y el techo real (120 páginas por minuto de clasificación en
+línea) es del PROYECTO, no de cada procesador. Cuesta US$5 por 1,000 páginas clasificadas, igual con uno que con cien clasificadores; el
+hospedaje (US$0.05 por hora) es solo de versiones propias desplegadas, y estos clasificadores usan versiones preentrenadas de Google.
 
 ### Procesadores huérfanos
 
 Al pasar el catálogo al servidor sin migrar lo de cada computadora, los extractores que esas pruebas crearon en Google quedaron
 sin dueño. `limpiar_procesadores_huerfanos.py` los lista (solo lectura) y, con `--borrar`, borra ÚNICAMENTE los que ningún tipo
-señala —ni como vigente, ni en su historial—, pidiendo escribir BORRAR. Nunca toca el clasificador, el extractor de INE del
-`.env` ni lo que no se llame `nexusdoc--…`. Se corre en el servidor (necesita las credenciales de Google y el almacén).
+señala —ni como vigente, ni en su historial—, pidiendo escribir BORRAR. Nunca toca el clasificador de plataforma, el extractor de INE
+del `.env` ni lo que no se llame `nexusdoc--…`. El clasificador de una organización que existe queda a salvo; el de una que ya NO existe
+(se purgó con `purgar_creado_por.py`) sí sale como huérfano. Se corre en el servidor (necesita las credenciales de Google y el almacén).
 
 `--antes-de AAAA-MM-DD` es un corte de seguridad: solo borra los huérfanos creados ANTES de esa fecha y lista aparte (sin tocar) los
 más recientes. Hay que usarlo cuando el registro que lee el script pueda no ser el de todos los ambientes que comparten el proyecto de
@@ -1753,8 +1774,8 @@ Google: lo creado antes del 2026-10-15 (cuando el catálogo pasó al servidor) n
 - **`/procesadores/*` y `/ia/extraer` siguen sin comprobar la organización** (lo vio HU11): quien tiene la llave de servicio y un
   `procesadorId` puede usarlo. Falta ligarlos al registro.
 - **Un tipo en edición sale del clasificador** (`crearNuevaVersion` lo pasa a `borrador`): mientras alguien edita el «INE» de su
-  organización, el clasificador deja de conocerlo en la siguiente sincronización. Es lo de siempre, pero ahora el clasificador es
-  de todos.
+  organización, el clasificador de ESA organización deja de conocerlo en la siguiente sincronización (desde el 2026-10-26 ya no
+  afecta a las demás).
 - **El archivo crece con cada guardado** (cada uno escribe el tipo entero). Con el uso de hoy basta; el remedio es compactarlo o
   la base.
 - **Los ejemplos subidos** (`/archivos`, bajo el prefijo de cada organización) que ya estaban en el almacén sin tipo que los
@@ -1764,10 +1785,13 @@ Google: lo creado antes del 2026-10-15 (cuando el catálogo pasó al servidor) n
 
 ```
 .venv/Scripts/python verificar_tipos_documentales.py
+.venv/Scripts/python verificar_clasificadores.py
 ```
 
 Offline: crear, ver desde otra persona, 409 por revisión, aislamiento, validación, orden, auditoría, clasificador sin cuerpo con
-los activos de las dos organizaciones, `asegurar`, y qué procesadores quedarían huérfanos.
+los activos de CADA organización, `asegurar`, y qué procesadores quedarían huérfanos. `verificar_clasificadores.py` pone un Google falso
+y comprueba el registro, crear/reutilizar/adoptar/recrear el clasificador de cada organización, el candado, que clasificar use el de quien
+pide y que las rutas pidan organización y sesión.
 
 ## Administradores de plataforma desde Nexus Monitor (2026-10-20)
 

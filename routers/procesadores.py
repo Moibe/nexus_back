@@ -5,16 +5,21 @@ como los capturó el wizard) al activarlo. Cuando exista la tabla
 `config_version`, este endpoint pasará a recibir solo el id y a leer de ahí.
 
 El CLASIFICADOR, en cambio, ya no recibe nada del front (2026-10-15): se arma con
-los tipos ACTIVOS de TODAS las organizaciones, leídos del registro del servidor
+los tipos ACTIVOS de la organización, leídos del registro del servidor
 (`servicios/tipos_documentales.py`). Antes los mandaba cada navegador desde su
 `localStorage`, y el último que sincronizaba pisaba a los demás.
+
+Desde el 2026-10-26 cada organización tiene SU clasificador (`servicios/clasificadores.py`): estas rutas piden `tenant` y el
+JWT de la persona (HU11), igual que tipos documentales, y solo tocan el de esa organización.
 """
 
 import logging
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from errores import SinClasificador
+from servicios import aislamiento
 from servicios import tipos_documentales as registro_tipos
 from servicios.almacen import ErrorAlmacen
 from servicios.esquema import CATEGORIA_OTRO, TIPO_GRUPO, esquema_clasificador_desde_tipos, esquema_desde_campos
@@ -164,10 +169,10 @@ async def activar(tipo: TipoDocumentalEntrada):
     return resultado
 
 
-def _tipos_activos() -> list[dict]:
-    """Los tipos activos de TODAS las organizaciones, del registro del servidor. 503 si el registro no se puede leer."""
+def _tipos_activos(tenant: str) -> list[dict]:
+    """Los tipos activos de ESTA organización, del registro del servidor. 503 si el registro no se puede leer."""
     try:
-        return registro_tipos.tipos_activos()
+        return registro_tipos.tipos_activos(tenant)
     except ErrorAlmacen as exc:
         logger.exception("No se pudo leer el registro de tipos documentales")
         raise HTTPException(
@@ -185,9 +190,9 @@ def _categorias_esperadas(tipos: list[dict]) -> list[tuple[str, str]]:
     return sorted(pares)
 
 
-async def _sincronizar(tipos: list[dict]) -> dict:
+async def _sincronizar(tipos: list[dict], tenant: str) -> dict:
     try:
-        return await _sincronizar_clasificador(tipos)
+        return await _sincronizar_clasificador(tipos, tenant)
     except DocumentAIError as exc:
         logger.exception("Falló la sincronización del clasificador")
         mensaje = _mensaje_para(
@@ -209,18 +214,23 @@ async def _sincronizar(tipos: list[dict]) -> dict:
 @router.post(
     "/clasificador/sincronizar",
     tags=["Procesadores"],
-    summary="Sincronizar el Classifier con los tipos documentales activos",
+    summary="Sincronizar el Classifier de una organización con sus tipos documentales activos",
     description=(
-        "Crea (la primera vez) o actualiza el ÚNICO Custom Document Classifier "
-        "del sistema, con un EntityType por cada tipo documental ACTIVO de TODAS "
-        "las organizaciones. **No recibe cuerpo**: la lista sale del registro de "
+        "Crea (la primera vez) o actualiza el Custom Document Classifier de la "
+        "organización `tenant`, con un EntityType por cada tipo documental ACTIVO "
+        "de ESA organización. **No recibe cuerpo**: la lista sale del registro de "
         "tipos documentales del servidor, así que lo que se haya guardado "
         "(activar, archivar o borrar un tipo) tiene que estar guardado ANTES de "
-        "llamar. Devuelve `procesadorId`."
+        "llamar. Pide el JWT de quien administra esa organización (o el del "
+        "administrador de plataforma, en su espacio). Devuelve `procesadorId`."
     ),
 )
-async def sincronizar_clasificador():
-    tipos = _tipos_activos()
+async def sincronizar_clasificador(
+    tenant: str = Query(..., description="La organización"),
+    authorization: str | None = Header(default=None),
+):
+    aislamiento.exigir_administrar(authorization, tenant, "clasificador")
+    tipos = _tipos_activos(tenant)
     # Sin tipos no hay nada que distinguir: un Classifier con cero categorías
     # se crearía bien y fallaría después, al clasificar, lejos de la causa —
     # mismo criterio que el guardia de "sin campos" en `activar`.
@@ -229,7 +239,7 @@ async def sincronizar_clasificador():
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No hay tipos documentales activos con los que armar el clasificador.",
         )
-    return await _sincronizar(tipos)
+    return await _sincronizar(tipos, tenant)
 
 
 @router.post(
@@ -237,26 +247,35 @@ async def sincronizar_clasificador():
     tags=["Procesadores"],
     summary="Comprobar que el Classifier está al día y, si no, sincronizarlo",
     description=(
-        "Compara las categorías que el Classifier tiene AHORA en Document AI "
-        "(nombre y descripción, que es prompt real) con los tipos activos del "
-        "registro, y lo sincroniza solo si difieren. La lectura no cobra. El "
-        "front lo llama una vez por sesión, antes de clasificar: cubre el "
-        "desfase que dejan una sincronización fallida o un tipo tocado a mano. "
+        "Compara las categorías que el Classifier de la organización tiene AHORA en "
+        "Document AI (nombre y descripción, que es prompt real) con sus tipos activos "
+        "del registro, y lo sincroniza solo si difieren (o lo crea, si todavía no "
+        "tiene). La lectura no cobra. El front lo llama una vez por sesión, antes de "
+        "clasificar: cubre el desfase que dejan una sincronización fallida o un tipo "
+        "tocado a mano. Pide el JWT de cualquier persona de la organización. "
         "Devuelve `sincronizado` (true si hubo que corregirlo)."
     ),
 )
-async def asegurar_clasificador():
-    tipos = _tipos_activos()
+async def asegurar_clasificador(
+    tenant: str = Query(..., description="La organización"),
+    authorization: str | None = Header(default=None),
+):
+    aislamiento.exigir(authorization, tenant, "clasificador")
+    tipos = _tipos_activos(tenant)
     if not tipos:
         # Nada que exigirle; el back rechazaría esa lista vacía de todos modos.
         return {"sincronizado": False, "motivo": "sin_tipos"}
     try:
-        vigente = await consultar_esquema_clasificador()
+        vigente = await consultar_esquema_clasificador(tenant)
+    except SinClasificador:
+        # Todavía no se creó el de esta organización (tiene tipos activos pero nunca se sincronizó): se crea ahora.
+        await _sincronizar(tipos, tenant)
+        return {"sincronizado": True, "motivo": "sin_clasificador"}
     except (DocumentAIError, RuntimeError):
         # Sin poder leerlo no se puede comparar (aún no se sincronizó nunca, o Google no responde): se sincroniza, que es
         # idempotente y lo crea si falta. Si Google está caído, falla igual y el error llega con su mensaje.
         logger.warning("No se pudo leer el clasificador para compararlo; se sincroniza directamente.")
-        await _sincronizar(tipos)
+        await _sincronizar(tipos, tenant)
         return {"sincronizado": True, "motivo": "ilegible"}
 
     en_google = sorted(
@@ -265,28 +284,35 @@ async def asegurar_clasificador():
     if en_google == _categorias_esperadas(tipos):
         return {"sincronizado": False, "motivo": "al_dia"}
     logger.warning("El clasificador estaba desfasado y se resincroniza. En Google: %s · En el registro: %s", en_google, _categorias_esperadas(tipos))
-    await _sincronizar(tipos)
+    await _sincronizar(tipos, tenant)
     return {"sincronizado": True, "motivo": "desfasado"}
 
 
 @router.get(
     "/clasificador",
     tags=["Procesadores"],
-    summary="Ver el esquema VIGENTE del Classifier",
+    summary="Ver el esquema VIGENTE del Classifier de una organización",
     description=(
         "Diagnóstico: devuelve las categorías que el Custom Document "
-        "Classifier tiene AHORA MISMO en Document AI (`name`, `displayName` y "
+        "Classifier de la organización tiene AHORA MISMO en Document AI (`name`, `displayName` y "
         "`description` de cada una), leídas de Google y no reconstruidas de "
         "este lado — que es lo único que sirve para detectar un desfase entre "
         "lo que creemos haber subido y lo que quedó. Incluye también la "
         "versión default del procesador y la que de verdad se usa al "
         "clasificar (`versionEnUso`, fijada en el `.env`), para poder ver si "
-        "divergieron. Lectura pura: no cobra y no modifica nada."
+        "divergieron. Lectura pura: no cobra y no modifica nada. 404 si la "
+        "organización todavía no tiene clasificador. Pide el JWT de quien administra."
     ),
 )
-async def ver_clasificador():
+async def ver_clasificador(
+    tenant: str = Query(..., description="La organización"),
+    authorization: str | None = Header(default=None),
+):
+    aislamiento.exigir_administrar(authorization, tenant, "clasificador")
     try:
-        return await consultar_esquema_clasificador()
+        return await consultar_esquema_clasificador(tenant)
+    except SinClasificador as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except DocumentAIError as exc:
         logger.exception("Falló la consulta del esquema del clasificador")
         raise HTTPException(

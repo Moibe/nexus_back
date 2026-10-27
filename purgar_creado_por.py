@@ -29,7 +29,8 @@ Se niega si alguno de los retirados SIGUE existiendo (retíralo antes), si algun
 plataforma que sigue vivo, o si una persona a borrar tiene membresía en una organización que NO se purga (avisa; con `--forzar`
 se borra igual).
 
-Lo que NO toca: los procesadores de Document AI en Google (ver `limpiar_procesadores_huerfanos.py`) y los renglones sueltos
+Lo que NO toca: los procesadores de Document AI en Google —los clasificadores de las organizaciones purgadas quedan ahí—
+(córrelo DESPUÉS con `limpiar_procesadores_huerfanos.py`, que ya los ve como huérfanos) y los renglones sueltos
 sin dueño (por ejemplo, los intentos de acceso por IP).
 
 Lee el mismo `.env` que la API (`ALMACEN_RUTA`). Con la API prendida funciona (su caché se invalida sola al cambiar el
@@ -242,6 +243,7 @@ REGISTROS_COMPARTIDOS = (
     "webhooks.jsonl",
     "entregas-webhooks.jsonl",
     "uso-llaves.jsonl",
+    "clasificadores.jsonl",
 )
 
 
@@ -276,7 +278,7 @@ def _filtrar(nombre: str, plan: Plan) -> tuple[list[bytes], list[bytes]]:
             return e.get("usuarioGuid") in U or e.get("hash") in hashes
         if nombre == "auditoria.jsonl":
             return de_organizacion(e) or e.get("usuarioGuid") in U or e.get("actor") in U or e.get("actor") in R
-        if nombre in ("tipos-documentales.jsonl", "procesos.jsonl"):
+        if nombre in ("tipos-documentales.jsonl", "procesos.jsonl", "clasificadores.jsonl"):
             return de_organizacion(e)
         if nombre in ("llaves.jsonl", "webhooks.jsonl", "entregas-webhooks.jsonl"):
             return de_organizacion(e) or e.get("id") in ids or e.get("webhook") in ids
@@ -343,6 +345,11 @@ def ejecutar(plan: Plan, motivo: str) -> None:
     almacen._exigir_raiz_montada()
     sello = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     respaldo = raiz / f".respaldo-purga-{sello}"
+    # Dos purgas en el mismo segundo no pueden pisarse el respaldo: la segunda lleva «-2», «-3»…
+    n = 1
+    while respaldo.exists():
+        n += 1
+        respaldo = raiz / f".respaldo-purga-{sello}-{n}"
     with registro.candado:
         shutil.copytree(raiz / ".registro", respaldo)
         print(f"\nRespaldo de .registro/ en {respaldo}")
