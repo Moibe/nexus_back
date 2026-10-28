@@ -1847,6 +1847,38 @@ que dev ya tiene, y el de producción lo que ya tiene staging. **Ojo al activarl
 (si no, un deploy de código viejo fallaría por «No module named migraciones»): primero se promueve el código y luego se agrega la línea. Además, `GET /health/db` dice si el esquema
 de la base está al día con el código: `esquema_desfasado` si le faltan migraciones (la base ADELANTE del código es normal).
 
+### El piloto: los tipos documentales en SQL (migración `0002`, 2026-10-28)
+
+La primera entidad del producto que deja el almacén y pasa a una tabla es el catálogo de tipos documentales: `nexus.documentTypes`.
+⚠️ No confundirla con `reference.documentTypes`, que es un catálogo global del diccionario viejo, congelado como especificación.
+
+**Son DOS almacenamientos tras la misma puerta.** `servicios/tipos_documentales.py` no guarda nada: elige, en cada llamada, entre
+
+- `tipos_documentales_sql.py` — la tabla. Es lo que corre donde el `.env` trae `SQLSERVER_HOST`: dev, staging y producción.
+- `tipos_documentales_archivo.py` — el JSONL de siempre. Es lo que corre donde no hay base: la laptop (sus `SQLSERVER_*` están
+  vacíos a propósito) y todas las pruebas offline, que seguirían siendo imposibles de correr si los tipos exigieran SQL.
+
+Lo que los dos comparten —qué es un tipo válido, cómo se ve hacia afuera, sus errores— vive en `tipos_documentales_comun.py`, así
+que la validación es una sola. **No se sincronizan ni se migran entre sí**: lo que se da de alta en la laptop no aparece en dev.
+Y las herramientas que reescriben registros del almacén (`renombrar_tenant.py`, `purgar_creado_por.py`) solo ven el JSONL: donde
+los tipos ya viven en SQL, no los tocan.
+
+**Qué gana al estar en la base:** la regla de que un id no se repite en NINGUNA organización ya no depende de Python
+(`UQ_documentTypes_publicId`); nombre, estado y procesador se calculan del JSON y se guardan solos (columnas `PERSISTED`: no
+pueden desfasarse, y se pueden indexar y restringir); y guardar, borrar y reordenar pasan por una transacción con el renglón
+bloqueado (`UPDLOCK`), en vez de depender del candado de proceso del almacén, que con más de un worker de uvicorn dejaba de
+alcanzar. Lo que NO cambió: el tipo sigue siendo una caja de JSON (`dataJson`), igual que lo maneja el front.
+
+Dos trampas que costaron encontrar y conviene recordar: en una base con intercalación `CI` (la de CSI) un `CHECK (col = lower(col))`
+**siempre es cierto** y no prohíbe nada — hay que comparar con `COLLATE … _BIN2`; y un `CHECK` deja pasar `NULL`, así que una
+columna calculada que puede no venir en el JSON se restringe con `IS NOT NULL AND …` por delante.
+
+**Verificación:** `verificar_tipos_documentales.py` (offline, el comportamiento del dominio por la API) y
+`verificar_tipos_documentales_sql.py`, que levanta un SQL Server desechable, aplica `0001` y `0002`, y corre **la misma batería
+contra los dos almacenamientos para comparar sus 32 observaciones una por una** — que es lo que impide que los dos caminos se
+separen sin que nadie se entere. Comprueba además que `usrNexus` (el usuario de la API) puede leer y escribir una tabla recién
+creada del esquema `nexus`, y que un id repetido no se cuela ni escribiendo SQL por fuera del servicio.
+
 **Verificación:** `verificar_corredor.py`, `verificar_linea_base.py` y `verificar_health_esquema.py` (sin base, rápidas) y `verificar_migraciones_sql.py` (SQL Server de verdad en un contenedor:
 aplica la línea base a una base vacía y comprueba el círculo completo, la simulación que no deja nada, la transacción por migración, la cadena, `marcar`, el candado
 y que los procedimientos congelados funcionan con los permisos de `usrNexus`).
