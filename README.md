@@ -408,7 +408,7 @@ sesión (`tenantDe`); el administrador de plataforma, que no tiene organización
 `NEXUS_TENANT` en el `.env` del front (default `plataforma`; hasta el 2026-10-26 era `demo`). Y desde el 2026-10-14 este back no se fía de ese cálculo: ver
 «Aislamiento entre organizaciones», al final.
 
-**El dominio de los clientes** es `nexus-doc-api.buzzword.com.mx` (proxy de
+**El dominio de los clientes** es `biblioratum-api.buzzword.com.mx` (proxy de
 Soporte TI hacia el 8083, con certificado válido). Se pidió que reenviara solo
 `/bandeja/`, `/docs` y `/openapi.json`, pero el 2026-10-01, al estrenarlo, se
 vio que reenvía TODO, incluidos `/docs-interno` y `/health/db` (que sin llave da
@@ -1135,7 +1135,7 @@ DBA. Nunca llevan el token ni la contraseña.
 ART Broker (la subsección de abajo). **Mientras en dev siga en `archivo`, nadie
 recibe el enlace**: la HU está completa pero el correo se lee del disco.
 `FRONT_URL` tiene que apuntar al front real de cada ambiente (en dev de CSI es
-`https://dev-nexus-doc.buzzword.com.mx` —el dominio, no la IP—, no el localhost del
+`https://dev-biblioratum.buzzword.com.mx` —el dominio, no la IP—, no el localhost del
 default), porque de ahí sale el enlace de todos los correos. Los `.eml` no se limpian solos.
 
 #### Salir por el servicio de ART Broker (`CORREO_MODO=api`, desde el 2026-10-13)

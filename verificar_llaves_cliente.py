@@ -403,7 +403,7 @@ def main() -> int:
         not any(x in texto for x in ("NEXUS_API_KEY", "/llaves", "/ia/", "/procesadores", "/archivos", "retirar")), "")
     descripcion_publica = pub["info"]["description"]
     rev("el ejemplo de curl usa el dominio público, no un marcador",
-        "curl -X POST https://nexus-doc-api.buzzword.com.mx/bandeja/" in descripcion_publica
+        "curl -X POST https://biblioratum-api.buzzword.com.mx/bandeja/" in descripcion_publica
         and "<servidor>" not in descripcion_publica and "__SERVIDOR__" not in descripcion_publica, descripcion_publica[400:600])
     rev("/docs se sirve", c.get("/docs").status_code == 200)
     rev("/redoc ya no existe", c.get("/redoc").status_code == 404)
@@ -417,7 +417,7 @@ def main() -> int:
     import config
     from servicios import uso_llaves as _uso
     publico = sorted(config.HOSTS_PUBLICOS)[0]
-    rev("el dominio público de fábrica es el de los clientes", publico == "nexus-doc-api.buzzword.com.mx", publico)
+    rev("el dominio público de fábrica es el de los clientes", publico == "biblioratum-api.buzzword.com.mx", publico)
 
     def por(host, metodo, ruta, headers=None, **kw):
         """Una petición como la entrega el proxy: con el nombre público en Host."""

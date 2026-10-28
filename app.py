@@ -113,7 +113,7 @@ async def autenticar_y_medir_las_llaves(request: Request, call_next):
     de 20 MiB— y recién entonces recibía su 401. Medido: 19 MB a 4 MB/s
     tardaban 4.5 s con todos los bytes enviados. Daba igual mientras el puerto
     8083 solo se alcanzara desde la intranet; desde el 2026-10-01 la API está
-    publicada en internet por `nexus-doc-api.buzzword.com.mx`, y eso convierte
+    publicada en internet por `biblioratum-api.buzzword.com.mx`, y eso convierte
     el detalle en un desperdicio de red y disco que cualquiera puede provocar.
     Ahora el 401 sale sin leer un solo byte (el mismo corte temprano que ya
     hacía el 413 de `limitar_tamano_subida`: medido, 5 ms y 0 bytes subidos).

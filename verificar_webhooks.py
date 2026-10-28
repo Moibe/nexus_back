@@ -229,7 +229,7 @@ def main() -> int:
         config.WEBHOOKS_CLAVE_CIFRADO = original
 
     titulo("8 · Por el dominio público no se alcanza")
-    publico = {"Host": "nexus-doc-api.buzzword.com.mx"}
+    publico = {"Host": "biblioratum-api.buzzword.com.mx"}
     r = c.get("/webhooks/", params={"tenant": "demo"}, headers=srv(publico))
     rev("listar por el nombre público da 404, aun con la llave de servicio", r.status_code == 404, str(r.status_code))
     r = c.post("/webhooks/", json={"tenant": "demo", "url": URL + "2", "eventos": ["documento.completado"]}, headers=srv(publico))

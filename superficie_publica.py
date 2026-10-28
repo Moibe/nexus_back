@@ -1,6 +1,6 @@
 """Qué se puede usar por el dominio público de la API.
 
-El dominio de los clientes (`nexus-doc-api.buzzword.com.mx`) lo atiende un
+El dominio de los clientes (`biblioratum-api.buzzword.com.mx`) lo atiende un
 reverse proxy de Soporte TI que reenvía a este servicio. Se pidió que
 reenviara SOLO `/bandeja/`, `/docs` y `/openapi.json`, pero el 2026-10-01, al
 estrenarlo, se comprobó que reenvía TODO: la documentación interna con su
