@@ -34,7 +34,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from routers.errores import almacen_no_disponible
-from servicios import auditoria, auth, invitaciones, tokens, usuarios
+from servicios import auditoria, auth, invitaciones, registro, tenants_registro, tokens, usuarios
 from servicios.almacen import ErrorAlmacen
 
 logger = logging.getLogger(__name__)
@@ -75,6 +75,42 @@ def _resumen(u: dict) -> dict:
     }
 
 
+def _creados_por_actor() -> dict[str, list[dict]]:
+    """Por cada quien dio altas, las cuentas que creó, en el orden de su alta.
+
+    Sale de la bitácora (`USER_CREATED` lleva `actor`, el guid de quien la dio de alta), porque la cuenta misma no guarda
+    quién la creó. Se lee el registro UNA vez para todos los administradores. Las cuentas que ya se retiraron siguen
+    saliendo, con estado `retirado` y el correo que dejó su `USER_DELETED`: haber creado una cuenta no se borra al retirarla."""
+    altas: list[dict] = []
+    retiros: dict[str, dict] = {}
+    for e in registro.eventos(auditoria.ARCHIVO):
+        if e.get("accion") == auditoria.USER_CREATED and e.get("actor") and e.get("usuarioGuid"):
+            altas.append(e)
+        elif e.get("accion") == auditoria.USER_DELETED and e.get("usuarioGuid"):
+            retiros[e["usuarioGuid"]] = e
+
+    salida: dict[str, list[dict]] = {}
+    for e in altas:
+        guid = e["usuarioGuid"]
+        organizacion = None
+        if e.get("tenantGuid"):
+            try:
+                t = tenants_registro.por_guid(e["tenantGuid"])
+                organizacion = {"guid": t["guid"], "nombre": t["nombre"]}
+            except tenants_registro.NoEncontrado:
+                organizacion = {"guid": e["tenantGuid"], "nombre": None}
+        try:
+            u = usuarios.por_guid(guid)
+            cuenta = {"email": u["email"], "nombre": u["nombre"], "apellidos": u["apellidos"], "estado": _estado(u)}
+        except usuarios.NoEncontrado:
+            r = retiros.get(guid, {})
+            cuenta = {"email": r.get("email") or r.get("correo"), "nombre": None, "apellidos": None, "estado": "retirado"}
+        salida.setdefault(e["actor"], []).append(
+            {"guid": guid, **cuenta, "rol": e.get("rol"), "organizacion": organizacion, "creadoEn": e.get("en")}
+        )
+    return salida
+
+
 def _admin_o_404(guid: str) -> dict:
     """El administrador de plataforma `guid`. Cualquier otra cuenta —de una organización, o que no existe— es un 404."""
     try:
@@ -98,14 +134,21 @@ def _anotar(accion: str, usuario_guid: str, **datos) -> None:
     "/",
     tags=["Administradores de plataforma"],
     summary="Listar los administradores de plataforma",
-    description="Los que existen, en el orden de su alta, con su estado (`pendiente`, `activo` o `inactivo`). Los retirados ya no salen.",
+    description=(
+        "Los que existen, en el orden de su alta, con su estado (`pendiente`, `activo` o `inactivo`). Los retirados ya no salen. "
+        "Cada uno trae `creados`: las cuentas que dio de alta (según la bitácora), con su rol, su organización y su estado."
+    ),
 )
 def listar():
     try:
         admins = usuarios.administradores_de_plataforma()
+        creados = _creados_por_actor()
     except ErrorAlmacen as exc:
         raise almacen_no_disponible(exc) from exc
-    return {"total": len(admins), "administradores": [_resumen(u) for u in admins]}
+    return {
+        "total": len(admins),
+        "administradores": [{**_resumen(u), "creados": creados.get(u["guid"], [])} for u in admins],
+    }
 
 
 @router.post(
