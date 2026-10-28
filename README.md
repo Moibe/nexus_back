@@ -1793,6 +1793,46 @@ los activos de CADA organización, `asegurar`, y qué procesadores quedarían hu
 y comprueba el registro, crear/reutilizar/adoptar/recrear el clasificador de cada organización, el candado, que clasificar use el de quien
 pide y que las rutas pidan organización y sesión.
 
+## Migraciones de la base (2026-10-28)
+
+Nexus **no usa stored procedures** (decisión del 2026-10-21): el esquema de SQL Server se versiona aquí, en `migraciones/NNNN_nombre.sql`, y lo aplica el
+corredor con el usuario de migraciones `usrNexusDDL` (NEX-491). Tres bases, una por ambiente: `IA_Nexus_Dev` (dev), `IA_Nexus_Staging` (staging) e
+`IA_Nexus` (producción); en el servidor cada back apunta a la suya con `SQLSERVER_DB` (ver `GET /health/db`, que dice a qué base habla).
+
+```
+python -m migraciones estado  --base IA_Nexus_Dev
+python -m migraciones aplicar --base IA_Nexus_Dev                      # simulación: todo en una transacción que se deshace
+python -m migraciones aplicar --base IA_Nexus_Dev --confirmar
+python -m migraciones marcar  --base IA_Nexus_Staging --version 1 --confirmar     # da por aplicada una que la base YA tiene
+python -m migraciones nueva   "agrega la tabla de tipos documentales"            # crea el siguiente archivo
+```
+
+**Lo que protege** (el detalle y el porqué, en el encabezado de `migraciones/corredor.py`): `--base` es obligatorio y solo acepta esas tres; sin `--confirmar`
+es una simulación que no deja ni la tabla de control; **cada migración corre en su propia transacción** (si la 3 falla, la 1 y la 2 quedan y la 3 no deja
+nada a medias, ni su DDL); **la cadena dev → staging → prod**: una migración solo entra a staging si ya está en dev con la MISMA suma de comprobación, y a
+producción si ya está en staging (no hay forma de saltársela); producción pide además `--produccion`; una migración aplicada **no se edita** (el corredor se
+niega si su suma cambió: se corrige con otra); un candado de aplicación (`sp_getapplock`) impide dos corredores a la vez.
+
+**Las credenciales** salen de `~/.nexus-sql-ddl.env` (o de la ruta de `NEXUS_DDL_ENV`), con `SQLSERVER_HOST`, `SQLSERVER_PORT`, `SQLSERVER_USER=usrNexusDDL`,
+`SQLSERVER_PASSWORD` y, si hace falta, `SQLSERVER_DRIVER`. Viven SOLO en la laptop de quien migra: **no** van en el `.env` de la API ni en el del servidor, y las
+migraciones **no corren solas al desplegar**. El corredor se niega a correr con cualquier otro usuario.
+
+**La línea base `0001_linea_base.sql`** se GENERA del catálogo (`python -m migraciones.linea_base --base IA_Nexus_Dev --salida migraciones/0001_linea_base.sql`;
+con `--comparar archivo` dice si una base sigue siendo igual a él): las 36 tablas con sus restricciones, índices y llaves foráneas, los catálogos de `reference`
+y `security.roles` con sus filas, la secuencia de organizaciones en su estado inicial y las 4 funciones y los 32 procedimientos congelados. **Las tres bases de
+CSI son IDÉNTICAS a ese archivo** (comprobado el 2026-10-28 con `--comparar`), así que en ellas la 0001 se MARCA, no se ejecuta; solo se ejecuta en una base
+vacía (una base nueva, o el SQL Server desechable de las pruebas). Tiene guardas: se niega si faltan los esquemas (los crea el DBA: `usrNexusDDL` no puede) o si la
+base ya tiene el esquema. No incluye usuarios ni permisos (del DBA).
+
+**Cómo se agrega una migración:** (1) `python -m migraciones nueva "..."` y se escribe el SQL (lotes separados por una línea `GO`); (2) se prueba contra un SQL
+Server desechable con `verificar_migraciones_sql.py` (necesita Docker); (3) `aplicar` en dev, luego en staging, luego en producción, de a una y revisando el
+archivo antes; (4) un cambio de esquema en la base real que no esté en un archivo es un error: la prueba del círculo (`generar(leer_catalogo(base))` contra una
+base construida desde cero con los archivos) lo detecta.
+
+**Verificación:** `verificar_corredor.py` y `verificar_linea_base.py` (sin base, rápidas) y `verificar_migraciones_sql.py` (SQL Server de verdad en un contenedor:
+aplica la línea base a una base vacía y comprueba el círculo completo, la simulación que no deja nada, la transacción por migración, la cadena, `marcar`, el candado
+y que los procedimientos congelados funcionan con los permisos de `usrNexus`).
+
 ## El espacio de plataforma se llama `plataforma` (2026-10-26)
 
 El espacio donde opera el administrador de plataforma (el que no es de ninguna organización) se llamaba `demo`, un nombre que parecía el de una
