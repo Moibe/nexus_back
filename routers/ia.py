@@ -11,11 +11,11 @@ el parseo de la respuesta viven en `servicios.ia`.
 import logging
 
 import httpx
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile, status
 
 from config import MAX_SUBIDA_BYTES, MAX_SUBIDA_MB
-from errores import ErrorDocumentAI
-from servicios import ia
+from errores import ErrorDocumentAI, SinClasificador
+from servicios import aislamiento, ia
 from servicios.subidas import MIME_SOPORTADOS, SubidaInvalida, revisar_tamano, revisar_tipo
 
 logger = logging.getLogger(__name__)
@@ -234,7 +234,13 @@ async def extraer_generico(
         "(0-100) es la de la categoría ganadora."
     ),
 )
-async def clasificar(archivo: UploadFile = File(...)):
+async def clasificar(
+    archivo: UploadFile = File(...),
+    tenant: str = Query(..., description="La organización cuyo clasificador se consulta"),
+    authorization: str | None = Header(default=None),
+):
+    # Primero quién pide y de quién es el clasificador, ANTES de leer el archivo: no se gasta nada en quien no puede.
+    aislamiento.exigir(authorization, tenant, "clasificador")
     # Tercera copia que había de los mismos guardias, y ya había divergido: esta
     # decía "El archivo excede" y `_leer_subida` "La imagen excede". Ahora las
     # tres puertas usan la misma política de `servicios/subidas.py`.
@@ -256,7 +262,10 @@ async def clasificar(archivo: UploadFile = File(...)):
         )
 
     try:
-        return await ia.clasificar_documento(contenido, archivo.content_type)
+        return await ia.clasificar_documento(contenido, archivo.content_type, tenant)
+    except SinClasificador as exc:
+        # Lo escribimos nosotros y no nombra nada de Google: se puede mostrar tal cual.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         logger.exception("Falló la clasificación del documento")
         raise _fallar(exc, "No se pudo clasificar el documento con Document AI.") from exc

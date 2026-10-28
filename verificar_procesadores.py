@@ -26,7 +26,7 @@ os.environ["NEXUS_API_KEY"] = SERVICIO
 os.environ["AUTH_JWT_SECRET"] = "secreto-de-prueba-de-al-menos-32-caracteres-xx"
 os.environ.setdefault("SQLSERVER_HOST", "")
 
-from fastapi.testclient import TestClient  # noqa: E402
+import verificacion_comun  # noqa: E402
 
 from app import app  # noqa: E402
 from routers import procesadores as router  # noqa: E402
@@ -46,7 +46,7 @@ def titulo(t: str) -> None:
     print(f"\n=== {t} ===")
 
 
-c = TestClient(app)
+c = verificacion_comun.cliente_con_sesion_de_plataforma(app, SERVICIO)
 LLAVE = {"x-api-key": SERVICIO}
 
 try:
@@ -165,7 +165,7 @@ try:
     async def eliminar_falso(pid):
         raise DocumentAIError("Document AI respondió 403", status_code=403)
 
-    async def esquema_falso():
+    async def esquema_falso(tenant):
         raise DocumentAIError("Document AI respondió 404", status_code=404)
 
     router.consultar_procesador = consultar_falso  # type: ignore[assignment]
@@ -175,7 +175,9 @@ try:
     rev("consultar con un 5xx: 502, no 500", r.status_code == 502, r.text[:160])
     r = c.delete("/procesadores/proc-1", headers=LLAVE)
     rev("borrar con un 4xx: 502 con SU frase (no la de «revisa los campos»)", r.status_code == 502 and "no permitió borrar" in r.json()["detail"] and "campos" not in r.json()["detail"], r.text[:200])
-    r = c.get("/procesadores/clasificador", headers=LLAVE)
+    # Desde el 2026-10-26 el clasificador es de cada organización: pide `tenant` y la sesión de quien administra (aquí, el administrador
+    # de plataforma en su espacio, que es el que pone `verificacion_comun`). `verificar_tipos_documentales.py` prueba el aislamiento.
+    r = c.get("/procesadores/clasificador", params={"tenant": "demo"}, headers=LLAVE)
     rev("ver el clasificador con un 4xx: 502 con su frase", r.status_code == 502 and "no permitió leer el esquema del clasificador" in r.json()["detail"], r.text[:200])
 
     async def inexistente(pid):

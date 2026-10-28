@@ -138,6 +138,22 @@ def ejecutar_sp_multiple(nombre: str, params: dict | None = None, commit: bool =
         conexion.close()
 
 
+def version_de_esquema() -> int | None:
+    """La última migración aplicada a ESTA base (`nexus.schemaMigrations`, ver `migraciones/`), o `None` si la tabla de control todavía no existe.
+    Solo lee, con el usuario de la API (`db_datareader`)."""
+    conexion = obtener_conexion()
+    try:
+        cursor = conexion.cursor()
+        cursor.execute("SELECT OBJECT_ID('nexus.schemaMigrations', 'U')")
+        if cursor.fetchone()[0] is None:
+            return None
+        cursor.execute("SELECT MAX(version) FROM nexus.schemaMigrations")
+        fila = cursor.fetchone()
+        return None if fila is None or fila[0] is None else int(fila[0])
+    finally:
+        conexion.close()
+
+
 def probar_conexion() -> dict:
     """Diagnóstico: confirma que la API alcanza SQL Server. Lo usa /health/db."""
     conexion = obtener_conexion()

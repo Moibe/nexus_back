@@ -52,7 +52,7 @@ CORS_ALLOWED_ORIGINS = [o.strip() for o in _origins_env.split(",") if o.strip()]
 # superficie_publica.py. Varios, separados por coma. Una variable presente pero
 # VACÍA vale lo mismo que ausente: un renglón en blanco en el .env no debe
 # apagar la restricción sin que nadie se entere.
-_hosts_env = os.getenv("NEXUS_HOSTS_PUBLICOS", "").strip() or "nexus-doc-api.buzzword.com.mx"
+_hosts_env = os.getenv("NEXUS_HOSTS_PUBLICOS", "").strip() or "biblioratum-api.buzzword.com.mx"
 HOSTS_PUBLICOS = frozenset(h.strip().lower() for h in _hosts_env.split(",") if h.strip())
 
 # ── SQL Server ────────────────────────────────────────────────────────────────

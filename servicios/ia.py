@@ -22,7 +22,6 @@ from google.auth import default
 from google.auth.transport.requests import Request
 
 from config import (
-    DOCAI_CLASIFICADOR_ID,
     DOCAI_LOCATION,
     DOCAI_PROCESADOR_INE,
     DOCAI_PROJECT_ID,
@@ -33,7 +32,8 @@ from config import (
     EXTRACCION_SOLAPE_PAGINAS,
     IA_TIMEOUT,
 )
-from errores import ErrorDocumentAI
+from errores import ErrorDocumentAI, SinClasificador
+from servicios import clasificadores
 from servicios.bloques import Parcial, combinar_datos, es_campo, planear_bloques, remapear_bloques, unir_capas_ocr
 from servicios.ocr import bloque_de, extraer_capa_ocr
 
@@ -948,10 +948,12 @@ async def extraer_ine(contenido: bytes, mime_type: str = "image/jpeg") -> dict[s
 PAGINAS_PARA_CLASIFICAR = 2
 
 
-async def clasificar_documento(contenido: bytes, mime_type: str) -> dict[str, Any]:
-    """Pregunta al Custom Document Classifier a cuál tipo documental activo
+async def clasificar_documento(contenido: bytes, mime_type: str, tenant: str) -> dict[str, Any]:
+    """Pregunta al Custom Document Classifier de ESTA organización a cuál de SUS tipos documentales activos
     pertenece un documento entrante — el paso previo a decidir a qué extractor
-    mandarlo, entre la Bandeja de preparación y el pipeline.
+    mandarlo, entre la Bandeja de preparación y el pipeline. Cada organización tiene su
+    clasificador (`servicios/clasificadores.py`), así que un documento nunca cae en un tipo de otra;
+    levanta `SinClasificador` si la organización todavía no tiene el suyo.
 
     A diferencia de `extraer_ine`, aquí NO hay campos que extraer: el
     Classifier solo etiqueta el documento ENTERO con una categoría (ver
@@ -970,12 +972,13 @@ async def clasificar_documento(contenido: bytes, mime_type: str) -> dict[str, An
     viene vacío. El front debe tratar `None` igual que `"otro"`: sin categoría
     reconocida, sin extractor al que mandarlo.
     """
-    if not DOCAI_CLASIFICADOR_ID:
-        raise RuntimeError(
-            "Falta DOCAI_CLASIFICADOR_ID en el .env — revisa .env.example"
+    procesador_id = clasificadores.id_de(tenant)
+    if not procesador_id:
+        raise SinClasificador(
+            "Tu organización todavía no tiene clasificador: se crea al activar su primer tipo documental."
         )
     crudo = await _procesar(
-        DOCAI_CLASIFICADOR_ID,
+        procesador_id,
         contenido,
         mime_type,
         DOCAI_VERSION_CLASIFICADOR,

@@ -37,8 +37,9 @@ publicación (un doble clic accidental) deben adoptarse entre sí.
 mismo mecanismo: un Custom Document Classifier (no Extractor) que distingue
 ENTRE los tipos documentales activos, para el paso "identificar qué tipo de
 documento es" entre la Bandeja de preparación y el pipeline. A diferencia del
-Extractor, aquí hay UN SOLO procesador para todo el sistema (no uno por tipo
-ni por versión), y su esquema se REEMPLAZA completo en cada sincronización en
+Extractor, aquí hay UN procesador por ORGANIZACIÓN (desde el 2026-10-26; antes,
+uno para todo el sistema — ver `servicios/clasificadores.py`), no uno por tipo
+ni por versión, y su esquema se REEMPLAZA completo en cada sincronización en
 vez de crear uno nuevo — ver el docstring de esa función para el detalle.
 """
 
@@ -52,11 +53,12 @@ from typing import Any
 import httpx
 
 from config import (
-    DOCAI_CLASIFICADOR_ID,
     DOCAI_LOCATION,
     DOCAI_PROJECT_ID,
     DOCAI_VERSION_CLASIFICADOR,
 )
+from errores import SinClasificador
+from servicios import clasificadores
 from servicios.esquema import esquema_clasificador_desde_tipos, estructura_desde_esquema
 from servicios.ia import SCOPES, _token  # misma credencial cacheada que /ia
 
@@ -222,6 +224,26 @@ async def _buscar_por_prefijo(cliente: httpx.AsyncClient, prefijo: str) -> dict 
             return None
 
 
+async def _buscar_exacto(cliente: httpx.AsyncClient, display_name: str) -> dict | None:
+    """Busca el procesador cuyo displayName es EXACTAMENTE `display_name`, paginando `list`.
+
+    Para los clasificadores, no `_buscar_por_prefijo`: el del espacio de plataforma se llama `nexusdoc-clasificador` y el de cada
+    organización `nexusdoc-clasificador--{guid}`, así que buscar el primero POR PREFIJO encontraría el de cualquier organización."""
+    ruta = f"{_PADRE}/processors"
+    token = ""
+    while True:
+        params = {"pageSize": 100}
+        if token:
+            params["pageToken"] = token
+        pagina = await _pedir(cliente, "GET", "v1", ruta, params=params)
+        for p in pagina.get("processors", []):
+            if p.get("displayName", "") == display_name:
+                return p
+        token = pagina.get("nextPageToken", "")
+        if not token:
+            return None
+
+
 async def activar_tipo_documental(
     id_tipo: str, nombre: str, esquema: dict, version_actual: int = 0
 ) -> dict:
@@ -349,34 +371,49 @@ async def activar_tipo_documental(
 _PREFIJO_CLASIFICADOR = "nexusdoc-clasificador"
 
 
-async def sincronizar_clasificador(tipos: list[dict]) -> dict:
-    """Crea (la primera vez) o actualiza el ÚNICO Custom Document Classifier
-    del sistema, con un EntityType por cada tipo documental de `tipos`.
+# Un candado por tenant: dos sincronizaciones de la MISMA organización a la vez (dos administradores guardando, o un doble clic) no
+# deben crear dos clasificadores. Es de proceso, como `registro.candado`: la API corre un solo uvicorn.
+_CANDADOS_CLASIFICADOR: dict[str, asyncio.Lock] = {}
 
-    A diferencia de `activar_tipo_documental` (un Extractor NUEVO por cada
-    versión que se publica, y el viejo se queda vivo como historial), aquí
-    hay UN SOLO procesador para todo el sistema: la lista de categorías
-    cambia con el tiempo, pero el processor es el mismo — se localiza
-    siempre por el mismo displayName fijo (`_PREFIJO_CLASIFICADOR`), y su
-    `datasetSchema` se REEMPLAZA por completo en cada llamada (Document AI no
-    ofrece un PATCH incremental de entityTypes, solo reemplazo total del
-    esquema), así que un tipo renombrado o eliminado desaparece solo del
-    esquema en la siguiente sincronización — no hace falta borrarlo a mano.
 
-    `tipos` es la lista COMPLETA de tipos documentales ACTIVOS
-    (`[{"id": ..., "nombre": ...}, ...]`) que el front debe mandar en cada
-    llamada: sin base de datos todavía, el back no tiene de dónde más
-    leerla (mismo motivo por el que `activar_tipo_documental` recibe el tipo
-    completo en vez de un id a buscar).
+async def sincronizar_clasificador(tipos: list[dict], tenant: str) -> dict:
+    """Crea (la primera vez) o actualiza el Custom Document Classifier de ESTE tenant, con un EntityType por cada tipo
+    documental de `tipos`.
+
+    A diferencia de `activar_tipo_documental` (un Extractor NUEVO por cada versión que se publica, y el viejo se queda vivo como
+    historial), aquí hay UN procesador por organización: la lista de categorías cambia con el tiempo, pero el processor es el
+    mismo, y su `datasetSchema` se REEMPLAZA por completo en cada llamada (Document AI no ofrece un PATCH incremental de
+    entityTypes, solo reemplazo total del esquema), así que un tipo renombrado o eliminado desaparece solo del esquema en la
+    siguiente sincronización — no hace falta borrarlo a mano.
+
+    Cuál es su procesador lo dice `servicios/clasificadores.py`: el id guardado de la organización (o el del `.env` si el tenant es
+    el espacio de plataforma). Si no hay, o Google ya no lo tiene (se borró a mano), se busca por su nombre EXACTO —para adoptar
+    el que un intento anterior dejó creado a medias— y solo si tampoco está se crea.
+
+    `tipos` es la lista COMPLETA de tipos documentales ACTIVOS de ese tenant (`[{"id": ..., "nombre": ...}, ...]`).
     """
     if not DOCAI_PROJECT_ID:
         raise RuntimeError("Falta DOCAI_PROJECT_ID en el .env — revisa .env.example")
 
-    async with httpx.AsyncClient() as cliente:
-        existente = await _buscar_por_prefijo(cliente, _PREFIJO_CLASIFICADOR)
-        creado = existente is None
+    nombre_visible = clasificadores.nombre_visible(tenant)
+    candado = _CANDADOS_CLASIFICADOR.setdefault(tenant, asyncio.Lock())
+    async with candado, httpx.AsyncClient() as cliente:
+        procesador = None
+        conocido = clasificadores.id_de(tenant)
+        if conocido:
+            try:
+                procesador = await _pedir(cliente, "GET", "v1", f"{_PADRE}/processors/{conocido}")
+            except DocumentAIError as exc:
+                # Un 404 es «ese procesador ya no existe» (se borró en la consola): se sigue como si no hubiera. Cualquier otro
+                # error es de Google y se deja subir.
+                if exc.status_code != 404:
+                    raise
+                logger.warning("El clasificador %s de %s ya no existe en Google; se vuelve a buscar o a crear.", conocido, tenant)
+        if procesador is None:
+            procesador = await _buscar_exacto(cliente, nombre_visible)
+        creado = procesador is None
 
-        if existente is None:
+        if procesador is None:
             procesador = await _pedir(
                 cliente,
                 "POST",
@@ -384,15 +421,17 @@ async def sincronizar_clasificador(tipos: list[dict]) -> dict:
                 f"{_PADRE}/processors",
                 json={
                     "type": "CUSTOM_CLASSIFICATION_PROCESSOR",
-                    "displayName": _PREFIJO_CLASIFICADOR,
+                    "displayName": nombre_visible,
                 },
             )
-            logger.info("Classifier creado: %s", procesador.get("name"))
+            logger.info("Classifier creado para %s: %s", tenant, procesador.get("name"))
         else:
-            procesador = existente
-            logger.info("Classifier ya existía: se reutiliza para sincronizar.")
+            logger.info("Classifier de %s ya existía: se reutiliza para sincronizar.", tenant)
 
         nombre_recurso = procesador["name"]  # projects/.../processors/{id}
+        # Se anota ANTES de subir el esquema: si lo que sigue falla, el procesador ya creado no se pierde y el siguiente intento lo
+        # reutiliza sin tener que buscarlo por nombre.
+        clasificadores.asignar(tenant, nombre_recurso.split("/")[-1])
 
         # Mismo dataset `unmanaged` que el Extractor, y el mismo trago de
         # "already initialized" cuando el processor ya se había sincronizado
@@ -437,9 +476,9 @@ async def sincronizar_clasificador(tipos: list[dict]) -> dict:
     }
 
 
-async def consultar_esquema_clasificador() -> dict:
-    """Lee el esquema VIGENTE del Classifier directo de Document AI: qué
-    categorías tiene ahora mismo, tal como Google las guardó.
+async def consultar_esquema_clasificador(tenant: str) -> dict:
+    """Lee el esquema VIGENTE del Classifier de ESTE tenant directo de Document AI: qué
+    categorías tiene ahora mismo, tal como Google las guardó. Levanta `SinClasificador` si todavía no tiene.
 
     Es una herramienta de DIAGNÓSTICO (2026-09-08), no parte del flujo: cuando
     el clasificador no reconoce algo, la primera pregunta es "¿de verdad tiene
@@ -451,17 +490,18 @@ async def consultar_esquema_clasificador() -> dict:
     El `datasetSchema` vive en v1beta3, igual que al subirlo. Lectura pura, no
     cobra y no modifica nada.
     """
-    if not DOCAI_CLASIFICADOR_ID:
-        raise RuntimeError("Falta DOCAI_CLASIFICADOR_ID en el .env — revisa .env.example")
+    procesador_id = clasificadores.id_de(tenant)
+    if not procesador_id:
+        raise SinClasificador("Esta organización todavía no tiene clasificador: se crea al activar su primer tipo documental.")
 
-    recurso = f"{_PADRE}/processors/{DOCAI_CLASIFICADOR_ID}"
+    recurso = f"{_PADRE}/processors/{procesador_id}"
     async with httpx.AsyncClient() as cliente:
         procesador = await _pedir(cliente, "GET", "v1", recurso)
         esquema = await _pedir(cliente, "GET", "v1beta3", f"{recurso}/dataset/datasetSchema")
 
     tipos = (esquema.get("documentSchema") or {}).get("entityTypes") or []
     return {
-        "procesadorId": DOCAI_CLASIFICADOR_ID,
+        "procesadorId": procesador_id,
         "procesadorDisplayName": procesador.get("displayName", ""),
         "estado": procesador.get("state", ""),
         "versionDefault": (procesador.get("defaultProcessorVersion") or "").split("/")[-1],
@@ -546,7 +586,7 @@ async def eliminar_procesador(procesador_id: str) -> None:
 
 async def listar_procesadores_nexusdoc() -> list[dict]:
     """TODOS los procesadores del proyecto cuyo nombre visible empieza con `nexusdoc`: los extractores
-    (`nexusdoc--{id}--v{n}--{nombre}`) y el clasificador (`nexusdoc-clasificador`). Lectura pura: no cobra y no cambia nada.
+    (`nexusdoc--{id}--v{n}--{nombre}`) y los clasificadores (`nexusdoc-clasificador` y `nexusdoc-clasificador--{organización}`). Lectura pura: no cobra y no cambia nada.
 
     Existe para la limpieza de procesadores huérfanos (`limpiar_procesadores_huerfanos.py`): Document AI no ofrece
     filtro, así que se pagina `processors.list` completo."""

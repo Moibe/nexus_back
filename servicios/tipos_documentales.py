@@ -7,8 +7,8 @@ versiones, los ejemplos recortados) vivía en el `localStorage` de CADA navegado
 
 - cada computadora tenía su propia biblioteca, y dos personas de la misma organización no se veían;
 - cada navegador inventaba sus ids, así que el mismo "INE" dado de alta en dos máquinas creaba dos extractores en Google;
-- el clasificador (que es UNO para todo el sistema) se sincronizaba con la lista de tipos del navegador que lo tocara
-  último, y los tipos de otra computadora dejaban de clasificarse.
+- el clasificador (que entonces era UNO para todo el sistema; desde el 2026-10-26 hay uno por organización) se sincronizaba con
+  la lista de tipos del navegador que lo tocara último, y los tipos de otra computadora dejaban de clasificarse.
 
 Ahora el catálogo vive AQUÍ, por organización. El navegador lo lee y lo escribe a través del BFF; el clasificador se
 sincroniza desde este registro (`tipos_activos`), no desde lo que mande el front.
@@ -33,9 +33,9 @@ guardó, es un 409 con la revisión vigente, y NO se pisa nada en silencio. `0` 
 ## Ids
 
 Los inventa el cliente (`tipo-` + 32 hexadecimales de un UUID) y el servidor exige que no se repitan EN NINGUNA organización:
-el clasificador es global y nombra cada categoría con el id, así que dos tipos con el mismo id, de organizaciones distintas,
-serían la misma categoría. Un id que ya existe en OTRA organización se contesta igual que uno repetido en la propia, sin
-nombrar de quién es.
+el id nombra cada categoría del clasificador y cada procesador en Google (y el registro lo busca sin mirar el tenant), así que dos
+tipos con el mismo id, de organizaciones distintas, serían el mismo. Un id que ya existe en OTRA organización se contesta igual
+que uno repetido en la propia, sin nombrar de quién es.
 
 ## Cómo se guarda
 
@@ -218,17 +218,18 @@ def ordenar(tenant: str, ids: list[str], por: str) -> None:
         registro.agregar(ARCHIVO, {"op": "orden", "tenant": tenant, "ids": unicos, "por": por, "en": _ahora()})
 
 
-def tipos_activos() -> list[dict]:
-    """Los tipos ACTIVOS de TODAS las organizaciones, con lo que el clasificador necesita de cada uno.
+def tipos_activos(tenant: str) -> list[dict]:
+    """Los tipos ACTIVOS de UNA organización, con lo que su clasificador necesita de cada uno. El orden es el de creación.
 
-    El clasificador es único para el sistema, así que arma sus categorías con los de todas. El orden es el de creación.
+    Desde el 2026-10-26 cada organización tiene su clasificador (`servicios/clasificadores.py`), así que arma sus categorías solo con
+    los suyos: antes eran los de todas, y un documento de una podía caer en un tipo de otra.
     """
     with registro.candado:
         tipos, _ = _doblar()
     return [
         {"id": t["id"], "nombre": t["datos"]["nombre"].strip(), "descripcion": (t["datos"].get("descripcion") or "").strip()}
         for t in tipos.values()
-        if t["datos"].get("estado") == "activo"
+        if t["tenant"] == tenant and t["datos"].get("estado") == "activo"
     ]
 
 
