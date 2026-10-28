@@ -260,6 +260,21 @@ def _credenciales() -> dict[str, str]:
     return valores
 
 
+def elegir_driver(valores: dict[str, str], instalados: list[str]) -> str:
+    """El driver ODBC: el que fija `SQLSERVER_DRIVER` en el archivo de credenciales; si no lo fija, el «ODBC Driver N for SQL Server» MÁS NUEVO de los instalados
+    (la laptop de Moibe tiene el 17 y el servidor el 18, y el `.env` del back del servidor tampoco lo fija)."""
+    if valores.get("SQLSERVER_DRIVER"):
+        return valores["SQLSERVER_DRIVER"]
+    versiones = {}
+    for nombre in instalados:
+        m = re.fullmatch(r"ODBC Driver (\d+) for SQL Server", nombre)
+        if m:
+            versiones[int(m.group(1))] = nombre
+    if not versiones:
+        raise ErrorMigracion("No hay ningún «ODBC Driver N for SQL Server» instalado (ni SQLSERVER_DRIVER en el archivo de credenciales). Instala el driver de Microsoft.")
+    return versiones[max(versiones)]
+
+
 class BaseSql:
     """Una base de SQL Server, abierta con `usrNexusDDL`. Nunca confirma sola: `confirmar()` y `deshacer()` los pide el corredor."""
 
@@ -273,7 +288,7 @@ class BaseSql:
         if nombre not in CADENA:
             raise ErrorMigracion(f"«{nombre}» no es una base de Nexus ({', '.join(CADENA)}).")
         v = valores or _credenciales()
-        driver = v.get("SQLSERVER_DRIVER") or "ODBC Driver 17 for SQL Server"
+        driver = elegir_driver(v, pyodbc.drivers())
         self.nombre = nombre
         self._candado = False  # el candado de aplicación es REENTRANTE: se toma una vez por conexión y se suelta una vez
         self._con = pyodbc.connect(

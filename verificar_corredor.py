@@ -284,6 +284,14 @@ try:
         else:
             os.environ["NEXUS_DDL_ENV"] = anterior_env
 
+    titulo("12c · El driver ODBC: el del archivo, o el más nuevo de los instalados")
+    d17, d18 = "ODBC Driver 17 for SQL Server", "ODBC Driver 18 for SQL Server"
+    rev("si el archivo lo fija, manda el archivo", corredor.elegir_driver({"SQLSERVER_DRIVER": d17}, [d18]) == d17)
+    rev("si no lo fija y hay 17 y 18, elige el 18 (el servidor)", corredor.elegir_driver({}, [d17, "SQL Server", d18]) == d18)
+    rev("si solo hay el 17 (la laptop de Moibe), el 17", corredor.elegir_driver({}, ["SQL Server", d17]) == d17)
+    rev("compara números y no texto: el 18 le gana al 9", corredor.elegir_driver({}, ["ODBC Driver 9 for SQL Server", d18]) == d18)
+    rev("sin ningún driver de Microsoft instalado: se niega y dice qué instalar", niega(lambda: corredor.elegir_driver({}, ["SQL Server", "MySQL ODBC 8.0"]), "Instala el driver"))
+
     titulo("13 · `nueva` crea el siguiente archivo")
     temporal = Path(tempfile.mkdtemp(prefix="verificar-corredor-nueva-"))
     original = corredor.CARPETA
