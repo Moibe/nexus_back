@@ -324,6 +324,40 @@ try:
             rev("usrNexus NO puede crear tablas (el DENY de Charlie, reproducido)", True)
     finally:
         app.close()
+
+    titulo("10 · `/health/db` con la API conectada como usrNexus: avisa si a la base le faltan migraciones")
+    import db.sqlserver as dbs
+    from fastapi.testclient import TestClient
+
+    from app import app as aplicacion
+
+    como_api = {"base": "IA_Nexus_Dev"}
+    original_conexion = dbs.obtener_conexion
+    original_descubrir = corredor.descubrir
+    dbs.obtener_conexion = lambda: conectar("usrNexus", APP, como_api["base"], autocommit=False)
+    try:
+        web = TestClient(aplicacion)
+        rev("`version_de_esquema()` lee la última migración con el usuario de la API (Dev tiene la 2 de las pruebas)", dbs.version_de_esquema() == 2)
+        r = web.get("/health/db").json()
+        rev("Dev, que va adelante o igual que el código: ok, y dice la base real", r["status"] == "ok" and r["base"] == "IA_Nexus_Dev" and r["esquema"]["aplicado"] == 2 and r["esquema"]["esperado"] == 1, str(r))
+        como_api["base"] = "IA_Nexus_Staging"
+        corredor.descubrir = lambda carpeta=None: [object(), object()]  # el código «espera» la 2; Staging solo tiene la 1 marcada
+        r = web.get("/health/db").json()
+        rev("Staging tiene la 1 y el código espera la 2: esquema_desfasado, con la pista", r["status"] == "esquema_desfasado" and r["esquema"] == {"aplicado": 1, "esperado": 2, "al_dia": False} and "python -m migraciones" in r["pista"], str(r))
+        corredor.descubrir = original_descubrir
+        c_sa = como_sa()
+        c_sa.cursor().execute("CREATE DATABASE [IA_Nexus_Vacia]")
+        v = como_sa("IA_Nexus_Vacia").cursor()
+        v.execute("CREATE USER usrNexus FOR LOGIN usrNexus")
+        v.execute("ALTER ROLE db_datareader ADD MEMBER usrNexus")
+        c_sa.close()
+        como_api["base"] = "IA_Nexus_Vacia"
+        rev("una base SIN tabla de control: `version_de_esquema()` es None (no truena)", dbs.version_de_esquema() is None)
+        r = web.get("/health/db").json()
+        rev("y `/health/db` dice esquema_desfasado con «ninguna anotada»", r["status"] == "esquema_desfasado" and r["esquema"]["aplicado"] is None and "ninguna anotada" in r["pista"], str(r))
+    finally:
+        dbs.obtener_conexion = original_conexion
+        corredor.descubrir = original_descubrir
 finally:
     if DEJAR:
         print(f"\n(el contenedor «{CONTENEDOR}» sigue vivo en 127.0.0.1:{PUERTO}; quítalo con: docker rm -f {CONTENEDOR})")

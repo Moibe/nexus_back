@@ -256,6 +256,34 @@ try:
         else:
             os.environ["NEXUS_DDL_ENV"] = anterior_env
 
+    titulo("12b · Dentro del deploy: `--esperar-env` solo deja migrar la base que ESE back usa")
+    anterior_env = os.environ.get("NEXUS_DDL_ENV")
+    os.environ["NEXUS_DDL_ENV"] = str(Path(tempfile.gettempdir()) / "no-existe-este-archivo.env")
+    carpeta_back = Path(tempfile.mkdtemp(prefix="verificar-corredor-back-"))
+    try:
+        del_back = carpeta_back / ".env"
+        del_back.write_text("SQLSERVER_HOST=h\nSQLSERVER_DB=IA_Nexus_Staging\n", encoding="utf-8")
+        codigo, texto = correr_cli("aplicar", "--base", "IA_Nexus_Dev", "--confirmar", "--esperar-env", str(del_back))
+        rev("el .env del back apunta a staging y el deploy pide migrar dev: se niega, y dice a cuál apunta", codigo == 2 and "IA_Nexus_Staging" in texto and "ese back usa" in texto.lower(), texto)
+        rev("y se niega ANTES de buscar credenciales (no llegó a tocar nada)", "credenciales" not in texto, texto)
+        codigo, texto = correr_cli("aplicar", "--base", "IA_Nexus_Staging", "--confirmar", "--esperar-env", str(del_back))
+        rev("si coincide, la guarda deja pasar (y entonces sí busca las credenciales, que aquí no existen a propósito)", codigo == 2 and "credenciales" in texto, texto)
+        codigo, texto = correr_cli("marcar", "--base", "IA_Nexus_Dev", "--version", "1", "--confirmar", "--esperar-env", str(del_back))
+        rev("la guarda también protege a `marcar`", codigo == 2 and "ese back usa" in texto.lower(), texto)
+        codigo, texto = correr_cli("aplicar", "--base", "IA_Nexus_Dev", "--esperar-env", str(carpeta_back / "no-hay.env"))
+        rev("un .env que no existe: se niega en vez de seguir sin comprobar", codigo == 2 and "No encuentro" in texto, texto)
+        del_back.write_text("SQLSERVER_HOST=h\n", encoding="utf-8")
+        codigo, texto = correr_cli("aplicar", "--base", "IA_Nexus_Dev", "--esperar-env", str(del_back))
+        rev("un .env sin SQLSERVER_DB: se niega", codigo == 2 and "sin SQLSERVER_DB" in texto, texto)
+        codigo, texto = correr_cli("estado", "--base", "IA_Nexus_Dev")
+        rev("`estado` no pide la guarda (solo lee)", "esperar" not in texto, texto)
+    finally:
+        shutil.rmtree(carpeta_back, ignore_errors=True)
+        if anterior_env is None:
+            os.environ.pop("NEXUS_DDL_ENV", None)
+        else:
+            os.environ["NEXUS_DDL_ENV"] = anterior_env
+
     titulo("13 · `nueva` crea el siguiente archivo")
     temporal = Path(tempfile.mkdtemp(prefix="verificar-corredor-nueva-"))
     original = corredor.CARPETA

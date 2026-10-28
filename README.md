@@ -1829,7 +1829,25 @@ Server desechable con `verificar_migraciones_sql.py` (necesita Docker); (3) `apl
 archivo antes; (4) un cambio de esquema en la base real que no esté en un archivo es un error: la prueba del círculo (`generar(leer_catalogo(base))` contra una
 base construida desde cero con los archivos) lo detecta.
 
-**Verificación:** `verificar_corredor.py` y `verificar_linea_base.py` (sin base, rápidas) y `verificar_migraciones_sql.py` (SQL Server de verdad en un contenedor:
+**Dentro del deploy (decisión de Moibe, 2026-10-28: «me gusta lo de que viva en el deploy»).** El `deploy.sh` de webhook-central hace `git pull` → `pip install` → `POST_BUILD`
+→ `pm2 restart`. La migración va en el `POST_BUILD` de cada back, o sea DESPUÉS de bajar el código y ANTES de reiniciar: primero la base y luego el código, sin que nadie
+tenga que acordarse. Si la migración falla, el `POST_BUILD` sale con error, el deploy no reinicia y la app vieja sigue con su base intacta. Una línea por ambiente
+(cada uno solo migra la base que usa SU back; `--esperar-env .env` lo comprueba contra el `SQLSERVER_DB` del `.env`):
+
+```
+dev      venv/bin/python -m migraciones aplicar --base IA_Nexus_Dev     --confirmar --esperar-env .env
+staging  venv/bin/python -m migraciones aplicar --base IA_Nexus_Staging --confirmar --esperar-env .env
+prod     venv/bin/python -m migraciones aplicar --base IA_Nexus         --confirmar --produccion --esperar-env .env
+```
+
+Requisitos en el servidor: (1) `~/.nexus-sql-ddl.env` del usuario que corre el hook (`mbriseno`), con `chmod 600`, FUERA de los repos y NO en el `.env` de la API (la API nunca lo carga);
+(2) que `POST_BUILD` corra con la carpeta del proyecto como directorio de trabajo y que un código de salida distinto de cero aborte el deploy antes del `pm2 restart`;
+(3) que la línea base (0001) esté ya MARCADA en esa base, o el corredor intentará ejecutarla y su guarda lo detendrá. La cadena sigue mandando: el deploy de staging solo migra lo
+que dev ya tiene, y el de producción lo que ya tiene staging. **Ojo al activarlo:** el `POST_BUILD` de un ambiente solo se agrega cuando su rama ya trae la carpeta `migraciones/`
+(si no, un deploy de código viejo fallaría por «No module named migraciones»): primero se promueve el código y luego se agrega la línea. Además, `GET /health/db` dice si el esquema
+de la base está al día con el código: `esquema_desfasado` si le faltan migraciones (la base ADELANTE del código es normal).
+
+**Verificación:** `verificar_corredor.py`, `verificar_linea_base.py` y `verificar_health_esquema.py` (sin base, rápidas) y `verificar_migraciones_sql.py` (SQL Server de verdad en un contenedor:
 aplica la línea base a una base vacía y comprueba el círculo completo, la simulación que no deja nada, la transacción por migración, la cadena, `marcar`, el candado
 y que los procedimientos congelados funcionan con los permisos de `usrNexus`).
 

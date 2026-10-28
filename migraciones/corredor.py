@@ -30,6 +30,9 @@ e IA_Nexus_Staging; solo se EJECUTA en una base vacía).
 - Producción (`IA_Nexus`) pide además `--produccion` junto a `--confirmar`.
 - Cada migración corre en su PROPIA transacción: si la 3 falla, la 1 y la 2 quedan aplicadas y la 3 no deja nada a medias.
 - Un candado de aplicación (`sp_getapplock`) impide que dos corredores trabajen a la vez sobre la misma base.
+- **Dentro del deploy** (`POST_BUILD` del `.conf` de cada back en webhook-central, que corre DESPUÉS de actualizar el código y ANTES de `pm2 restart`):
+  `--esperar-env .env` compara el `SQLSERVER_DB` del `.env` de ESE back con `--base` y se niega si no coinciden, así un deploy solo puede migrar la base que
+  su propio back usa (un `.conf` mal copiado no migra la base de otro ambiente). Si la migración falla, el `POST_BUILD` sale con error y el deploy no reinicia.
 - Las credenciales salen de `~/.nexus-sql-ddl.env` (o de la ruta de `NEXUS_DDL_ENV`), NUNCA del `.env` del servidor ni del de la API: la contraseña
   de migraciones vive solo en la laptop de quien migra, y las migraciones no corren solas al desplegar.
 """
@@ -230,6 +233,18 @@ def ejecutar(
 # ── La base real ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 
+def _exigir_misma_base(base: str, ruta: str) -> None:
+    """Se niega si el `.env` del back que se está desplegando no apunta a `base`: un deploy solo migra la base que SU back usa."""
+    from dotenv import dotenv_values
+
+    env = Path(ruta)
+    if not env.is_file():
+        raise ErrorMigracion(f"No encuentro {env} para comprobar a qué base apunta este back (--esperar-env).")
+    usada = (dotenv_values(env).get("SQLSERVER_DB") or "").strip()
+    if usada != base:
+        raise ErrorMigracion(f"El .env {env} apunta a «{usada or '(sin SQLSERVER_DB)'}», no a {base}: un deploy solo migra la base que ESE back usa. Revisa el POST_BUILD del proyecto.")
+
+
 def _credenciales() -> dict[str, str]:
     from dotenv import dotenv_values
 
@@ -381,6 +396,7 @@ def main(argv: list[str] | None = None) -> int:
         p = sub.add_parser(nombre)
         p.add_argument("--base", required=True, choices=list(CADENA), help="La base. Obligatoria: no hay valor por omisión.")
         if nombre != "estado":
+            p.add_argument("--esperar-env", metavar="RUTA", help="El .env del back que se despliega: el corredor se niega si su SQLSERVER_DB no es --base.")
             p.add_argument("--confirmar", action="store_true", help="Hacerlo de verdad. Sin esto es una simulación que se deshace.")
             p.add_argument("--produccion", action="store_true", help=f"Obligatorio además de --confirmar para {PRODUCCION}.")
         if nombre == "aplicar":
@@ -398,6 +414,8 @@ def main(argv: list[str] | None = None) -> int:
         migraciones = descubrir()
         if args.orden != "estado" and args.confirmar and args.base == PRODUCCION and not args.produccion:
             raise ErrorMigracion(f"{PRODUCCION} es producción: para escribir ahí hay que pasar --produccion además de --confirmar.")
+        if args.orden != "estado" and args.esperar_env:
+            _exigir_misma_base(args.base, args.esperar_env)
         valores = _credenciales()
         base = BaseSql(args.base, valores)
         anterior = BaseSql(CADENA[args.base], valores) if CADENA[args.base] else None
