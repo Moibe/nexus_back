@@ -27,15 +27,14 @@ from html import escape
 
 import config
 
-# La MARCA que firma cada correo. Desde el 2026-10-29 el correo de BIENVENIDA dice Biblioratum de punta a punta (asunto, logo, texto,
-# firma y pie); los de recuperación (`recuperacion` y `primer_acceso_pendiente`) siguen diciendo NexusDoc porque no se pidió
-# cambiarlos. Si algún día también cambian, basta con poner aquí la misma marca en las dos constantes.
-MARCA = "NexusDoc"
-MARCA_BIENVENIDA = "Biblioratum"
+# La MARCA que firma TODOS los correos. Desde el 2026-10-29 es Biblioratum de punta a punta (asunto, logo, texto, firma y pie), en la
+# bienvenida y en los dos de recuperación (`recuperacion` y `primer_acceso_pendiente`); antes decían NexusDoc. Los textos comunes llevan
+# `{marca}` y `_marca()` lo llena; los propios de cada correo lo traen con f-string.
+MARCA = "Biblioratum"
 
 ASUNTO_RECUPERACION = "Restablece tu contraseña"
-ASUNTO_PRIMER_ACCESO = "Tu primer acceso a NexusDoc sigue pendiente"
-ASUNTO_BIENVENIDA = f"Bienvenido a {MARCA_BIENVENIDA}"
+ASUNTO_PRIMER_ACCESO = f"Tu primer acceso a {MARCA} sigue pendiente"
+ASUNTO_BIENVENIDA = f"Bienvenido a {MARCA}"
 
 # Los textos comunes a los tres correos llevan `{marca}`: `_marca()` lo llena con la de cada uno.
 _ENCABEZADO = "En {marca} nos preocupamos por tu seguridad y por brindarte la mejor experiencia en todo momento."
@@ -166,14 +165,14 @@ def recuperacion(nombre: str, enlace: str) -> tuple[str, str, str]:
     cuerpo nunca se registra (`servicios/correo.py`)."""
     parrafos = [
         f"Hola, {nombre}.",
-        "Recibimos una solicitud para restablecer la contraseña de tu cuenta en NexusDoc. Para mantener la "
+        f"Recibimos una solicitud para restablecer la contraseña de tu cuenta en {MARCA}. Para mantener la "
         "seguridad de tu información y garantizar el acceso protegido a la plataforma, puedes crear una nueva "
         "contraseña utilizando el siguiente enlace:",
     ]
     # Lo que va DESPUÉS del botón, en el orden del diseño.
     cierre = [
         "Por motivos de seguridad, este enlace estará disponible por un tiempo limitado. Si no realizaste esta "
-        "solicitud, puedes ignorar este mensaje. Tu cuenta y la información almacenada dentro de NexusDoc "
+        f"solicitud, puedes ignorar este mensaje. Tu cuenta y la información almacenada dentro de {MARCA} "
         "permanecerán protegidas y no se realizará ningún cambio. Si necesitas ayuda o presentas algún "
         "inconveniente para acceder a tu cuenta, nuestro equipo estará disponible para apoyarte.",
         _marca(_CIERRE, MARCA),
@@ -195,7 +194,7 @@ def primer_acceso_pendiente(nombre: str) -> tuple[str, str, str]:
     cuenta."""
     parrafos = [
         f"Hola, {nombre}.",
-        "Recibimos una solicitud para restablecer la contraseña de tu cuenta en NexusDoc, pero tu cuenta todavía "
+        f"Recibimos una solicitud para restablecer la contraseña de tu cuenta en {MARCA}, pero tu cuenta todavía "
         "no completa su primer acceso, así que no es posible restablecerla por este medio.",
         "Para continuar, entra con la contraseña temporal que te entregó la persona que dio de alta tu cuenta y "
         "configura tu nueva contraseña. Si no la tienes o ya no funciona, pídesela a esa persona.",
@@ -227,7 +226,7 @@ _PORTAL = "Te damos la bienvenida al Portal Administrativo {marca}."
 PERFILES_BIENVENIDA = ("super_admin", "admin_organizacion", "usuario")
 
 
-def _presentacion(perfil: str, organizacion: str | None, marca: str = MARCA_BIENVENIDA) -> str:
+def _presentacion(perfil: str, organizacion: str | None, marca: str = MARCA) -> str:
     portal = _marca(_PORTAL, marca)
     if perfil == "super_admin":
         return (
@@ -258,7 +257,7 @@ def bienvenida(
     organización. `contrasena` viaja SOLO en el cuerpo de este correo. Todo lo que escribió una persona
     (nombre, organización, correo) se escapa en el HTML; la contraseña también, porque su alfabeto incluye
     `&`."""
-    marca = MARCA_BIENVENIDA
+    marca = MARCA
     presentacion = _presentacion(perfil, organizacion, marca)
     saludo = f"Hola, {nombre}."
     pide = "A continuación, encontrarás tus datos de acceso:"

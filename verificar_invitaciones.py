@@ -130,9 +130,15 @@ try:
         ">B</span>" in html and ">Biblioratum</span>" in html and "Equipo Biblioratum" in html and "© Biblioratum." in html and ">N</span>" not in html)
     _, t_rec, h_rec = plantillas_correo.recuperacion("Ana", "http://localhost:3400/x")
     _, t_pri, h_pri = plantillas_correo.primer_acceso_pendiente("Ana")
-    rev("los correos de recuperación NO cambiaron: siguen diciendo NexusDoc y ni una vez Biblioratum",
-        "Equipo NexusDoc" in t_rec and ">NexusDoc</span>" in h_rec and ">N</span>" in h_rec and "NexusDoc" in t_pri and ">NexusDoc</span>" in h_pri
-        and "Biblioratum" not in t_rec + h_rec + t_pri + h_pri)
+    a_rec, _, _ = plantillas_correo.recuperacion("Ana", "http://localhost:3400/x")
+    a_pri, _, _ = plantillas_correo.primer_acceso_pendiente("Ana")
+    rev("los DOS correos de recuperación también dicen Biblioratum de punta a punta y ni una vez NexusDoc (textos, logo, firma y pie)",
+        "Equipo Biblioratum" in t_rec and ">Biblioratum</span>" in h_rec and ">B</span>" in h_rec and "© Biblioratum." in t_rec
+        and "tu cuenta en Biblioratum" in t_rec and "dentro de Biblioratum" in t_rec
+        and "Equipo Biblioratum" in t_pri and ">Biblioratum</span>" in h_pri and "tu cuenta en Biblioratum" in t_pri
+        and "NexusDoc" not in t_rec + h_rec + t_pri + h_pri)
+    rev("y sus asuntos: el de restablecer no lleva marca, el del primer acceso dice Biblioratum",
+        a_rec == "Restablece tu contraseña" and a_pri == "Tu primer acceso a Biblioratum sigue pendiente")
     hostil = "<img src=x onerror=alert(1)>"
     asunto, texto, html = plantillas_correo.bienvenida(hostil, "a@e.com", "P&<\"'>", enlace, "admin_organizacion", "<b>Org</b>")
     rev("el nombre, la organización y la contraseña van ESCAPADOS en el HTML (no se puede meter marcado)",

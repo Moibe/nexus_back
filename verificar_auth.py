@@ -856,6 +856,33 @@ try:
         limpia["membresias"] == [{"tenantGuid": "tenant-4i", "rol": "ADMIN"}] and limpia["recuperacion"] == {"email": "luna.recupera@ejemplo.com"},
         f"{limpia['membresias']} {limpia['recuperacion']}")
 
+    titulo("4j2 · El NOMBRE de la organización viaja en el JWT (`tnn`) para mostrarlo junto al rol; sin organización, o si no se encuentra, no hay `tnn`")
+    from servicios import tenants_registro
+
+    org = tenants_registro.crear("Dorama", luna4["guid"])
+    ana = usuario_4i("tnn-ana@ejemplo.com", "Tnn-Ana-Segura-123!")
+    usuarios.agregar_membresia(ana["guid"], org["guid"], "ADMIN")
+    token_ana, _ = auth.emitir_acceso(usuarios.por_guid(ana["guid"]), "sesion-x")
+    claims_ana = auth.verificar_acceso(token_ana)
+    rev("quien pertenece a una organización: el JWT trae tnt (su guid), rol y tnn con el nombre tal cual",
+        claims_ana["tnt"] == org["guid"] and claims_ana["rol"] == "ADMIN" and claims_ana["tnn"] == "Dorama", str(claims_ana))
+    token_plat, _ = auth.emitir_acceso(usuarios.por_guid(u["guid"]), "sesion-x")
+    claims_plat = auth.verificar_acceso(token_plat)
+    rev("el administrador de plataforma (sin organización): sin tnt ni tnn", claims_plat["adm"] is True and "tnt" not in claims_plat and "tnn" not in claims_plat, str(claims_plat))
+    token_luna, _ = auth.emitir_acceso(usuarios.por_guid(luna4["guid"]), "sesion-x")
+    claims_luna = auth.verificar_acceso(token_luna)
+    rev("una organización que no se encuentra en el registro NO impide emitir el token: trae tnt y rol, y ningún tnn",
+        claims_luna["tnt"] == "tenant-4i" and claims_luna["rol"] == "ADMIN" and "tnn" not in claims_luna, str(claims_luna))
+    # Un nombre con acentos y símbolos viaja íntegro (el JWT es JSON en UTF-8).
+    org_rara = tenants_registro.crear("Compañía Ñandú & Hijos, S.A.", luna4["guid"])
+    raro = usuario_4i("tnn-rara@ejemplo.com", "Tnn-Rara-Segura-123!")
+    usuarios.agregar_membresia(raro["guid"], org_rara["guid"], "VIEWER")
+    token_raro, _ = auth.emitir_acceso(usuarios.por_guid(raro["guid"]), "sesion-x")
+    rev("un nombre con acentos, eñes y símbolos llega íntegro", auth.verificar_acceso(token_raro)["tnn"] == "Compañía Ñandú & Hijos, S.A.")
+    # Y por HTTP: lo que el login entrega al front es ese mismo token.
+    r = login(c, "tnn-ana@ejemplo.com", "Tnn-Ana-Segura-123!")
+    rev("por el login real: el accessToken que recibe el front trae tnn", r.status_code == 200 and auth.verificar_acceso(r.json()["accessToken"]).get("tnn") == "Dorama", r.text[:160])
+
     titulo("4k · HU13 CA-4: cambiar la contraseña desde una sesión cierra las de los OTROS dispositivos, conserva la actual y deja PASSWORD_CHANGED")
     hugo = usuario_4i("cuatro-k-hugo@ejemplo.com", "Cuatro-K-Hugo-123!")
     sesiones_k = [login(c, "cuatro-k-hugo@ejemplo.com", "Cuatro-K-Hugo-123!").json() for _ in range(3)]

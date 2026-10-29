@@ -29,9 +29,9 @@ def main() -> int:
     try:
         donde = correo.enviar(
             destino,
-            "Prueba de NexusDoc",
-            "Este es un correo de prueba de NexusDoc. Si lo lees, el canal de correo funciona.",
-            "<p>Este es un correo de <b>prueba</b> de NexusDoc.</p><p>Si lo lees, el canal de correo funciona.</p>",
+            "Prueba de Biblioratum",
+            "Este es un correo de prueba de Biblioratum. Si lo lees, el canal de correo funciona.",
+            "<p>Este es un correo de <b>prueba</b> de Biblioratum.</p><p>Si lo lees, el canal de correo funciona.</p>",
         )
     except correo.ErrorCorreo as exc:
         print(f"NO salió: {exc}")
