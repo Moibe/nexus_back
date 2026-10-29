@@ -23,6 +23,7 @@ from config import (
     avisos_de_produccion,
 )
 from logging_config import configurar_logging
+from servicios import almacen as almacen_servicio
 
 # Antes de importar los routers, para que cualquier log que ocurra durante los
 # imports (por ejemplo el aviso de que falta el driver ODBC) ya salga con formato.
@@ -280,9 +281,19 @@ def health():
     # variable está mal puesta y eso no se publica en un puerto que alcanza
     # cualquiera en la red de CSI. Si no es 0, el detalle está en el log:
     #   pm2 logs nexus-back-api --lines 40
+    #
+    # `almacen_disponible` SÍ habla del NAS: si el centinela `.nexus-almacen` no está
+    # (montaje caído, ruta sin configurar), `status` deja de ser "ok". El 21-oct el
+    # NAS no montó tras un reinicio, el back dio 503 a todo y este endpoint seguía
+    # diciendo "ok". Es una comprobación barata (un `stat`), no escribe nada.
+    # El código HTTP se queda en 200 A PROPÓSITO: Nexus Monitor lee `environment` de
+    # aquí y descarta cualquier respuesta que no sea 2xx, así que un 503 lo dejaría
+    # sin poder decir de qué ambiente habla justo cuando más falta hace.
+    almacen = almacen_servicio.raiz_montada()
     return {
-        "status": "ok",
+        "status": "ok" if almacen else "almacen_no_disponible",
         "environment": ENVIRONMENT,
+        "almacen_disponible": almacen,
         "documentos_disponible": DOCUMENTOS_DISPONIBLE,
         "avisos_configuracion": len(AVISOS_CONFIGURACION),
     }

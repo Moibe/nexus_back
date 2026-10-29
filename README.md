@@ -84,6 +84,11 @@ ir textual en `SQLSERVER_DRIVER` del `.env`.
 
 Prueba rápida de conectividad: `GET /health/db`.
 
+`GET /health` también avisa del almacén (el NAS): trae `almacen_disponible` y, si el centinela `.nexus-almacen` no está (montaje caído o `ALMACEN_RUTA`
+sin configurar), `status` pasa de `ok` a `almacen_no_disponible`. El código HTTP **se queda en 200** a propósito: Nexus Monitor lee `environment` de esta
+respuesta y descarta lo que no sea 2xx. Antes (hasta el 2026-10-28) decía `ok` con el NAS caído, como el 21-oct. Ojo: `documentos_disponible` NO habla del NAS, solo
+de si hay `SQLSERVER_HOST`. Prueba: `verificar_health_almacen.py`.
+
 ### Credenciales de Document AI
 
 Hace falta el JSON de una cuenta de servicio con permiso sobre Document AI.
