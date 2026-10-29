@@ -116,10 +116,23 @@ try:
     ):
         asunto, texto, html = plantillas_correo.bienvenida("Ana", "ana@ejemplo.com", "Ab1&xyz", enlace, perfil, "Seguros Monterrey")
         rev(f"{perfil}: asunto, presentación del diseño, accesos, recomendación y botón",
-            asunto == "Bienvenido a NexusDoc" and frase in texto and "Tus accesos temporales" in texto
+            asunto == "Bienvenido a Biblioratum" and frase in texto and "Tus accesos temporales" in texto
             and "Usuario: ana@ejemplo.com" in texto and "Contraseña temporal: Ab1&xyz" in texto
             and "Por seguridad, te recomendamos cambiar tu contraseña después de iniciar sesión por primera vez." in texto
             and "Ir a portal Administrador" in html and "Hola, Ana." in texto)
+        rev(f"{perfil}: ni en el texto ni en el HTML queda rastro de NexusDoc (todo dice Biblioratum)",
+            "NexusDoc" not in texto and "NexusDoc" not in html and "Biblioratum" in texto and "Biblioratum" in html)
+    asunto, texto, html = plantillas_correo.bienvenida("Ana", "ana@ejemplo.com", "Ab1&xyz", enlace, "usuario")
+    rev("la bienvenida dice Biblioratum en CADA pieza: portal, cierre, firma, aviso de seguridad, aviso automático y derechos",
+        all(p in texto for p in ("Portal Administrativo Biblioratum", "En Biblioratum trabajamos", "Equipo Biblioratum",
+                                 "Biblioratum nunca te pedirá", "generado automáticamente por Biblioratum", "© Biblioratum.")))
+    rev("y en el HTML el logo lleva la inicial B y el nombre, y la firma y el pie también",
+        ">B</span>" in html and ">Biblioratum</span>" in html and "Equipo Biblioratum" in html and "© Biblioratum." in html and ">N</span>" not in html)
+    _, t_rec, h_rec = plantillas_correo.recuperacion("Ana", "http://localhost:3400/x")
+    _, t_pri, h_pri = plantillas_correo.primer_acceso_pendiente("Ana")
+    rev("los correos de recuperación NO cambiaron: siguen diciendo NexusDoc y ni una vez Biblioratum",
+        "Equipo NexusDoc" in t_rec and ">NexusDoc</span>" in h_rec and ">N</span>" in h_rec and "NexusDoc" in t_pri and ">NexusDoc</span>" in h_pri
+        and "Biblioratum" not in t_rec + h_rec + t_pri + h_pri)
     hostil = "<img src=x onerror=alert(1)>"
     asunto, texto, html = plantillas_correo.bienvenida(hostil, "a@e.com", "P&<\"'>", enlace, "admin_organizacion", "<b>Org</b>")
     rev("el nombre, la organización y la contraseña van ESCAPADOS en el HTML (no se puede meter marcado)",
@@ -147,7 +160,7 @@ try:
     r = invitaciones.enviar_bienvenida("b@ejemplo.com", "Beto", "Secreta-456!", "usuario")
     rev("con canal real: ENVIADO, a la dirección y con el asunto del diseño",
         r == invitaciones.ENVIADO and len(enviados) == 1 and enviados[0]["destino"] == "b@ejemplo.com"
-        and enviados[0]["asunto"] == "Bienvenido a NexusDoc", str(r))
+        and enviados[0]["asunto"] == "Bienvenido a Biblioratum", str(r))
     rev("lleva la contraseña y el enlace de ESTE ambiente (FRONT_URL)",
         "Secreta-456!" in enviados[0]["texto"] and f"{config.FRONT_URL}/acceso/iniciar-sesion" in enviados[0]["texto"])
     rev("y la espera está acotada (hay una persona mirando la pantalla)", enviados[0]["timeout"] == invitaciones.ESPERA_MAX_S)
