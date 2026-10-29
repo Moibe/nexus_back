@@ -24,12 +24,15 @@ No renombra ni borra expedientes, no tiene estado ni folio, y un documento no se
 
 import logging
 
-from fastapi import APIRouter, Header, HTTPException, Query, status
+from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
 
+from routers.archivos import guardar_subida
+from routers.bandeja import MIME_BANDEJA
 from routers.errores import almacen_no_disponible
 from servicios import aislamiento, auditoria, documentos, expedientes
 from servicios.almacen import ErrorAlmacen
+from servicios.subidas import normalizar_tipo
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +133,40 @@ def listar_documentos(
     except ValueError as exc:
         raise _tenant_invalido(exc) from exc
     except ErrorAlmacen as exc:
+        raise almacen_no_disponible(exc) from exc
+
+
+@router.post(
+    "/documentos",
+    status_code=status.HTTP_201_CREATED,
+    tags=["Expedientes"],
+    summary="Registrar el documento de una carga manual",
+    description=(
+        "Lo que la persona carga a mano en el Pipeline del front también es un documento de su organización, igual que lo que un "
+        "cliente manda por la API: guarda los bytes en el almacén y anota el documento con `canal: MANUAL`, que es lo que lo hace "
+        "aparecer en «Archivos procesados». Mismo formato que acepta la bandeja (PDF, JPEG, PNG y TIFF) y mismos límites de tamaño. "
+        "Subir dos veces el mismo archivo crea DOS documentos que comparten los bytes, como por la API."
+    ),
+)
+def registrar_documento_manual(
+    archivo: UploadFile = File(...),
+    tenant: str = Form(..., description="La organización de quien carga"),
+    sha256: str | None = Form(None, description="Opcional. El SHA-256 del archivo, para verificar la transferencia.", examples=[""]),
+    authorization: str | None = Header(default=None),
+):
+    # Quien carga a mano es una persona de la organización, no un cliente con API Key: se le exige la sesión, igual que a `/archivos`.
+    aislamiento.exigir(authorization, tenant, "documento")
+    mime = normalizar_tipo(archivo.content_type)
+    if mime not in MIME_BANDEJA:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Formato no admitido. Se aceptan PDF, JPEG, PNG y TIFF.",
+        )
+    guardado = guardar_subida(archivo, tenant, sha256)
+    try:
+        return documentos.nacer(tenant, guardado, mime, archivo.filename or "", "MANUAL", None)
+    except ErrorAlmacen as exc:
+        # Los bytes ya quedaron en el almacén; sin registro son un objeto suelto, barato y deduplicado: reintentar lo registra.
         raise almacen_no_disponible(exc) from exc
 
 
