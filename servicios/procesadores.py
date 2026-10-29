@@ -44,6 +44,7 @@ vez de crear uno nuevo — ver el docstring de esa función para el detalle.
 """
 
 import asyncio
+import base64
 import logging
 import re
 import time
@@ -59,7 +60,7 @@ from config import (
 )
 from errores import SinClasificador
 from servicios import clasificadores
-from servicios.esquema import esquema_clasificador_desde_tipos, estructura_desde_esquema
+from servicios.esquema import campos_desde_esquema, esquema_clasificador_desde_tipos, estructura_desde_esquema
 from servicios.ia import SCOPES, _token  # misma credencial cacheada que /ia
 
 logger = logging.getLogger(__name__)
@@ -151,13 +152,13 @@ class DocumentAIError(RuntimeError):
 
 
 async def _pedir(
-    cliente: httpx.AsyncClient, metodo: str, api: str, ruta: str, **kwargs: Any
+    cliente: httpx.AsyncClient, metodo: str, api: str, ruta: str, *, timeout: float = 60, **kwargs: Any
 ) -> dict:
     r = await cliente.request(
         metodo,
         _url(api, ruta),
         headers={"Authorization": f"Bearer {_token()}"},
-        timeout=60,
+        timeout=timeout,
         **kwargs,
     )
     if r.status_code >= 400:
@@ -542,6 +543,85 @@ async def estructura_del_procesador(procesador_id: str) -> dict:
     estructura = estructura_desde_esquema(respuesta.get("documentSchema") or {})
     _CACHE_ESTRUCTURA[procesador_id] = (ahora, estructura)
     return estructura
+
+
+#: El recurso `Schema` de Document AI bajo el que se generan las propuestas de «Generar a partir de un documento». Uno para todo
+#: el proyecto: `schemaVersions:generate` exige un padre `schemas/{id}`, pero no guarda nada que dependa de quién pregunta (cada
+#: generación deja una `schemaVersion`, que se borra en cuanto se leyó). Se busca por nombre visible y, si no existe, se crea.
+NOMBRE_RECURSO_GENERADOR = "nexusdoc-generador-esquemas"
+_recurso_generador: list[str] = []  # su `name` completo, una vez encontrado
+_candado_generador = asyncio.Lock()
+
+#: Lo que se le pide al modelo además del documento. Medido el 2026-10-29 sobre una factura: sin esto propone nombres y
+#: descripciones en inglés; con esto, en español. Pedirle un `displayName` con acentos NO sirve (lo ignora): el nombre legible lo
+#: arma `esquema.nombre_legible`.
+_INSTRUCCION_GENERAR = (
+    "Escribe todo en español. En name usa snake_case sin acentos; en description explica en español qué dato es y cómo "
+    "reconocerlo en el documento."
+)
+
+
+async def _recurso_de_generacion(cliente: httpx.AsyncClient) -> str:
+    """El `name` del recurso Schema que hace de padre de las generaciones: lo encuentra por nombre visible o lo crea UNA vez."""
+    async with _candado_generador:
+        if _recurso_generador:
+            return _recurso_generador[0]
+        token = ""
+        while True:
+            params: dict[str, Any] = {"pageSize": 100}
+            if token:
+                params["pageToken"] = token
+            pagina = await _pedir(cliente, "GET", "v1beta3", f"{_PADRE}/schemas", params=params)
+            encontrado = next((s for s in pagina.get("schemas", []) if s.get("displayName") == NOMBRE_RECURSO_GENERADOR), None)
+            if encontrado:
+                _recurso_generador.append(encontrado["name"])
+                return encontrado["name"]
+            token = pagina.get("nextPageToken", "")
+            if not token:
+                break
+        creado = await _pedir(cliente, "POST", "v1beta3", f"{_PADRE}/schemas", json={"displayName": NOMBRE_RECURSO_GENERADOR})
+        _recurso_generador.append(creado["name"])
+        return creado["name"]
+
+
+async def generar_campos(contenido: bytes, mime_type: str, nombre_tipo: str = "", descripcion_tipo: str = "") -> list[dict]:
+    """«Generar a partir de un documento» (paso 2 del alta de un tipo documental): Google lee un documento de ejemplo y propone
+    los campos a extraer. Devuelve campos del wizard (`esquema.campos_desde_esquema`), que la persona revisa antes de agregar.
+
+    Es la misma función que el botón «Generar a partir de un documento» de la consola de Document AI:
+    `schemas.schemaVersions:generate` (v1beta3; medida el 2026-10-29, ~13 s por una factura de una página). No crea procesadores ni
+    toca ningún tipo documental. Cada llamada deja una `schemaVersion` guardada en el recurso padre: se borra en cuanto se leyó,
+    para que no se acumulen (si el borrado falla solo se avisa en el log: la propuesta ya está). El nombre y la descripción del
+    tipo, si ya se capturaron en el paso 1, viajan como contexto. Lo propuesto cambia un poco de una corrida a otra (una vez el
+    domicilio sale entero y otra en calle, colonia y ciudad): es una sugerencia, no un resultado reproducible."""
+    instruccion = _INSTRUCCION_GENERAR
+    contexto = " ".join(p for p in ((nombre_tipo or "").strip(), (descripcion_tipo or "").strip()) if p)
+    if contexto:
+        instruccion = f"El documento es de este tipo: {contexto}. {instruccion}"
+    cuerpo = {
+        "rawDocuments": {
+            "documents": [{"mimeType": mime_type, "content": base64.b64encode(contenido).decode("ascii"), "displayName": "ejemplo"}]
+        },
+        "generateSchemaVersionParams": {"prompt": instruccion},
+    }
+    async with httpx.AsyncClient() as cliente:
+        padre = await _recurso_de_generacion(cliente)
+        try:
+            respuesta = await _pedir(cliente, "POST", "v1beta3", f"{padre}/schemaVersions:generate", json=cuerpo, timeout=120)
+        except DocumentAIError as exc:
+            if exc.status_code != 404:
+                raise
+            # Alguien borró el recurso padre a mano: se olvida, se crea otro y se intenta una vez más.
+            _recurso_generador.clear()
+            padre = await _recurso_de_generacion(cliente)
+            respuesta = await _pedir(cliente, "POST", "v1beta3", f"{padre}/schemaVersions:generate", json=cuerpo, timeout=120)
+        version = respuesta.get("schemaVersion") or {}
+        if version.get("name"):
+            try:
+                await _pedir(cliente, "DELETE", "v1beta3", version["name"])
+            except (DocumentAIError, httpx.HTTPError) as exc:
+                logger.warning("No se pudo borrar la versión de esquema generada %s: %s", version["name"], exc)
+    return campos_desde_esquema(version.get("schema") or {})
 
 
 async def consultar_procesador(procesador_id: str) -> dict:

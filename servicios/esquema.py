@@ -312,6 +312,121 @@ def esquema_clasificador_desde_tipos(tipos: list[dict]) -> dict:
     }
 
 
+#: valueType de Google -> tipo de dato del wizard, para LEER un esquema que propuso Google (`campos_desde_esquema`). Es el
+#: inverso de `_VALUE_TYPES` más los que Google usa y el wizard no tiene: `address` (lo propone para un domicilio entero) cae a
+#: texto, igual que cualquier valueType que no se conozca. Medido el 2026-10-29 con `schemaVersions:generate` sobre una factura:
+#: string, number, datetime, money, address y el nombre de un EntityType `object` (los conceptos, como grupo repetible).
+_TIPO_DE_VALUE_TYPE = {
+    "string": "texto",
+    "number": "numero",
+    "integer": "numero",
+    "float": "numero",
+    "datetime": "fecha",
+    "date": "fecha",
+    "money": "moneda",
+    "checkbox": "booleano",
+    "boolean": "booleano",
+    "address": "texto",
+}
+
+#: Palabras que en un nombre legible van en mayúsculas («RFC del cliente», no «Rfc del cliente»).
+_SIGLAS = {"rfc", "curp", "cfdi", "iva", "isr", "ieps", "nss", "ine", "imss", "sat", "cp", "clabe", "id", "uuid", "url", "iban", "swift"}
+
+
+def nombre_legible(nombre: str) -> str:
+    """`rfc_cliente` -> «RFC cliente»: el `name` de Google (snake_case, sin acentos) vuelto algo que una persona lee en el wizard.
+    Los acentos no se pueden recuperar; el nombre queda editable en el paso 2. Al activar, `normalizar_nombre` lo devuelve a la
+    forma de Google."""
+    palabras = [p for p in re.split(r"[_\-\s]+", nombre or "") if p]
+    if not palabras:
+        return "Campo"
+    legibles = [p.upper() if p.lower() in _SIGLAS else p.lower() for p in palabras]
+    if legibles[0].islower():
+        legibles[0] = legibles[0][:1].upper() + legibles[0][1:]
+    return " ".join(legibles)
+
+
+def campos_desde_esquema(esquema: dict) -> list[dict]:
+    """Los CAMPOS del wizard que corresponden a un `DocumentSchema` de extractor: el camino inverso de `esquema_desde_campos`.
+
+    Sirve para «Generar a partir de un documento» (paso 2): Google propone un esquema leyendo un documento de ejemplo y aquí se
+    convierte en campos que la persona revisa y agrega. Cada campo trae `nombre` (legible), `tipoDato`, `descripcion`,
+    `obligatorio`, `cardinalidad`, `valoresLista` y `subcampos`, lo mismo que captura el paso 2.
+
+    - Una Property cuyo `valueType` nombra un EntityType `object` con `properties` es un **grupo** (los conceptos de una factura);
+      sus hijas son los subcampos. Un solo nivel, como en el wizard: un objeto dentro de un grupo queda como texto.
+    - Una Property cuyo `valueType` nombra un EntityType con `enumValues` es una **lista** con esos valores. Dentro de un grupo el
+      wizard no captura listas, así que ahí queda como texto.
+    - El `occurrenceType` da obligatorio (REQUIRED_*) y cardinalidad (*_MULTIPLE); sin él, opcional y único.
+    - Dos nombres que se volverían el mismo en el wizard se quedan con el primero (Google no los repite, pero no se confía).
+    """
+    tipos = {t.get("name"): t for t in esquema.get("entityTypes") or []}
+    raiz = tipos.get("custom_extraction_document_type") or next(
+        (t for t in tipos.values() if "document" in (t.get("baseTypes") or []) and t.get("properties")), None
+    )
+    if raiz is None:
+        return []
+
+    def _ocurrencia(prop: dict) -> tuple[bool, str]:
+        ocurrencia = str(prop.get("occurrenceType") or "OPTIONAL_ONCE")
+        return ocurrencia.startswith("REQUIRED"), "multiple" if ocurrencia.endswith("MULTIPLE") else "unico"
+
+    def _tipo_simple(prop: dict, permite_lista: bool) -> tuple[str, list[str]]:
+        value_type = prop.get("valueType") or "string"
+        destino = tipos.get(value_type)
+        if destino is not None:
+            valores = [str(v) for v in (destino.get("enumValues") or {}).get("values") or [] if str(v).strip()]
+            if valores and permite_lista:
+                return "lista", valores
+            return "texto", []
+        return _TIPO_DE_VALUE_TYPE.get(value_type, "texto"), []
+
+    campos: list[dict] = []
+    vistos: set[str] = set()
+    for prop in raiz.get("properties") or []:
+        if not prop.get("name"):
+            continue
+        nombre = nombre_legible(prop["name"])
+        if normalizar_nombre(nombre) in vistos:
+            continue
+        vistos.add(normalizar_nombre(nombre))
+        obligatorio, cardinalidad = _ocurrencia(prop)
+        campo = {
+            "nombre": nombre,
+            "tipoDato": "texto",
+            "descripcion": (prop.get("description") or "").strip(),
+            "obligatorio": obligatorio,
+            "cardinalidad": cardinalidad,
+            "valoresLista": [],
+            "subcampos": [],
+        }
+        destino = tipos.get(prop.get("valueType"))
+        if destino and destino.get("properties") and "object" in (destino.get("baseTypes") or []):
+            vistos_hijos: set[str] = set()
+            for hijo in destino["properties"]:
+                if not hijo.get("name"):
+                    continue
+                nombre_hijo = nombre_legible(hijo["name"])
+                if normalizar_nombre(nombre_hijo) in vistos_hijos:
+                    continue
+                vistos_hijos.add(normalizar_nombre(nombre_hijo))
+                tipo_hijo, _ = _tipo_simple(hijo, permite_lista=False)
+                campo["subcampos"].append(
+                    {
+                        "nombre": nombre_hijo,
+                        "tipoDato": tipo_hijo,
+                        "descripcion": (hijo.get("description") or "").strip(),
+                        "obligatorio": _ocurrencia(hijo)[0],
+                    }
+                )
+            if campo["subcampos"]:
+                campo["tipoDato"] = TIPO_GRUPO
+        else:
+            campo["tipoDato"], campo["valoresLista"] = _tipo_simple(prop, permite_lista=True)
+        campos.append(campo)
+    return campos
+
+
 def estructura_desde_esquema(esquema: dict) -> dict[str, dict]:
     """La ESTRUCTURA que declara un `DocumentSchema` de extractor: qué es obligatorio, qué se repite y qué es un grupo.
 

@@ -1743,6 +1743,17 @@ si no tiene). Piden la llave de servicio **y** el JWT de la persona (HU11): sinc
 clasificar (`POST /ia/clasificar?tenant=`), cualquiera de la organización. Quien no es de ella recibe 403 `sin_acceso`, y el
 administrador de plataforma solo toca el clasificador de SU espacio, nunca el de una organización.
 
+### Generar campos a partir de un documento
+
+`POST /procesadores/generar-campos` (multipart: `archivo`, `tenant`, y opcionales `nombre` y `descripcion` del tipo) es el «Generar a
+partir de un documento» del paso 2 del alta: Document AI lee un documento de ejemplo y **propone** campos (nombre legible, tipo de
+dato, descripción, obligatorio, cardinalidad, valores de lista y subcampos de cada grupo). No guarda nada ni crea procesadores:
+responde `{campos}` y la persona elige cuáles agregar. Por dentro es `schemas.schemaVersions:generate` (v1beta3), bajo UN recurso
+`Schema` del proyecto llamado `nexusdoc-generador-esquemas` (se busca por nombre y se crea la primera vez); cada generación deja una
+versión guardada en él, que se borra en cuanto se leyó. Tarda unos segundos (~13 con una factura de una página) y lo propuesto
+varía un poco de una vez a otra. Pide sesión y el rol que administra tipos documentales; si Google no puede leer el documento
+responde 422 con un mensaje para la persona, y nunca el texto de Google. Prueba: `verificar_generar_campos.py`.
+
 **Un clasificador por organización (2026-10-26).** Hasta entonces era UNO para todo el sistema, con los tipos activos de todas: un
 documento de una organización podía caer en un tipo de otra, lo que una guardaba cambiaba el clasificador de las demás y los
 nombres y descripciones de los tipos de cada cliente quedaban a la vista de todos en el esquema. Ahora (`servicios/clasificadores.py`):

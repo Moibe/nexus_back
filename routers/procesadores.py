@@ -15,10 +15,12 @@ JWT de la persona (HU11), igual que tipos documentales, y solo tocan el de esa o
 
 import logging
 
-from fastapi import APIRouter, Header, HTTPException, Query, status
+import httpx
+from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
 
 from errores import SinClasificador
+from routers.ia import _leer_subida
 from servicios import aislamiento
 from servicios import tipos_documentales as registro_tipos
 from servicios.almacen import ErrorAlmacen
@@ -29,6 +31,7 @@ from servicios.procesadores import (
     consultar_esquema_clasificador,
     consultar_procesador,
     eliminar_procesador,
+    generar_campos as _generar_campos,
     sincronizar_clasificador as _sincronizar_clasificador,
 )
 
@@ -167,6 +170,54 @@ async def activar(tipo: TipoDocumentalEntrada):
         ) from exc
 
     return resultado
+
+
+@router.post(
+    "/generar-campos",
+    tags=["Procesadores"],
+    summary="Proponer campos a partir de un documento de ejemplo",
+    description=(
+        "«Generar a partir de un documento» del paso 2 del alta de un tipo documental: Document AI lee el documento y propone "
+        "los campos a extraer (nombre, tipo de dato, descripción, si se repite, y los campos de cada grupo). No guarda nada ni "
+        "crea procesadores: devuelve `campos` para que la persona los revise y agregue los que quiera. Tarda unos segundos. Lo "
+        "propuesto puede variar un poco de una vez a otra. Pide el rol que administra tipos documentales."
+    ),
+)
+async def generar_campos(
+    archivo: UploadFile = File(..., description="El documento de ejemplo (PDF o imagen)"),
+    tenant: str = Form(..., description="La organización"),
+    nombre: str = Form("", max_length=200, description="El nombre del tipo documental, si ya se capturó: viaja como contexto"),
+    descripcion: str = Form("", max_length=2000, description="Su descripción, si ya se capturó: viaja como contexto"),
+    authorization: str | None = Header(default=None),
+):
+    aislamiento.exigir_administrar(authorization, tenant, "tipo_documental")
+    contenido = await _leer_subida(archivo)
+    try:
+        campos = await _generar_campos(contenido, archivo.content_type or "application/pdf", nombre, descripcion)
+    except DocumentAIError as exc:
+        logger.exception("Falló la generación de campos a partir de un documento")
+        if 400 <= exc.status_code < 500:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "Document AI no pudo leer este documento para proponer campos. Revisa que esté completo, que no tenga "
+                    "contraseña y que no sea demasiado largo, o prueba con otro ejemplo."
+                ),
+            ) from exc
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=_mensaje_para(exc, mensaje_4xx="")) from exc
+    except httpx.TimeoutException as exc:
+        logger.exception("Document AI no respondió a tiempo al generar campos")
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Document AI tardó demasiado en proponer los campos. Intenta de nuevo o prueba con un documento más corto.",
+        ) from exc
+    except RuntimeError as exc:
+        logger.exception("Falló la generación de campos a partir de un documento")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="No se pudieron proponer campos. Intenta de nuevo; si el problema persiste, avisa al equipo técnico.",
+        ) from exc
+    return {"campos": campos}
 
 
 def _tipos_activos(tenant: str) -> list[dict]:
