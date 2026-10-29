@@ -1754,7 +1754,7 @@ nombres y descripciones de los tipos de cada cliente quedaban a la vista de todo
 - el id se guarda y no se busca por nombre en cada llamada (Document AI no filtra `processors.list`); por nombre EXACTO solo se busca la
   primera vez —para adoptar el que un intento anterior dejó a medias— o si el procesador se borró a mano (se vuelve a crear);
 - dos sincronizaciones a la vez de la misma organización crean un solo clasificador (candado por tenant);
-- clasificar sin clasificador es un 409 con una frase que se puede mostrar («Tu organización todavía no tiene clasificador…»).
+- clasificar sin clasificador es un 409 con una frase que se puede mostrar y que dice QUÉ hacer y DÓNDE, sin nombrar piezas internas (desde el 2026-10-29: «Todavía no se pueden clasificar documentos: tu organización no tiene ningún tipo documental activo. Crea y activa al menos uno en Configuración, Tipos documentales, y vuelve a intentarlo.»; el clasificador de una organización se crea al activar su primer tipo documental).
 
 Los límites de Google no estorban: no hay tope de procesadores por proyecto, y el techo real (120 páginas por minuto de clasificación en
 línea) es del PROYECTO, no de cada procesador. Cuesta US$5 por 1,000 páginas clasificadas, igual con uno que con cien clasificadores; el

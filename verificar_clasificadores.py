@@ -251,8 +251,11 @@ try:
         try:
             asyncio.run(ia.clasificar_documento(b"x", "application/pdf", org_e))
             rev("sin clasificador: SinClasificador y NO se llama a Google", False)
-        except SinClasificador:
+        except SinClasificador as exc:
             rev("sin clasificador: SinClasificador y NO se llama a Google", usados == [])
+            rev("y el texto dice QUÉ hacer y DÓNDE: crear y activar al menos un tipo documental, en Configuración",
+                "ningún tipo documental activo" in str(exc) and "Crea y activa al menos uno" in str(exc) and "Configuración" in str(exc), str(exc))
+            rev("sin nombrar piezas internas (nada de «clasificador» ni de Google)", "clasificador" not in str(exc).lower() and "google" not in str(exc).lower(), str(exc))
     finally:
         ia._procesar = original  # type: ignore[assignment]
 
@@ -262,7 +265,7 @@ try:
     async def clasificar_falso(contenido, mime, tenant):
         recibidos.append(tenant)
         if tenant == org_e:
-            raise SinClasificador("Tu organización todavía no tiene clasificador: se crea al activar su primer tipo documental.")
+            raise SinClasificador("Todavía no se pueden clasificar documentos: tu organización no tiene ningún tipo documental activo. Crea y activa al menos uno en Configuración, Tipos documentales, y vuelve a intentarlo.")
         return {"categoria": "tipo-aaa", "confianza": 90}
 
     router_ia.ia.clasificar_documento = clasificar_falso  # type: ignore[assignment]
@@ -277,7 +280,7 @@ try:
     rev("el administrador de plataforma NO puede clasificar con el clasificador de una organización", c.post("/ia/clasificar", params={"tenant": org_a}, files=pdf, headers=cab(bearer_super)).status_code == 403 and not recibidos)
     rev("pero sí con el de su espacio", c.post("/ia/clasificar", params={"tenant": "demo"}, files=pdf, headers=cab(bearer_super)).status_code == 200 and recibidos == ["demo"])
     r = c.post("/ia/clasificar", params={"tenant": org_e}, files=pdf, headers=cab(e_admin))
-    rev("una organización sin clasificador: 409 con una frase que se puede mostrar", r.status_code == 409 and "todavía no tiene clasificador" in r.json()["detail"], r.text[:200])
+    rev("una organización sin clasificador: 409 con una frase que se puede mostrar", r.status_code == 409 and "ningún tipo documental activo" in r.json()["detail"], r.text[:200])
 
     titulo("13 · La limpieza de huérfanos y los clasificadores de organización")
     en_google = [
