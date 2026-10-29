@@ -64,8 +64,8 @@ def _tenant_invalido(exc: ValueError) -> HTTPException:
     tags=["Expedientes"],
     summary="Listar los expedientes de una organización",
     description=(
-        "Todos los expedientes de la organización, en el orden de su creación, cada uno con su tipo y cuántos documentos tiene. Con `tipo`, "
-        "solo los de ese tipo de expediente."
+        "Todos los expedientes de la organización, en el orden de su creación, cada uno con su tipo, cuántos documentos tiene "
+        "(`totalDocumentos`) y cuánto pesan en total (`tamanoBytes`). Con `tipo`, solo los de ese tipo de expediente."
     ),
 )
 def listar(

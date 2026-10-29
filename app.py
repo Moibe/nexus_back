@@ -330,16 +330,31 @@ _PISTAS_SQLSTATE = {
     "/health/db",
     tags=["Utilidad"],
     summary="Health Check de SQL Server",
-    description="Confirma que la API alcanza SQL Server y devuelve versión y base conectada.",
+    description=(
+        "Confirma que la API alcanza SQL Server y devuelve versión y base conectada, y si el ESQUEMA de esa base está al día con el código: "
+        "`esquema` dice la última migración aplicada y la que este código espera. Si a la base le faltan migraciones, `status` es "
+        "`esquema_desfasado` (el código usaría algo que la base todavía no tiene). Que la base vaya ADELANTE del código es normal: se migra antes de desplegar."
+    ),
 )
 def health_db():
     try:
         # El import va DENTRO del try: si falta el runtime de ODBC truena con
         # ImportError, y este endpoint tiene que reportarlo como estado, no
         # devolver un 500 pelón.
-        from db.sqlserver import probar_conexion
+        from db.sqlserver import probar_conexion, version_de_esquema
+        from migraciones.corredor import descubrir
 
-        return {"status": "ok", **probar_conexion()}
+        datos = probar_conexion()
+        esperado = len(descubrir())
+        aplicado = version_de_esquema()
+        al_dia = aplicado is not None and aplicado >= esperado
+        respuesta = {"status": "ok" if al_dia else "esquema_desfasado", **datos, "esquema": {"aplicado": aplicado, "esperado": esperado, "al_dia": al_dia}}
+        if not al_dia:
+            respuesta["pista"] = (
+                f"A la base le faltan migraciones: tiene {aplicado if aplicado is not None else 'ninguna anotada'} y este código espera la {esperado}. "
+                "Se aplican con `python -m migraciones aplicar --base <esta base> --confirmar` (o con el deploy)."
+            )
+        return respuesta
     except ConfiguracionIncompleta as exc:
         # Este mensaje lo escribimos nosotros y solo nombra variables que faltan
         # — sin valores. Se puede mostrar tal cual, y es lo que hace la

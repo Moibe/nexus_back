@@ -1,9 +1,16 @@
-"""Acceso a SQL Server vía stored procedures.
+"""Acceso a SQL Server vía stored procedures — el diccionario VIEJO.
 
 Regla del proyecto: esta API es el ÚNICO consumidor de la base. El front nunca
-habla con SQL Server directo — pasa por aquí. Y aquí nunca se escribe SQL de
-tablas: el DBA expone stored procedures y este módulo solo los invoca. Si algo
-requiere un query nuevo, se le pide un SP, no se escribe el SELECT aquí.
+habla con SQL Server directo — pasa por aquí.
+
+Lo que este módulo toca son los esquemas `documents`, `security` y `reference`,
+y los toca SOLO por los stored procedures que dejó el DBA: ahí no se escribe SQL
+de tablas. Desde la decisión del 2026-10-21 («Nexus sin stored procedures») esos
+SPs quedaron CONGELADOS como especificación del dominio, así que tampoco se piden
+nuevos: lo que nace de hoy en adelante vive en el esquema `nexus`, con su esquema
+versionado en `migraciones/`, y se escribe con SQL directo desde `db/tablas.py`.
+Este módulo se queda para lo que ya existía, y aporta además `version_de_esquema()`,
+que es cómo `/health/db` sabe si la base va al día con el código.
 
 pyodbc es síncrono; los endpoints de FastAPI que lo usan se declaran con `def`
 (no `async def`) para que FastAPI los corra en su threadpool y no bloquee el
@@ -134,6 +141,22 @@ def ejecutar_sp_multiple(nombre: str, params: dict | None = None, commit: bool =
         if commit:
             conexion.commit()
         return sets
+    finally:
+        conexion.close()
+
+
+def version_de_esquema() -> int | None:
+    """La última migración aplicada a ESTA base (`nexus.schemaMigrations`, ver `migraciones/`), o `None` si la tabla de control todavía no existe.
+    Solo lee, con el usuario de la API (`db_datareader`)."""
+    conexion = obtener_conexion()
+    try:
+        cursor = conexion.cursor()
+        cursor.execute("SELECT OBJECT_ID('nexus.schemaMigrations', 'U')")
+        if cursor.fetchone()[0] is None:
+            return None
+        cursor.execute("SELECT MAX(version) FROM nexus.schemaMigrations")
+        fila = cursor.fetchone()
+        return None if fila is None or fila[0] is None else int(fila[0])
     finally:
         conexion.close()
 

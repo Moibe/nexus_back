@@ -405,7 +405,7 @@ SPs del DBA; solo cambian `servicios/bandeja.py` y
 
 **Un tenant por organización** (desde el 2026-10-09, HU11). El front saca el tenant de la organización de la
 sesión (`tenantDe`); el administrador de plataforma, que no tiene organización, opera en el espacio de plataforma:
-`NEXUS_TENANT` en el `.env` del front (default `demo`). Y desde el 2026-10-14 este back no se fía de ese cálculo: ver
+`NEXUS_TENANT` en el `.env` del front (default `plataforma`; hasta el 2026-10-26 era `demo`). Y desde el 2026-10-14 este back no se fía de ese cálculo: ver
 «Aislamiento entre organizaciones», al final.
 
 **El dominio de los clientes** es `biblioratum-api.buzzword.com.mx` (proxy de
@@ -1577,7 +1577,7 @@ minutos), que esa persona pueda operar en ese tenant:
 
 - Si pertenece a una organización, **solo en la suya** (su membresía, con el guid exacto).
 - El **administrador de plataforma**, que no pertenece a ninguna, opera en el *espacio de plataforma*: cualquier tenant que
-  **no** sea el guid de una organización (`demo`, el heredado `csi`…). **Nunca** en el de una organización: para eso están las
+  **no** sea el guid de una organización (`plataforma`, antes `demo`; el heredado `csi`…). **Nunca** en el de una organización: para eso están las
   rutas `/organizaciones/…`. El guid se compara sin espacios en los extremos y sin distinguir mayúsculas, porque el almacén
   recorta el tenant y un montaje que no distingue mayúsculas llevaría `ABC…` al directorio de `abc…`: escribirlo así no es un
   rodeo.
@@ -1721,26 +1721,47 @@ responde 404 igual que uno que no existe.
 es un 409 `conflicto` con `revisionActual` y no se pisa nada. Crear con un id que ya existe —en esta organización o en
 otra— también es 409.
 
-**Ids.** Los inventa el cliente (`tipo-` + 32 hexadecimales). Tienen que ser únicos en TODAS las organizaciones, porque el
-clasificador es global y nombra cada categoría con el id.
+**Ids.** Los inventa el cliente (`tipo-` + 32 hexadecimales). Tienen que ser únicos en TODAS las organizaciones, porque el id
+nombra cada categoría del clasificador y cada procesador en Google, y el registro lo busca sin mirar el tenant.
 
 **Auditoría.** Crear, borrar, cambiar de estado y calibrar dejan `DOCUMENT_TYPE_CREATED`, `DOCUMENT_TYPE_DELETED`,
 `DOCUMENT_TYPE_STATE_CHANGED` y `DOCUMENT_TYPE_CALIBRATED`, con quién y de qué organización. Guardar a secas, no.
 
-### El clasificador sale de este registro
+### El clasificador sale de este registro, y es de cada organización
 
-`POST /procesadores/clasificador/sincronizar` **ya no recibe cuerpo**: arma las categorías con los tipos `activo` de TODAS las
-organizaciones, leídos del registro (antes los mandaba el navegador, y el último que sincronizaba pisaba a los demás). Por eso
-lo que cambia de estado hay que **guardarlo antes** de llamar. `POST /procesadores/clasificador/asegurar` compara lo que Google
-tiene (nombre y descripción de cada categoría) con el registro y sincroniza solo si difieren; el front lo llama una vez por
-sesión, antes de clasificar.
+`POST /procesadores/clasificador/sincronizar?tenant=` **no recibe cuerpo**: arma las categorías con los tipos `activo` de ESA
+organización, leídos del registro (antes los mandaba el navegador, y el último que sincronizaba pisaba a los demás). Por eso lo que
+cambia de estado hay que **guardarlo antes** de llamar. `POST /procesadores/clasificador/asegurar?tenant=` compara lo que Google
+tiene (nombre y descripción de cada categoría) con el registro y sincroniza solo si difieren —o lo crea, si la organización todavía
+no tiene—; el front lo llama una vez por sesión, antes de clasificar. `GET /procesadores/clasificador?tenant=` es el diagnóstico (404
+si no tiene). Piden la llave de servicio **y** el JWT de la persona (HU11): sincronizar y ver, el rol que administra; asegurar y
+clasificar (`POST /ia/clasificar?tenant=`), cualquiera de la organización. Quien no es de ella recibe 403 `sin_acceso`, y el
+administrador de plataforma solo toca el clasificador de SU espacio, nunca el de una organización.
+
+**Un clasificador por organización (2026-10-26).** Hasta entonces era UNO para todo el sistema, con los tipos activos de todas: un
+documento de una organización podía caer en un tipo de otra, lo que una guardaba cambiaba el clasificador de las demás y los
+nombres y descripciones de los tipos de cada cliente quedaban a la vista de todos en el esquema. Ahora (`servicios/clasificadores.py`):
+
+- el de una organización se llama `nexusdoc-clasificador--{guid}` en Google y su id queda en `clasificadores.jsonl`; **se crea la
+  primera vez que se sincroniza** (al activar su primer tipo), no al darla de alta;
+- el del espacio de plataforma (cualquier tenant que no es una organización: `plataforma`, antes `demo`) sigue siendo el de siempre, el del `.env`
+  (`DOCAI_CLASIFICADOR_ID`, `nexusdoc-clasificador`), así que no hubo que migrar nada;
+- el id se guarda y no se busca por nombre en cada llamada (Document AI no filtra `processors.list`); por nombre EXACTO solo se busca la
+  primera vez —para adoptar el que un intento anterior dejó a medias— o si el procesador se borró a mano (se vuelve a crear);
+- dos sincronizaciones a la vez de la misma organización crean un solo clasificador (candado por tenant);
+- clasificar sin clasificador es un 409 con una frase que se puede mostrar («Tu organización todavía no tiene clasificador…»).
+
+Los límites de Google no estorban: no hay tope de procesadores por proyecto, y el techo real (120 páginas por minuto de clasificación en
+línea) es del PROYECTO, no de cada procesador. Cuesta US$5 por 1,000 páginas clasificadas, igual con uno que con cien clasificadores; el
+hospedaje (US$0.05 por hora) es solo de versiones propias desplegadas, y estos clasificadores usan versiones preentrenadas de Google.
 
 ### Procesadores huérfanos
 
 Al pasar el catálogo al servidor sin migrar lo de cada computadora, los extractores que esas pruebas crearon en Google quedaron
 sin dueño. `limpiar_procesadores_huerfanos.py` los lista (solo lectura) y, con `--borrar`, borra ÚNICAMENTE los que ningún tipo
-señala —ni como vigente, ni en su historial—, pidiendo escribir BORRAR. Nunca toca el clasificador, el extractor de INE del
-`.env` ni lo que no se llame `nexusdoc--…`. Se corre en el servidor (necesita las credenciales de Google y el almacén).
+señala —ni como vigente, ni en su historial—, pidiendo escribir BORRAR. Nunca toca el clasificador de plataforma, el extractor de INE
+del `.env` ni lo que no se llame `nexusdoc--…`. El clasificador de una organización que existe queda a salvo; el de una que ya NO existe
+(se purgó con `purgar_creado_por.py`) sí sale como huérfano. Se corre en el servidor (necesita las credenciales de Google y el almacén).
 
 `--antes-de AAAA-MM-DD` es un corte de seguridad: solo borra los huérfanos creados ANTES de esa fecha y lista aparte (sin tocar) los
 más recientes. Hay que usarlo cuando el registro que lee el script pueda no ser el de todos los ambientes que comparten el proyecto de
@@ -1753,8 +1774,8 @@ Google: lo creado antes del 2026-10-15 (cuando el catálogo pasó al servidor) n
 - **`/procesadores/*` y `/ia/extraer` siguen sin comprobar la organización** (lo vio HU11): quien tiene la llave de servicio y un
   `procesadorId` puede usarlo. Falta ligarlos al registro.
 - **Un tipo en edición sale del clasificador** (`crearNuevaVersion` lo pasa a `borrador`): mientras alguien edita el «INE» de su
-  organización, el clasificador deja de conocerlo en la siguiente sincronización. Es lo de siempre, pero ahora el clasificador es
-  de todos.
+  organización, el clasificador de ESA organización deja de conocerlo en la siguiente sincronización (desde el 2026-10-26 ya no
+  afecta a las demás).
 - **El archivo crece con cada guardado** (cada uno escribe el tipo entero). Con el uso de hoy basta; el remedio es compactarlo o
   la base.
 - **Los ejemplos subidos** (`/archivos`, bajo el prefijo de cada organización) que ya estaban en el almacén sin tipo que los
@@ -1764,10 +1785,124 @@ Google: lo creado antes del 2026-10-15 (cuando el catálogo pasó al servidor) n
 
 ```
 .venv/Scripts/python verificar_tipos_documentales.py
+.venv/Scripts/python verificar_clasificadores.py
 ```
 
 Offline: crear, ver desde otra persona, 409 por revisión, aislamiento, validación, orden, auditoría, clasificador sin cuerpo con
-los activos de las dos organizaciones, `asegurar`, y qué procesadores quedarían huérfanos.
+los activos de CADA organización, `asegurar`, y qué procesadores quedarían huérfanos. `verificar_clasificadores.py` pone un Google falso
+y comprueba el registro, crear/reutilizar/adoptar/recrear el clasificador de cada organización, el candado, que clasificar use el de quien
+pide y que las rutas pidan organización y sesión.
+
+## Migraciones de la base (2026-10-28)
+
+Nexus **no usa stored procedures** (decisión del 2026-10-21): el esquema de SQL Server se versiona aquí, en `migraciones/NNNN_nombre.sql`, y lo aplica el
+corredor con el usuario de migraciones `usrNexusDDL` (NEX-491). Tres bases, una por ambiente: `IA_Nexus_Dev` (dev), `IA_Nexus_Staging` (staging) e
+`IA_Nexus` (producción); en el servidor cada back apunta a la suya con `SQLSERVER_DB` (ver `GET /health/db`, que dice a qué base habla).
+
+```
+python -m migraciones estado  --base IA_Nexus_Dev
+python -m migraciones aplicar --base IA_Nexus_Dev                      # simulación: todo en una transacción que se deshace
+python -m migraciones aplicar --base IA_Nexus_Dev --confirmar
+python -m migraciones marcar  --base IA_Nexus_Staging --version 1 --confirmar     # da por aplicada una que la base YA tiene
+python -m migraciones nueva   "agrega la tabla de tipos documentales"            # crea el siguiente archivo
+```
+
+**Lo que protege** (el detalle y el porqué, en el encabezado de `migraciones/corredor.py`): `--base` es obligatorio y solo acepta esas tres; sin `--confirmar`
+es una simulación que no deja ni la tabla de control; **cada migración corre en su propia transacción** (si la 3 falla, la 1 y la 2 quedan y la 3 no deja
+nada a medias, ni su DDL); **la cadena dev → staging → prod**: una migración solo entra a staging si ya está en dev con la MISMA suma de comprobación, y a
+producción si ya está en staging (no hay forma de saltársela); producción pide además `--produccion`; una migración aplicada **no se edita** (el corredor se
+niega si su suma cambió: se corrige con otra); un candado de aplicación (`sp_getapplock`) impide dos corredores a la vez.
+
+**Las credenciales** salen de `~/.nexus-sql-ddl.env` (o de la ruta de `NEXUS_DDL_ENV`), con `SQLSERVER_HOST`, `SQLSERVER_PORT`, `SQLSERVER_USER=usrNexusDDL`,
+`SQLSERVER_PASSWORD` y, si hace falta, `SQLSERVER_DRIVER`. Viven SOLO en la laptop de quien migra: **no** van en el `.env` de la API ni en el del servidor, y las
+migraciones **no corren solas al desplegar**. El corredor se niega a correr con cualquier otro usuario.
+
+**La línea base `0001_linea_base.sql`** se GENERA del catálogo (`python -m migraciones.linea_base --base IA_Nexus_Dev --salida migraciones/0001_linea_base.sql`;
+con `--comparar archivo` dice si una base sigue siendo igual a él): las 36 tablas con sus restricciones, índices y llaves foráneas, los catálogos de `reference`
+y `security.roles` con sus filas, la secuencia de organizaciones en su estado inicial y las 4 funciones y los 32 procedimientos congelados. **Las tres bases de
+CSI son IDÉNTICAS a ese archivo** (comprobado el 2026-10-28 con `--comparar`), así que en ellas la 0001 se MARCA, no se ejecuta; solo se ejecuta en una base
+vacía (una base nueva, o el SQL Server desechable de las pruebas). Tiene guardas: se niega si faltan los esquemas (los crea el DBA: `usrNexusDDL` no puede) o si la
+base ya tiene el esquema. No incluye usuarios ni permisos (del DBA).
+
+**Cómo se agrega una migración:** (1) `python -m migraciones nueva "..."` y se escribe el SQL (lotes separados por una línea `GO`); (2) se prueba contra un SQL
+Server desechable con `verificar_migraciones_sql.py` (necesita Docker); (3) `aplicar` en dev, luego en staging, luego en producción, de a una y revisando el
+archivo antes; (4) un cambio de esquema en la base real que no esté en un archivo es un error: la prueba del círculo (`generar(leer_catalogo(base))` contra una
+base construida desde cero con los archivos) lo detecta.
+
+**Dentro del deploy (decisión de Moibe, 2026-10-28: «me gusta lo de que viva en el deploy»).** El `deploy.sh` de webhook-central hace `git pull` → `pip install` → `POST_BUILD`
+→ `pm2 restart`. La migración va en el `POST_BUILD` de cada back, o sea DESPUÉS de bajar el código y ANTES de reiniciar: primero la base y luego el código, sin que nadie
+tenga que acordarse. Si la migración falla, el `POST_BUILD` sale con error, el deploy no reinicia y la app vieja sigue con su base intacta. Una línea por ambiente
+(cada uno solo migra la base que usa SU back; `--esperar-env .env` lo comprueba contra el `SQLSERVER_DB` del `.env`):
+
+```
+dev      venv/bin/python -m migraciones aplicar --base IA_Nexus_Dev     --confirmar --esperar-env .env
+staging  venv/bin/python -m migraciones aplicar --base IA_Nexus_Staging --confirmar --esperar-env .env
+prod     venv/bin/python -m migraciones aplicar --base IA_Nexus         --confirmar --produccion --esperar-env .env
+```
+
+Requisitos en el servidor: (1) `~/.nexus-sql-ddl.env` del usuario que corre el hook (`mbriseno`), con `chmod 600`, FUERA de los repos y NO en el `.env` de la API (la API nunca lo carga);
+(2) que `POST_BUILD` corra con la carpeta del proyecto como directorio de trabajo y que un código de salida distinto de cero aborte el deploy antes del `pm2 restart`;
+(3) que la línea base (0001) esté ya MARCADA en esa base, o el corredor intentará ejecutarla y su guarda lo detendrá. La cadena sigue mandando: el deploy de staging solo migra lo
+que dev ya tiene, y el de producción lo que ya tiene staging. **Ojo al activarlo:** el `POST_BUILD` de un ambiente solo se agrega cuando su rama ya trae la carpeta `migraciones/`
+(si no, un deploy de código viejo fallaría por «No module named migraciones»): primero se promueve el código y luego se agrega la línea. Además, `GET /health/db` dice si el esquema
+de la base está al día con el código: `esquema_desfasado` si le faltan migraciones (la base ADELANTE del código es normal).
+
+### El piloto: los tipos documentales en SQL (migración `0002`, 2026-10-28)
+
+La primera entidad del producto que deja el almacén y pasa a una tabla es el catálogo de tipos documentales: `nexus.documentTypes`.
+⚠️ No confundirla con `reference.documentTypes`, que es un catálogo global del diccionario viejo, congelado como especificación.
+
+**Son DOS almacenamientos tras la misma puerta.** `servicios/tipos_documentales.py` no guarda nada: elige, en cada llamada, entre
+
+- `tipos_documentales_sql.py` — la tabla. Es lo que corre donde el `.env` trae `SQLSERVER_HOST`: dev, staging y producción.
+- `tipos_documentales_archivo.py` — el JSONL de siempre. Es lo que corre donde no hay base: la laptop (sus `SQLSERVER_*` están
+  vacíos a propósito) y todas las pruebas offline, que seguirían siendo imposibles de correr si los tipos exigieran SQL.
+
+Lo que los dos comparten —qué es un tipo válido, cómo se ve hacia afuera, sus errores— vive en `tipos_documentales_comun.py`, así
+que la validación es una sola. **No se sincronizan ni se migran entre sí**: lo que se da de alta en la laptop no aparece en dev.
+Y las herramientas que reescriben registros del almacén (`renombrar_tenant.py`, `purgar_creado_por.py`) solo ven el JSONL: donde
+los tipos ya viven en SQL, no los tocan.
+
+**Qué gana al estar en la base:** la regla de que un id no se repite en NINGUNA organización ya no depende de Python
+(`UQ_documentTypes_publicId`); nombre, estado y procesador se calculan del JSON y se guardan solos (columnas `PERSISTED`: no
+pueden desfasarse, y se pueden indexar y restringir); y guardar, borrar y reordenar pasan por una transacción con el renglón
+bloqueado (`UPDLOCK`), en vez de depender del candado de proceso del almacén, que con más de un worker de uvicorn dejaba de
+alcanzar. Lo que NO cambió: el tipo sigue siendo una caja de JSON (`dataJson`), igual que lo maneja el front.
+
+Dos trampas que costaron encontrar y conviene recordar: en una base con intercalación `CI` (la de CSI) un `CHECK (col = lower(col))`
+**siempre es cierto** y no prohíbe nada — hay que comparar con `COLLATE … _BIN2`; y un `CHECK` deja pasar `NULL`, así que una
+columna calculada que puede no venir en el JSON se restringe con `IS NOT NULL AND …` por delante.
+
+**Verificación:** `verificar_tipos_documentales.py` (offline, el comportamiento del dominio por la API) y
+`verificar_tipos_documentales_sql.py`, que levanta un SQL Server desechable, aplica `0001` y `0002`, y corre **la misma batería
+contra los dos almacenamientos para comparar sus 32 observaciones una por una** — que es lo que impide que los dos caminos se
+separen sin que nadie se entere. Comprueba además que `usrNexus` (el usuario de la API) puede leer y escribir una tabla recién
+creada del esquema `nexus`, y que un id repetido no se cuela ni escribiendo SQL por fuera del servicio.
+
+**Verificación:** `verificar_corredor.py`, `verificar_linea_base.py` y `verificar_health_esquema.py` (sin base, rápidas) y `verificar_migraciones_sql.py` (SQL Server de verdad en un contenedor:
+aplica la línea base a una base vacía y comprueba el círculo completo, la simulación que no deja nada, la transacción por migración, la cadena, `marcar`, el candado
+y que los procedimientos congelados funcionan con los permisos de `usrNexus`).
+
+## El espacio de plataforma se llama `plataforma` (2026-10-26)
+
+El espacio donde opera el administrador de plataforma (el que no es de ninguna organización) se llamaba `demo`, un nombre que parecía el de una
+empresa de mentira. Ahora es `plataforma`: lo fija el front (`NEXUS_TENANT`, `src/lib/server/nexus.ts`), y el back no sabe de ese nombre (para él
+es «cualquier tenant que no es una organización»). Cambiar el nombre en el front NO alcanza: lo que el espacio ya tenía está guardado bajo el
+nombre viejo. `renombrar_tenant.py` lo pasa CONSERVÁNDOLO:
+
+```
+.venv/Scripts/python renombrar_tenant.py                 # simulación de demo → plataforma
+.venv/Scripts/python renombrar_tenant.py --confirmar
+.venv/Scripts/python renombrar_tenant.py --de plataforma --a demo --confirmar     # lo deshace
+```
+
+Respalda `.registro/`, cambia el tenant de los renglones de ese espacio en los registros compartidos (tipos documentales, procesos, llaves,
+webhooks, entregas), reescribe las rutas de archivo que llevan su nombre (`demo/ab/cd/<sha256>` → `plataforma/…`: bandeja, documentos y los
+ejemplos de cada tipo documental), renombra sus registros propios (`bandeja-`, `documentos-`, `expedientes-`, `tipos-expediente-`) y su carpeta
+del almacén, y deja `PLATFORM_TENANT_RENAMED` en la bitácora. La bitácora NO se reescribe (es evidencia de solo agregar). Se niega si el origen o el
+destino es el guid de una organización o si el destino ya tiene datos. Los procesadores de Google no dependen del nombre del tenant, así que siguen
+siendo los mismos. Orden al desplegar: primero el front con el default nuevo, después correr el script; entre una cosa y otra el administrador de
+plataforma ve el espacio vacío. Verificación offline: `verificar_renombre_tenant.py`.
 
 ## Administradores de plataforma desde Nexus Monitor (2026-10-20)
 
@@ -1815,17 +1950,19 @@ decisiones y lo que falta están en [`docs/modelo-entidades.md`](docs/modelo-ent
 |---|---|---|
 | `GET /tipos-expediente/?tenant=` | los tipos de la organización, cada uno con su esquema (`tiposDocumentales`, con id y nombre) y su `totalExpedientes` | cualquiera que opere en ella |
 | `GET /tipos-expediente/{id}?tenant=` | un tipo, su esquema y cuántos expedientes tiene | ídem |
-| `PUT /tipos-expediente/{id}/esquema` `{tenant, tiposDocumentales}` | reemplaza el esquema por esa lista ordenada de tipos documentales de la misma organización (sin repetidos, hasta 50); idempotente (`cambiado: false` si es la misma); `[]` lo deja sin esquema. **Describe, no restringe:** los expedientes de ese tipo siguen recibiendo cualquier documento | `roles.PUEDEN_ADMINISTRAR` |
-| `POST /tipos-expediente/` `{tenant, nombre}` | crea un tipo (201); el nombre es único por organización, sin distinguir mayúsculas ni espacios de más: uno repetido da 409 `ya_existe` | `roles.PUEDEN_ADMINISTRAR` |
-| `GET /expedientes/?tenant=&tipo=` | los expedientes de la organización, cada uno con su `tipo` y su `totalDocumentos`; con `tipo`, solo los de ese tipo | cualquiera que opere en ella |
-| `GET /expedientes/{id}?tenant=` | el expediente con sus documentos completos, en el orden en que se agregaron | ídem |
+| `PUT /tipos-expediente/{id}/esquema` `{tenant, tiposDocumentales}` | reemplaza el esquema por esa lista ordenada de tipos documentales de la misma organización (sin repetidos, hasta 50); como al crear, **pide al menos uno**: `[]` da 400 y el esquema anterior se queda; idempotente (`cambiado: false` si es la misma). **Describe, no restringe:** los expedientes de ese tipo siguen recibiendo cualquier documento (es lo mismo que `PATCH` con solo el esquema) | `roles.PUEDEN_ADMINISTRAR` |
+| `POST /tipos-expediente/` `{tenant, nombre, tiposDocumentales}` | crea un tipo (201) **con su esquema**: `tiposDocumentales` es obligatorio y lleva al menos un tipo documental de la misma organización (sin repetidos, hasta 50; lista vacía, repetidos o uno que no existe o es de otra organización dan 400; sin el campo, 422); el tipo y su esquema se guardan en un solo evento. El nombre es único por organización, sin distinguir mayúsculas ni espacios de más: uno repetido da 409 `ya_existe` | `roles.PUEDEN_ADMINISTRAR` |
+| `PATCH /tipos-expediente/{id}` `{tenant, nombre?, tiposDocumentales?}` | **edita un tipo ya creado**: cambia el nombre, el esquema o los dos en una llamada (lo que no viene no se toca; si no viene ninguno, 400). El `id` no cambia y sus expedientes ven el nombre nuevo; el nombre sigue siendo único (otro tipo con ese nombre: 409 `ya_existe`; las mayúsculas del propio nombre sí se pueden cambiar); el esquema reemplaza al anterior y pide lo mismo que al crear (al menos un tipo documental de la organización, sin repetidos, hasta 50; `[]` da 400). **Todo se comprueba antes de escribir:** si el nombre se repite o un tipo documental no existe, no cambia ni lo uno ni lo otro. Idempotente: responde `{cambiado, nombreCambiado, esquemaCambiado, tipo}` y lo que ya estaba igual no se escribe | `roles.PUEDEN_ADMINISTRAR` |
+| `DELETE /tipos-expediente/{id}?tenant=` | lo borra y libera su nombre; **solo si no tiene expedientes**: con expedientes, 409 `con_expedientes` (con `total`), porque todo expediente es instancia de un tipo; la cuenta y el borrado son atómicos frente a crear expedientes | `roles.PUEDEN_ADMINISTRAR` |
+| `GET /expedientes/?tenant=&tipo=` | los expedientes de la organización, cada uno con su `tipo`, su `totalDocumentos` y su `tamanoBytes` (lo que pesan sus documentos juntos; se calcula al consultar); con `tipo`, solo los de ese tipo | cualquiera que opere en ella |
+| `GET /expedientes/{id}?tenant=` | el expediente (con los mismos totales) y sus documentos completos, en el orden en que se agregaron | ídem |
 | `GET /expedientes/documentos?tenant=&sin_expediente=` | los documentos y los expedientes en que está cada uno; `true` = solo el void, `false` = solo los organizados | ídem |
 | `POST /expedientes/` `{tenant, nombre, tipoId}` | crea un expediente vacío (201) como instancia de ese tipo, que debe ser de la misma organización (si no, 404) | `roles.PUEDEN_ORGANIZAR` |
 | `PUT /expedientes/{id}/documentos/{documento_id}?tenant=` | mete un documento; idempotente (`agregado: false` si ya estaba) | ídem |
 | `DELETE /expedientes/{id}/documentos/{documento_id}?tenant=` | lo saca; el documento NO se borra y, si era su último expediente, vuelve al void | ídem |
 
 Todas piden la llave de servicio **y** el JWT de la persona (HU11); un id de otra organización responde 404 como si no existiera. Crear, meter y
-sacar dejan `CASE_CREATED` (con el tipo), `CASE_DOCUMENT_ADDED` y `CASE_DOCUMENT_REMOVED` en la bitácora, crear un tipo deja `CASE_TYPE_CREATED` y cambiar su esquema deja `CASE_TYPE_SCHEMA_CHANGED` (con el esquema antes y después; no se repite si no cambió).
+sacar dejan `CASE_CREATED` (con el tipo), `CASE_DOCUMENT_ADDED` y `CASE_DOCUMENT_REMOVED` en la bitácora, crear un tipo deja `CASE_TYPE_CREATED` (con su esquema en `tiposDocumentales`; el esquema inicial no deja además un `CASE_TYPE_SCHEMA_CHANGED`), cambiar su esquema después `CASE_TYPE_SCHEMA_CHANGED` (con el esquema antes y después), renombrarlo `CASE_TYPE_RENAMED` (con el nombre antes y después) y borrarlo `CASE_TYPE_DELETED`; una edición que cambia las dos cosas deja las dos anotaciones, y el esquema y el nombre no repiten rastro si no cambiaron.
 Los roles de solo consulta (Compliance, Auditor y Viewer) reciben 403 `sin_permiso` al intentar organizar; Analista y Operador organizan pero no
 crean tipos (propuesta de producto, pendiente de confirmar con César).
 

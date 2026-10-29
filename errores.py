@@ -22,6 +22,14 @@ class ConfiguracionIncompleta(RuntimeError):
     """
 
 
+class SinClasificador(RuntimeError):
+    """Esta organización todavía no tiene clasificador en Document AI.
+
+    Su mensaje SÍ se puede mostrar: lo escribimos nosotros y no nombra nada de Google. El clasificador de una organización
+    se crea la primera vez que se sincroniza (`servicios/procesadores.sincronizar_clasificador`), o sea al activar su primer
+    tipo documental; hasta entonces clasificar no tiene a dónde ir."""
+
+
 class ErrorDocumentAI(RuntimeError):
     """Document AI rechazó una llamada concreta.
 

@@ -13,8 +13,8 @@ Lo que se prueba:
 - lo que no es un tipo (id raro, sin nombre, estado inventado, enorme) se rechaza, y lo que el servidor pone no se puede forzar;
 - el orden de la biblioteca se guarda por organización;
 - crear, borrar, cambiar de estado y calibrar dejan rastro con quién; guardar a secas, no;
-- el clasificador se sincroniza SIN cuerpo, con los tipos activos de TODAS las organizaciones, y `asegurar` solo corrige si hay
-  desfase.
+- el clasificador de CADA organización se sincroniza SIN cuerpo, con los tipos activos de ESA organización, y `asegurar` solo corrige
+  si hay desfase (o lo crea si falta); quien no es de la organización recibe 403 y el administrador de plataforma solo toca el suyo.
 """
 
 import json
@@ -37,6 +37,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from app import app  # noqa: E402
 from routers import procesadores as router_procesadores  # noqa: E402
 from servicios import auth, procesadores_huerfanos, tipos_documentales, usuarios  # noqa: E402
+from errores import SinClasificador  # noqa: E402
 from servicios.procesadores import DocumentAIError  # noqa: E402
 
 fallos = 0
@@ -229,56 +230,99 @@ try:
     r = guardar(a_admin, org_a, ine, {**activo, "calibradoEn": "2026-10-15T01:00:00Z", "descripcion": "otra"}, r.json()["revision"])
     rev("guardar otra vez lo ya calibrado no repite el rastro", len(auditoria("DOCUMENT_TYPE_CALIBRATED")) == 1)
 
-    titulo("10 · El clasificador sale de ESTE registro, de todas las organizaciones")
+    titulo("10 · Cada organización tiene SU clasificador, armado con SUS tipos activos de ESTE registro")
     guardar(b_admin, org_b, otro_b, tipo("De Beta", estado="activo", version=1, procesadorId="proc-beta-1"), 1)
     archivado = nuevo_id()
     guardar(a_admin, org_a, archivado, tipo("Viejo", estado="archivado", procesadorId="proc-viejo"), 0)
-    activos = tipos_documentales.tipos_activos()
-    rev("`tipos_activos` trae los activos de las DOS organizaciones y nada más", sorted(t["id"] for t in activos) == sorted([ine, otro_b]), str(activos))
-    rev("con nombre y descripción (que es prompt)", all(t["nombre"] and t["descripcion"] for t in activos))
+    activos_a = tipos_documentales.tipos_activos(org_a)
+    activos_b = tipos_documentales.tipos_activos(org_b)
+    rev("`tipos_activos` de A trae solo el activo de A (ni el archivado, ni los de B)", [t["id"] for t in activos_a] == [ine], str(activos_a))
+    rev("y el de B, solo el de B", [t["id"] for t in activos_b] == [otro_b], str(activos_b))
+    rev("con nombre y descripción (que es prompt)", all(t["nombre"] and t["descripcion"] for t in activos_a + activos_b))
+    rev("de una organización que no existe: ninguno", tipos_documentales.tipos_activos("no-existe") == [])
 
-    llamadas: list[list[dict]] = []
+    llamadas: list[tuple[str, list[dict]]] = []
 
-    async def sincronizar_falso(tipos):
-        llamadas.append(tipos)
-        return {"procesadorId": "clas-1", "creado": False}
+    async def sincronizar_falso(tipos, tenant):
+        llamadas.append((tenant, tipos))
+        return {"procesadorId": f"clas-{tenant[:4]}", "creado": False}
 
-    esquema_google = {"categorias": []}
+    esquema_google: dict = {"categorias": []}
 
-    async def consultar_falso():
+    async def consultar_falso(tenant):
         if esquema_google.get("falla"):
             raise DocumentAIError("no existe", status_code=404)
+        if esquema_google.get("sin_clasificador"):
+            raise SinClasificador("Esta organización todavía no tiene clasificador: se crea al activar su primer tipo documental.")
         return esquema_google
 
     router_procesadores._sincronizar_clasificador = sincronizar_falso
     router_procesadores.consultar_esquema_clasificador = consultar_falso
 
-    r = c.post("/procesadores/clasificador/sincronizar", headers=cab())
-    rev("sincronizar SIN cuerpo: 200", r.status_code == 200 and r.json()["procesadorId"] == "clas-1", r.text[:200])
-    rev("recibió los tipos activos de las dos organizaciones", len(llamadas) == 1 and sorted(t["id"] for t in llamadas[0]) == sorted([ine, otro_b]), str(llamadas))
-    rev("lo que mande el cliente en el cuerpo no cuenta",
-        c.post("/procesadores/clasificador/sincronizar", json={"tipos": [{"id": "tipo-falso", "nombre": "Falso"}]}, headers=cab()).status_code == 200
-        and all(t["id"] != "tipo-falso" for t in llamadas[-1]))
+    def sincronizar(bearer, tenant, **kw):
+        return c.post("/procesadores/clasificador/sincronizar", params={"tenant": tenant}, headers=cab(bearer), **kw)
 
-    esperadas = router_procesadores._categorias_esperadas(tipos_documentales.tipos_activos())
+    def asegurar(bearer, tenant):
+        return c.post("/procesadores/clasificador/asegurar", params={"tenant": tenant}, headers=cab(bearer))
+
+    r = sincronizar(a_admin, org_a)
+    rev("sincronizar SIN cuerpo: 200", r.status_code == 200 and r.json()["procesadorId"] == f"clas-{org_a[:4]}", r.text[:200])
+    rev("recibió el tenant y SOLO los tipos activos de esa organización", len(llamadas) == 1 and llamadas[0][0] == org_a and [t["id"] for t in llamadas[0][1]] == [ine], str(llamadas))
+    sincronizar(b_admin, org_b)
+    rev("la otra organización sincroniza el suyo, con solo sus tipos", llamadas[-1][0] == org_b and [t["id"] for t in llamadas[-1][1]] == [otro_b], str(llamadas[-1]))
+    rev("lo que mande el cliente en el cuerpo no cuenta",
+        sincronizar(a_admin, org_a, json={"tipos": [{"id": "tipo-falso", "nombre": "Falso"}]}).status_code == 200
+        and all(t["id"] != "tipo-falso" for t in llamadas[-1][1]))
+    n = len(llamadas)
+    r = sincronizar(b_admin, org_a)
+    rev("sincronizar el clasificador de OTRA organización: 403 sin_acceso y no llega a Google", r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_acceso" and len(llamadas) == n, r.text[:200])
+    rev("sin sesión (solo la llave de servicio): 401", c.post("/procesadores/clasificador/sincronizar", params={"tenant": org_a}, headers=cab()).status_code == 401)
+    rev("sin decir de qué organización: 422", c.post("/procesadores/clasificador/sincronizar", headers=cab(a_admin)).status_code == 422)
+    rev("el administrador de plataforma, en SU espacio, puede", sincronizar(bearer_super, "demo").status_code == 422 and llamadas[-1][0] != "demo", "sin tipos activos en su espacio: 422")
+    rev("pero no en el clasificador de una organización", sincronizar(bearer_super, org_a).status_code == 403)
+
+    esperadas = router_procesadores._categorias_esperadas(tipos_documentales.tipos_activos(org_a))
     esquema_google["categorias"] = [{"name": n, "description": d} for n, d in esperadas] + [{"name": "otro", "description": "x"}]
     llamadas.clear()
-    r = c.post("/procesadores/clasificador/asegurar", headers=cab())
+    r = asegurar(a_admin, org_a)
     rev("asegurar con el clasificador al día: no sincroniza", r.status_code == 200 and r.json() == {"sincronizado": False, "motivo": "al_dia"} and not llamadas, r.text[:200])
+    # Con las categorías de B en el clasificador de A, A está desfasado: se compara contra SUS tipos, no contra los de todas.
+    esquema_google["categorias"] = [{"name": n, "description": d} for n, d in router_procesadores._categorias_esperadas(activos_b)] + [{"name": "otro", "description": "x"}]
+    r = asegurar(a_admin, org_a)
+    rev("y compara contra los tipos de SU organización (con los de B en Google, A está desfasado)", r.json()["motivo"] == "desfasado" and llamadas[-1][0] == org_a, r.text[:200])
+    esquema_google["categorias"] = [{"name": n, "description": d} for n, d in esperadas] + [{"name": "otro", "description": "x"}]
     esquema_google["categorias"][0]["description"] = "una descripción vieja"
-    r = c.post("/procesadores/clasificador/asegurar", headers=cab())
+    llamadas.clear()
+    r = asegurar(a_admin, org_a)
     rev("una descripción vieja cuenta como desfase: sincroniza", r.json() == {"sincronizado": True, "motivo": "desfasado"} and len(llamadas) == 1, r.text[:200])
     esquema_google["categorias"] = [{"name": n, "description": d} for n, d in esperadas][1:]
     llamadas.clear()
-    rev("una categoría que falta: sincroniza", c.post("/procesadores/clasificador/asegurar", headers=cab()).json()["motivo"] == "desfasado" and len(llamadas) == 1)
+    rev("una categoría que falta: sincroniza", asegurar(a_admin, org_a).json()["motivo"] == "desfasado" and len(llamadas) == 1)
     esquema_google["categorias"] = [{"name": n, "description": d} for n, d in esperadas] + [{"name": "tipo-borrado", "description": ""}]
     llamadas.clear()
-    rev("una categoría de más (un tipo que ya no existe): sincroniza", c.post("/procesadores/clasificador/asegurar", headers=cab()).json()["motivo"] == "desfasado" and len(llamadas) == 1)
+    rev("una categoría de más (un tipo que ya no existe): sincroniza", asegurar(a_admin, org_a).json()["motivo"] == "desfasado" and len(llamadas) == 1)
     esquema_google["falla"] = True
     llamadas.clear()
-    r = c.post("/procesadores/clasificador/asegurar", headers=cab())
+    r = asegurar(a_admin, org_a)
     rev("si Google no deja leerlo, lo sincroniza directo (crea lo que falte)", r.json() == {"sincronizado": True, "motivo": "ilegible"} and len(llamadas) == 1, r.text[:200])
-    rev("sin llave de servicio: 401", c.post("/procesadores/clasificador/asegurar").status_code == 401)
+    esquema_google.pop("falla")
+    esquema_google["sin_clasificador"] = True
+    llamadas.clear()
+    r = asegurar(a_admin, org_a)
+    rev("si la organización todavía no tiene clasificador, asegurar lo crea", r.json() == {"sincronizado": True, "motivo": "sin_clasificador"} and len(llamadas) == 1, r.text[:200])
+    esquema_google.pop("sin_clasificador")
+    llamadas.clear()
+    org_vacia, vacia_admin = crear_organizacion(bearer_super, "Gamma", "gabi@ejemplo.com", "Rumbo-Sereno-Verde-49!")
+    r = asegurar(vacia_admin, org_vacia)
+    rev("una organización sin tipos activos: asegurar no exige nada", r.json() == {"sincronizado": False, "motivo": "sin_tipos"} and not llamadas, r.text[:200])
+    rev("y sincronizar le dice que no hay con qué armarlo (422)", sincronizar(vacia_admin, org_vacia).status_code == 422)
+    rev("asegurar la organización ajena: 403", asegurar(b_admin, org_a).status_code == 403)
+    rev("sin llave de servicio: 401", c.post("/procesadores/clasificador/asegurar", params={"tenant": org_a}).status_code == 401)
+    esquema_google["sin_clasificador"] = True
+    r = c.get("/procesadores/clasificador", params={"tenant": org_a}, headers=cab(a_admin))
+    rev("ver el clasificador de una organización que no tiene: 404 con su frase", r.status_code == 404 and "todavía no tiene clasificador" in r.json()["detail"], r.text[:200])
+    esquema_google.pop("sin_clasificador")
+    rev("ver el de otra organización: 403", c.get("/procesadores/clasificador", params={"tenant": org_a}, headers=cab(b_admin)).status_code == 403)
 
     titulo("11 · Borrar")
     r = c.delete(f"/tipos-documentales/{archivado}", params={"tenant": org_a}, headers=cab(a_otra))
@@ -289,7 +333,7 @@ try:
     rev("borrarlo otra vez: 404", c.delete(f"/tipos-documentales/{archivado}", params={"tenant": org_a}, headers=cab(a_otra)).status_code == 404)
     rev("guardar sobre uno borrado (con revisión): 404", guardar(a_admin, org_a, archivado, tipo("Viejo"), 1).status_code == 404)
     guardar(a_admin, org_a, ine, {**activo, "estado": "archivado"}, listar(a_admin, org_a).json()["tipos"][0]["revision"] if False else next(t["revision"] for t in listar(a_admin, org_a).json()["tipos"] if t["id"] == ine))
-    rev("un tipo archivado ya no entra al clasificador", ine not in [t["id"] for t in tipos_documentales.tipos_activos()])
+    rev("un tipo archivado ya no entra al clasificador", ine not in [t["id"] for t in tipos_documentales.tipos_activos(org_a)])
 
     titulo("12 · Procesadores con dueño (para limpiar los huérfanos)")
     hist = nuevo_id()
