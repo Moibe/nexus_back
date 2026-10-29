@@ -557,9 +557,9 @@ _candado_generador = asyncio.Lock()
 #: arma `esquema.nombre_legible`. Lo de los grupos también se midió: con el contexto del tipo, una corrida devolvió TODO en grupos
 #: (Proveedor, Cliente, Totales…), que en el asistente es incómodo; un grupo sirve sobre todo para lo que se repite.
 _INSTRUCCION_GENERAR = (
-    "Escribe todo en español. En name usa snake_case sin acentos; en description explica en español qué dato es y cómo "
-    "reconocerlo en el documento. Prefiere campos sueltos: usa un objeto con propiedades solo para datos que se repiten en "
-    "varios renglones, como los conceptos de una tabla."
+    "Escribe todo en español. Solo en name usa snake_case sin acentos; en description escribe en español correcto, con acentos, "
+    "qué dato es y cómo reconocerlo en el documento. Prefiere campos sueltos: usa un objeto con propiedades solo para datos que "
+    "se repiten en varios renglones, como los conceptos de una tabla."
 )
 
 
