@@ -554,10 +554,12 @@ _candado_generador = asyncio.Lock()
 
 #: Lo que se le pide al modelo además del documento. Medido el 2026-10-29 sobre una factura: sin esto propone nombres y
 #: descripciones en inglés; con esto, en español. Pedirle un `displayName` con acentos NO sirve (lo ignora): el nombre legible lo
-#: arma `esquema.nombre_legible`.
+#: arma `esquema.nombre_legible`. Lo de los grupos también se midió: con el contexto del tipo, una corrida devolvió TODO en grupos
+#: (Proveedor, Cliente, Totales…), que en el asistente es incómodo; un grupo sirve sobre todo para lo que se repite.
 _INSTRUCCION_GENERAR = (
     "Escribe todo en español. En name usa snake_case sin acentos; en description explica en español qué dato es y cómo "
-    "reconocerlo en el documento."
+    "reconocerlo en el documento. Prefiere campos sueltos: usa un objeto con propiedades solo para datos que se repiten en "
+    "varios renglones, como los conceptos de una tabla."
 )
 
 
