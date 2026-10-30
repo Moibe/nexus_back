@@ -1010,7 +1010,7 @@ try:
     rev("cualquier rol de la organización puede cargar (también los que solo leen), igual que `/archivos` y que clasificar: es la sesión la que manda",
         all(manual(P[rol], org_a, f"de-{rol.lower()}.pdf", pdf(910 + i)).status_code == 201 for i, rol in enumerate(ORGANIZAN + SOLO_LEEN)))
     rev("y la forma de lo guardado es la de siempre: el mismo evento `nacer`, con los mismos campos que los que entran por la API",
-        all(set(d) == {"id", "tenant", "sha256", "rutaRelativa", "tamanoBytes", "mime", "nombreOriginal", "canal", "llaveId", "recibidoEn", "expedientes"} for d in docs(a_admin, org_a).json()["documentos"]),
+        all(set(d) == {"id", "tenant", "sha256", "rutaRelativa", "tamanoBytes", "mime", "nombreOriginal", "canal", "llaveId", "recibidoEn", "expedientes", "tipoDocumental"} for d in docs(a_admin, org_a).json()["documentos"]),
         str(docs(a_admin, org_a).json()["documentos"][-1]))
 
     if SQL:

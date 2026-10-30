@@ -36,7 +36,7 @@ from pydantic import BaseModel, Field
 from routers.archivos import guardar_subida
 from routers.bandeja import MIME_BANDEJA
 from routers.errores import almacen_no_disponible
-from servicios import aislamiento, auditoria, documentos, expedientes, expedientes_virtuales
+from servicios import aislamiento, auditoria, datos_extraidos, documentos, expedientes, expedientes_virtuales
 from servicios.almacen import ErrorAlmacen
 from servicios.subidas import normalizar_tipo
 
@@ -137,11 +137,75 @@ def listar_documentos(
 ):
     aislamiento.exigir(authorization, tenant, "expediente")
     try:
-        return {"documentos": expedientes.listar_documentos(tenant, sin_expediente)}
+        return {"documentos": _con_tipo(tenant, expedientes.listar_documentos(tenant, sin_expediente))}
     except ValueError as exc:
         raise _tenant_invalido(exc) from exc
     except ErrorAlmacen as exc:
         raise almacen_no_disponible(exc) from exc
+
+
+def _con_tipo(tenant: str, docs: list[dict]) -> list[dict]:
+    """Cada documento con `tipoDocumental`: el de su última extracción o, si no se ha extraído, el de su última clasificación (`null` si no
+    se sabe). Si la lectura falla, los documentos se entregan igual, sin él."""
+    try:
+        tipos = datos_extraidos.tipos_de(tenant, [d["id"] for d in docs])
+    except Exception:  # noqa: BLE001
+        logger.exception("No se pudo leer el tipo documental de los documentos")
+        tipos = {}
+    return [{**d, "tipoDocumental": tipos.get(d["id"])} for d in docs]
+
+
+class Correccion(BaseModel):
+    tenant: str = Field(..., description="La organización")
+    ruta: str = Field(..., description="El campo, como lo da `campos[].ruta` (`rfc`, `domicilio.calle`, `accionistas[2].nombre`)")
+    valor: str = Field(..., description="El valor correcto")
+    motivo: str | None = Field(None, description="Opcional. Por qué se corrige (hasta 500 caracteres)")
+
+
+@router.get(
+    "/documentos/{documento_id}/datos",
+    tags=["Expedientes"],
+    summary="Lo que se sabe de un documento: su clasificación y sus datos extraídos",
+    description=(
+        "`clasificacion`: lo último que dijo el clasificador (categoría, tipo documental, confianza). `extraccion`: la última corrida de "
+        "extracción, aunque haya fallado (tipo documental y la revisión de su configuración, procesador y versión, estado, confianzas, "
+        "cuántas corridas lleva). `campos`: los VIGENTES, uno por campo, de la última corrida que terminó; cada uno con `valor` (el "
+        "normalizado o su última corrección), `valorCrudo`, `confianza` 0-100, `pagina`, y `motivoSinValor` cuando el campo se pedía y no "
+        "apareció. Todo `null`/vacío si el documento no se ha procesado desde que se guardan (migración 0007)."
+    ),
+)
+def datos_de_documento(documento_id: str, tenant: str = Query(..., description="La organización"), authorization: str | None = Header(default=None)):
+    aislamiento.exigir(authorization, tenant, "documento")
+    try:
+        return datos_extraidos.de_documento(tenant, documento_id)
+    except datos_extraidos.DocumentoNoEncontrado as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_DOCUMENTO_NO_EXISTE) from exc
+
+
+@router.post(
+    "/documentos/{documento_id}/datos/correcciones",
+    status_code=status.HTTP_201_CREATED,
+    tags=["Expedientes"],
+    summary="Corregir a mano un dato extraído",
+    description=(
+        "Corrige el valor VIGENTE de un campo del documento. El dato extraído no se toca: la corrección queda aparte, con quién y cuándo, y "
+        "desde ese momento es el valor vigente. Devuelve el campo como queda. Solo vive en SQL: sin base responde 503."
+    ),
+)
+def corregir_dato(documento_id: str, entrada: Correccion, authorization: str | None = Header(default=None)):
+    actor = aislamiento.exigir_organizar(authorization, entrada.tenant, "documento")
+    try:
+        campo = datos_extraidos.corregir(entrada.tenant, documento_id, entrada.ruta, entrada.valor, entrada.motivo, actor.guid)
+    except datos_extraidos.SinBase as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except datos_extraidos.DocumentoNoEncontrado as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_DOCUMENTO_NO_EXISTE) from exc
+    except datos_extraidos.CampoNoEncontrado as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ese documento no tiene ese campo en su extracción vigente.") from exc
+    except datos_extraidos.CorreccionInvalida as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    _anotar(auditoria.FIELD_CORRECTED, actor, entrada.tenant, documentoId=documento_id, ruta=entrada.ruta)
+    return campo
 
 
 @router.post(
@@ -197,7 +261,7 @@ def ver(expediente_id: str, tenant: str = Query(..., description="La organizaci�
         raise almacen_no_disponible(exc) from exc
     if detalle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
-    return detalle
+    return {**detalle, "documentos": _con_tipo(tenant, detalle.get("documentos") or [])}
 
 
 @router.put(
@@ -292,7 +356,11 @@ def _virtual_o_404(tenant: str, expediente_id: str, virtual_id: str) -> dict:
     virtual = expedientes_virtuales.obtener(tenant, expediente_id, virtual_id)
     if virtual is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_VIRTUAL_NO_EXISTE)
-    return virtual
+    docs = _con_tipo(tenant, virtual["documentos"])
+    # Ahora que los documentos saben su tipo documental, cada tipo del esquema dice qué documentos lo cubren: uno sin ninguno es lo que FALTA.
+    for tipo in virtual["tipo"]["tiposDocumentales"]:
+        tipo["documentos"] = [d["id"] for d in docs if (d["tipoDocumental"] or {}).get("id") == tipo["id"]]
+    return {**virtual, "documentos": docs}
 
 
 @router.post(
