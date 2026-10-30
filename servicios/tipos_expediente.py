@@ -47,6 +47,11 @@ El `id` (`tipo-expediente-` + 32 hexadecimales), `creadoPor` y `creadoEn`. El no
 
 ## Cómo se guarda
 
+Desde el 2026-10-29, donde hay base, en `nexus.caseTypes` y su esquema en `nexus.caseTypeDocumentTypes` (migración `0003`, ver
+`servicios/expedientes_sql.py`), con una llave foránea REAL a los tipos documentales: allí borrar un tipo documental lo QUITA de los
+esquemas, en vez de dejarlo como un id sin nombre. Este módulo valida igual en los dos casos y solo cambia dónde se escribe; se elige por
+`SQLSERVER_HOST` en cada llamada. Lo de abajo es el almacén, lo que corre donde no hay base (la laptop, las pruebas offline):
+
 Un archivo de solo agregar por organización, `tipos-expediente-{tenant}.jsonl` (ver `servicios/registro.py`), con cuatro eventos: `crear` (con el
 esquema inicial en `tiposDocumentales`), `esquema` (la lista completa de tipos documentales, que reemplaza a la anterior), `renombrar` (el nombre
 nuevo) y `borrar`. El estado vigente se arma doblando el archivo. Un id de otra organización no existe en su archivo y se contesta como uno que no
@@ -58,7 +63,18 @@ import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
 
+from config import SQLSERVER_HOST
 from servicios import almacen, registro, tipos_documentales
+
+
+def _sql():
+    """El módulo de SQL si el `.env` dice que hay base; `None` si no. Se importa tarde: sin base, `pyodbc` ni se carga."""
+    if not SQLSERVER_HOST:
+        return None
+    from servicios import expedientes_sql
+
+    return expedientes_sql
+
 
 MAX_NOMBRE = 200
 #: Tope de tipos documentales en un esquema: un tipo de expediente normal describe unas decenas como mucho.
@@ -166,6 +182,8 @@ def crear(tenant: str, nombre: object, tipos_documentales_ids: object, por: str)
     ids = _validar_esquema(tipos_documentales_ids)
     if not ids:
         raise TipoInvalido("Un tipo de expediente necesita al menos un tipo documental en su esquema.")
+    if sql := _sql():
+        return sql.tipos_crear(almacen._validar_tenant(tenant), limpio, ids, por)
     tipo_id = f"tipo-expediente-{uuid.uuid4().hex}"
     en = _ahora()
     with registro.candado:
@@ -194,6 +212,10 @@ def editar(tenant: str, tipo_id: object, nombre: object, tipos_documentales_ids:
     ids = _validar_esquema(tipos_documentales_ids) if tipos_documentales_ids is not None else None
     if ids is not None and not ids:
         raise TipoInvalido("Un tipo de expediente necesita al menos un tipo documental en su esquema.")
+    if sql := _sql():
+        if not isinstance(tipo_id, str) or not _RE_ID.match(tipo_id):
+            raise NoEncontrado(tipo_id)
+        return sql.tipos_editar(almacen._validar_tenant(tenant), tipo_id, limpio, ids, por)
     with registro.candado:
         tipos = _doblar(tenant)
         actual = tipos.get(tipo_id) if isinstance(tipo_id, str) and _RE_ID.match(tipo_id) else None
@@ -225,7 +247,11 @@ def borrar(tenant: str, tipo_id: object, por: str, cuantos_expedientes: Callable
     `NoEncontrado` si no es de esa organización; `TipoConExpedientes` si todavía tiene: todo expediente es instancia de un tipo, así que uno con
     expedientes no puede desaparecer. `cuantos_expedientes` cuenta los de ESTE tipo y se llama con el candado puesto, el mismo con que
     `expedientes.crear` comprueba el tipo: un expediente nuevo no se cuela entre la cuenta y el borrado. (Es una función porque `expedientes`
-    importa este módulo y no al revés.)"""
+    importa este módulo y no al revés.) En SQL no se usa: la cuenta se hace en la misma transacción, con el tipo bloqueado."""
+    if sql := _sql():
+        if not isinstance(tipo_id, str) or not _RE_ID.match(tipo_id):
+            raise NoEncontrado(tipo_id)
+        return sql.tipos_borrar(almacen._validar_tenant(tenant), tipo_id)
     with registro.candado:
         actual = _doblar(tenant).get(tipo_id) if isinstance(tipo_id, str) and _RE_ID.match(tipo_id) else None
         if actual is None:
@@ -249,6 +275,8 @@ def con_esquema_resuelto(tipo: dict, nombres: dict[str, str | None]) -> dict:
 
 def listar(tenant: str) -> list[dict]:
     """Los tipos de UNA organización, en el orden de su creación."""
+    if sql := _sql():
+        return sql.tipos_listar(almacen._validar_tenant(tenant))
     with registro.candado:
         return list(_doblar(tenant).values())
 
@@ -257,5 +285,7 @@ def obtener(tenant: str, tipo_id: object) -> dict | None:
     """El tipo de esa organización, o `None` si no existe (o es de otra: no se distingue)."""
     if not isinstance(tipo_id, str) or not _RE_ID.match(tipo_id):
         return None
+    if sql := _sql():
+        return sql.tipos_obtener(almacen._validar_tenant(tenant), tipo_id)
     with registro.candado:
         return _doblar(tenant).get(tipo_id)

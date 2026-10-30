@@ -23,15 +23,30 @@ Lo que se prueba:
 - crear, meter y sacar piden un rol que organice (Compliance, Auditor y Viewer solo leen) y cada rechazo deja `ROLE_DENIED`;
 - crear, meter y sacar dejan rastro con quién; meter un documento que ya estaba, no;
 - el tope de documentos por expediente, un corte a media escritura y dos peticiones simultáneas.
+
+Con `--sql` corre LO MISMO contra SQL Server (migración `0003`, en un contenedor desechable: ver `pruebas_sql.py`), que es donde viven estas
+tres entidades en dev, staging y producción desde el 2026-10-29. Las comprobaciones que leen el JSONL a mano se saltan ahí (no hay archivo) y
+se agregan las que solo la base puede cuidar (sección 19).
+
+    .venv/Scripts/python verificar_expedientes.py --sql
 """
 
 import json
 import os
 import shutil
+import sys
 import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+sys.stdout.reconfigure(encoding="utf-8")
+SQL = "--sql" in sys.argv
+if SQL:
+    # ANTES de importar la app: `config.py` lee el entorno una sola vez.
+    import pruebas_sql
+
+    BASE_SQL = pruebas_sql.preparar("nexus-expedientes-prueba", 14333, dejar="--dejar" in sys.argv)
 
 RAIZ = Path(tempfile.mkdtemp(prefix="verificar-expedientes-"))
 (RAIZ / ".nexus-almacen").touch()
@@ -285,12 +300,13 @@ try:
     creado_choque = [x for x in auditoria("CASE_TYPE_CREATED") if x.get("tipoId") == tipo_a2]
     rev("`CASE_TYPE_CREATED` lleva el esquema con el que nació, en su orden", len(creado_choque) == 1 and creado_choque[0].get("tiposDocumentales") == lista_choque, str(creado_choque))
     rev("y el esquema inicial NO deja además un `CASE_TYPE_SCHEMA_CHANGED`: es parte de la creación", auditoria("CASE_TYPE_SCHEMA_CHANGED") == [])
-    registro.agregar("tipos-expediente-verificacion-legado.jsonl", {"op": "crear", "id": "tipo-expediente-" + "a" * 32, "tenant": "verificacion-legado", "nombre": "Anterior a la regla", "por": "x", "en": "2026-10-24T00:00:00Z"})
-    try:
-        leidos = [t["tiposDocumentales"] for t in tipos_expediente.listar("verificacion-legado")]
-    except Exception as exc:  # noqa: BLE001 — lo que se prueba es justo que NO truene
-        leidos = f"truena: {exc!r}"
-    rev("un tipo creado ANTES de esta regla (su evento no trae esquema) se lee sin esquema y sin romper nada", leidos == [[]], str(leidos))
+    if not SQL:  # en SQL no hay tipos «de antes de la regla»: la tabla nació vacía
+        registro.agregar("tipos-expediente-verificacion-legado.jsonl", {"op": "crear", "id": "tipo-expediente-" + "a" * 32, "tenant": "verificacion-legado", "nombre": "Anterior a la regla", "por": "x", "en": "2026-10-24T00:00:00Z"})
+        try:
+            leidos = [t["tiposDocumentales"] for t in tipos_expediente.listar("verificacion-legado")]
+        except Exception as exc:  # noqa: BLE001 — lo que se prueba es justo que NO truene
+            leidos = f"truena: {exc!r}"
+        rev("un tipo creado ANTES de esta regla (su evento no trae esquema) se lee sin esquema y sin romper nada", leidos == [[]], str(leidos))
 
     titulo("1 · Un documento NACE al entrar, y nace en el void")
     r1 = subir(a_admin, org_a, "acta.pdf", pdf(1))
@@ -469,8 +485,9 @@ try:
 
     titulo("9 · Un corte a media escritura no rompe el registro")
     ruta = RAIZ / ".registro" / f"expedientes-{org_a}.jsonl"
-    with open(ruta, "ab") as f:
-        f.write(b'{"op": "crear", "id": "expediente-roto')
+    if not SQL:  # en SQL no hay archivo que cortar: lo que se comprueba abajo debe seguir siendo cierto igual
+        with open(ruta, "ab") as f:
+            f.write(b'{"op": "crear", "id": "expediente-roto')
     antes = [e["id"] for e in listar(a_admin, org_a).json()["expedientes"]]
     rev("una última línea rota se ignora al leer", e1 in antes and len(antes) >= 4)
     nuevo = crear(a_admin, org_a, "Después del corte")
@@ -501,13 +518,14 @@ try:
         nuevos = list(pool.map(lambda i: crear(a_admin, org_a, f"Simultáneo {i}").json()["id"], range(8)))
     rev("ocho expedientes creados a la vez: ocho ids distintos y ninguno se pierde", len(set(nuevos)) == 8 and len(listar(a_admin, org_a).json()["expedientes"]) == antes_n + 8)
 
-    titulo("12 · La forma de lo guardado (la de una tabla)")
-    eventos_doc = [json.loads(x) for x in (RAIZ / ".registro" / f"documentos-{org_a}.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
-    campos = {"op", "id", "tenant", "sha256", "rutaRelativa", "tamanoBytes", "mime", "nombreOriginal", "canal", "llaveId", "recibidoEn"}
-    rev("cada documento guardado tiene exactamente los campos de la entidad", all(set(e) == campos and e["op"] == "nacer" for e in eventos_doc) and len(eventos_doc) == 5, str([sorted(set(e) ^ campos) for e in eventos_doc][:2]))
-    eventos_exp = [json.loads(x) for x in ruta.read_text(encoding="utf-8").splitlines() if x.strip().endswith("}")]
-    rev("cada expediente y cada pertenencia, también, y de solo agregar", {e["op"] for e in eventos_exp} == {"crear", "agregar", "quitar"} and all(e["tenant"] == org_a for e in eventos_exp))
-    rev("el registro de una organización no lleva nada de otra", not (RAIZ / ".registro" / f"documentos-{org_b}.jsonl").exists() and all(b_exp not in json.dumps(e) for e in eventos_exp))
+    titulo("12 · La forma de lo guardado (la de una tabla)" + (" — solo en el almacén" if SQL else ""))
+    if not SQL:
+        eventos_doc = [json.loads(x) for x in (RAIZ / ".registro" / f"documentos-{org_a}.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
+        campos = {"op", "id", "tenant", "sha256", "rutaRelativa", "tamanoBytes", "mime", "nombreOriginal", "canal", "llaveId", "recibidoEn"}
+        rev("cada documento guardado tiene exactamente los campos de la entidad", all(set(e) == campos and e["op"] == "nacer" for e in eventos_doc) and len(eventos_doc) == 5, str([sorted(set(e) ^ campos) for e in eventos_doc][:2]))
+        eventos_exp = [json.loads(x) for x in ruta.read_text(encoding="utf-8").splitlines() if x.strip().endswith("}")]
+        rev("cada expediente y cada pertenencia, también, y de solo agregar", {e["op"] for e in eventos_exp} == {"crear", "agregar", "quitar"} and all(e["tenant"] == org_a for e in eventos_exp))
+        rev("el registro de una organización no lleva nada de otra", not (RAIZ / ".registro" / f"documentos-{org_b}.jsonl").exists() and all(b_exp not in json.dumps(e) for e in eventos_exp))
 
     titulo("13 · Tipos de expediente: sus instancias, el filtro, el conteo y el aislamiento")
     ec1 = crear(a_admin, org_a, "Choque del 12 de marzo", tipo=tipo_a2).json()["id"]
@@ -544,12 +562,13 @@ try:
         codigos = list(pool.map(lambda _: crear_tipo(a_admin, org_a, "Carrera de nombres").status_code, range(8)))
     rev("ocho peticiones a la vez para crear el MISMO tipo: solo una lo crea (el nombre es único)", codigos.count(201) == 1 and codigos.count(409) == 7, str(codigos))
 
-    eventos_tipos = [json.loads(x) for x in (RAIZ / ".registro" / f"tipos-expediente-{org_a}.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
-    rev("cada tipo guardado tiene exactamente los campos de la entidad (con su esquema), en UN solo evento `crear`", eventos_tipos and all(set(e) == {"op", "id", "tenant", "nombre", "tiposDocumentales", "por", "en"} and e["op"] == "crear" and e["tenant"] == org_a and e["tiposDocumentales"] for e in eventos_tipos), str(eventos_tipos[:1]))
-    crear_exp = [e for e in (json.loads(x) for x in ruta.read_text(encoding="utf-8").splitlines() if x.strip().endswith("}")) if e["op"] == "crear"]
-    rev("y cada expediente guardado lleva el id de su tipo", crear_exp and all(set(e) == {"op", "id", "tenant", "nombre", "tipo", "por", "en"} and e["tipo"].startswith("tipo-expediente-") for e in crear_exp), str(crear_exp[:1]))
-    tipos_de_b = (RAIZ / ".registro" / f"tipos-expediente-{org_b}.jsonl").read_text(encoding="utf-8")
-    rev("el registro de tipos de una organización no lleva nada de otra", tipo_a not in tipos_de_b and tipo_b in tipos_de_b and tipo_b not in "".join(json.dumps(e) for e in eventos_tipos))
+    if not SQL:
+        eventos_tipos = [json.loads(x) for x in (RAIZ / ".registro" / f"tipos-expediente-{org_a}.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
+        rev("cada tipo guardado tiene exactamente los campos de la entidad (con su esquema), en UN solo evento `crear`", eventos_tipos and all(set(e) == {"op", "id", "tenant", "nombre", "tiposDocumentales", "por", "en"} and e["op"] == "crear" and e["tenant"] == org_a and e["tiposDocumentales"] for e in eventos_tipos), str(eventos_tipos[:1]))
+        crear_exp = [e for e in (json.loads(x) for x in ruta.read_text(encoding="utf-8").splitlines() if x.strip().endswith("}")) if e["op"] == "crear"]
+        rev("y cada expediente guardado lleva el id de su tipo", crear_exp and all(set(e) == {"op", "id", "tenant", "nombre", "tipo", "por", "en"} and e["tipo"].startswith("tipo-expediente-") for e in crear_exp), str(crear_exp[:1]))
+        tipos_de_b = (RAIZ / ".registro" / f"tipos-expediente-{org_b}.jsonl").read_text(encoding="utf-8")
+        rev("el registro de tipos de una organización no lleva nada de otra", tipo_a not in tipos_de_b and tipo_b in tipos_de_b and tipo_b not in "".join(json.dumps(e) for e in eventos_tipos))
     rev("`tipos_expediente` guarda por organización: el de B no existe en A", tipos_expediente.obtener(org_a, tipo_b) is None and tipos_expediente.obtener(org_b, tipo_a) is None)
 
     titulo("14 · El esquema de un tipo de expediente: describe, no restringe")
@@ -636,17 +655,22 @@ try:
 
     r = c.delete(f"/tipos-documentales/{td_rec}", params={"tenant": org_a}, headers=cab(a_admin))
     rev("borrar de la biblioteca un tipo documental que está en un esquema: 200", r.status_code == 200, r.text[:150])
-    rev("queda en el esquema como un id SIN nombre, a la vista", ver_a() == [(td_ine, "INE"), (td_rec, None)], str(ver_a()))
+    if SQL:
+        # La llave foránea es real: borrar el tipo documental lo quita del esquema, sin dejar un id sin nombre.
+        rev("en SQL se va del esquema con él (llave foránea con ON DELETE CASCADE): no queda un id sin nombre", ver_a() == [(td_ine, "INE")], str(ver_a()))
+    else:
+        rev("queda en el esquema como un id SIN nombre, a la vista", ver_a() == [(td_ine, "INE"), (td_rec, None)], str(ver_a()))
     definir(a_admin, [td_ine])
     rev("y se puede quitar del esquema", ver_a() == [(td_ine, "INE")])
 
     cambios = [x for x in auditoria("CASE_TYPE_SCHEMA_CHANGED") if x.get("tipoId") == tipo_a]
     rev("`CASE_TYPE_SCHEMA_CHANGED` dice quién, dónde y cuál tipo", cambios and cambios[0].get("usuarioGuid") == guid_rita and cambios[0].get("tenant") == org_a and cambios[0].get("nombre") == "Expediente médico", str(cambios[:1]))
     rev("lleva el esquema ANTES y DESPUÉS, uno por cada cambio real (ni por repetidos ni por rechazados)", [(x.get("antes"), x.get("despues")) for x in cambios] == esperados, f"{[(x.get('antes'), x.get('despues')) for x in cambios]} != {esperados}")
-    eventos_tipos = [json.loads(x) for x in (RAIZ / ".registro" / f"tipos-expediente-{org_a}.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
-    de_esquema = [e for e in eventos_tipos if e["op"] == "esquema"]
-    rev("cada cambio de esquema guardado tiene exactamente sus campos", bool(de_esquema) and all(set(e) == {"op", "id", "tenant", "tiposDocumentales", "por", "en"} and e["tenant"] == org_a for e in de_esquema), str(de_esquema[:1]))
-    rev("y se guarda un evento por cada cambio real, ni uno más", len(de_esquema) == len(esperados), f"{len(de_esquema)} eventos, {len(esperados)} cambios")
+    if not SQL:
+        eventos_tipos = [json.loads(x) for x in (RAIZ / ".registro" / f"tipos-expediente-{org_a}.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
+        de_esquema = [e for e in eventos_tipos if e["op"] == "esquema"]
+        rev("cada cambio de esquema guardado tiene exactamente sus campos", bool(de_esquema) and all(set(e) == {"op", "id", "tenant", "tiposDocumentales", "por", "en"} and e["tenant"] == org_a for e in de_esquema), str(de_esquema[:1]))
+        rev("y se guarda un evento por cada cambio real, ni uno más", len(de_esquema) == len(esperados), f"{len(de_esquema)} eventos, {len(esperados)} cambios")
 
     titulo("15 · Cuánto pesa un expediente: la suma de sus documentos, calculada al consultar")
 
@@ -684,8 +708,9 @@ try:
     meter(b_admin, org_b, exp_b, doc_b)
     rev("y pesa solo lo suyo", peso(b_admin, org_b, exp_b) == len(pdf(90)) + 300, str(peso(b_admin, org_b, exp_b)))
     rev("sin que cambie el peso de la primera", peso(a_admin, org_a, otro) == tam[grande] and peso(a_admin, org_a, pesado) == 0)
-    eventos_exp = [json.loads(x) for x in ruta.read_text(encoding="utf-8").splitlines() if x.strip().endswith("}")]
-    rev("el peso no se guarda: ningún evento del registro lo lleva", all("tamanoBytes" not in e and "totalDocumentos" not in e for e in eventos_exp))
+    if not SQL:
+        eventos_exp = [json.loads(x) for x in ruta.read_text(encoding="utf-8").splitlines() if x.strip().endswith("}")]
+        rev("el peso no se guarda: ningún evento del registro lo lleva", all("tamanoBytes" not in e and "totalDocumentos" not in e for e in eventos_exp))
 
     titulo("16 · Renombrar y borrar un tipo de expediente")
     try:
@@ -705,6 +730,9 @@ try:
         return r.json()["nombre"] if r.status_code == 200 else None
 
     def eventos_de_tipos(op: str) -> list[dict]:
+        """Los eventos del JSONL. En SQL no hay: las comprobaciones que los leen se saltan."""
+        if SQL:
+            return []
         ruta_t = RAIZ / ".registro" / f"tipos-expediente-{org_a}.jsonl"
         return [e for e in (json.loads(x) for x in ruta_t.read_text(encoding="utf-8").splitlines() if x.strip()) if e["op"] == op]
 
@@ -720,7 +748,7 @@ try:
     for mismo in ("Tipo renombrado", "  Tipo     renombrado  "):
         r = renombrar_tipo(a_admin, org_a, t1, mismo)
         rev(f"ponerle el mismo nombre («{mismo.strip()}», con otros espacios): 200 `cambiado: false`", r.status_code == 200 and r.json()["cambiado"] is False, r.text[:150])
-    rev("y no escribe nada ni repite el rastro", len(auditoria("CASE_TYPE_RENAMED")) == n_renombres and len([e for e in eventos_de_tipos("renombrar") if e["id"] == t1]) == 1)
+    rev("y no escribe nada ni repite el rastro", len(auditoria("CASE_TYPE_RENAMED")) == n_renombres and (SQL or len([e for e in eventos_de_tipos("renombrar") if e["id"] == t1]) == 1))
     r = renombrar_tipo(a_admin, org_a, t1, "TIPO RENOMBRADO")
     rev("cambiarle solo las mayúsculas a su PROPIO nombre sí se puede (no se repite consigo mismo)", r.status_code == 200 and r.json()["cambiado"] is True and r.json()["tipo"]["nombre"] == "TIPO RENOMBRADO", r.text[:150])
     esperados_t1.append(("Tipo renombrado", "TIPO RENOMBRADO"))
@@ -772,7 +800,8 @@ try:
     primero = next(x for x in auditoria("CASE_TYPE_RENAMED") if x.get("tipoId") == t1)
     rev("y quién lo hizo y en qué organización", primero.get("usuarioGuid") == guid_rita and primero.get("tenant") == org_a, str(primero))
     renombres_t1 = [e for e in eventos_de_tipos("renombrar") if e["id"] == t1]
-    rev("cada renombre guardado tiene exactamente sus campos, y hay uno por cada cambio real", renombres_t1 and all(set(e) == {"op", "id", "tenant", "nombre", "por", "en"} and e["tenant"] == org_a for e in renombres_t1) and [e["nombre"] for e in renombres_t1] == [d for _, d in esperados_t1], str(renombres_t1[:1]))
+    if not SQL:
+        rev("cada renombre guardado tiene exactamente sus campos, y hay uno por cada cambio real", renombres_t1 and all(set(e) == {"op", "id", "tenant", "nombre", "por", "en"} and e["tenant"] == org_a for e in renombres_t1) and [e["nombre"] for e in renombres_t1] == [d for _, d in esperados_t1], str(renombres_t1[:1]))
 
     # ---------------------------------------------------------------- borrar
     r = borrar_tipo(a_admin, org_a, t1)
@@ -790,7 +819,8 @@ try:
     borrados = [x for x in auditoria("CASE_TYPE_DELETED") if x.get("tipoId") == t2]
     rev("`CASE_TYPE_DELETED` dice quién, dónde y cuál (con su nombre)", len(borrados) == 1 and borrados[0].get("usuarioGuid") == guid_rita and borrados[0].get("tenant") == org_a and borrados[0].get("nombre") == nombre_t2, str(borrados))
     eventos_borrar = [e for e in eventos_de_tipos("borrar") if e["id"] == t2]
-    rev("el borrado guardado tiene exactamente sus campos", len(eventos_borrar) == 1 and set(eventos_borrar[0]) == {"op", "id", "tenant", "por", "en"} and eventos_borrar[0]["tenant"] == org_a, str(eventos_borrar))
+    if not SQL:
+        rev("el borrado guardado tiene exactamente sus campos", len(eventos_borrar) == 1 and set(eventos_borrar[0]) == {"op", "id", "tenant", "por", "en"} and eventos_borrar[0]["tenant"] == org_a, str(eventos_borrar))
     rev("con un tipo borrado, crear un expediente, definirle esquema, renombrarlo o editarlo dan 404", crear(a_admin, org_a, "De un borrado", tipo=t2).status_code == 404 and esquema(a_admin, org_a, t2, [td_ine]).status_code == 404 and renombrar_tipo(a_admin, org_a, t2, "Revivir").status_code == 404 and editar_tipo(a_admin, org_a, t2, nombre="Revivir", tiposDocumentales=[td_ine]).status_code == 404)
 
     r_no = borrar_tipo(a_admin, org_a, inexistente_t)
@@ -846,6 +876,9 @@ try:
         return j["nombre"], [x["id"] for x in j["tiposDocumentales"]]
 
     def eventos_de(tipo: str) -> list[dict]:
+        """Los eventos del JSONL. En SQL no hay: las comprobaciones que los leen se saltan (`SQL or …`)."""
+        if SQL:
+            return []
         ruta_t = RAIZ / ".registro" / f"tipos-expediente-{org_a}.jsonl"
         return [e for e in (json.loads(x) for x in ruta_t.read_text(encoding="utf-8").splitlines() if x.strip()) if e["id"] == tipo]
 
@@ -866,18 +899,18 @@ try:
     rev("el tipo vuelve con el nombre limpio y el esquema nuevo, con el nombre de cada tipo documental y en el orden dado", j["tipo"]["nombre"] == "Editado completo" and [(x["id"], x["nombre"]) for x in j["tipo"]["tiposDocumentales"]] == [(td_acta, "Acta constitutiva"), (td_domicilio, "Comprobante de domicilio")], str(j))
     rev("conserva su id, su fecha de creación y su conteo", j["tipo"]["id"] == ed and j["tipo"]["creadoEn"] == creado_en_ed and j["tipo"]["totalExpedientes"] == 0, str(j))
     rev("al pedirlo y al listarlo ya es así", forma(ed) == ("Editado completo", [td_acta, td_domicilio]) and next(t for t in listar_tipos(a_admin, org_a).json()["tipos"] if t["id"] == ed)["nombre"] == "Editado completo")
-    rev("se guardan DOS eventos seguidos: el nombre y luego el esquema", ops_de(ed) == ["crear", "renombrar", "esquema"], str(ops_de(ed)))
+    rev("se guardan DOS eventos seguidos: el nombre y luego el esquema", SQL or ops_de(ed) == ["crear", "renombrar", "esquema"], str(ops_de(ed)))
     rev("y el rastro anota cada cosa, una vez, con su antes y su después", rastro("CASE_TYPE_RENAMED", ed) == [("Para editar", "Editado completo")] and rastro("CASE_TYPE_SCHEMA_CHANGED", ed) == [([td_ine], [td_acta, td_domicilio])], f"{rastro('CASE_TYPE_RENAMED', ed)} {rastro('CASE_TYPE_SCHEMA_CHANGED', ed)}")
     anotados = [x for accion in ("CASE_TYPE_RENAMED", "CASE_TYPE_SCHEMA_CHANGED") for x in auditoria(accion) if x.get("tipoId") == ed]
     rev("las dos anotaciones dicen quién y en qué organización", len(anotados) == 2 and all(x.get("usuarioGuid") == guid_rita and x.get("tenant") == org_a for x in anotados), str(anotados))
 
     r = editar_tipo(a_admin, org_a, ed, tiposDocumentales=[td_domicilio, td_acta])
     rev("editar SOLO el esquema (aquí, el orden): el nombre no se toca y las banderas lo dicen", r.status_code == 200 and banderas(r) == (True, False, True) and forma(ed) == ("Editado completo", [td_domicilio, td_acta]), r.text[:250])
-    rev("deja un evento `esquema` y una anotación de esquema, y ninguna de nombre", ops_de(ed) == ["crear", "renombrar", "esquema", "esquema"] and len(rastro("CASE_TYPE_SCHEMA_CHANGED", ed)) == 2 and len(rastro("CASE_TYPE_RENAMED", ed)) == 1)
+    rev("deja un evento `esquema` y una anotación de esquema, y ninguna de nombre", (SQL or ops_de(ed) == ["crear", "renombrar", "esquema", "esquema"]) and len(rastro("CASE_TYPE_SCHEMA_CHANGED", ed)) == 2 and len(rastro("CASE_TYPE_RENAMED", ed)) == 1)
 
     r = editar_tipo(a_admin, org_a, ed, nombre="Editado solo el nombre")
     rev("editar SOLO el nombre: el esquema no se toca y las banderas lo dicen", r.status_code == 200 and banderas(r) == (True, True, False) and forma(ed) == ("Editado solo el nombre", [td_domicilio, td_acta]), r.text[:250])
-    rev("deja un evento `renombrar` y una anotación de nombre, y ninguna de esquema", ops_de(ed) == ["crear", "renombrar", "esquema", "esquema", "renombrar"] and len(rastro("CASE_TYPE_RENAMED", ed)) == 2 and len(rastro("CASE_TYPE_SCHEMA_CHANGED", ed)) == 2)
+    rev("deja un evento `renombrar` y una anotación de nombre, y ninguna de esquema", (SQL or ops_de(ed) == ["crear", "renombrar", "esquema", "esquema", "renombrar"]) and len(rastro("CASE_TYPE_RENAMED", ed)) == 2 and len(rastro("CASE_TYPE_SCHEMA_CHANGED", ed)) == 2)
 
     ops_antes = list(ops_de(ed))
     r = editar_tipo(a_admin, org_a, ed, nombre="  Editado   solo el nombre ", tiposDocumentales=[td_domicilio, td_acta])
@@ -946,15 +979,16 @@ try:
     rev("sus expedientes ven el nombre nuevo, siguen siendo de ese tipo y conservan sus documentos (el esquema describe, no restringe)", ver(a_admin, org_a, exp_ed).json()["tipo"] == {"id": ed, "nombre": "Editado con expediente"} and ids_docs_de(a_admin, org_a, exp_ed) == [doc_ed])
 
     # ---------------------------------------------------------------- un tipo de ANTES de la regla (sin esquema)
-    legado = "tipo-expediente-" + "b" * 32
-    registro.agregar(f"tipos-expediente-{org_a}.jsonl", {"op": "crear", "id": legado, "tenant": org_a, "nombre": "Anterior a la regla", "por": "x", "en": "2026-10-24T00:00:00Z"})
-    rev("un tipo de ANTES de la regla (su evento no trae esquema) se lee sin esquema", forma(legado) == ("Anterior a la regla", []))
-    r = renombrar_tipo(a_admin, org_a, legado, "Anterior renombrado")
-    rev("renombrarlo, sin tocar el esquema, se puede: no le exige uno", r.status_code == 200 and banderas(r) == (True, True, False) and forma(legado) == ("Anterior renombrado", []), r.text[:200])
-    r = editar_tipo(a_admin, org_a, legado, nombre="Anterior con esquema", tiposDocumentales=[td_ine])
-    rev("y ponerle esquema por primera vez, junto con el nombre, también", r.status_code == 200 and banderas(r) == (True, True, True) and forma(legado) == ("Anterior con esquema", [td_ine]), r.text[:200])
-    rev("pero ya con esquema, no se le puede dejar vacío", editar_tipo(a_admin, org_a, legado, tiposDocumentales=[]).status_code == 400 and forma(legado)[1] == [td_ine])
-    borrar_tipo(a_admin, org_a, legado)
+    if not SQL:  # en SQL no hay tipos de antes de la regla: la tabla nació vacía
+        legado = "tipo-expediente-" + "b" * 32
+        registro.agregar(f"tipos-expediente-{org_a}.jsonl", {"op": "crear", "id": legado, "tenant": org_a, "nombre": "Anterior a la regla", "por": "x", "en": "2026-10-24T00:00:00Z"})
+        rev("un tipo de ANTES de la regla (su evento no trae esquema) se lee sin esquema", forma(legado) == ("Anterior a la regla", []))
+        r = renombrar_tipo(a_admin, org_a, legado, "Anterior renombrado")
+        rev("renombrarlo, sin tocar el esquema, se puede: no le exige uno", r.status_code == 200 and banderas(r) == (True, True, False) and forma(legado) == ("Anterior renombrado", []), r.text[:200])
+        r = editar_tipo(a_admin, org_a, legado, nombre="Anterior con esquema", tiposDocumentales=[td_ine])
+        rev("y ponerle esquema por primera vez, junto con el nombre, también", r.status_code == 200 and banderas(r) == (True, True, True) and forma(legado) == ("Anterior con esquema", [td_ine]), r.text[:200])
+        rev("pero ya con esquema, no se le puede dejar vacío", editar_tipo(a_admin, org_a, legado, tiposDocumentales=[]).status_code == 400 and forma(legado)[1] == [td_ine])
+        borrar_tipo(a_admin, org_a, legado)
 
     # ---------------------------------------------------------------- carrera
     esquemas_carrera = [[td_ine], [td_acta], [td_domicilio], [td_ine, td_acta], [td_acta, td_ine], [td_domicilio, td_ine], [td_ine, td_domicilio], [td_acta, td_domicilio]]
@@ -963,8 +997,16 @@ try:
         respuestas = list(pool.map(lambda lista: editar_tipo(a_admin, org_a, ed, tiposDocumentales=lista), esquemas_carrera))
     rev("ocho ediciones del esquema a la vez: todas responden 200", all(r.status_code == 200 for r in respuestas), str([r.status_code for r in respuestas]))
     escritos = [e["tiposDocumentales"] for e in eventos_de(ed) if e["op"] == "esquema"][previos:]
-    rev("queda UNO de los esquemas pedidos, entero (nunca una mezcla), y es el último que se escribió", forma(ed)[1] in esquemas_carrera and bool(escritos) and escritos[-1] == forma(ed)[1], f"{forma(ed)[1]} {escritos}")
-    rev("y cada cambio que dijo ser real dejó exactamente un evento, ni uno más", sum(1 for r in respuestas if r.json()["esquemaCambiado"]) == len(escritos), f"{[r.json()['esquemaCambiado'] for r in respuestas]} {len(escritos)}")
+    rev("queda UNO de los esquemas pedidos, entero (nunca una mezcla), y es el último que se escribió", forma(ed)[1] in esquemas_carrera and (SQL or (bool(escritos) and escritos[-1] == forma(ed)[1])), f"{forma(ed)[1]} {escritos}")
+    rev("y cada cambio que dijo ser real dejó exactamente un evento, ni uno más", SQL or sum(1 for r in respuestas if r.json()["esquemaCambiado"]) == len(escritos), f"{[r.json()['esquemaCambiado'] for r in respuestas]} {len(escritos)}")
+    if SQL:
+        # Sin eventos que contar, la mezcla se ve en la base: un esquema con posiciones repetidas o salteadas sería una mezcla de dos.
+        con = BASE_SQL["conectar"]("sa", BASE_SQL["sa"], BASE_SQL["base"])
+        filas_ed = con.cursor().execute(
+            "SELECT s.position FROM nexus.caseTypeDocumentTypes s JOIN nexus.caseTypes t ON t.caseTypeId = s.caseTypeId WHERE t.publicId = ? ORDER BY s.position", ed
+        ).fetchall()
+        con.close()
+        rev("en la base, el esquema que quedó tiene sus posiciones 0, 1, 2… sin huecos ni repetidas (no es una mezcla de dos)", [f[0] for f in filas_ed] == list(range(len(forma(ed)[1]))), str(filas_ed))
 
     de_ed = eventos_de(ed)
     rev("cada evento que dejó la edición tiene exactamente sus campos", all(set(e) == {"op", "id", "tenant", "nombre", "por", "en"} for e in de_ed if e["op"] == "renombrar") and all(set(e) == {"op", "id", "tenant", "tiposDocumentales", "por", "en"} for e in de_ed if e["op"] == "esquema") and all(e["tenant"] == org_a for e in de_ed), str(de_ed[-2:]))
@@ -1010,6 +1052,42 @@ try:
     rev("y la forma de lo guardado es la de siempre: el mismo evento `nacer`, con los mismos campos que los que entran por la API",
         all(set(d) == {"id", "tenant", "sha256", "rutaRelativa", "tamanoBytes", "mime", "nombreOriginal", "canal", "llaveId", "recibidoEn", "expedientes"} for d in docs(a_admin, org_a).json()["documentos"]),
         str(docs(a_admin, org_a).json()["documentos"][-1]))
+
+    if SQL:
+        titulo("19 · Lo que SOLO la base puede cuidar (aunque alguien escriba por fuera del servicio)")
+        import pyodbc  # noqa: E402
+
+        con = BASE_SQL["conectar"]("usrNexus", BASE_SQL["app"], BASE_SQL["base"])
+        k = con.cursor()
+
+        def rechaza(sql: str, *params) -> bool:
+            try:
+                k.execute(sql, *params)
+                return False
+            except pyodbc.Error:
+                return True
+
+        rev("usrNexus (el usuario de la API) lee las cinco tablas nuevas", all(
+            k.execute(f"SELECT count(*) FROM nexus.{t}").fetchone()[0] >= 0 for t in ("caseTypes", "caseTypeDocumentTypes", "documents", "cases", "caseDocuments")))
+        id_tipo_a = k.execute("SELECT caseTypeId FROM nexus.caseTypes WHERE publicId = ?", tipo_a).fetchone()[0]
+        rev("borrar un tipo CON expedientes lo impide la llave foránea", rechaza("DELETE FROM nexus.caseTypes WHERE caseTypeId = ?", id_tipo_a))
+        rev("un nombre de tipo repetido en la misma organización, aunque cambien las mayúsculas, lo impide la base", rechaza(
+            "INSERT INTO nexus.caseTypes (publicId, tenant, name, createdBy) VALUES (?, ?, ?, 'x')", "tipo-expediente-" + "c" * 32, org_a, "EXPEDIENTE MÉDICO"))
+        rev("…pero en OTRA organización sí cabe", not rechaza(
+            "INSERT INTO nexus.caseTypes (publicId, tenant, name, createdBy) VALUES (?, ?, ?, 'x')", "tipo-expediente-" + "c" * 32, "otra-org-de-prueba", "Expediente médico"))
+        k.execute("DELETE FROM nexus.caseTypes WHERE publicId = ?", "tipo-expediente-" + "c" * 32)
+        id_e1 = k.execute("SELECT caseId FROM nexus.cases WHERE publicId = ?", e1).fetchone()[0]
+        id_d1 = k.execute("SELECT documentId FROM nexus.documents WHERE publicId = ?", d1).fetchone()[0]
+        rev("meter dos veces el mismo documento al mismo expediente lo impide la base", rechaza("INSERT INTO nexus.caseDocuments (caseId, documentId, addedBy) VALUES (?, ?, 'x')", id_e1, id_d1))
+        rev("un esquema que apunta a un tipo documental que no existe lo impide la llave foránea", rechaza(
+            "INSERT INTO nexus.caseTypeDocumentTypes (caseTypeId, documentTypePublicId, position) VALUES (?, ?, 9)", id_tipo_a, "tipo-" + "0" * 32))
+        rev("un canal que no es API ni MANUAL, o un sha256 que no es hexadecimal, no entran", rechaza(
+            "INSERT INTO nexus.documents (publicId, tenant, sha256, relativePath, sizeBytes, mime, originalName, channel) VALUES (?, ?, ?, 'x', 1, 'x', 'x', 'CORREO')", "documento-" + "e" * 32, org_a, "a" * 64)
+            and rechaza("INSERT INTO nexus.documents (publicId, tenant, sha256, relativePath, sizeBytes, mime, originalName, channel) VALUES (?, ?, ?, 'x', 1, 'x', 'x', 'API')", "documento-" + "e" * 32, org_a, "Z" * 64))
+        rev("un id con mayúsculas o un tenant con espacios no entran", rechaza(
+            "INSERT INTO nexus.cases (publicId, tenant, caseTypeId, name, createdBy) VALUES (?, ?, ?, 'x', 'x')", "expediente-" + "A" * 32, org_a, id_tipo_a)
+            and rechaza("INSERT INTO nexus.cases (publicId, tenant, caseTypeId, name, createdBy) VALUES (?, ?, ?, 'x', 'x')", "expediente-" + "a" * 32, "con espacio", id_tipo_a))
+        con.close()
 finally:
     shutil.rmtree(RAIZ, ignore_errors=True)
 
