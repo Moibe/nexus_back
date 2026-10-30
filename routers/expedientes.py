@@ -1,8 +1,12 @@
 """Dominio: expedientes — conjuntos de documentos de una organización (ver `servicios/expedientes.py`).
 
-Un expediente es una INSTANCIA de un tipo de expediente (`/tipos-expediente`): el tipo «expediente médico» es la clase y el expediente de UN
-paciente es la carpeta con SUS documentos. Tiene un nombre y reúne documentos; un documento puede estar en ninguno (el «void»), en uno o en
-varios. Los documentos NACEN al entrar al sistema (`servicios/documentos.py`), no aquí: este router solo los organiza.
+Un expediente es un RECEPTÁCULO de documentos (desde el 2026-10-29 no tiene tipo): la carpeta de un cliente o de un caso. Tiene un nombre y
+reúne documentos; un documento puede estar en ninguno (el «void»), en uno o en varios. Los documentos NACEN al entrar al sistema
+(`servicios/documentos.py`), no aquí: este router solo los organiza.
+
+Dentro de un expediente viven sus EXPEDIENTES VIRTUALES (`/expedientes/{id}/virtuales`, ver `servicios/expedientes_virtuales.py`): grupitos
+de sus documentos, cada uno instancia de un tipo de expediente virtual (`/tipos-expediente`), que son lo que usará el motor de reglas. Solo
+viven en SQL: sin base, sus rutas responden 503.
 
 Todas las rutas van detrás de la llave de servicio y exigen TAMBIÉN el JWT de la persona (HU11): el tenant lo manda la petición y se
 comprueba contra el registro, igual que en tipos documentales, procesos y bandeja.
@@ -10,12 +14,14 @@ comprueba contra el registro, igual que en tipos documentales, procesos y bandej
 ## Quién puede qué
 
 - **Leer** (listar, ver un expediente, listar documentos): cualquiera que opere en la organización.
-- **Organizar** (crear un expediente, meter o sacar un documento): `roles.PUEDEN_ORGANIZAR` (Administrador, Supervisor, Analista y
-  Operador); Compliance, Auditor y Viewer reciben 403 `sin_permiso`. Es una propuesta de producto pendiente de confirmar con César.
+- **Organizar** (crear un expediente, meter o sacar un documento; crear, llenar y borrar sus expedientes virtuales): `roles.PUEDEN_ORGANIZAR`
+  (Administrador, Supervisor, Analista y Operador); Compliance, Auditor y Viewer reciben 403 `sin_permiso`. Es una propuesta de producto
+  pendiente de confirmar con César.
 
 ## Qué se anota (auditoría)
 
-`CASE_CREATED`, `CASE_DOCUMENT_ADDED` y `CASE_DOCUMENT_REMOVED`, con quién lo hizo. Meter un documento que ya estaba no repite el rastro.
+`CASE_CREATED`, `CASE_DOCUMENT_ADDED` y `CASE_DOCUMENT_REMOVED`, con quién lo hizo; de los virtuales, `VIRTUAL_CASE_CREATED`,
+`VIRTUAL_CASE_DOCUMENT_ADDED`, `VIRTUAL_CASE_DOCUMENT_REMOVED` y `VIRTUAL_CASE_DELETED`. Meter un documento que ya estaba no repite el rastro.
 
 ## Lo que NO hace todavía
 
@@ -30,7 +36,7 @@ from pydantic import BaseModel, Field
 from routers.archivos import guardar_subida
 from routers.bandeja import MIME_BANDEJA
 from routers.errores import almacen_no_disponible
-from servicios import aislamiento, auditoria, documentos, expedientes
+from servicios import aislamiento, auditoria, documentos, expedientes, expedientes_virtuales
 from servicios.almacen import ErrorAlmacen
 from servicios.subidas import normalizar_tipo
 
@@ -39,15 +45,26 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _NO_EXISTE = "Ese expediente no existe."
-_TIPO_NO_EXISTE = "Ese tipo de expediente no existe."
+_VIRTUAL_NO_EXISTE = "Ese expediente virtual no existe."
+_TIPO_NO_EXISTE = "Ese tipo de expediente virtual no existe."
 _DOCUMENTO_NO_EXISTE = "Ese documento no existe."
 _DOCUMENTO_NO_ESTA = "Ese documento no está en el expediente."
+_DOCUMENTO_NO_ESTA_EN_VIRTUAL = "Ese documento no está en el expediente virtual."
 
 
 class NuevoExpediente(BaseModel):
     tenant: str = Field(..., description="La organización a la que pertenece el expediente")
     nombre: str = Field(..., description="Cómo se llama el expediente (hasta 200 caracteres)")
-    tipoId: str = Field(..., description="El tipo de expediente del que es instancia (`/tipos-expediente`), de la misma organización")
+
+
+class NuevoVirtual(BaseModel):
+    tenant: str = Field(..., description="La organización")
+    tipoId: str = Field(..., description="El tipo de expediente virtual del que es instancia (`/tipos-expediente`), de la misma organización")
+    nombre: str = Field(..., description="Cómo se llama (hasta 200 caracteres); dos pueden llamarse igual")
+    documentos: list[str] = Field(
+        default_factory=list,
+        description="Los ids de los documentos DEL EXPEDIENTE con que nace (pueden ser ninguno). Uno que no esté en el expediente: 404 y no se crea nada.",
+    )
 
 
 def _anotar(accion: str, actor: aislamiento.Actor, tenant: str, **datos) -> None:
@@ -67,18 +84,14 @@ def _tenant_invalido(exc: ValueError) -> HTTPException:
     tags=["Expedientes"],
     summary="Listar los expedientes de una organización",
     description=(
-        "Todos los expedientes de la organización, en el orden de su creación, cada uno con su tipo, cuántos documentos tiene "
-        "(`totalDocumentos`) y cuánto pesan en total (`tamanoBytes`). Con `tipo`, solo los de ese tipo de expediente."
+        "Todos los expedientes de la organización, en el orden de su creación, cada uno con cuántos documentos tiene "
+        "(`totalDocumentos`) y cuánto pesan en total (`tamanoBytes`)."
     ),
 )
-def listar(
-    tenant: str = Query(..., description="La organización"),
-    tipo: str | None = Query(None, description="El id de un tipo de expediente: solo los expedientes de ese tipo"),
-    authorization: str | None = Header(default=None),
-):
+def listar(tenant: str = Query(..., description="La organización"), authorization: str | None = Header(default=None)):
     aislamiento.exigir(authorization, tenant, "expediente")
     try:
-        return {"expedientes": expedientes.listar(tenant, tipo)}
+        return {"expedientes": expedientes.listar(tenant)}
     except ValueError as exc:
         raise _tenant_invalido(exc) from exc
     except ErrorAlmacen as exc:
@@ -90,24 +103,19 @@ def listar(
     status_code=status.HTTP_201_CREATED,
     tags=["Expedientes"],
     summary="Crear un expediente",
-    description=(
-        "Crea un expediente vacío con ese nombre, como instancia de un tipo de expediente de la misma organización (`tipoId`). Dos "
-        "expedientes pueden llamarse igual."
-    ),
+    description="Crea un expediente vacío con ese nombre. Dos expedientes pueden llamarse igual. No tiene tipo: lo tienen sus expedientes virtuales.",
 )
 def crear(entrada: NuevoExpediente, authorization: str | None = Header(default=None)):
     actor = aislamiento.exigir_organizar(authorization, entrada.tenant, "expediente")
     try:
-        creado = expedientes.crear(entrada.tenant, entrada.nombre, actor.guid, entrada.tipoId)
-    except expedientes.TipoNoEncontrado as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_TIPO_NO_EXISTE) from exc
+        creado = expedientes.crear(entrada.tenant, entrada.nombre, actor.guid)
     except expedientes.ExpedienteInvalido as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ValueError as exc:
         raise _tenant_invalido(exc) from exc
     except ErrorAlmacen as exc:
         raise almacen_no_disponible(exc) from exc
-    _anotar(auditoria.CASE_CREATED, actor, entrada.tenant, expedienteId=creado["id"], nombre=creado["nombre"], tipoId=creado["tipo"]["id"], tipoNombre=creado["tipo"]["nombre"])
+    _anotar(auditoria.CASE_CREATED, actor, entrada.tenant, expedienteId=creado["id"], nombre=creado["nombre"])
     return creado
 
 
@@ -173,8 +181,11 @@ def registrar_documento_manual(
 @router.get(
     "/{expediente_id}",
     tags=["Expedientes"],
-    summary="Ver un expediente con sus documentos",
-    description="El expediente y sus documentos completos, en el orden en que se agregaron.",
+    summary="Ver un expediente con sus documentos y sus expedientes virtuales",
+    description=(
+        "El expediente y sus documentos completos, en el orden en que se agregaron, y `expedientesVirtuales`: cada uno con su tipo y los ids "
+        "de sus documentos (vacío donde no hay base)."
+    ),
 )
 def ver(expediente_id: str, tenant: str = Query(..., description="La organización"), authorization: str | None = Header(default=None)):
     aislamiento.exigir(authorization, tenant, "expediente")
@@ -236,7 +247,7 @@ def agregar_documento(
     "/{expediente_id}/documentos/{documento_id}",
     tags=["Expedientes"],
     summary="Sacar un documento de un expediente",
-    description="El documento NO se borra: si era su único expediente, vuelve al void.",
+    description="El documento NO se borra: si era su único expediente, vuelve al void. Sale también de los expedientes virtuales de ese expediente.",
 )
 def quitar_documento(
     expediente_id: str,
@@ -268,3 +279,177 @@ def quitar_documento(
             nombreOriginal=documento["nombreOriginal"],
         )
     return {"quitado": True}
+
+
+# ── Expedientes virtuales ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+def _sin_base(exc: expedientes_virtuales.SinBase) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+
+
+def _virtual_o_404(tenant: str, expediente_id: str, virtual_id: str) -> dict:
+    virtual = expedientes_virtuales.obtener(tenant, expediente_id, virtual_id)
+    if virtual is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_VIRTUAL_NO_EXISTE)
+    return virtual
+
+
+@router.post(
+    "/{expediente_id}/virtuales",
+    status_code=status.HTTP_201_CREATED,
+    tags=["Expedientes"],
+    summary="Crear un expediente virtual dentro de un expediente",
+    description=(
+        "Un expediente virtual es un grupito de documentos DE ESTE EXPEDIENTE, instancia de un tipo de expediente virtual (`tipoId`, de "
+        "`/tipos-expediente`): por ejemplo, la «Solicitud de crédito» de Juan Pérez. Nace con los `documentos` elegidos (pueden ser ninguno); "
+        "uno que no esté en el expediente responde 404 y no se crea nada. Un expediente puede tener varios, del mismo tipo o de distintos. "
+        "Solo vive en SQL: sin base responde 503."
+    ),
+)
+def crear_virtual(expediente_id: str, entrada: NuevoVirtual, authorization: str | None = Header(default=None)):
+    actor = aislamiento.exigir_organizar(authorization, entrada.tenant, "expediente")
+    try:
+        creado = expedientes_virtuales.crear(entrada.tenant, expediente_id, entrada.tipoId, entrada.nombre, entrada.documentos, actor.guid)
+    except expedientes_virtuales.NoEncontrado as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE) from exc
+    except expedientes_virtuales.TipoNoEncontrado as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_TIPO_NO_EXISTE) from exc
+    except expedientes_virtuales.DocumentoNoEnExpediente as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_DOCUMENTO_NO_ESTA) from exc
+    except expedientes_virtuales.VirtualInvalido as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except expedientes_virtuales.SinBase as exc:
+        raise _sin_base(exc) from exc
+    except ValueError as exc:
+        raise _tenant_invalido(exc) from exc
+    _anotar(
+        auditoria.VIRTUAL_CASE_CREATED,
+        actor,
+        entrada.tenant,
+        expedienteVirtualId=creado["id"],
+        nombre=creado["nombre"],
+        expedienteId=expediente_id,
+        tipoId=creado["tipo"]["id"],
+        tipoNombre=creado["tipo"]["nombre"],
+        documentos=[d["id"] for d in creado["documentos"]],
+    )
+    return creado
+
+
+@router.get(
+    "/{expediente_id}/virtuales/{virtual_id}",
+    tags=["Expedientes"],
+    summary="Ver un expediente virtual",
+    description="El expediente virtual con su tipo (y el esquema del tipo), su expediente y sus documentos completos, en el orden en que se agregaron.",
+)
+def ver_virtual(expediente_id: str, virtual_id: str, tenant: str = Query(..., description="La organización"), authorization: str | None = Header(default=None)):
+    aislamiento.exigir(authorization, tenant, "expediente")
+    try:
+        return _virtual_o_404(tenant, expediente_id, virtual_id)
+    except expedientes_virtuales.SinBase as exc:
+        raise _sin_base(exc) from exc
+    except ValueError as exc:
+        raise _tenant_invalido(exc) from exc
+
+
+@router.put(
+    "/{expediente_id}/virtuales/{virtual_id}/documentos/{documento_id}",
+    tags=["Expedientes"],
+    summary="Meter un documento del expediente a uno de sus expedientes virtuales",
+    description=(
+        "El documento tiene que estar en el expediente (si no, 404). Idempotente: si ya estaba en el virtual, responde `agregado: false` y no "
+        "hace nada."
+    ),
+)
+def agregar_documento_virtual(
+    expediente_id: str,
+    virtual_id: str,
+    documento_id: str,
+    tenant: str = Query(..., description="La organización"),
+    authorization: str | None = Header(default=None),
+):
+    actor = aislamiento.exigir_organizar(authorization, tenant, "expediente")
+    try:
+        agregado = expedientes_virtuales.agregar_documento(tenant, expediente_id, virtual_id, documento_id, actor.guid)
+        virtual = _virtual_o_404(tenant, expediente_id, virtual_id)
+    except expedientes_virtuales.NoEncontrado as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_VIRTUAL_NO_EXISTE) from exc
+    except expedientes_virtuales.DocumentoNoEnExpediente as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_DOCUMENTO_NO_ESTA) from exc
+    except expedientes_virtuales.SinBase as exc:
+        raise _sin_base(exc) from exc
+    except ValueError as exc:
+        raise _tenant_invalido(exc) from exc
+    if agregado:
+        documento = next((d for d in virtual["documentos"] if d["id"] == documento_id), None)
+        _anotar(
+            auditoria.VIRTUAL_CASE_DOCUMENT_ADDED,
+            actor,
+            tenant,
+            expedienteVirtualId=virtual_id,
+            nombre=virtual["nombre"],
+            expedienteId=expediente_id,
+            documentoId=documento_id,
+            nombreOriginal=documento["nombreOriginal"] if documento else None,
+        )
+    return {"agregado": agregado, "expedienteVirtual": virtual}
+
+
+@router.delete(
+    "/{expediente_id}/virtuales/{virtual_id}/documentos/{documento_id}",
+    tags=["Expedientes"],
+    summary="Sacar un documento de un expediente virtual",
+    description="El documento sigue en el expediente: solo deja de ser parte de ese grupito.",
+)
+def quitar_documento_virtual(
+    expediente_id: str,
+    virtual_id: str,
+    documento_id: str,
+    tenant: str = Query(..., description="La organización"),
+    authorization: str | None = Header(default=None),
+):
+    actor = aislamiento.exigir_organizar(authorization, tenant, "expediente")
+    try:
+        antes = _virtual_o_404(tenant, expediente_id, virtual_id)
+        expedientes_virtuales.quitar_documento(tenant, expediente_id, virtual_id, documento_id)
+    except expedientes_virtuales.NoEncontrado as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_VIRTUAL_NO_EXISTE) from exc
+    except expedientes_virtuales.DocumentoNoEncontrado as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_DOCUMENTO_NO_ESTA_EN_VIRTUAL) from exc
+    except expedientes_virtuales.SinBase as exc:
+        raise _sin_base(exc) from exc
+    except ValueError as exc:
+        raise _tenant_invalido(exc) from exc
+    documento = next((d for d in antes["documentos"] if d["id"] == documento_id), None)
+    _anotar(
+        auditoria.VIRTUAL_CASE_DOCUMENT_REMOVED,
+        actor,
+        tenant,
+        expedienteVirtualId=virtual_id,
+        nombre=antes["nombre"],
+        expedienteId=expediente_id,
+        documentoId=documento_id,
+        nombreOriginal=documento["nombreOriginal"] if documento else None,
+    )
+    return {"quitado": True}
+
+
+@router.delete(
+    "/{expediente_id}/virtuales/{virtual_id}",
+    tags=["Expedientes"],
+    summary="Borrar un expediente virtual",
+    description="Borra el grupito, NO sus documentos: siguen en el expediente. Uno que no existe responde 404.",
+)
+def borrar_virtual(expediente_id: str, virtual_id: str, tenant: str = Query(..., description="La organización"), authorization: str | None = Header(default=None)):
+    actor = aislamiento.exigir_organizar(authorization, tenant, "expediente")
+    try:
+        borrado = expedientes_virtuales.borrar(tenant, expediente_id, virtual_id)
+    except expedientes_virtuales.NoEncontrado as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_VIRTUAL_NO_EXISTE) from exc
+    except expedientes_virtuales.SinBase as exc:
+        raise _sin_base(exc) from exc
+    except ValueError as exc:
+        raise _tenant_invalido(exc) from exc
+    _anotar(auditoria.VIRTUAL_CASE_DELETED, actor, tenant, expedienteVirtualId=virtual_id, nombre=borrado["nombre"], expedienteId=expediente_id)
+    return {"borrado": True}

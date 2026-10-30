@@ -31,11 +31,12 @@ def _docker(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["docker", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900)
 
 
-def preparar(contenedor: str, puerto: int, dejar: bool = False) -> dict:
+def preparar(contenedor: str, puerto: int, dejar: bool = False, hasta: int | None = None) -> dict:
     """Levanta el contenedor, arma la base, aplica las migraciones y deja `SQLSERVER_*` en `os.environ`.
 
-    Devuelve `{"sa", "app", "puerto", "base", "driver"}` por si la prueba quiere asomarse a la base con otro usuario. Con `dejar`, el
-    contenedor sigue vivo al terminar (para investigar)."""
+    Devuelve `{"sa", "app", "puerto", "base", "driver", "conectar", "aplicar"}` por si la prueba quiere asomarse a la base con otro
+    usuario. Con `dejar`, el contenedor sigue vivo al terminar (para investigar). Con `hasta`, solo aplica hasta esa versión, y
+    `aplicar(None)` aplica después las que falten: así se prueba una migración sobre una base que ya tiene datos de la anterior."""
     if _docker("info", "--format", "{{.ServerVersion}}").returncode != 0:
         print("Docker no responde: esta prueba se SALTA (no cuenta como pasada). Abre Docker Desktop y vuelve a intentar.")
         raise SystemExit(0)
@@ -96,24 +97,28 @@ def preparar(contenedor: str, puerto: int, dejar: bool = False) -> dict:
     k.execute("DENY CREATE TABLE, CREATE VIEW, CREATE FUNCTION, CREATE PROCEDURE, CREATE TYPE, CREATE SCHEMA, ALTER ANY SCHEMA TO usrNexus")
     con.close()
 
-    # Las migraciones de verdad, con el corredor y el usuario de migraciones.
-    carpeta = Path(tempfile.mkdtemp(prefix="pruebas-sql-"))
-    env_ddl = carpeta / "ddl.env"
-    env_ddl.write_text(
-        f"SQLSERVER_HOST=127.0.0.1\nSQLSERVER_PORT={puerto}\nSQLSERVER_USER=usrNexusDDL\nSQLSERVER_PASSWORD={ddl}\nSQLSERVER_DRIVER={driver}\n",
-        encoding="utf-8",
-    )
-    r = subprocess.run(
-        [sys.executable, "-m", "migraciones", "aplicar", "--base", BASE, "--confirmar"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(Path(__file__).parent),
-        env={**os.environ, "NEXUS_DDL_ENV": str(env_ddl)}, timeout=600,
-    )
-    env_ddl.unlink()
-    if r.returncode != 0:
-        raise SystemExit(f"El corredor no pudo aplicar las migraciones:\n{(r.stdout + r.stderr).strip()[-1500:]}")
+    def aplicar(hasta_version: int | None) -> None:
+        """Las migraciones de verdad, con el corredor y el usuario de migraciones."""
+        carpeta = Path(tempfile.mkdtemp(prefix="pruebas-sql-"))
+        env_ddl = carpeta / "ddl.env"
+        env_ddl.write_text(
+            f"SQLSERVER_HOST=127.0.0.1\nSQLSERVER_PORT={puerto}\nSQLSERVER_USER=usrNexusDDL\nSQLSERVER_PASSWORD={ddl}\nSQLSERVER_DRIVER={driver}\n",
+            encoding="utf-8",
+        )
+        orden = [sys.executable, "-m", "migraciones", "aplicar", "--base", BASE, "--confirmar"]
+        if hasta_version is not None:
+            orden += ["--hasta", str(hasta_version)]
+        r = subprocess.run(
+            orden, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(Path(__file__).parent),
+            env={**os.environ, "NEXUS_DDL_ENV": str(env_ddl)}, timeout=600,
+        )
+        env_ddl.unlink()
+        if r.returncode != 0:
+            raise SystemExit(f"El corredor no pudo aplicar las migraciones:\n{(r.stdout + r.stderr).strip()[-1500:]}")
 
+    aplicar(hasta)
     os.environ.update(
         SQLSERVER_HOST="127.0.0.1", SQLSERVER_PORT=str(puerto), SQLSERVER_DB=BASE,
         SQLSERVER_USER="usrNexus", SQLSERVER_PASSWORD=app, SQLSERVER_TRUST_CERT="yes", SQLSERVER_DRIVER=driver,
     )
-    return {"sa": sa, "app": app, "puerto": puerto, "base": BASE, "driver": driver, "conectar": conectar}
+    return {"sa": sa, "app": app, "puerto": puerto, "base": BASE, "driver": driver, "conectar": conectar, "aplicar": aplicar}

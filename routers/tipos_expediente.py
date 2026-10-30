@@ -1,7 +1,9 @@
-"""Dominio: tipos de expediente — la clase de la que salen los expedientes (ver `servicios/tipos_expediente.py`).
+"""Dominio: tipos de expediente VIRTUAL — la clase de la que salen los expedientes virtuales (ver `servicios/tipos_expediente.py`).
 
-«Expediente médico» y «expediente de un choque» son TIPOS; el expediente de UN paciente o de UN choque es una instancia de su tipo
-(`/expedientes`) y guarda los documentos de ese caso. El tipo no guarda documentos.
+Desde el 2026-10-29 el expediente no tiene tipo: es un receptáculo de documentos. Lo que es instancia de un tipo es el EXPEDIENTE VIRTUAL
+(`/expedientes/{id}/virtuales`), un subconjunto de los documentos de un expediente: la «Solicitud de crédito» de Juan Pérez. La ruta sigue
+siendo `/tipos-expediente` y los ids `tipo-expediente-…`; donde abajo dice «expediente» debe leerse «expediente virtual».
+`totalExpedientesVirtuales` es cuántos expedientes virtuales tiene cada tipo (antes, `totalExpedientes`).
 
 Todas las rutas van detrás de la llave de servicio y exigen TAMBIÉN el JWT de la persona (HU11): el tenant lo manda la petición y se
 comprueba contra el registro, igual que en tipos documentales, procesos y expedientes.
@@ -51,7 +53,7 @@ from fastapi import APIRouter, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from routers.errores import almacen_no_disponible
-from servicios import aislamiento, auditoria, expedientes, tipos_expediente
+from servicios import aislamiento, auditoria, expedientes_virtuales, tipos_expediente
 from servicios.almacen import ErrorAlmacen
 
 logger = logging.getLogger(__name__)
@@ -105,7 +107,7 @@ class Edicion(BaseModel):
 
 
 def _con_total(tipo: dict, cuenta: dict[str, int], nombres: dict[str, str | None]) -> dict:
-    return {**tipos_expediente.con_esquema_resuelto(tipo, nombres), "totalExpedientes": cuenta.get(tipo["id"], 0)}
+    return {**tipos_expediente.con_esquema_resuelto(tipo, nombres), "totalExpedientesVirtuales": cuenta.get(tipo["id"], 0)}
 
 
 def _nombre_repetido() -> HTTPException:
@@ -117,7 +119,7 @@ def _editar(tenant: str, tipo_id: str, nombre: str | None, tipos_documentales: l
     actor = aislamiento.exigir_administrar(authorization, tenant, "tipo de expediente")
     try:
         tipo, nombre_anterior, esquema_anterior = tipos_expediente.editar(tenant, tipo_id, nombre, tipos_documentales, actor.guid)
-        cuenta = expedientes.contar_por_tipo(tenant)
+        cuenta = expedientes_virtuales.contar_por_tipo(tenant)
         nombres = tipos_expediente.nombres_de_tipos_documentales(tenant)
     except tipos_expediente.NoEncontrado as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE) from exc
@@ -152,7 +154,7 @@ def _editar(tenant: str, tipo_id: str, nombre: str | None, tipos_documentales: l
 def listar(tenant: str = Query(..., description="La organización"), authorization: str | None = Header(default=None)):
     aislamiento.exigir(authorization, tenant, "tipo de expediente")
     try:
-        cuenta = expedientes.contar_por_tipo(tenant)
+        cuenta = expedientes_virtuales.contar_por_tipo(tenant)
         nombres = tipos_expediente.nombres_de_tipos_documentales(tenant)
         return {"tipos": [_con_total(t, cuenta, nombres) for t in tipos_expediente.listar(tenant)]}
     except ValueError as exc:
@@ -199,7 +201,7 @@ def ver(tipo_id: str, tenant: str = Query(..., description="La organización"), 
     aislamiento.exigir(authorization, tenant, "tipo de expediente")
     try:
         tipo = tipos_expediente.obtener(tenant, tipo_id)
-        cuenta = expedientes.contar_por_tipo(tenant) if tipo else {}
+        cuenta = expedientes_virtuales.contar_por_tipo(tenant) if tipo else {}
         nombres = tipos_expediente.nombres_de_tipos_documentales(tenant) if tipo else {}
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -254,14 +256,14 @@ def editar(tipo_id: str, entrada: Edicion, authorization: str | None = Header(de
 def borrar(tipo_id: str, tenant: str = Query(..., description="La organización"), authorization: str | None = Header(default=None)):
     actor = aislamiento.exigir_administrar(authorization, tenant, "tipo de expediente")
     try:
-        borrado = tipos_expediente.borrar(tenant, tipo_id, actor.guid, lambda: expedientes.contar_por_tipo(tenant).get(tipo_id, 0))
+        borrado = tipos_expediente.borrar(tenant, tipo_id, actor.guid)
     except tipos_expediente.NoEncontrado as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE) from exc
     except tipos_expediente.TipoConExpedientes as exc:
-        cuantos = f"{exc.total} expediente" if exc.total == 1 else f"{exc.total} expedientes"
+        cuantos = f"{exc.total} expediente virtual" if exc.total == 1 else f"{exc.total} expedientes virtuales"
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={"codigo": "con_expedientes", "mensaje": f"Este tipo de expediente tiene {cuantos}: no se puede borrar mientras los tenga.", "total": exc.total},
+            detail={"codigo": "con_expedientes", "mensaje": f"Este tipo de expediente virtual tiene {cuantos}: no se puede borrar mientras los tenga.", "total": exc.total},
         ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

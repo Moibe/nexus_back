@@ -437,7 +437,8 @@ app.include_router(
     dependencies=[Depends(exigir_llave)],
 )
 
-# Los tipos de expediente de cada organización («expediente médico», «expediente de un choque»): la clase de la que salen los expedientes.
+# Los tipos de expediente VIRTUAL de cada organización («Solicitud de crédito»): la clase de la que salen los expedientes virtuales (desde el
+# 2026-10-29 el expediente no tiene tipo; la ruta conservó su nombre).
 from routers.tipos_expediente import router as tipos_expediente_router  # noqa: E402
 
 app.include_router(

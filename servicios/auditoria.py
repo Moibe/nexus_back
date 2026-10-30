@@ -93,8 +93,9 @@ PROCESS_DELETED = "PROCESS_DELETED"
 CASE_CREATED = "CASE_CREATED"
 CASE_DOCUMENT_ADDED = "CASE_DOCUMENT_ADDED"
 CASE_DOCUMENT_REMOVED = "CASE_DOCUMENT_REMOVED"
-# Un tipo de expediente (`servicios/tipos_expediente.py`): la clase de la que salen los expedientes. Lleva quién (`usuarioGuid`,
-# `sesionGuid`), de qué organización (`tenant`) y qué tipo (`tipoId`, `nombre`). `CASE_CREATED` lleva además `tipoId` y `tipoNombre`.
+# Un tipo de expediente VIRTUAL (`servicios/tipos_expediente.py`; hasta el 2026-10-29 era «tipo de expediente» y el nombre de las acciones
+# se conservó): la clase de la que salen los expedientes virtuales. Lleva quién (`usuarioGuid`, `sesionGuid`), de qué organización (`tenant`)
+# y qué tipo (`tipoId`, `nombre`). Los `CASE_CREATED` anteriores a ese día llevan además `tipoId` y `tipoNombre`; los de después, no.
 CASE_TYPE_CREATED = "CASE_TYPE_CREATED"
 # Se cambió el esquema de un tipo de expediente (los tipos documentales que lo describen). Lleva quién, de qué organización, qué tipo
 # (`tipoId`, `nombre`) y el esquema `antes` y `despues` (listas de ids de tipos documentales). No se anota si la lista no cambió.
@@ -104,8 +105,15 @@ CASE_TYPE_SCHEMA_CHANGED = "CASE_TYPE_SCHEMA_CHANGED"
 CASE_TYPE_RENAMED = "CASE_TYPE_RENAMED"
 # Se borró un tipo de expediente (solo se puede si no tenía expedientes). Lleva quién, de qué organización y qué tipo (`tipoId`, `nombre`).
 CASE_TYPE_DELETED = "CASE_TYPE_DELETED"
+# Expedientes virtuales (`servicios/expedientes_virtuales.py`): un grupito de documentos de un expediente. Llevan quién, de qué organización,
+# qué virtual (`expedienteVirtualId`, `nombre`) y de qué expediente (`expedienteId`). Crear lleva además su tipo (`tipoId`, `tipoNombre`) y los
+# ids de los documentos con que nació (`documentos`); meter y sacar, qué documento (`documentoId`, `nombreOriginal`).
+VIRTUAL_CASE_CREATED = "VIRTUAL_CASE_CREATED"
+VIRTUAL_CASE_DOCUMENT_ADDED = "VIRTUAL_CASE_DOCUMENT_ADDED"
+VIRTUAL_CASE_DOCUMENT_REMOVED = "VIRTUAL_CASE_DOCUMENT_REMOVED"
+VIRTUAL_CASE_DELETED = "VIRTUAL_CASE_DELETED"
 
-ACCIONES = frozenset({ROLE_DENIED, CASE_TYPE_CREATED, CASE_TYPE_SCHEMA_CHANGED, CASE_TYPE_RENAMED, CASE_TYPE_DELETED, CASE_CREATED, CASE_DOCUMENT_ADDED, CASE_DOCUMENT_REMOVED, PROCESS_CREATED, PROCESS_DELETED, DOCUMENT_TYPE_CREATED, DOCUMENT_TYPE_DELETED, DOCUMENT_TYPE_STATE_CHANGED, DOCUMENT_TYPE_CALIBRATED, DOCUMENT_DISCARDED, PASSWORD_RESET_REQUESTED, PASSWORD_RESET_COMPLETED, PASSWORD_CHANGED, FIRST_LOGIN_PASSWORD_CHANGED, PROFILE_UPDATED, CROSS_TENANT_ACCESS, LOGOUT, FORCED_LOGOUT, USER_CREATED, INVITATION_REISSUED, USER_DELETED})
+ACCIONES = frozenset({ROLE_DENIED, VIRTUAL_CASE_CREATED, VIRTUAL_CASE_DOCUMENT_ADDED, VIRTUAL_CASE_DOCUMENT_REMOVED, VIRTUAL_CASE_DELETED,CASE_TYPE_CREATED, CASE_TYPE_SCHEMA_CHANGED, CASE_TYPE_RENAMED, CASE_TYPE_DELETED, CASE_CREATED, CASE_DOCUMENT_ADDED, CASE_DOCUMENT_REMOVED, PROCESS_CREATED, PROCESS_DELETED, DOCUMENT_TYPE_CREATED, DOCUMENT_TYPE_DELETED, DOCUMENT_TYPE_STATE_CHANGED, DOCUMENT_TYPE_CALIBRATED, DOCUMENT_DISCARDED, PASSWORD_RESET_REQUESTED, PASSWORD_RESET_COMPLETED, PASSWORD_CHANGED, FIRST_LOGIN_PASSWORD_CHANGED, PROFILE_UPDATED, CROSS_TENANT_ACCESS, LOGOUT, FORCED_LOGOUT, USER_CREATED, INVITATION_REISSUED, USER_DELETED})
 
 
 def _ahora() -> datetime:
