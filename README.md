@@ -84,6 +84,11 @@ ir textual en `SQLSERVER_DRIVER` del `.env`.
 
 Prueba rápida de conectividad: `GET /health/db`.
 
+`GET /health` también avisa del almacén (el NAS): trae `almacen_disponible` y, si el centinela `.nexus-almacen` no está (montaje caído o `ALMACEN_RUTA`
+sin configurar), `status` pasa de `ok` a `almacen_no_disponible`. El código HTTP **se queda en 200** a propósito: Nexus Monitor lee `environment` de esta
+respuesta y descarta lo que no sea 2xx. Antes (hasta el 2026-10-28) decía `ok` con el NAS caído, como el 21-oct. Ojo: `documentos_disponible` NO habla del NAS, solo
+de si hay `SQLSERVER_HOST`. Prueba: `verificar_health_almacen.py`.
+
 ### Credenciales de Document AI
 
 Hace falta el JSON de una cuenta de servicio con permiso sobre Document AI.
@@ -1738,6 +1743,17 @@ si no tiene). Piden la llave de servicio **y** el JWT de la persona (HU11): sinc
 clasificar (`POST /ia/clasificar?tenant=`), cualquiera de la organización. Quien no es de ella recibe 403 `sin_acceso`, y el
 administrador de plataforma solo toca el clasificador de SU espacio, nunca el de una organización.
 
+### Generar campos a partir de un documento
+
+`POST /procesadores/generar-campos` (multipart: `archivo`, `tenant`, y opcionales `nombre` y `descripcion` del tipo) es el «Generar a
+partir de un documento» del paso 2 del alta: Document AI lee un documento de ejemplo y **propone** campos (nombre legible, tipo de
+dato, descripción, obligatorio, cardinalidad, valores de lista y subcampos de cada grupo). No guarda nada ni crea procesadores:
+responde `{campos}` y la persona elige cuáles agregar. Por dentro es `schemas.schemaVersions:generate` (v1beta3), bajo UN recurso
+`Schema` del proyecto llamado `nexusdoc-generador-esquemas` (se busca por nombre y se crea la primera vez); cada generación deja una
+versión guardada en él, que se borra en cuanto se leyó. Tarda unos segundos (~13 con una factura de una página) y lo propuesto
+varía un poco de una vez a otra. Pide sesión y el rol que administra tipos documentales; si Google no puede leer el documento
+responde 422 con un mensaje para la persona, y nunca el texto de Google. Prueba: `verificar_generar_campos.py`.
+
 **Un clasificador por organización (2026-10-26).** Hasta entonces era UNO para todo el sistema, con los tipos activos de todas: un
 documento de una organización podía caer en un tipo de otra, lo que una guardaba cambiaba el clasificador de las demás y los
 nombres y descripciones de los tipos de cada cliente quedaban a la vista de todos en el esquema. Ahora (`servicios/clasificadores.py`):
@@ -1749,7 +1765,7 @@ nombres y descripciones de los tipos de cada cliente quedaban a la vista de todo
 - el id se guarda y no se busca por nombre en cada llamada (Document AI no filtra `processors.list`); por nombre EXACTO solo se busca la
   primera vez —para adoptar el que un intento anterior dejó a medias— o si el procesador se borró a mano (se vuelve a crear);
 - dos sincronizaciones a la vez de la misma organización crean un solo clasificador (candado por tenant);
-- clasificar sin clasificador es un 409 con una frase que se puede mostrar («Tu organización todavía no tiene clasificador…»).
+- clasificar sin clasificador es un 409 con una frase que se puede mostrar y que dice QUÉ hacer y DÓNDE, sin nombrar piezas internas (desde el 2026-10-29: «Todavía no se pueden clasificar documentos: tu organización no tiene ningún tipo documental activo. Crea y activa al menos uno en Configuración, Tipos documentales, y vuelve a intentarlo.»; el clasificador de una organización se crea al activar su primer tipo documental).
 
 Los límites de Google no estorban: no hay tope de procesadores por proyecto, y el techo real (120 páginas por minuto de clasificación en
 línea) es del PROYECTO, no de cada procesador. Cuesta US$5 por 1,000 páginas clasificadas, igual con uno que con cien clasificadores; el
@@ -1956,6 +1972,7 @@ decisiones y lo que falta están en [`docs/modelo-entidades.md`](docs/modelo-ent
 | `DELETE /tipos-expediente/{id}?tenant=` | lo borra y libera su nombre; **solo si no tiene expedientes**: con expedientes, 409 `con_expedientes` (con `total`), porque todo expediente es instancia de un tipo; la cuenta y el borrado son atómicos frente a crear expedientes | `roles.PUEDEN_ADMINISTRAR` |
 | `GET /expedientes/?tenant=&tipo=` | los expedientes de la organización, cada uno con su `tipo`, su `totalDocumentos` y su `tamanoBytes` (lo que pesan sus documentos juntos; se calcula al consultar); con `tipo`, solo los de ese tipo | cualquiera que opere en ella |
 | `GET /expedientes/{id}?tenant=` | el expediente (con los mismos totales) y sus documentos completos, en el orden en que se agregaron | ídem |
+| `POST /expedientes/documentos` (formulario: `archivo`, `tenant`, `sha256?`) | **registra el documento de una carga manual** (la del Pipeline del front): guarda los bytes y lo anota con `canal: MANUAL`; mismo formato que la bandeja (PDF, JPEG, PNG, TIFF) y mismos límites; cualquier persona de la organización (la sesión manda, como en `/archivos`); dos cargas del mismo archivo son dos documentos con los mismos bytes. Es lo que llena «Archivos procesados» con lo que no llegó por la API (desde el 2026-10-29; antes solo nacían los de la API) |
 | `GET /expedientes/documentos?tenant=&sin_expediente=` | los documentos y los expedientes en que está cada uno; `true` = solo el void, `false` = solo los organizados | ídem |
 | `POST /expedientes/` `{tenant, nombre, tipoId}` | crea un expediente vacío (201) como instancia de ese tipo, que debe ser de la misma organización (si no, 404) | `roles.PUEDEN_ORGANIZAR` |
 | `PUT /expedientes/{id}/documentos/{documento_id}?tenant=` | mete un documento; idempotente (`agregado: false` si ya estaba) | ídem |

@@ -968,6 +968,48 @@ try:
 
     de_ed = eventos_de(ed)
     rev("cada evento que dejó la edición tiene exactamente sus campos", all(set(e) == {"op", "id", "tenant", "nombre", "por", "en"} for e in de_ed if e["op"] == "renombrar") and all(set(e) == {"op", "id", "tenant", "tiposDocumentales", "por", "en"} for e in de_ed if e["op"] == "esquema") and all(e["tenant"] == org_a for e in de_ed), str(de_ed[-2:]))
+
+    # ---------------------------------------------------------------- 18
+    titulo("18 · Lo que se carga a mano también es un documento (POST /expedientes/documentos): es lo que llena «Archivos procesados»")
+
+    def manual(bearer, tenant, nombre, contenido, tipo="application/pdf", **campos):
+        return c.post("/expedientes/documentos", files={"archivo": (nombre, contenido, tipo)}, data={"tenant": tenant, **campos}, headers=cab(bearer))
+
+    antes = ids_docs(a_admin, org_a)
+    antes_b = ids_docs(b_admin, org_b)
+    r = manual(a_admin, org_a, "manual-uno.pdf", pdf(901))
+    nuevo = r.json() if r.status_code == 201 else {}
+    rev("201 con el documento que nació: canal MANUAL, su nombre, su tamaño, su tipo, su organización y sin llave de cliente",
+        r.status_code == 201 and nuevo["canal"] == "MANUAL" and nuevo["nombreOriginal"] == "manual-uno.pdf" and nuevo["tamanoBytes"] == len(pdf(901))
+        and nuevo["mime"] == "application/pdf" and nuevo["tenant"] == org_a and nuevo["llaveId"] is None and nuevo["id"].startswith("documento-"), r.text[:240])
+    rev("sus bytes quedan en el prefijo de SU organización", nuevo.get("rutaRelativa", "").startswith(org_a + "/") and len(nuevo.get("sha256", "")) == 64, str(nuevo))
+    lista = docs(a_admin, org_a).json()["documentos"]
+    rev("aparece en la lista de documentos de su organización (la que lee «Archivos procesados»), al final y en el void",
+        len(lista) == len(antes) + 1 and lista[-1]["id"] == nuevo.get("id") and lista[-1]["expedientes"] == [] and nuevo.get("id") in ids_docs(a_admin, org_a, True))
+    rev("conserva su canal en la lista, y los que entraron por la API siguen siendo API", lista[-1]["canal"] == "MANUAL" and all(d["canal"] == "API" for d in lista[:-1]))
+    rev("lo ve cualquiera de su organización, no solo quien lo cargó", nuevo.get("id") in ids_docs(P["VIEWER"], org_a))
+    rev("la otra organización NO lo ve", ids_docs(b_admin, org_b) == antes_b)
+    otra = manual(a_admin, org_a, "manual-uno.pdf", pdf(901))
+    rev("el mismo archivo cargado dos veces son DOS documentos con los mismos bytes (igual que por la API)",
+        otra.status_code == 201 and otra.json()["id"] != nuevo["id"] and otra.json()["sha256"] == nuevo["sha256"] and otra.json()["rutaRelativa"] == nuevo["rutaRelativa"])
+
+    cantidad = len(ids_docs(a_admin, org_a))
+    rev("con la sesión de OTRA organización: 403 y no crea nada", manual(b_admin, org_a, "intruso.pdf", pdf(902)).status_code == 403 and len(ids_docs(a_admin, org_a)) == cantidad)
+    rev("sin Bearer (solo la llave de servicio): 401", manual(None, org_a, "sin-sesion.pdf", pdf(903)).status_code == 401)
+    rev("sin llave de servicio: se rechaza", c.post("/expedientes/documentos", files={"archivo": ("x.pdf", pdf(904), "application/pdf")}, data={"tenant": org_a}, headers=cab(a_admin, servicio=False)).status_code in (401, 403))
+    rev("sin decir la organización: 422", c.post("/expedientes/documentos", files={"archivo": ("x.pdf", pdf(905), "application/pdf")}, headers=cab(a_admin)).status_code == 422)
+    rev("una organización con caracteres raros no abre el disco: se rechaza", manual(a_admin, "../x", "x.pdf", pdf(906)).status_code in (400, 403, 404))
+    rev("nada de lo rechazado dejó un documento", len(ids_docs(a_admin, org_a)) == cantidad and ids_docs(b_admin, org_b) == antes_b)
+
+    rev("un formato que la bandeja tampoco acepta (GIF): 400 y no crea nada", manual(a_admin, org_a, "x.gif", b"GIF89a", "image/gif").status_code == 400 and len(ids_docs(a_admin, org_a)) == cantidad)
+    rev("un archivo vacío: 400 y no crea nada", manual(a_admin, org_a, "vacio.pdf", b"").status_code == 400 and len(ids_docs(a_admin, org_a)) == cantidad)
+    for nombre, tipo in (("foto.jpg", "image/jpeg"), ("captura.png", "image/png"), ("escaneo.tiff", "image/tiff")):
+        rev(f"{tipo}: se acepta, como en la bandeja", manual(a_admin, org_a, nombre, b"\x00" + nombre.encode() * 3, tipo).status_code == 201)
+    rev("cualquier rol de la organización puede cargar (también los que solo leen), igual que `/archivos` y que clasificar: es la sesión la que manda",
+        all(manual(P[rol], org_a, f"de-{rol.lower()}.pdf", pdf(910 + i)).status_code == 201 for i, rol in enumerate(ORGANIZAN + SOLO_LEEN)))
+    rev("y la forma de lo guardado es la de siempre: el mismo evento `nacer`, con los mismos campos que los que entran por la API",
+        all(set(d) == {"id", "tenant", "sha256", "rutaRelativa", "tamanoBytes", "mime", "nombreOriginal", "canal", "llaveId", "recibidoEn", "expedientes"} for d in docs(a_admin, org_a).json()["documentos"]),
+        str(docs(a_admin, org_a).json()["documentos"][-1]))
 finally:
     shutil.rmtree(RAIZ, ignore_errors=True)
 

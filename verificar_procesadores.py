@@ -54,6 +54,8 @@ try:
     rutas = {(metodo.upper(), ruta) for ruta, ops in app.openapi()["paths"].items() for metodo in ops if ruta.startswith("/procesadores")}
     esperadas = {
         ("POST", "/procesadores/activar"),
+        # 2026-10-29: «Generar a partir de un documento» del paso 2 (ver verificar_generar_campos.py).
+        ("POST", "/procesadores/generar-campos"),
         ("POST", "/procesadores/clasificador/sincronizar"),
         ("POST", "/procesadores/clasificador/asegurar"),
         ("GET", "/procesadores/clasificador"),
