@@ -13,7 +13,8 @@ Lo que se prueba (decisión de producto de Moibe, 2026-10-29: el expediente es u
 - solo puede tener documentos DE SU expediente: uno de otro expediente, uno suelto o uno ajeno se rechaza (404) y, al crear, no deja nada;
 - meter es idempotente; sacar del virtual deja el documento en el expediente; sacar el documento DEL EXPEDIENTE lo saca de sus virtuales;
 - borrar el virtual no toca documentos; un tipo con virtuales no se borra (409, con cuántos), y sin ellos sí;
-- el tipo cuenta sus virtuales (`totalExpedientesVirtuales`) y un renombre del tipo se ve en ellos;
+- el tipo cuenta sus virtuales (`totalExpedientesVirtuales`), un renombre del tipo se ve en ellos y se pueden listar
+  (`GET /tipos-expediente/{id}/virtuales`: lo que enseña el mosaico de Configuración al picar la cuenta);
 - lo de otra organización contesta 404 (o 403 con su tenant); los roles que solo leen ven pero no tocan; cada cosa deja su rastro;
 - borrar un tipo mientras se crean virtuales de él: nunca queda uno huérfano.
 """
@@ -309,6 +310,61 @@ try:
         r = crear_v(adm, org, juan, seguro)
         rev("crear sin base: 503 que dice que necesitan la base", r.status_code == 503 and "base de datos" in r.text, f"{r.status_code} {r.text[:120]}")
         rev("y contar los virtuales de un tipo sin base no truena: da cero", expedientes_virtuales.contar_por_tipo(org) == {})
+    finally:
+        expedientes_virtuales.SQLSERVER_HOST = guardado
+
+    # Al final a propósito: crea y borra virtuales, y las secciones de arriba cuentan los de cada tipo y los borrados de la bitácora.
+    titulo("10 · Los expedientes virtuales de un tipo (lo que enseña el mosaico al picar la cuenta del tipo)")
+
+    def de_tipo(bearer: str, tenant: str, t: str):
+        return c.get(f"/tipos-expediente/{t}/virtuales", params={"tenant": tenant}, headers=cab(bearer))
+
+    alta = tipo(adm, org, "Alta de empresa", [td_ine]).json()["id"]
+    otro_tipo = tipo(adm, org, "Alta de sucursal", [td_ine]).json()["id"]
+    sin_nada = tipo(adm, org, "Sin ninguno", [td_ine]).json()["id"]
+    a1 = crear_v(adm, org, juan, alta, "Alta de Juan", [d_dom]).json()["id"]
+    a2 = crear_v(adm, org, maria, alta, "Alta de María").json()["id"]
+    crear_v(adm, org, juan, otro_tipo, "Sucursal de Juan")
+    r = de_tipo(adm, org, alta)
+    rev("200 y dice de qué tipo son", r.status_code == 200 and r.json()["tipo"] == {"id": alta, "nombre": "Alta de empresa"}, r.text[:200])
+    lista = r.json()["expedientesVirtuales"]
+    rev("trae los virtuales de ESE tipo, de todos los expedientes, los más recientes primero", [v["id"] for v in lista] == [a2, a1], json.dumps(lista)[:300])
+    rev("y ninguno de otro tipo", all(v["nombre"] != "Sucursal de Juan" for v in lista))
+    por_id = {v["id"]: v for v in lista}
+    docs_juan = len(ver(adm, org, juan).json()["documentos"])
+    docs_maria = len(ver(adm, org, maria).json()["documentos"])
+    rev(
+        "cada uno dice su expediente (nombre y cuántos documentos tiene) y cuántos de ellos lo forman",
+        por_id[a1]["expediente"] == {"id": juan, "nombre": "Juan Pérez", "totalDocumentos": docs_juan}
+        and por_id[a1]["totalDocumentos"] == 1
+        and por_id[a2]["expediente"] == {"id": maria, "nombre": "María López", "totalDocumentos": docs_maria}
+        and por_id[a2]["totalDocumentos"] == 0,
+        json.dumps(lista)[:400],
+    )
+    rev("y quién y cuándo lo creó", por_id[a1]["creadoPor"] == guid_rita and bool(por_id[a1]["creadoEn"]))
+    rev("son tantos como dice la cuenta del tipo", ver_tipo(adm, org, alta).json()["totalExpedientesVirtuales"] == len(lista) == 2)
+
+    sacar(adm, org, juan, d_dom)
+    ahora = {v["id"]: v for v in de_tipo(adm, org, alta).json()["expedientesVirtuales"]}
+    rev("sacar un documento del expediente lo saca del virtual y baja los dos números", ahora[a1]["totalDocumentos"] == 0 and ahora[a1]["expediente"]["totalDocumentos"] == docs_juan - 1, json.dumps(ahora[a1])[:250])
+    borrar_v(adm, org, maria, a2)
+    rev("un virtual borrado ya no sale, y la cuenta del tipo baja con él", [v["id"] for v in de_tipo(adm, org, alta).json()["expedientesVirtuales"]] == [a1] and ver_tipo(adm, org, alta).json()["totalExpedientesVirtuales"] == 1)
+    r = de_tipo(adm, org, sin_nada)
+    rev("un tipo sin virtuales: 200 y la lista vacía", r.status_code == 200 and r.json()["expedientesVirtuales"] == [], r.text[:150])
+
+    for t, que in (("tipo-expediente-" + "0" * 32, "que no existe"), ("cualquier-cosa", "sin forma de id"), (td_ine, "DOCUMENTAL (otra cosa)")):
+        r = de_tipo(adm, org, t)
+        rev(f"de un tipo {que}: 404", r.status_code == 404 and "tipo de expediente no existe" in r.text, f"{r.status_code} {r.text[:100]}")
+    rev("de un tipo de OTRA organización, con la sesión y el tenant de ésta: 404", de_tipo(adm, org, tipo_b).status_code == 404)
+    rev("…poniendo el tenant de la otra: 403", de_tipo(adm, otra, tipo_b).status_code == 403)
+    rev("la otra organización no ve los virtuales de ésta aunque pida el mismo id de tipo: 404", de_tipo(adm_b, otra, alta).status_code == 404)
+    rev("sin sesión: 401", c.get(f"/tipos-expediente/{alta}/virtuales", params={"tenant": org}, headers=cab()).status_code == 401)
+    rev("el VIEWER, que solo lee, lo ve", de_tipo(P["VIEWER"], org, alta).status_code == 200)
+
+    guardado = expedientes_virtuales.SQLSERVER_HOST
+    try:
+        expedientes_virtuales.SQLSERVER_HOST = ""
+        rev("sin base, `listar_de_tipo` no truena: da una lista vacía", expedientes_virtuales.listar_de_tipo(org, alta) == [])
     finally:
         expedientes_virtuales.SQLSERVER_HOST = guardado
 finally:

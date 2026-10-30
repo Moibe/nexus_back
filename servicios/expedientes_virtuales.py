@@ -300,3 +300,40 @@ def contar_por_tipo(tenant: str) -> dict[str, int]:
             tenant,
         )
         return {f["publicId"]: int(f["n"]) for f in tablas.filas(cur)}
+
+
+def listar_de_tipo(tenant: str, tipo_id: object) -> list[dict]:
+    """Los expedientes virtuales de UN tipo, de toda la organización (cada uno vive en algún expediente), los más recientes primero.
+
+    Cada uno trae su expediente (nombre y cuántos documentos tiene) y cuántos de esos documentos lo forman: con eso la pantalla dice «2 de 3
+    documentos» sin pedir cada expediente. Es lo que hay detrás de la cuenta `totalExpedientesVirtuales` de un tipo. Sin base, ninguno (como
+    `contar_por_tipo`); un id que no tiene la forma de un tipo, tampoco."""
+    if not SQLSERVER_HOST or not isinstance(tipo_id, str) or not _RE_TIPO.match(tipo_id):
+        return []
+    tenant = almacen._validar_tenant(tenant)
+    from db import tablas
+
+    from servicios.tipos_documentales_comun import momento
+
+    with tablas.lectura() as cur:
+        cur.execute(
+            "SELECT v.publicId, v.name, v.createdBy, v.createdAt, c.publicId AS expedienteId, c.name AS expedienteNombre, "
+            "(SELECT count(*) FROM nexus.virtualCaseDocuments vd WHERE vd.virtualCaseId = v.virtualCaseId) AS enVirtual, "
+            "(SELECT count(*) FROM nexus.caseDocuments cd WHERE cd.caseId = c.caseId) AS enExpediente "
+            "FROM nexus.virtualCases v JOIN nexus.cases c ON c.caseId = v.caseId "
+            "JOIN nexus.virtualCaseTypes t ON t.virtualCaseTypeId = v.virtualCaseTypeId "
+            "WHERE t.publicId = ? AND v.tenant = ? ORDER BY v.virtualCaseId DESC",
+            tipo_id,
+            tenant,
+        )
+        return [
+            {
+                "id": f["publicId"],
+                "nombre": f["name"],
+                "expediente": {"id": f["expedienteId"], "nombre": f["expedienteNombre"], "totalDocumentos": int(f["enExpediente"])},
+                "totalDocumentos": int(f["enVirtual"]),
+                "creadoPor": f["createdBy"],
+                "creadoEn": momento(f["createdAt"]),
+            }
+            for f in tablas.filas(cur)
+        ]

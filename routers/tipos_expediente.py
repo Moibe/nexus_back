@@ -10,7 +10,8 @@ comprueba contra el registro, igual que en tipos documentales, procesos y expedi
 
 ## Quién puede qué
 
-- **Leer** (listar, ver un tipo): cualquiera que opere en la organización, porque quien organiza expedientes necesita elegir el tipo.
+- **Leer** (listar, ver un tipo y ver sus expedientes virtuales, `GET /{id}/virtuales`): cualquiera que opere en la organización, porque quien
+  organiza expedientes necesita elegir el tipo.
 - **Crear**, **editar** (su nombre y su esquema) y **borrar** un tipo: `roles.PUEDEN_ADMINISTRAR` (Administrador y Supervisor), igual que la
   biblioteca de tipos documentales y los procesos: un tipo define cómo se arman los expedientes de la organización, no es trabajo de cada
   expediente. Propuesta de producto, pendiente de confirmar con César; los demás roles reciben 403 `sin_permiso`.
@@ -210,6 +211,30 @@ def ver(tipo_id: str, tenant: str = Query(..., description="La organización"), 
     if tipo is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
     return _con_total(tipo, cuenta, nombres)
+
+
+@router.get(
+    "/{tipo_id}/virtuales",
+    tags=["Tipos de expediente"],
+    summary="Listar los expedientes virtuales de un tipo",
+    description=(
+        "Los expedientes virtuales de ese tipo en TODA la organización (cada uno vive dentro de un expediente), los más recientes primero. Cada "
+        "uno trae su expediente (con cuántos documentos tiene) y cuántos de esos documentos lo forman. Es lo que hay detrás de la cuenta "
+        "`totalExpedientesVirtuales`. Lo lee cualquiera que opere en la organización. Sin base, la lista viene vacía."
+    ),
+)
+def listar_virtuales(tipo_id: str, tenant: str = Query(..., description="La organización"), authorization: str | None = Header(default=None)):
+    aislamiento.exigir(authorization, tenant, "tipo de expediente")
+    try:
+        tipo = tipos_expediente.obtener(tenant, tipo_id)
+        virtuales = expedientes_virtuales.listar_de_tipo(tenant, tipo_id) if tipo else []
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ErrorAlmacen as exc:
+        raise almacen_no_disponible(exc) from exc
+    if tipo is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
+    return {"tipo": {"id": tipo["id"], "nombre": tipo["nombre"]}, "expedientesVirtuales": virtuales}
 
 
 @router.put(
