@@ -15,6 +15,10 @@ front, así que el back lo trata como una caja y NO interpreta las reglas: no sa
 (eso vive en el front, en `reglas.ts`, hasta que haya un motor que corra los procesos de verdad). Lo que SÍ comprueba es que el
 dibujo esté entero: ids de nodos únicos, cables que unen nodos que existen, números donde van números, y un tope de tamaño.
 
+Lo demás que mande el cliente dentro de `datos` (la vista del lienzo, y desde el 2026-10-29 `activo`, que la lista de procesos del front usa
+para marcar un proceso activo o inactivo; ausente = activo) se conserva tal cual: el back no lo interpreta. El front DEPENDE de eso, y
+`verificar_procesos.py` lo vigila.
+
 ## Lo que pone el servidor y el cliente no puede escribir
 
 `revision`, `creadoPor`, `creadoEn`, `modificadoPor`, `modificadoEn` y `tenant`. Se guardan junto al proceso, nunca dentro de `datos`.

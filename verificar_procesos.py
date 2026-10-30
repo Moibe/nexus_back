@@ -298,6 +298,15 @@ try:
     rev("de los datos de un nodo solo lo que el lienzo usa", d["nodos"][0]["data"] == {"tipoId": "tipo-aaaa1111"} and set(d["nodos"][2]["data"]) == {"operador", "a", "b"}, str(d["nodos"]))
     rev("del cable solo id, origen, destino y sus dos puntos", set(d["aristas"][0]) == {"id", "source", "sourceHandle", "target", "targetHandle"}, str(d["aristas"][0]))
     rev("lo demás que mandó la pantalla (la vista) se conserva en `datos`", d.get("vista") == {"x": 10, "y": 20, "zoom": 0.8})
+    # `activo` lo marca la lista de procesos del front (2026-10-29). El back no lo interpreta, pero el front depende de que lo conserve
+    # (también el `false`) y de poder cambiarlo con un guardado normal sobre la revisión que leyó: si algún día `_validar` descarta lo
+    # desconocido, activar y desactivar fallaría en silencio.
+    r = guardar(a_admin, org_a, p3, {**d, "activo": False}, 1)
+    rev("`activo: false` (lo marca la lista de procesos del front) se conserva al guardar", r.status_code == 200 and r.json()["datos"].get("activo") is False and r.json()["revision"] == 2, r.text[:200])
+    leido = next(x for x in listar(a_admin, org_a).json()["procesos"] if x["id"] == p3)
+    rev("y al leer la lista, con su dibujo intacto", leido["datos"].get("activo") is False and leido["datos"]["nodos"] == d["nodos"] and leido["datos"]["aristas"] == d["aristas"])
+    r = guardar(a_admin, org_a, p3, {**leido["datos"], "activo": True}, leido["revision"])
+    rev("y se vuelve a cambiar con un guardado normal (activo: true, revisión 3)", r.status_code == 200 and r.json()["datos"].get("activo") is True and r.json()["revision"] == 3, r.text[:200])
 
     titulo("8b · Las listas: operadores de listas, valores fijos y muestras de varios renglones")
     listas = proceso("Socios")
