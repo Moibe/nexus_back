@@ -66,7 +66,7 @@ con.close()
 rev("se armó lo de la 0003: un tipo con esquema y un expediente de ese tipo con dos documentos", True)
 
 print("\n=== 2 · La 0004, con el corredor real ===")
-BASE["aplicar"](None)
+BASE["aplicar"](4)
 con = BASE["conectar"]("usrNexus", BASE["app"], BASE["base"])
 k = con.cursor()
 rev("la base dice versión 4", k.execute("SELECT MAX(version) FROM nexus.schemaMigrations").fetchone()[0] == 4)

@@ -33,13 +33,24 @@ editó, y si en el ínterin otra persona lo guardó es un 409 con la revisión v
 Los inventa el cliente (`proceso-` + 32 hexadecimales) y el servidor exige que no se repitan en NINGUNA organización: un id que ya
 existe en OTRA se contesta igual que uno repetido en la propia, sin nombrar de quién es.
 
+## El tipo de expediente virtual sobre el que corre (2026-10-29)
+
+Desde que el expediente es un receptáculo y los grupitos con tipo son los EXPEDIENTES VIRTUALES (`servicios/expedientes_virtuales.py`), un
+proceso se LIGA a un tipo de expediente virtual: `datos.tipoExpedienteVirtualId` («Solicitud de crédito»), o `null` mientras no se elija.
+Es el contrato entre el proceso y los documentos: el proceso compara datos de ciertos tipos documentales y el tipo dice qué tipos
+documentales trae cada expediente virtual. El servidor exige que sea un tipo de la MISMA organización (uno ajeno se contesta igual que uno
+que no existe) y, si el tipo se borra después, el proceso se queda sin liga (en SQL lo hace la base, ON DELETE SET NULL; en el almacén se
+lee como `null`). Todavía no hay motor que corra el proceso sobre las instancias: los documentos aún no guardan su tipo documental ni los
+datos extraídos, que es lo que las reglas comparan.
+
 ## Cómo se guarda
 
-Un solo archivo de solo-agregar (`procesos.jsonl`, ver `servicios/registro.py`) con dos clases de evento: `guardar` (el proceso
-COMPLETO, con su revisión nueva) y `eliminar`. El estado vigente se arma doblando el archivo de principio a fin.
+Desde el 2026-10-29, donde hay base, en `nexus.processes` (migración `0005`, `servicios/procesos_sql.py`), con la liga en su propia columna.
+Este módulo valida igual en los dos casos y elige por `SQLSERVER_HOST` en cada llamada. Donde no hay base (la laptop, las pruebas offline),
+un solo archivo de solo-agregar (`procesos.jsonl`, ver `servicios/registro.py`) con dos clases de evento: `guardar` (el proceso COMPLETO,
+con su revisión nueva) y `eliminar`. El estado vigente se arma doblando el archivo de principio a fin.
 
-⚠️ Cada guardado escribe el proceso entero y el archivo crece con cada edición. Con el uso de hoy basta; si crece, la salida es
-compactar o la base.
+⚠️ En el almacén cada guardado escribe el proceso entero y el archivo crece con cada edición; la salida de verdad es la base, que ya existe.
 """
 
 import json
@@ -48,7 +59,17 @@ import math
 import re
 from datetime import datetime, timezone
 
-from servicios import registro
+from config import SQLSERVER_HOST
+from servicios import registro, tipos_expediente
+
+
+def _sql():
+    """El módulo de SQL si el `.env` dice que hay base; `None` si no. Se importa tarde: sin base, `pyodbc` ni se carga."""
+    if not SQLSERVER_HOST:
+        return None
+    from servicios import procesos_sql
+
+    return procesos_sql
 
 logger = logging.getLogger(__name__)
 
@@ -200,18 +221,26 @@ def _validar(proceso_id: str, datos: object) -> dict:
     existentes = set(ids_nodos)
     if any(a["source"] not in existentes or a["target"] not in existentes for a in aristas):
         raise ProcesoInvalido("Un cable une un nodo que no existe.")
+    tipo = datos.get("tipoExpedienteVirtualId")
+    if tipo is not None and (not isinstance(tipo, str) or not tipos_expediente._RE_ID.match(tipo)):
+        raise ProcesoInvalido("Ese tipo de expediente virtual no existe en esta organización.")
     limpio = {k: v for k, v in datos.items() if k not in _RESERVADAS and k not in ("id", "nodos", "aristas", "nombre", "descripcion")}
-    limpio.update({"nombre": nombre, "descripcion": descripcion, "nodos": nodos, "aristas": aristas})
+    limpio.update({"nombre": nombre, "descripcion": descripcion, "nodos": nodos, "aristas": aristas, "tipoExpedienteVirtualId": tipo})
     if len(json.dumps(limpio, ensure_ascii=False).encode("utf-8")) > TOPE_BYTES:
         raise ProcesoInvalido("El proceso es demasiado grande para guardarse.")
     return limpio
 
 
-def _publico(p: dict) -> dict:
+def _publico(p: dict, tipos_vigentes: set[str] | None = None) -> dict:
+    """El proceso como lo ve quien consulta. Con `tipos_vigentes` (los tipos de expediente virtual que existen en su organización), una liga
+    a un tipo que ya no existe se lee como `null`: lo mismo que hace la base con ON DELETE SET NULL."""
+    datos = {**p["datos"], "id": p["id"]}
+    tipo = datos.get("tipoExpedienteVirtualId")
+    datos["tipoExpedienteVirtualId"] = tipo if tipo and (tipos_vigentes is None or tipo in tipos_vigentes) else None
     return {
         "id": p["id"],
         "revision": p["revision"],
-        "datos": {**p["datos"], "id": p["id"]},
+        "datos": datos,
         "creadoPor": p["creadoPor"],
         "creadoEn": p["creadoEn"],
         "modificadoPor": p["modificadoPor"],
@@ -219,18 +248,45 @@ def _publico(p: dict) -> dict:
     }
 
 
+def _tipos_vigentes(tenant: str) -> set[str]:
+    return {t["id"] for t in tipos_expediente.listar(tenant)}
+
+
+def _sin_id(p: dict) -> dict:
+    """Lo que devuelve SQL ya trae la liga resuelta; solo falta el `id` dentro de `datos`, como en el almacén."""
+    return {**p, "datos": {**p["datos"], "id": p["id"]}}
+
+
 def listar(tenant: str) -> list[dict]:
     """Los procesos de UNA organización, en el orden de su creación."""
+    if sql := _sql():
+        return [_sin_id(p) for p in sql.listar(tenant)]
     with registro.candado:
         procesos = _doblar()
-    return [_publico(p) for p in procesos.values() if p["tenant"] == tenant]
+    vigentes = _tipos_vigentes(tenant)
+    return [_publico(p, vigentes) for p in procesos.values() if p["tenant"] == tenant]
 
 
 def obtener(tenant: str, proceso_id: str) -> dict | None:
+    if sql := _sql():
+        p = sql.obtener(tenant, proceso_id)
+        return _sin_id(p) if p else None
     with registro.candado:
         procesos = _doblar()
     p = procesos.get(proceso_id)
-    return _publico(p) if p and p["tenant"] == tenant else None
+    return _publico(p, _tipos_vigentes(tenant)) if p and p["tenant"] == tenant else None
+
+
+def de_tipo(tenant: str, tipo_id: str) -> list[dict]:
+    """Los procesos ligados a ese tipo de expediente virtual: `{id, nombre, activo}`, en el orden de su creación. Lo enseña cada expediente
+    virtual de ese tipo («qué procesos le aplican»)."""
+    if sql := _sql():
+        return sql.de_tipo(tenant, tipo_id)
+    return [
+        {"id": p["id"], "nombre": p["datos"]["nombre"], "activo": p["datos"].get("activo") is not False}
+        for p in listar(tenant)
+        if p["datos"].get("tipoExpedienteVirtualId") == tipo_id
+    ]
 
 
 def guardar(tenant: str, proceso_id: str, datos: object, revision: int, por: str) -> tuple[dict, dict | None]:
@@ -242,6 +298,12 @@ def guardar(tenant: str, proceso_id: str, datos: object, revision: int, por: str
     limpio = _validar(proceso_id, datos)
     if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
         raise ProcesoInvalido("La revisión no es válida.")
+    if sql := _sql():
+        nuevo, actual = sql.guardar(tenant, proceso_id, limpio, revision, por)
+        return _sin_id(nuevo), _sin_id(actual) if actual else None
+    tipo = limpio.get("tipoExpedienteVirtualId")
+    if tipo is not None and tipos_expediente.obtener(tenant, tipo) is None:
+        raise ProcesoInvalido("Ese tipo de expediente virtual no existe en esta organización.")
     with registro.candado:
         procesos = _doblar()
         actual = procesos.get(proceso_id)
@@ -266,6 +328,8 @@ def guardar(tenant: str, proceso_id: str, datos: object, revision: int, por: str
 
 def eliminar(tenant: str, proceso_id: str, por: str) -> dict:
     """Quita un proceso de la organización. Devuelve el que se quitó. `NoEncontrado` si no es de ella."""
+    if sql := _sql():
+        return _sin_id(sql.eliminar(tenant, proceso_id))
     with registro.candado:
         procesos = _doblar()
         actual = procesos.get(proceso_id)

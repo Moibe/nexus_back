@@ -225,6 +225,8 @@ def obtener(tenant: str, expediente_id: object, virtual_id: object) -> dict | No
             v["virtualCaseId"],
         )
         docs = [expedientes_sql.a_documento(f) for f in tablas.filas(cur)]
+    from servicios import procesos
+
     return {
         "id": v["publicId"],
         "nombre": v["name"],
@@ -234,6 +236,9 @@ def obtener(tenant: str, expediente_id: object, virtual_id: object) -> dict | No
         "creadoEn": momento(v["createdAt"]),
         "totalDocumentos": len(docs),
         "documentos": docs,
+        # Los procesos del motor de reglas ligados a su tipo: los que le aplican. Se leen aunque quien mira no pueda editar procesos (solo
+        # el nombre y si está activo); todavía no hay motor que los corra sobre el expediente virtual.
+        "procesos": procesos.de_tipo(tenant, v["tipoId"]),
     }
 
 

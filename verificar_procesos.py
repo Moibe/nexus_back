@@ -12,15 +12,31 @@ Lo que se prueba:
 - lo que no es un proceso (id raro, sin nombre, nodos de un tipo inventado, cables a nodos que no existen, ids repetidos, posiciones
   absurdas, enorme) se rechaza, y lo que el servidor pone no se puede forzar;
 - lo que se guarda sale LIMPIO: del nodo y del cable solo lo que el lienzo necesita;
-- crear y borrar dejan rastro con quién; guardar a secas, no.
+- crear y borrar dejan rastro con quién; guardar a secas, no;
+- (2026-10-29) la liga con un tipo de expediente virtual: solo de la misma organización, se cambia y se quita con un guardado normal, se
+  pierde sola si el tipo se borra, y el expediente virtual de ese tipo enseña sus procesos (esto último, solo con base).
+
+Con `--sql` corre LO MISMO contra SQL Server (migración `0005`, contenedor desechable de `pruebas_sql.py`); lo que lee el JSONL a mano se
+salta ahí.
+
+    .venv/Scripts/python verificar_procesos.py --sql
 """
 
 import json
 import os
 import shutil
+import sys
 import tempfile
 import uuid
 from pathlib import Path
+
+sys.stdout.reconfigure(encoding="utf-8")
+SQL = "--sql" in sys.argv
+if SQL:
+    # ANTES de importar la app: `config.py` lee el entorno una sola vez.
+    import pruebas_sql
+
+    pruebas_sql.preparar("nexus-procesos-prueba", 14337, dejar="--dejar" in sys.argv)
 
 RAIZ = Path(tempfile.mkdtemp(prefix="verificar-procesos-"))
 (RAIZ / ".nexus-almacen").touch()
@@ -388,15 +404,59 @@ try:
     rev("guardar a secas NO deja rastro (el proceso 1 se guardó dos veces y se anotó una sola vez)", sum(1 for e in creados if e.get("procesoId") == p1) == 1 and not any(e.get("procesoId") == p1 for e in borrados))
     rev("el rastro no lleva el dibujo ni los valores de ejemplo", not any("nodos" in e or "aristas" in e or "datos" in e for e in creados + borrados))
 
-    titulo("12 · Resiste un corte a media escritura")
-    ruta = RAIZ / ".registro" / "procesos.jsonl"
-    with open(ruta, "ab") as f:
-        f.write(b'{"op": "guardar", "id": "proceso-roto')
-    antes = ids(a_admin, org_a)
-    rev("una última línea rota se ignora al leer", ids(a_admin, org_a) == antes and len(antes) >= 3)
-    n = nuevo_id()
-    r = guardar(a_admin, org_a, n, proceso("Después del corte"), 0)
-    rev("y el guardado siguiente no queda pegado a ella", r.status_code == 200 and n in ids(a_admin, org_a))
+    if not SQL:  # en SQL no hay archivo que cortar
+        titulo("12 · Resiste un corte a media escritura")
+        ruta = RAIZ / ".registro" / "procesos.jsonl"
+        with open(ruta, "ab") as f:
+            f.write(b'{"op": "guardar", "id": "proceso-roto')
+        antes = ids(a_admin, org_a)
+        rev("una última línea rota se ignora al leer", ids(a_admin, org_a) == antes and len(antes) >= 3)
+        n = nuevo_id()
+        r = guardar(a_admin, org_a, n, proceso("Después del corte"), 0)
+        rev("y el guardado siguiente no queda pegado a ella", r.status_code == 200 and n in ids(a_admin, org_a))
+
+    titulo("13 · La liga con un tipo de expediente virtual (2026-10-29)")
+    td_ine = "tipo-" + uuid.uuid4().hex
+    assert c.put(f"/tipos-documentales/{td_ine}", json={"tenant": org_a, "revision": 0, "datos": {"nombre": "INE", "descripcion": "", "estado": "activo", "procesadorId": ""}}, headers=cab(a_admin)).status_code == 200
+    td_b = "tipo-" + uuid.uuid4().hex
+    assert c.put(f"/tipos-documentales/{td_b}", json={"tenant": org_b, "revision": 0, "datos": {"nombre": "INE", "descripcion": "", "estado": "activo", "procesadorId": ""}}, headers=cab(b_admin)).status_code == 200
+    credito = c.post("/tipos-expediente/", json={"tenant": org_a, "nombre": "Solicitud de crédito", "tiposDocumentales": [td_ine]}, headers=cab(a_admin)).json()["id"]
+    seguro = c.post("/tipos-expediente/", json={"tenant": org_a, "nombre": "Póliza de seguro", "tiposDocumentales": [td_ine]}, headers=cab(a_admin)).json()["id"]
+    tipo_b = c.post("/tipos-expediente/", json={"tenant": org_b, "nombre": "Solicitud de crédito", "tiposDocumentales": [td_b]}, headers=cab(b_admin)).json()["id"]
+
+    rev("un proceso que nunca eligió tipo se lee con `tipoExpedienteVirtualId: null`", all(x["datos"].get("tipoExpedienteVirtualId", "falta") is None for x in listar(a_admin, org_a).json()["procesos"]))
+    pl = nuevo_id()
+    r = guardar(a_admin, org_a, pl, proceso("Validar crédito", tipoExpedienteVirtualId=credito), 0)
+    rev("crear un proceso ligado a un tipo de expediente virtual de su organización: 200 y lo devuelve", r.status_code == 200 and r.json()["datos"]["tipoExpedienteVirtualId"] == credito, r.text[:200])
+    rev("y al listarlo trae su tipo", next(x for x in listar(a_admin, org_a).json()["procesos"] if x["id"] == pl)["datos"]["tipoExpedienteVirtualId"] == credito)
+    inexistente = guardar(a_admin, org_a, nuevo_id(), proceso("Con tipo fantasma", tipoExpedienteVirtualId="tipo-expediente-" + "0" * 32), 0)
+    rev("con un tipo que no existe: 400 que lo dice", inexistente.status_code == 400 and "tipo de expediente virtual" in inexistente.text, inexistente.text[:160])
+    ajeno = guardar(a_admin, org_a, nuevo_id(), proceso("Con tipo ajeno", tipoExpedienteVirtualId=tipo_b), 0)
+    rev("con uno de OTRA organización: 400, igual que uno que no existe", ajeno.status_code == 400 and ajeno.json() == inexistente.json(), ajeno.text[:160])
+    for malo, que in ((td_ine, "un tipo DOCUMENTAL"), ("cualquier-cosa", "algo sin forma de id"), (123, "un número")):
+        rev(f"con {que} en lugar del tipo: 400", guardar(a_admin, org_a, nuevo_id(), proceso("Malo", tipoExpedienteVirtualId=malo), 0).status_code == 400)
+    rev("nada de lo rechazado se guardó", sum(1 for x in listar(a_admin, org_a).json()["procesos"] if x["datos"]["nombre"] in ("Con tipo fantasma", "Con tipo ajeno", "Malo")) == 0)
+    r = guardar(a_admin, org_a, pl, proceso("Validar crédito", tipoExpedienteVirtualId=seguro), 1)
+    rev("cambiarle el tipo con un guardado normal (revisión 2)", r.status_code == 200 and r.json()["datos"]["tipoExpedienteVirtualId"] == seguro and r.json()["revision"] == 2, r.text[:160])
+    r = guardar(a_admin, org_a, pl, proceso("Validar crédito", tipoExpedienteVirtualId=None), 2)
+    rev("quitarle la liga (null) también", r.status_code == 200 and r.json()["datos"]["tipoExpedienteVirtualId"] is None, r.text[:160])
+    r = guardar(a_admin, org_a, pl, proceso("Validar crédito", tipoExpedienteVirtualId=credito), 3)
+    rev("la liga no se cuela dentro del dibujo: el proceso vuelve con su mismo dibujo", r.json()["datos"]["nodos"] == guardar(a_admin, org_a, nuevo_id(), proceso("Igual"), 0).json()["datos"]["nodos"])
+    otro = nuevo_id()
+    guardar(a_admin, org_a, otro, proceso("Otro de crédito", tipoExpedienteVirtualId=credito, activo=False), 0)
+    from servicios import procesos as servicio_procesos  # noqa: E402
+
+    rev("`de_tipo` da los procesos ligados a ese tipo, en orden, con si están activos", servicio_procesos.de_tipo(org_a, credito) == [{"id": pl, "nombre": "Validar crédito", "activo": True}, {"id": otro, "nombre": "Otro de crédito", "activo": False}], str(servicio_procesos.de_tipo(org_a, credito)))
+    rev("…y los de otro tipo u organización no se mezclan", servicio_procesos.de_tipo(org_a, seguro) == [] and servicio_procesos.de_tipo(org_b, credito) == [])
+    if SQL:
+        exp = c.post("/expedientes/", json={"tenant": org_a, "nombre": "Juan Pérez"}, headers=cab(a_admin)).json()["id"]
+        v = c.post(f"/expedientes/{exp}/virtuales", json={"tenant": org_a, "tipoId": credito, "nombre": "Crédito", "documentos": []}, headers=cab(a_admin))
+        rev("el expediente virtual de ese tipo enseña los procesos que le aplican", v.status_code == 201 and [x["id"] for x in v.json()["procesos"]] == [pl, otro], v.text[:250])
+        c.delete(f"/expedientes/{exp}/virtuales/{v.json()['id']}", params={"tenant": org_a}, headers=cab(a_admin))
+    r = c.delete(f"/tipos-expediente/{credito}", params={"tenant": org_a}, headers=cab(a_admin))
+    rev("borrar el tipo (sin expedientes virtuales) se puede aunque tenga procesos", r.status_code == 200, r.text[:160])
+    leidos = {x["id"]: x["datos"]["tipoExpedienteVirtualId"] for x in listar(a_admin, org_a).json()["procesos"]}
+    rev("y sus procesos se quedan, sin liga", leidos.get(pl, "falta") is None and leidos.get(otro, "falta") is None, str(leidos))
 finally:
     shutil.rmtree(RAIZ, ignore_errors=True)
 
