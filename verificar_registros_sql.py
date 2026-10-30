@@ -36,6 +36,9 @@ os.environ.update(ALMACEN_RUTA=str(RAIZ), DOCAI_CLASIFICADOR_ID="clasificador-de
 
 fallos: list[str] = []
 
+# `asegurar_todo()` también importa lo de la 0008 (tokens, llaves, webhooks…), cuyas tablas esta prueba todavía no tiene: aquí solo los cuatro de la 0006.
+DE_LA_0006 = ("organizaciones", "clasificadores", "bandeja", "auditoria")
+
 
 def rev(que: str, ok: bool, extra: str = "") -> None:
     print(f"  {'OK   ' if ok else 'FALLA'}  {que}{(' — ' + extra) if extra and not ok else ''}")
@@ -128,7 +131,7 @@ try:
 
     titulo("2 · La importación")
     modo(True)
-    importacion_json.asegurar_todo()
+    [importacion_json.asegurar(n) for n in DE_LA_0006]
     con = BASE["conectar"]("usrNexus", BASE["app"], BASE["base"])
     k = con.cursor()
     hechos = {r[0]: (r[1], r[2]) for r in k.execute("SELECT registryName, rowsImported, rowsSkipped FROM nexus.jsonImports").fetchall()}
@@ -137,7 +140,7 @@ try:
     rev("la que traía un slug repetido NO se pierde: entra con un slug libre y conserva su código",
         tuple(k.execute("SELECT slug, code FROM nexus.tenants WHERE guid = ?", ORG_REPETIDA).fetchone()) == ("alfa-seguros-2", "NEX-00003"))
     importacion_json.olvidar()
-    importacion_json.asegurar_todo()
+    [importacion_json.asegurar(n) for n in DE_LA_0006]
     rev("importar otra vez no duplica nada", k.execute("SELECT (SELECT count(*) FROM nexus.tenants) * 1000 + (SELECT count(*) FROM nexus.inboxEntries)").fetchone()[0] == 3005)
     con.close()
 

@@ -18,7 +18,9 @@ de llave: una inundación de identificadores inventados hacía crecer sin tope e
 hubiera jamás un cliente detrás. Mientras el puerto 8083 solo se alcanzaba
 desde la intranet era una rareza; con la API publicada en internet, no.
 
-Registro PROVISIONAL de solo agregar en el NAS, `uso-llaves.jsonl` (ver
+Desde el 2026-10-30 (migración `0008`), donde hay base, cada llamada es una fila de `nexus.apiKeyUsage` (con llave foránea a la llave),
+importada una vez desde el JSONL; el índice en memoria de abajo se calienta de ahí y sigue siendo lo que contesta el tope y las métricas. Donde
+no hay base, registro PROVISIONAL de solo agregar en el NAS, `uso-llaves.jsonl` (ver
 `servicios/registro.py`), igual que las llaves y la bandeja. Cuando exista la
 tabla del DBA cambia este módulo y nada más. Un archivo para todas las llaves:
 las consultas son por llave y periodo, y lo que hoy entra son decenas de
@@ -38,6 +40,7 @@ import statistics
 import threading
 from datetime import datetime, timedelta, timezone
 
+from config import SQLSERVER_HOST
 from servicios import registro
 
 ARCHIVO = "uso-llaves.jsonl"
@@ -47,6 +50,15 @@ AVISO_DESDE = 0.80
 
 def _ahora() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _sql():
+    """El módulo de SQL si el `.env` dice que hay base; `None` si no. Se importa tarde: sin base, `pyodbc` ni se carga."""
+    if not SQLSERVER_HOST:
+        return None
+    from servicios import integraciones_sql
+
+    return integraciones_sql
 
 
 # ── El índice por llave, en memoria ──────────────────────────────────────────
@@ -88,10 +100,13 @@ def _calentar() -> None:
     if _indice_listo:
         return
     nuevo: dict[str, list[_Evento]] = {}
-    for e in registro.eventos(ARCHIVO):
-        par = _compacto(e)
-        if par:
-            nuevo.setdefault(par[0], []).append(par[1])
+    if sql := _sql():
+        nuevo = sql.uso_cargar()
+    else:
+        for e in registro.eventos(ARCHIVO):
+            par = _compacto(e)
+            if par:
+                nuevo.setdefault(par[0], []).append(par[1])
     _indice.clear()
     _indice.update(nuevo)
     _indice_listo = True
@@ -120,18 +135,21 @@ def registrar(llave_id: str, ruta: str, metodo: str, status: int, ms: int, bytes
             registro.logger.exception("No se pudo calentar el índice de uso")
         _indice.setdefault(llave_id, []).append((ahora, status, ms, bytes_))
     try:
-        registro.agregar(
-            ARCHIVO,
-            {
-                "en": _ahora().isoformat(timespec="milliseconds"),
-                "llave": llave_id,
-                "ruta": ruta,
-                "metodo": metodo,
-                "status": status,
-                "ms": ms,
-                "bytes": bytes_,
-            },
-        )
+        if sql := _sql():
+            sql.uso_registrar(llave_id, ruta, metodo, status, ms, bytes_, ahora)
+        else:
+            registro.agregar(
+                ARCHIVO,
+                {
+                    "en": _ahora().isoformat(timespec="milliseconds"),
+                    "llave": llave_id,
+                    "ruta": ruta,
+                    "metodo": metodo,
+                    "status": status,
+                    "ms": ms,
+                    "bytes": bytes_,
+                },
+            )
     except Exception:  # noqa: BLE001
         registro.logger.exception("No se pudo registrar el uso de la llave %s", llave_id)
 

@@ -633,9 +633,10 @@ def calentar_uso_de_llaves() -> None:
 
 @app.on_event("startup")
 def importar_registros_json() -> None:
-    """Migración `0006`: importa UNA vez a SQL las organizaciones, los clasificadores, la bandeja y la auditoría que traían sus JSONL
-    (`servicios/importacion_json.py`). Se hace al arrancar para que ninguna petición escriba en una tabla con llave foránea a
-    organizaciones antes de que existan; si falla (la base o el NAS no responden), no tumba la app: se reintenta al usar cada uno."""
+    """Migraciones `0006` y `0008`: importa UNA vez a SQL lo que traían sus JSONL —las organizaciones, los clasificadores, la bandeja y la
+    auditoría; los enlaces de un solo uso, las llaves de cliente, su uso, los webhooks y sus entregas— (`servicios/importacion_json.py`). Se hace
+    al arrancar para que ninguna petición escriba en una tabla con llave foránea a organizaciones antes de que existan; si falla (la base o el NAS
+    no responden), no tumba la app: se reintenta al usar cada uno."""
     if not SQLSERVER_HOST:
         return
     try:
