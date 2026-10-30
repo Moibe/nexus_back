@@ -6,6 +6,7 @@ El back lo trata casi como una caja: `datos` es el objeto que el front ya maneja
 se guarda tal cual. Solo se EXIGE y se lee lo que el back necesita para algo:
 
 - `nombre` y `descripcion` — son las categorías del clasificador (la descripción es prompt real para el modelo);
+- `instrucciones` — opcionales (hasta `MAX_INSTRUCCIONES` caracteres): viajan al extractor como su `documentPrompt`, ver `esquema.esquema_desde_campos`;
 - `estado` — `borrador`, `activo` o `archivado`: solo los `activo` entran al clasificador;
 - `procesadorId` — para saber qué procesadores de Google tienen dueño (`servicios/procesadores_huerfanos.py`).
 

@@ -359,6 +359,31 @@ if estructura_desde_esquema({}) == {} and estructura_desde_esquema({"entityTypes
 else:
     mal("esquema vacío")
 
+# ── Instrucciones para la extracción (2026-10-30) ────────────────────────────
+caso("[16] Las instrucciones del tipo viajan como el `documentPrompt` del esquema, y sin ellas el esquema NO cambia")
+INSTRUCCIONES = "  Estas constancias se emiten en México. La persona que interesa es el titular, no el beneficiario.  "
+CAMPOS_I = [{"nombre": "Nombre", "tipoDato": "texto", "obligatorio": True}]
+e = esquema_desde_campos("T", "Una constancia.", CAMPOS_I, INSTRUCCIONES)
+if e.get("documentPrompt") == INSTRUCCIONES.strip():
+    ok("con instrucciones: `documentPrompt` es el texto, sin los espacios de los extremos")
+else:
+    mal(f"documentPrompt: {e.get('documentPrompt')!r}")
+if e["description"] == "Una constancia." and e["entityTypes"][0]["properties"][0]["name"] == "nombre":
+    ok("la descripción del tipo y los campos siguen donde estaban (la instrucción no los pisa)")
+else:
+    mal("las instrucciones movieron otra cosa del esquema")
+base = esquema_desde_campos("T", "Una constancia.", CAMPOS_I)
+for rotulo, sin in (("omitidas", base), ("vacías", esquema_desde_campos("T", "Una constancia.", CAMPOS_I, "")), ("solo espacios", esquema_desde_campos("T", "Una constancia.", CAMPOS_I, "  \n "))):
+    if "documentPrompt" not in sin and sin == base:
+        ok(f"instrucciones {rotulo}: no hay `documentPrompt` y el esquema sale idéntico al de siempre")
+    else:
+        mal(f"instrucciones {rotulo}: {sorted(sin)}")
+resto = {k: v for k, v in e.items() if k != "documentPrompt"}
+if resto == base:
+    ok("lo único que cambia con las instrucciones es esa clave")
+else:
+    mal("las instrucciones cambiaron algo más del esquema")
+
 print()
 print("=== FALLÓ ===" if fallas else "=== MAPEO VERIFICADO ===")
 raise SystemExit(1 if fallas else 0)

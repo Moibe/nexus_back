@@ -137,7 +137,7 @@ def _propiedad(campo: dict, nombre: str, tipos_auxiliares: list[dict], prefijo_a
     }
 
 
-def esquema_desde_campos(nombre_tipo: str, descripcion_tipo: str, campos: list[dict]) -> dict:
+def esquema_desde_campos(nombre_tipo: str, descripcion_tipo: str, campos: list[dict], instrucciones: str = "") -> dict:
     """Arma el `DocumentSchema` (forma v1beta3) para un tipo documental.
 
     Forma v1beta3 y no v1 porque la Property de v1 NO tiene `description` — y
@@ -159,6 +159,14 @@ def esquema_desde_campos(nombre_tipo: str, descripcion_tipo: str, campos: list[d
     fecha, moneda, casilla o lista), no otro grupo. Un grupo sin subcampos no se
     puede declarar (un objeto sin propiedades no dice qué extraer) y se omite;
     quien llama —`/procesadores/activar`— ya lo rechaza antes con un 422.
+
+    `instrucciones` (2026-10-30) son las «Instrucciones para la extracción» del tipo, opcionales: viajan como el `documentPrompt` del
+    esquema, el texto que Google inyecta en el prompt del modelo para TODO el documento (campo de Google de enero de 2026, en v1 y
+    v1beta3). Medido contra el servicio real el mismo día: se acepta y se guarda, y sirve para ORIENTAR qué se extrae (con «la persona
+    que interesa es el titular» el campo de nombre pasó del beneficiario al titular y, al quitarla, volvió). NO sirve para reescribir
+    valores («escribe las fechas AAAA-MM-DD», «nombres con los apellidos al final»): el extractor devuelve texto anclado en lo impreso
+    y el campo cuyo valor ya no coincide desaparece de la respuesta. Por eso la pantalla se lo advierte a quien las escribe. Sin
+    instrucciones, o en blanco, la clave NO se manda y el esquema sale igual que antes.
     """
     tipo_raiz = "custom_extraction_document_type"
     propiedades: list[dict] = []
@@ -193,7 +201,7 @@ def esquema_desde_campos(nombre_tipo: str, descripcion_tipo: str, campos: list[d
             }
         )
 
-    return {
+    esquema: dict = {
         "displayName": nombre_tipo.strip() or "Tipo documental",
         "description": (descripcion_tipo or "").strip(),
         "entityTypes": [
@@ -205,6 +213,9 @@ def esquema_desde_campos(nombre_tipo: str, descripcion_tipo: str, campos: list[d
             *tipos_auxiliares,
         ],
     }
+    if (instrucciones or "").strip():
+        esquema["documentPrompt"] = instrucciones.strip()
+    return esquema
 
 
 def esquema_clasificador_desde_tipos(tipos: list[dict]) -> dict:

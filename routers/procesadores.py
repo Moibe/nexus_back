@@ -34,6 +34,7 @@ from servicios.procesadores import (
     generar_campos as _generar_campos,
     sincronizar_clasificador as _sincronizar_clasificador,
 )
+from servicios.tipos_documentales_comun import MAX_INSTRUCCIONES
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,9 @@ class TipoDocumentalEntrada(BaseModel):
     id: str = Field(min_length=1, max_length=100)
     nombre: str = Field(min_length=1, max_length=200)
     descripcion: str = ""
+    # Opcional (2026-10-30): contexto para leer el documento, que viaja como el `documentPrompt` del extractor. Orienta qué se
+    # extrae; no sirve para reescribir valores. Ver `esquema_desde_campos`.
+    instrucciones: str = Field(default="", max_length=MAX_INSTRUCCIONES)
     campos: list[CampoEntrada]
     # La versión YA publicada (0 = nunca activado). "Activar" siempre manda 0;
     # "Crear nueva versión" manda la actual, para que el back publique la
@@ -110,7 +114,11 @@ def _mensaje_para(exc: DocumentAIError, *, mensaje_4xx: str) -> str:
     description=(
         "Crea (o adopta, si un intento anterior ya lo dejó a medias) el Custom "
         "Extractor de Document AI para la SIGUIENTE versión del tipo documental "
-        "(`version` + 1) y le sube el esquema armado desde sus campos. Una "
+        "(`version` + 1) y le sube el esquema armado desde sus campos. Las "
+        "`instrucciones` opcionales del tipo viajan como el `documentPrompt` "
+        "del esquema: contexto para leer el documento que orienta qué se "
+        "extrae (no reescribe valores: el campo cuyo valor ya no coincide con "
+        "lo impreso desaparece de la respuesta). Una "
         "versión nunca reutiliza el procesador de la anterior — esa se queda "
         "viva sin tocarse. El procesador nace en modalidad zero-shot: extrae "
         "leyendo solo el esquema, sin entrenamiento. Devuelve `procesadorId` y "
@@ -149,7 +157,7 @@ async def activar(tipo: TipoDocumentalEntrada):
             )
 
     esquema = esquema_desde_campos(
-        tipo.nombre, tipo.descripcion, [c.model_dump() for c in tipo.campos]
+        tipo.nombre, tipo.descripcion, [c.model_dump() for c in tipo.campos], tipo.instrucciones
     )
     try:
         resultado = await activar_tipo_documental(tipo.id, tipo.nombre, esquema, tipo.version)
