@@ -154,10 +154,10 @@ def docs_v(bearer: str, tenant: str, exp: str, v: str) -> list[str]:
 
 
 def auditoria(accion: str) -> list[dict]:
-    ruta = RAIZ / ".registro" / "auditoria.jsonl"
-    if not ruta.exists():
-        return []
-    return [e for e in (json.loads(x) for x in ruta.read_text(encoding="utf-8").splitlines() if x.strip()) if e.get("accion") == accion]
+    # Por el servicio y no leyendo el JSONL: con --sql la bitácora vive en nexus.auditEvents (migración 0006).
+    from servicios import auditoria as bitacora
+
+    return bitacora.eventos({accion})
 
 
 try:

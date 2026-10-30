@@ -632,6 +632,21 @@ def calentar_uso_de_llaves() -> None:
 
 
 @app.on_event("startup")
+def importar_registros_json() -> None:
+    """Migración `0006`: importa UNA vez a SQL las organizaciones, los clasificadores, la bandeja y la auditoría que traían sus JSONL
+    (`servicios/importacion_json.py`). Se hace al arrancar para que ninguna petición escriba en una tabla con llave foránea a
+    organizaciones antes de que existan; si falla (la base o el NAS no responden), no tumba la app: se reintenta al usar cada uno."""
+    if not SQLSERVER_HOST:
+        return
+    try:
+        from servicios import importacion_json
+
+        importacion_json.asegurar_todo()
+    except Exception:  # noqa: BLE001
+        logger.warning("No se pudieron importar los registros JSON al arrancar; se intentará al usarse.", exc_info=True)
+
+
+@app.on_event("startup")
 def arrancar_entregas_de_webhooks() -> None:
     """El trabajador que entrega los avisos de webhook y los reintenta (ver
     `servicios/entregas_webhooks.py`). Reconstruye lo pendiente del registro:

@@ -1,4 +1,10 @@
-"""Organizaciones (tenants) — registro PROVISIONAL.
+"""Organizaciones (tenants).
+
+**Desde el 2026-10-29 (migración `0006`), donde hay base, viven en `nexus.tenants`** (`servicios/registros_sql.py`), importadas una vez
+desde `tenants.jsonl` la primera vez que se usan en cada ambiente (`servicios/importacion_json.py`). Este módulo valida igual en los dos
+casos y elige por `SQLSERVER_HOST` en cada llamada; el JSONL de abajo es lo que corre donde no hay base (la laptop, las pruebas offline).
+El espacio de plataforma (`plataforma`, `csi`, `demo`) NO es una organización y no se registra aquí (decisión de Moibe: «plataforma se
+trata aparte»). Lo de abajo es la historia de este registro:
 
 Lo definitivo es `security.tenants` con `uspCreateTenant`, que YA EXISTEN
 (ver `repositorios/tenants.py`). No se usan todavía por una razón práctica: el
@@ -31,7 +37,18 @@ import unicodedata
 import uuid
 from datetime import datetime, timezone
 
+from config import SQLSERVER_HOST
 from servicios import registro
+
+
+def _sql():
+    """El módulo de SQL si el `.env` dice que hay base; `None` si no. Se importa tarde: sin base, `pyodbc` ni se carga."""
+    if not SQLSERVER_HOST:
+        return None
+    from servicios import registros_sql
+
+    return registros_sql
+
 
 ARCHIVO = "tenants.jsonl"
 
@@ -87,6 +104,18 @@ def _indice() -> dict[str, dict]:
     return tenants
 
 
+def indice_archivo() -> dict[str, dict]:
+    """Lo que dice el JSONL, aunque haya base: es lo que importa `servicios/importacion_json.py`."""
+    return _indice()
+
+
+def _todas() -> list[dict]:
+    """Todas, de donde vivan, en el orden en que se crearon."""
+    if sql := _sql():
+        return list(reversed(sql.orgs_listar()))
+    return list(_indice().values())
+
+
 def _siguiente_codigo(tenants: dict[str, dict]) -> str:
     usados = [t["codigo"] for t in tenants.values() if t["codigo"].startswith(f"{PREFIJO_CODIGO}-")]
     numeros = [int(c.split("-", 1)[1]) for c in usados if c.split("-", 1)[1].isdigit()]
@@ -115,7 +144,7 @@ def coincidencias(nombre: str) -> list[dict]:
         return []
     return [
         {"guid": t["guid"], "nombre": t["nombre"], "slug": t["slug"], "codigo": t["codigo"]}
-        for t in _indice().values()
+        for t in _todas()
         if t["slug"] == base or t["slug"].startswith(base + "-")
     ]
 
@@ -125,7 +154,7 @@ def slug_propuesto(nombre: str) -> str:
     base = slug_de(nombre)
     if not base:
         return ""
-    return _slug_libre(base, {t["slug"] for t in _indice().values()})
+    return _slug_libre(base, {t["slug"] for t in _todas()})
 
 
 def crear(nombre: str, admin_guid: str, recuperacion: dict | None = None) -> dict:
@@ -139,6 +168,8 @@ def crear(nombre: str, admin_guid: str, recuperacion: dict | None = None) -> dic
     base = slug_de(nombre)
     if not base:
         raise ValueError("El nombre debe tener al menos una letra o un número.")
+    if sql := _sql():
+        return por_guid(sql.orgs_crear(nombre, base, admin_guid, recuperacion or {}, _slug_libre, PREFIJO_CODIGO))
     with registro.candado:
         tenants = _indice()
         slug = _slug_libre(base, {t["slug"] for t in tenants.values()})
@@ -163,12 +194,14 @@ def listar() -> list[dict]:
     """Todas, de la más nueva a la más vieja (el listado las muestra así)."""
     # El registro guarda la hora al segundo: dos altas en el mismo segundo
     # empatan, y entonces manda el orden en que se escribieron.
+    if sql := _sql():
+        return sql.orgs_listar()
     orden = list(_indice().values())
     return [t for _, t in sorted(enumerate(orden), key=lambda x: (x[1]["creadaEn"] or "", x[0]), reverse=True)]
 
 
 def por_guid(guid: str) -> dict:
-    t = _indice().get(guid)
+    t = (sql.orgs_por_guid(guid) if isinstance(guid, str) else None) if (sql := _sql()) else _indice().get(guid)
     if not t:
         raise NoEncontrado(guid)
     return t
@@ -177,6 +210,10 @@ def por_guid(guid: str) -> dict:
 def cambiar_estado(guid: str, estado: str) -> dict:
     if estado not in {"ACTIVE", "SUSPENDED", "CLOSED"}:
         raise ValueError(f"Estado inválido: {estado}")
+    if sql := _sql():
+        if not sql.orgs_cambiar_estado(guid, estado):
+            raise NoEncontrado(guid)
+        return por_guid(guid)
     with registro.candado:
         if guid not in _indice():
             raise NoEncontrado(guid)

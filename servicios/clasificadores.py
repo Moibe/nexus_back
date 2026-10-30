@@ -18,14 +18,24 @@ El id se guarda aquí y no se busca por nombre en cada llamada porque Document A
 nombre es paginar TODOS los procesadores del proyecto. Por nombre solo se busca la primera vez (o si el procesador se borró a mano),
 para adoptar el que un intento anterior dejó creado a medias en vez de duplicarlo.
 
-Es PROVISIONAL como llaves, webhooks y usuarios: el día que haya base, el id del clasificador es una columna de la organización y este
-módulo se reduce a leerla.
+**Desde el 2026-10-29 (migración `0006`), donde hay base, el id vive en `nexus.tenantClassifiers`** (una fila por organización, con llave
+foránea a `nexus.tenants`), importado una vez desde `clasificadores.jsonl` (`servicios/importacion_json.py`). Este módulo elige por
+`SQLSERVER_HOST` en cada llamada; el JSONL es lo que corre donde no hay base.
 """
 
 from datetime import datetime, timezone
 
-from config import DOCAI_CLASIFICADOR_ID
+from config import DOCAI_CLASIFICADOR_ID, SQLSERVER_HOST
 from servicios import almacen, registro
+
+
+def _sql():
+    """El módulo de SQL si el `.env` dice que hay base; `None` si no. Se importa tarde: sin base, `pyodbc` ni se carga."""
+    if not SQLSERVER_HOST:
+        return None
+    from servicios import registros_sql
+
+    return registros_sql
 from servicios.aislamiento import es_organizacion
 
 ARCHIVO = "clasificadores.jsonl"
@@ -55,12 +65,19 @@ def _asignados() -> dict[str, str]:
     return asignados
 
 
+def asignados_archivo() -> dict[str, str]:
+    """Lo que dice el JSONL, aunque haya base: es lo que importa `servicios/importacion_json.py`."""
+    return _asignados()
+
+
 def id_de(tenant: str) -> str | None:
     """El id del clasificador de este tenant, o `None` si todavía no tiene (aún no se sincroniza, o el espacio de plataforma
     sin `DOCAI_CLASIFICADOR_ID` en el `.env`)."""
     tenant = almacen._validar_tenant(tenant)
     if not es_organizacion(tenant):
         return DOCAI_CLASIFICADOR_ID or None
+    if sql := _sql():
+        return sql.clasificador_de(tenant)
     return _asignados().get(tenant)
 
 
@@ -70,6 +87,8 @@ def asignar(tenant: str, procesador_id: str) -> None:
     tenant = almacen._validar_tenant(tenant)
     if not es_organizacion(tenant):
         return
+    if sql := _sql():
+        return sql.clasificador_asignar(tenant, procesador_id)
     with registro.candado:
         if _asignados().get(tenant) == procesador_id:
             return

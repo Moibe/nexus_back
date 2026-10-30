@@ -15,6 +15,13 @@ tendrá el renglón de la tabla:
 No sustituye al audit trail: es lo que hay para no dejar el criterio sin nada
 y para tener los datos listos el día que la tabla exista.
 
+**Ese día llegó el 2026-10-29 (migración `0006`):** donde hay base, los eventos
+van a `nexus.auditEvents`, UNA tabla general (no una por entidad), con el
+evento entero en `dataJson` tal como se escribía aquí, importada una vez desde
+`auditoria.jsonl` (`servicios/importacion_json.py`). Este módulo elige por
+`SQLSERVER_HOST` en cada llamada. Quien necesite LEER la bitácora usa
+`eventos()`, nunca el JSONL a mano: donde hay base, el archivo ya no crece.
+
 ## Dos usos
 
 1. **Rastro**: quién pidió qué y cuándo. Nunca se guarda un token en claro ni
@@ -28,7 +35,18 @@ y para tener los datos listos el día que la tabla exista.
 
 from datetime import datetime, timedelta, timezone
 
+from config import SQLSERVER_HOST
 from servicios import registro
+
+
+def _sql():
+    """El módulo de SQL si el `.env` dice que hay base; `None` si no. Se importa tarde: sin base, `pyodbc` ni se carga."""
+    if not SQLSERVER_HOST:
+        return None
+    from servicios import registros_sql
+
+    return registros_sql
+
 
 ARCHIVO = "auditoria.jsonl"
 
@@ -125,16 +143,23 @@ def registrar(accion: str, usuario_guid: str | None = None, **datos) -> None:
     responsable de no meter secretos."""
     if accion not in ACCIONES:
         raise ValueError(f"Acción de auditoría desconocida: {accion}")
-    registro.agregar(
-        ARCHIVO,
-        {
-            "evento": "auditoria",
-            "accion": accion,
-            "usuarioGuid": usuario_guid,
-            "en": _ahora().isoformat(timespec="seconds"),
-            **datos,
-        },
-    )
+    evento = {
+        "evento": "auditoria",
+        "accion": accion,
+        "usuarioGuid": usuario_guid,
+        "en": _ahora().isoformat(timespec="seconds"),
+        **datos,
+    }
+    if sql := _sql():
+        return sql.auditoria_registrar(evento)
+    registro.agregar(ARCHIVO, evento)
+
+
+def eventos(acciones: set[str] | frozenset[str] | None = None) -> list[dict]:
+    """Los eventos de la bitácora en el orden en que se escribieron (con `acciones`, solo esos), de donde vivan."""
+    if sql := _sql():
+        return sql.auditoria_eventos(frozenset(acciones) if acciones is not None else None)
+    return [e for e in registro.eventos(ARCHIVO) if acciones is None or e.get("accion") in acciones]
 
 
 def cuando(evento: dict) -> datetime | None:
@@ -155,7 +180,9 @@ def recientes(accion: str, segundos: int = 3600) -> list[tuple[datetime, dict]]:
     el error que el plan de esta pieza traía."""
     desde = _ahora() - timedelta(seconds=segundos)
     salida = []
-    for e in registro.eventos(ARCHIVO):
+    # En SQL la ventana ya la filtra la base (con un segundo de holgura: `en` se guarda al segundo); aquí se vuelve a mirar `en`.
+    leidos = sql.auditoria_eventos(frozenset({accion}), desde - timedelta(seconds=1)) if (sql := _sql()) else registro.eventos(ARCHIVO)
+    for e in leidos:
         if e.get("accion") != accion:
             continue
         hora = cuando(e)
