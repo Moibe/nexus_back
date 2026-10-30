@@ -17,7 +17,7 @@ import logging
 
 import httpx
 from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from errores import SinClasificador
 from routers.ia import _leer_subida
@@ -62,6 +62,17 @@ class CampoEntrada(BaseModel):
     valoresLista: list[str] = []
     # Solo con `tipoDato == "grupo"` (2026-10-16): los campos de cada fila. Un grupo sin ninguno no se puede activar.
     subcampos: list[SubcampoEntrada] = []
+
+    @model_validator(mode="before")
+    @classmethod
+    def _subcampos_solo_en_grupos(cls, datos):
+        """Los subcampos solo existen en un `grupo`. El asistente CONSERVA los de un campo que dejó de ser grupo (para no perder
+        lo escrito si regresa), así que un campo de texto puede traer un residuo, incluso uno en blanco: el subcampo vacío que
+        nace al elegir «Grupo de campos». Validarlo daba un 422 de pydantic que la pantalla mostraba como «HTTP 422» (incidencia
+        de QA en staging, 2026-10-30). Fuera de un grupo se descartan antes de validar; el esquema tampoco los usaba."""
+        if isinstance(datos, dict) and datos.get("tipoDato") != TIPO_GRUPO:
+            return {**datos, "subcampos": []}
+        return datos
 
 
 class TipoDocumentalEntrada(BaseModel):
