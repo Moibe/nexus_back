@@ -14,13 +14,15 @@ comprueba contra el registro, igual que en tipos documentales, procesos y bandej
 ## Quién puede qué
 
 - **Leer** (listar, ver un expediente, listar documentos): cualquiera que opere en la organización.
-- **Organizar** (crear un expediente, meter o sacar un documento; crear, llenar y borrar sus expedientes virtuales): `roles.PUEDEN_ORGANIZAR`
+- **Organizar** (crear un expediente, meter o sacar un documento, o SUBIRLE un archivo directo; crear, llenar y borrar sus expedientes
+  virtuales): `roles.PUEDEN_ORGANIZAR`
   (Administrador, Supervisor, Analista y Operador); Compliance, Auditor y Viewer reciben 403 `sin_permiso`. Es una propuesta de producto
   pendiente de confirmar con César.
 
 ## Qué se anota (auditoría)
 
-`CASE_CREATED`, `CASE_DOCUMENT_ADDED` y `CASE_DOCUMENT_REMOVED`, con quién lo hizo; de los virtuales, `VIRTUAL_CASE_CREATED`,
+`CASE_CREATED`, `CASE_DOCUMENT_ADDED` (también al subir un archivo directo a un expediente, con `subida: true`) y `CASE_DOCUMENT_REMOVED`,
+con quién lo hizo; de los virtuales, `VIRTUAL_CASE_CREATED`,
 `VIRTUAL_CASE_DOCUMENT_ADDED`, `VIRTUAL_CASE_DOCUMENT_REMOVED` y `VIRTUAL_CASE_DELETED`. Meter un documento que ya estaba no repite el rastro.
 
 ## Lo que NO hace todavía
@@ -305,6 +307,66 @@ def agregar_documento(
             nombreOriginal=documento["nombreOriginal"],
         )
     return {"agregado": agregado, "expediente": detalle}
+
+
+@router.post(
+    "/{expediente_id}/documentos",
+    status_code=status.HTTP_201_CREATED,
+    tags=["Expedientes"],
+    summary="Subir un archivo directamente a un expediente",
+    description=(
+        "Lo que la persona sube desde la pantalla de un expediente: guarda los bytes en el almacén, anota el documento con `canal: MANUAL` "
+        "(como una carga manual: aparece en «Archivos procesados») y lo mete a ESTE expediente, todo en una llamada. Todo se comprueba "
+        "ANTES de guardar nada: el rol (solo quien organiza: Administrador, Supervisor, Analista y Operador), el formato (PDF, JPEG, PNG y "
+        "TIFF, con los mismos límites de tamaño que la bandeja) y el expediente (404 si no es de la organización, 400 si ya tiene el "
+        "máximo de documentos), así que un rechazo no deja un documento suelto. Subir dos veces el mismo archivo crea DOS documentos que "
+        "comparten los bytes, como por la API. El documento queda sin tipo documental hasta que pase por el pipeline."
+    ),
+)
+def subir_documento(
+    expediente_id: str,
+    archivo: UploadFile = File(...),
+    tenant: str = Form(..., description="La organización"),
+    sha256: str | None = Form(None, description="Opcional. El SHA-256 del archivo, para verificar la transferencia.", examples=[""]),
+    authorization: str | None = Header(default=None),
+):
+    actor = aislamiento.exigir_organizar(authorization, tenant, "expediente")
+    mime = normalizar_tipo(archivo.content_type)
+    if mime not in MIME_BANDEJA:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato no admitido. Se aceptan PDF, JPEG, PNG y TIFF.")
+    # El expediente se comprueba ANTES de guardar los bytes: uno que no existe, o que ya está lleno, no puede dejar un documento suelto.
+    try:
+        detalle = expedientes.obtener(tenant, expediente_id)
+    except ValueError as exc:
+        raise _tenant_invalido(exc) from exc
+    except ErrorAlmacen as exc:
+        raise almacen_no_disponible(exc) from exc
+    if detalle is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
+    if len(detalle["documentos"]) >= expedientes.MAX_DOCUMENTOS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"El expediente ya tiene el máximo de documentos ({expedientes.MAX_DOCUMENTOS}).")
+    guardado = guardar_subida(archivo, tenant, sha256)
+    try:
+        documento = documentos.nacer(tenant, guardado, mime, archivo.filename or "", "MANUAL", None)
+        expedientes.agregar_documento(tenant, expediente_id, documento["id"], actor.guid)
+    except expedientes.NoEncontrado as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE) from exc
+    except expedientes.ExpedienteInvalido as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ErrorAlmacen as exc:
+        # Los bytes ya quedaron en el almacén; sin registro son un objeto suelto, barato y deduplicado: reintentar lo registra.
+        raise almacen_no_disponible(exc) from exc
+    _anotar(
+        auditoria.CASE_DOCUMENT_ADDED,
+        actor,
+        tenant,
+        expedienteId=expediente_id,
+        nombre=detalle["nombre"],
+        documentoId=documento["id"],
+        nombreOriginal=documento["nombreOriginal"],
+        subida=True,
+    )
+    return {"agregado": True, "documento": documento}
 
 
 @router.delete(

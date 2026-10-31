@@ -22,6 +22,9 @@ Lo que se prueba:
 - lo de otra organización responde como si no existiera (404) y su tenant, 403 `sin_acceso`;
 - crear, meter y sacar piden un rol que organice (Compliance, Auditor y Viewer solo leen) y cada rechazo deja `ROLE_DENIED`;
 - crear, meter y sacar dejan rastro con quién; meter un documento que ya estaba, no;
+- SUBIR un archivo directo a un expediente (`POST /expedientes/{id}/documentos`, 2026-10-30): nace como carga manual y entra al expediente en una
+  sola llamada; solo lo hace quien organiza y todo se rechaza ANTES de guardar (formato, vacío, expediente ajeno o inexistente, tope): nunca deja un
+  documento suelto;
 - el tope de documentos por expediente, un corte a media escritura y dos peticiones simultáneas.
 
 Con `--sql` corre LO MISMO contra SQL Server (migración `0003`, en un contenedor desechable: ver `pruebas_sql.py`), que es donde viven estas
@@ -1012,6 +1015,70 @@ try:
     rev("y la forma de lo guardado es la de siempre: el mismo evento `nacer`, con los mismos campos que los que entran por la API",
         all(set(d) == {"id", "tenant", "sha256", "rutaRelativa", "tamanoBytes", "mime", "nombreOriginal", "canal", "llaveId", "recibidoEn", "expedientes", "tipoDocumental"} for d in docs(a_admin, org_a).json()["documentos"]),
         str(docs(a_admin, org_a).json()["documentos"][-1]))
+
+    # ---------------------------------------------------------------- 18b
+    titulo("18b · Subir un archivo directo a un expediente (POST /expedientes/{id}/documentos): nace como carga manual y entra al expediente en UNA llamada")
+
+    def subir_a(bearer, tenant, exp, nombre, contenido, tipo="application/pdf", **campos):
+        return c.post(f"/expedientes/{exp}/documentos", files={"archivo": (nombre, contenido, tipo)}, data={"tenant": tenant, **campos}, headers=cab(bearer))
+
+    destino = crear(a_admin, org_a, "Subidas directas").json()["id"]
+    vecino = crear(a_admin, org_a, "El de al lado").json()["id"]
+    ajeno = crear(b_admin, org_b, "De Beta").json()["id"]
+    antes = ids_docs(a_admin, org_a)
+    r = subir_a(a_admin, org_a, destino, "directo-uno.pdf", pdf(950))
+    nuevo = r.json().get("documento", {}) if r.status_code == 201 else {}
+    rev("201 con `agregado: true` y el documento que nació: canal MANUAL, su nombre, su tamaño, su tipo y su organización",
+        r.status_code == 201 and r.json()["agregado"] is True and nuevo["canal"] == "MANUAL" and nuevo["nombreOriginal"] == "directo-uno.pdf"
+        and nuevo["tamanoBytes"] == len(pdf(950)) and nuevo["mime"] == "application/pdf" and nuevo["tenant"] == org_a and nuevo["id"].startswith("documento-"), r.text[:240])
+    rev("queda EN ese expediente y en ningún otro, en la misma llamada", ids_docs_de(a_admin, org_a, destino) == [nuevo.get("id")] and ids_docs_de(a_admin, org_a, vecino) == [])
+    en_lista = [d for d in docs(a_admin, org_a).json()["documentos"] if d["id"] == nuevo.get("id")]
+    rev("y es un documento de la organización como cualquier otro: sale en la lista de «Archivos procesados», con su expediente",
+        len(ids_docs(a_admin, org_a)) == len(antes) + 1 and len(en_lista) == 1 and en_lista[0]["canal"] == "MANUAL" and en_lista[0]["expedientes"] == [{"id": destino, "nombre": "Subidas directas"}], str(en_lista))
+    rev("el expediente lo enseña como carga manual y SIN tipo documental (todavía no pasó por el pipeline)",
+        [(d["canal"], d["tipoDocumental"]) for d in ver(a_admin, org_a, destino).json()["documentos"]] == [("MANUAL", None)])
+    rev("lo ve cualquiera de la organización y la otra no", nuevo.get("id") in ids_docs(P["VIEWER"], org_a) and nuevo.get("id") not in ids_docs(b_admin, org_b))
+    otra = subir_a(a_admin, org_a, destino, "directo-uno.pdf", pdf(950))
+    rev("el mismo archivo dos veces son DOS documentos con los mismos bytes, y los dos quedan en el expediente, en orden",
+        otra.status_code == 201 and otra.json()["documento"]["id"] != nuevo["id"] and otra.json()["documento"]["sha256"] == nuevo["sha256"]
+        and ids_docs_de(a_admin, org_a, destino) == [nuevo["id"], otra.json()["documento"]["id"]])
+    for nombre, tipo in (("foto.jpg", "image/jpeg"), ("captura.png", "image/png"), ("escaneo.tiff", "image/tiff")):
+        rev(f"{tipo}: se acepta, como en la bandeja", subir_a(a_admin, org_a, destino, nombre, b"\x00" + nombre.encode() * 3, tipo).status_code == 201)
+    metidos = [x for x in auditoria("CASE_DOCUMENT_ADDED") if x.get("documentoId") == nuevo["id"]]
+    rev("deja `CASE_DOCUMENT_ADDED` con quién, el expediente, el documento y que fue una subida",
+        len(metidos) == 1 and metidos[0].get("usuarioGuid") == guid_rita and metidos[0].get("expedienteId") == destino and metidos[0].get("nombre") == "Subidas directas"
+        and metidos[0].get("nombreOriginal") == "directo-uno.pdf" and metidos[0].get("subida") is True, str(metidos))
+
+    # Todo lo que se rechaza se rechaza ANTES de guardar: ni un documento suelto en el void ni nada en el expediente.
+    cantidad, en_destino, cantidad_b = len(ids_docs(a_admin, org_a)), ids_docs_de(a_admin, org_a, destino), len(ids_docs(b_admin, org_b))
+    rev("un formato que la bandeja tampoco acepta (GIF): 400", subir_a(a_admin, org_a, destino, "x.gif", b"GIF89a", "image/gif").status_code == 400)
+    rev("un archivo vacío: 400", subir_a(a_admin, org_a, destino, "vacio.pdf", b"").status_code == 400)
+    r = subir_a(a_admin, org_a, "expediente-" + "0" * 32, "x.pdf", pdf(951))
+    rev("un expediente que no existe: 404 que lo dice", r.status_code == 404 and "Ese expediente no existe" in r.text, f"{r.status_code} {r.text[:100]}")
+    rev("el expediente de OTRA organización, con la sesión y el tenant de ésta: 404", subir_a(a_admin, org_a, ajeno, "x.pdf", pdf(952)).status_code == 404)
+    rev("…poniendo el tenant de la otra: 403", subir_a(a_admin, org_b, ajeno, "x.pdf", pdf(953)).status_code == 403)
+    rev("sin Bearer (solo la llave de servicio): 401", subir_a(None, org_a, destino, "x.pdf", pdf(954)).status_code == 401)
+    rev("sin decir la organización: 422", c.post(f"/expedientes/{destino}/documentos", files={"archivo": ("x.pdf", pdf(955), "application/pdf")}, headers=cab(a_admin)).status_code == 422)
+    antes_denegados = len(auditoria("ROLE_DENIED"))
+    malas = [(rol, r.status_code, r.json().get("detail", {}).get("codigo")) for rol in SOLO_LEEN for r in [subir_a(P[rol], org_a, destino, f"de-{rol.lower()}.pdf", pdf(956))]]
+    rev("quien solo lee (Compliance, Auditor, Viewer) recibe 403 sin_permiso, y no se cuela ni como carga manual (a diferencia de `POST /expedientes/documentos`)",
+        all(s == 403 and cod == "sin_permiso" for _, s, cod in malas), str(malas))
+    rev("cada rechazo de rol deja `ROLE_DENIED` sobre el expediente", len(auditoria("ROLE_DENIED")) - antes_denegados == len(SOLO_LEEN) and all(x.get("recurso") == "expediente" for x in auditoria("ROLE_DENIED")[antes_denegados:]))
+    rev("nada de lo rechazado dejó un documento ni movió el expediente",
+        len(ids_docs(a_admin, org_a)) == cantidad and ids_docs_de(a_admin, org_a, destino) == en_destino and len(ids_docs(b_admin, org_b)) == cantidad_b)
+    rev("quienes organizan (Supervisor, Analista y Operador) sí suben", all(subir_a(P[rol], org_a, destino, f"de-{rol.lower()}.pdf", pdf(960 + i)).status_code == 201 for i, rol in enumerate(ORGANIZAN)))
+
+    tope = expedientes.MAX_DOCUMENTOS
+    try:
+        expedientes.MAX_DOCUMENTOS = 2
+        con_tope = crear(a_admin, org_a, "Con tope de subidas").json()["id"]
+        rev("hasta el tope se puede subir", subir_a(a_admin, org_a, con_tope, "uno.pdf", pdf(970)).status_code == 201 and subir_a(a_admin, org_a, con_tope, "dos.pdf", pdf(971)).status_code == 201)
+        antes_tope = len(ids_docs(a_admin, org_a))
+        r = subir_a(a_admin, org_a, con_tope, "tres.pdf", pdf(972))
+        rev("pasado el tope: 400 que dice cuál es, y NO deja un documento suelto", r.status_code == 400 and "máximo" in r.text and len(ids_docs(a_admin, org_a)) == antes_tope, r.text[:200])
+        rev("el expediente se quedó con los dos que cupieron", len(ids_docs_de(a_admin, org_a, con_tope)) == 2)
+    finally:
+        expedientes.MAX_DOCUMENTOS = tope
 
     if SQL:
         titulo("19 · Lo que SOLO la base puede cuidar (aunque alguien escriba por fuera del servicio)")
