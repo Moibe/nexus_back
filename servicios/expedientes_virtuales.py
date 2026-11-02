@@ -103,6 +103,23 @@ def _ids_validos(expediente_id: object, virtual_id: object = None) -> None:
         raise NoEncontrado(virtual_id)
 
 
+def duplicados(documentos: list[dict]) -> list[dict]:
+    """Los tipos documentales que tienen DOS O MÁS documentos entre `documentos` (cada uno con su `id`, su `nombreOriginal` y su `tipoDocumental`,
+    el de su última extracción o, si no se ha extraído, el de su última clasificación; uno sin tipo no cuenta). Moibe, 2026-11-03: un expediente
+    virtual con dos INE no sabe cuál es «el INE», así que un proceso que lo usa NO corre sobre él y los documentos quedan marcados.
+
+    Devuelve `[{"tipoId", "tipoNombre", "documentos": [{"id", "nombre"}]}]` en el orden en que aparece el primer documento de cada tipo, con los
+    documentos en el orden en que vienen. No se guarda nada: se calcula al leer, así que sacar uno de los dos quita la marca sola."""
+    por_tipo: dict[str, dict] = {}
+    for d in documentos:
+        tipo = d.get("tipoDocumental") or {}
+        if not tipo.get("id"):
+            continue
+        grupo = por_tipo.setdefault(tipo["id"], {"tipoId": tipo["id"], "tipoNombre": tipo.get("nombre"), "documentos": []})
+        grupo["documentos"].append({"id": d["id"], "nombre": d.get("nombreOriginal")})
+    return [g for g in por_tipo.values() if len(g["documentos"]) >= 2]
+
+
 # Cada virtual con su tipo y cuántos documentos tiene. `{filtro}` lo acota a un expediente o a un virtual.
 _VIRTUALES = (
     "SELECT v.virtualCaseId, v.publicId, v.name, v.createdBy, v.createdAt, t.virtualCaseTypeId, t.publicId AS tipoId, t.name AS tipoNombre "

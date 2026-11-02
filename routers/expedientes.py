@@ -324,7 +324,23 @@ def ver(expediente_id: str, tenant: str = Query(..., description="La organizaci�
         raise almacen_no_disponible(exc) from exc
     if detalle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
-    return {**detalle, "documentos": _con_tipo(tenant, detalle.get("documentos") or [])}
+    docs = _con_tipo(tenant, detalle.get("documentos") or [])
+    # Duplicados (Moibe, 2026-11-03): un expediente virtual con dos documentos de un mismo tipo no sabe cuál es «el INE». Cada virtual dice cuáles
+    # son sus duplicados y cada documento dice en qué virtuales está duplicado (`duplicadoEn`). Se calcula al leer: no se guarda nada.
+    por_id = {d["id"]: d for d in docs}
+    marcas: dict[str, list[dict]] = {}
+    virtuales = []
+    for v in detalle.get("expedientesVirtuales") or []:
+        repetidos = expedientes_virtuales.duplicados([por_id[i] for i in v["documentos"] if i in por_id])
+        virtuales.append({**v, "duplicados": repetidos})
+        for grupo in repetidos:
+            for d in grupo["documentos"]:
+                marcas.setdefault(d["id"], []).append({"id": v["id"], "nombre": v["nombre"], "tipoNombre": grupo["tipoNombre"]})
+    return {
+        **detalle,
+        "documentos": [{**d, "duplicadoEn": marcas.get(d["id"], [])} for d in docs],
+        "expedientesVirtuales": virtuales,
+    }
 
 
 @router.put(
@@ -545,7 +561,11 @@ def _virtual_o_404(tenant: str, expediente_id: str, virtual_id: str) -> dict:
     # Ahora que los documentos saben su tipo documental, cada tipo del esquema dice qué documentos lo cubren: uno sin ninguno es lo que FALTA.
     for tipo in virtual["tipo"]["tiposDocumentales"]:
         tipo["documentos"] = [d["id"] for d in docs if (d["tipoDocumental"] or {}).get("id") == tipo["id"]]
-    return {**virtual, "documentos": docs}
+    # Duplicados (Moibe, 2026-11-03): dos o más documentos del mismo tipo. Cada documento trae `duplicado` y el virtual, la lista de `duplicados`
+    # (por tipo, con los documentos): un proceso que usa ese tipo no se ejecuta sobre este virtual hasta que quede uno.
+    repetidos = expedientes_virtuales.duplicados(docs)
+    marcados = {d["id"] for grupo in repetidos for d in grupo["documentos"]}
+    return {**virtual, "documentos": [{**d, "duplicado": d["id"] in marcados} for d in docs], "duplicados": repetidos}
 
 
 @router.post(

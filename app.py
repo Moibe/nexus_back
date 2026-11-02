@@ -437,6 +437,17 @@ app.include_router(
     dependencies=[Depends(exigir_llave)],
 )
 
+# Las ejecuciones: correr un proceso sobre un expediente virtual y su historial inmutable (migración 0009). El back prepara los datos reales y
+# guarda lo que salió; las reglas las corre el servidor del front con la misma lógica del lienzo. Llave de servicio Y JWT (HU11).
+from routers.ejecuciones import router as ejecuciones_router  # noqa: E402
+
+app.include_router(
+    ejecuciones_router,
+    prefix="/ejecuciones",
+    tags=["Ejecuciones"],
+    dependencies=[Depends(exigir_llave)],
+)
+
 # Los tipos de expediente VIRTUAL de cada organización («Solicitud de crédito»): la clase de la que salen los expedientes virtuales (desde el
 # 2026-10-29 el expediente no tiene tipo; la ruta conservó su nombre).
 from routers.tipos_expediente import router as tipos_expediente_router  # noqa: E402

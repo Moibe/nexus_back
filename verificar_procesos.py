@@ -519,8 +519,19 @@ try:
     guardar(a_admin, org_a, otro, proceso("Otro de crédito", tipoExpedienteVirtualId=credito, activo=False), 0)
     from servicios import procesos as servicio_procesos  # noqa: E402
 
-    rev("`de_tipo` da los procesos ligados a ese tipo, en orden, con si están activos", servicio_procesos.de_tipo(org_a, credito) == [{"id": pl, "nombre": "Validar crédito", "activo": True}, {"id": otro, "nombre": "Otro de crédito", "activo": False}], str(servicio_procesos.de_tipo(org_a, credito)))
+    rev("`de_tipo` da los procesos ligados a ese tipo, en orden, con si están activos y si son ejecutables (los de prueba no traen Resultado)", servicio_procesos.de_tipo(org_a, credito) == [{"id": pl, "nombre": "Validar crédito", "activo": True, "ejecutable": False}, {"id": otro, "nombre": "Otro de crédito", "activo": False, "ejecutable": False}], str(servicio_procesos.de_tipo(org_a, credito)))
     rev("…y los de otro tipo u organización no se mezclan", servicio_procesos.de_tipo(org_a, seguro) == [] and servicio_procesos.de_tipo(org_b, credito) == [])
+    con_resultado = proceso("Con resultado", tipoExpedienteVirtualId=credito)
+    con_resultado["nodos"].append({"id": "resultado-final", "type": "resultado-final", "position": {"x": 1000, "y": 0}, "data": {"si": "Sí", "no": "No", "sin": "Sin datos"}})
+    con_resultado["aristas"].append(cable("operador-1", "resultado", "resultado-final", "a"))
+    p_res = nuevo_id()
+    guardar(a_admin, org_a, p_res, con_resultado, 0)
+    rev("un proceso con su Resultado conectado a una regla es ejecutable (`ejecutable`); los demás, no", [p["ejecutable"] for p in servicio_procesos.de_tipo(org_a, credito)] == [False, False, True], str(servicio_procesos.de_tipo(org_a, credito)))
+    rev("`resultado_conectado`: pide el nodo, la regla (no un campo) y su punto «a»", servicio_procesos.resultado_conectado(con_resultado) and not servicio_procesos.resultado_conectado(proceso("Sin resultado"))
+        and not servicio_procesos.resultado_conectado({**con_resultado, "aristas": [a for a in con_resultado["aristas"] if a["target"] != "resultado-final"]})
+        and not servicio_procesos.resultado_conectado({**con_resultado, "aristas": [cable("tipo-acta", "rfc", "resultado-final", "a")]})
+        and not servicio_procesos.resultado_conectado({**con_resultado, "aristas": [cable("operador-1", "resultado", "resultado-final", "b")]}))
+    c.delete(f"/procesos/{p_res}", params={"tenant": org_a}, headers=cab(a_admin))
     if SQL:
         exp = c.post("/expedientes/", json={"tenant": org_a, "nombre": "Juan Pérez"}, headers=cab(a_admin)).json()["id"]
         v = c.post(f"/expedientes/{exp}/virtuales", json={"tenant": org_a, "tipoId": credito, "nombre": "Crédito", "documentos": []}, headers=cab(a_admin))

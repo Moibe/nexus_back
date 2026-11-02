@@ -95,11 +95,18 @@ def eliminar(tenant: str, proceso_id: str) -> dict:
 
 
 def de_tipo(tenant: str, tipo_id: str) -> list[dict]:
-    """Los procesos ligados a un tipo de expediente virtual, en el orden de su creación: `{id, nombre, activo}`."""
+    """Los procesos ligados a un tipo de expediente virtual, en el orden de su creación: `{id, nombre, activo, ejecutable}`. `ejecutable` (2026-11-03)
+    sale del dibujo: tiene su Resultado con una regla conectada (`procesos.resultado_conectado`)."""
+    from servicios import procesos
+
     with tablas.lectura() as cur:
         cur.execute(
-            "SELECT publicId, name, JSON_VALUE(dataJson, '$.activo') AS activo FROM nexus.processes "
-            "WHERE tenant = ? AND virtualCaseTypePublicId = ? ORDER BY processId",
+            "SELECT publicId, name, dataJson FROM nexus.processes WHERE tenant = ? AND virtualCaseTypePublicId = ? ORDER BY processId",
             tenant, tipo_id,
         )
-        return [{"id": f["publicId"], "nombre": f["name"], "activo": f["activo"] != "false"} for f in tablas.filas(cur)]
+        filas = tablas.filas(cur)
+    salida = []
+    for f in filas:
+        datos = json.loads(f["dataJson"])
+        salida.append({"id": f["publicId"], "nombre": f["name"], "activo": datos.get("activo") is not False, "ejecutable": procesos.resultado_conectado(datos)})
+    return salida

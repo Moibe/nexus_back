@@ -1999,9 +1999,9 @@ entero (el punto `@documento` de un tipo, solo para `existe`), un valor fijo o e
 2026-11-03 hay además dos nodos **finales**, los que dicen qué entrega el proceso al terminar: un **valor final** es un dato que ya no se compara
 más y que entra, con su nombre, a la lista de valores finales de la corrida, y el **resultado** es la palabra con la que termina el proceso
 («Aprobado», «Certificado»…, la que la organización escriba) según la regla que se le conecte pase, no pase o no se pueda saber por falta de datos.
-Aquí solo se **guarda ese dibujo**: `servicios/procesos.py` (registro provisional, `procesos.jsonl` dentro de `.registro/`) y `routers/procesos.py`.
-**Todavía no hay un motor que corra los procesos sobre un expediente de verdad**: el back no interpreta las reglas, solo
-comprueba que el dibujo esté entero.
+Aquí solo se **guarda ese dibujo**: `servicios/procesos.py` y `routers/procesos.py`. El back **no interpreta las reglas**, solo comprueba que el
+dibujo esté entero; correrlas sobre un expediente virtual con datos reales y guardar lo que salió es de [Ejecuciones](#ejecuciones-correr-un-proceso-sobre-un-expediente-virtual-y-su-historial-2026-11-03),
+más abajo.
 
 | Ruta | Qué hace |
 |---|---|
@@ -2019,7 +2019,9 @@ con `type` `tipo-documental` (`data.tipoId`), `operador` (`data.operador` y los 
 caracteres porque el ejemplo de una lista son varios renglones) o `constante` (`data.familia` —`texto`, `numero`, `fecha` o
 `booleano`— y `data.valor`, de hasta 500), `valor-final` (`data.nombre`, de hasta 80 y puede ir vacío, y el valor de ejemplo `data.a`) o
 `resultado-final` (`data.si`, `data.no` y `data.sin`: las tres palabras, de 1 a 60 caracteres cada una, para cuando la regla conectada pasa, no pasa
-o no se puede evaluar; **un proceso tiene a lo más un resultado**); cada cable, `{id,
+o no se puede evaluar; **un proceso tiene a lo más un resultado**, y desde el 2026-11-03 el lienzo no deja guardar uno sin él; **el back no lo exige**,
+porque activar o desactivar un proceso desde la lista guarda el dibujo entero y no debe fallar en los de antes —un proceso sin Resultado (o con el
+Resultado sin ninguna regla conectada) se guarda, pero no se puede ejecutar: ver `resultado_conectado`—); cada cable, `{id,
 source, sourceHandle, target, targetHandle}`. Se rechazan con 400: un id que no sea `proceso-…`, un nodo de un tipo inventado o sin
 posición, posiciones que no son números o pasan de un millón, ids de nodo o de cable repetidos, un cable que une un nodo que no
 existe, más de un resultado, más de 300 nodos o 600 cables, y más de 1 MB. **Lo que se guarda sale limpio**: del nodo y del cable solo lo que el lienzo
@@ -2042,6 +2044,76 @@ avisa a los procesos que lo usan (el lienzo muestra «Tipo documental no disponi
 Offline: crear, ver desde otra persona, 409 por revisión, aislamiento entre organizaciones, validación del dibujo, que lo guardado
 salga limpio, listas de ejemplo largas y valores fijos, auditoría y corte a media escritura. Se probó rompiendo 22 reglas del
 servicio y del router a propósito: las 22 se detectan.
+
+## Ejecuciones: correr un proceso sobre un expediente virtual, y su historial (2026-11-03)
+
+Una **ejecución** junta UN expediente virtual con UN proceso del motor de reglas, lo corre con los datos que dijeron sus documentos y deja en el
+historial cómo terminó: la palabra del **Resultado**, la lista de **valores finales** y el detalle de cómo salió cada regla y de qué documento y campo
+se tomó cada dato. Lo hace `servicios/ejecuciones.py` (con `routers/ejecuciones.py`) sobre la migración `0009` (`nexus.processRuns` y
+`nexus.processRunFinalValues`); **solo SQL**: sin base, escribir levanta 503 y el historial sale vacío.
+
+**El back NO interpreta las reglas.** Qué significa «igual» (texto sin mayúsculas, números con símbolo de moneda, fechas escritas de tres maneras…),
+cómo se combinan las reglas y qué palabra sale del Resultado vive en UN solo lugar, `reglas.ts` del front, que el lienzo ya usa para probar con valores
+de ejemplo. Una ejecución corre ESA misma lógica en el servidor del front (el BFF `/api/ejecuciones`) con los datos reales, así que lo que el lienzo
+enseña probando y lo que una ejecución decide no pueden discrepar. Aquí se hacen las dos cosas que sí son del back: **preparar** (en una sola lectura,
+todo lo que la ejecución necesita) y **guardar** lo que salió (el historial). Si algún día hace falta correr procesos desde aquí (una API, algo
+automático) se porta esa lógica con la suite del front como oráculo.
+
+| Ruta | Qué hace |
+|---|---|
+| `GET /ejecuciones/preparar?tenant=&expediente=&virtual=&proceso=` | El proceso con su dibujo y su `revision`, los tipos documentales que usa con sus campos, y por cada uno el documento del expediente virtual que lo cubre con sus **valores vigentes** (los de su última extracción, con las correcciones a mano), o los `duplicados`. |
+| `POST /ejecuciones/` | Guarda UNA ejecución, todo o nada: `{tenant, expedienteId, virtualId, procesoId, procesoRevision, resultado: {caso, texto}, valoresFinales, detalle}`. 201 con la ejecución completa. |
+| `GET /ejecuciones/?tenant=` | El historial de la organización, de la más reciente a la más antigua. Filtros opcionales `expediente`, `virtual` y `proceso` (sus ids); `limite` (1 a 200, por omisión 50) y `antes` (el id de la última que ya se vio) para pedir las siguientes. Devuelve `{ejecuciones, total, hayMas}`. |
+| `GET /ejecuciones/{id}?tenant=` | Una ejecución completa: su resumen, `valoresFinales`, `detalle` (reglas, evidencia, condición, faltantes) y `definicion` (el proceso tal como estaba). |
+
+**Quién puede qué.** Ver el historial (listar y abrir) es de cualquiera que opere en la organización; **ejecutar** (preparar y guardar) es de quien
+organiza (`roles.PUEDEN_ORGANIZAR`: Administrador, Supervisor, Analista y Operador, como subir archivos a un expediente); los demás roles reciben 403
+`sin_permiso`. Es una propuesta de producto pendiente de confirmar con César. Piden la llave de servicio **y** el JWT de la persona (HU11): una
+ejecución de otra organización, o que no existe, es 404 sin distinguir.
+
+**Qué se exige para ejecutar** (`preparar`, 409 con su `codigo` para que la pantalla explique qué hacer): `proceso_inactivo` (está apagado), `no_corre_aqui`
+(corre sobre otro tipo de expediente virtual), `sin_resultado` (no trae su nodo de Resultado) y `resultado_sin_regla` (su Resultado no tiene ninguna
+regla conectada). Un virtual o un proceso que no son de la organización son 404 (`virtual_no_existe`, `proceso_no_existe`).
+
+**Duplicados** (Moibe, 2026-11-03: «no corre la regla y se avisa que tiene un duplicado, y quedan marcados en el expediente»). Si el expediente virtual trae
+DOS O MÁS documentos de un tipo documental que el proceso usa, no se sabe cuál es «el INE»: `preparar` los entrega en `duplicados` (y no da valores de
+ese tipo), quien ejecuta no debe seguir, y los documentos quedan marcados: el detalle del virtual trae `duplicado` en cada documento y `duplicados` (los
+tipos repetidos y sus archivos), y el detalle del expediente trae `duplicadoEn` por documento y `duplicados` por virtual. El tipo de un documento es el de su
+última extracción o, si no se ha extraído, el de su última clasificación; uno sin tipo no cuenta. **No se guarda nada**: se calcula al leer, así que sacar
+uno de los dos quita la marca sola. Un tipo que el proceso NO usa puede estar duplicado sin que estorbe (`preparar` solo mira los que el proceso usa).
+Una ejecución que no se corrió por duplicados no es una ejecución: no se guarda ni deja rastro.
+
+**Los nombres de los campos.** Lo extraído se guarda con los nombres de Google (`ano_de_registro`, `socios[2].nombre`) y el lienzo conoce los de la
+biblioteca («Año de registro», `socios.nombre`). `esquema.nombres_en_google` los une con la MISMA regla con que se armó el esquema que se le mandó a
+Google (`esquema_desde_campos`, con sus sufijos para nombres que colapsan al mismo), y `preparar` entrega los valores por el nombre de la biblioteca,
+que es el que usa el motor: `{forma: valor|lista|filas, valores, confianza, pagina}` por campo (la confianza es la más baja y la página la de la primera;
+las filas de un grupo que se repite solo importa cuántas son). Un campo que el documento no trae queda con `valores` vacío: la regla dirá «sin valores».
+
+**El historial es una foto inmutable.** No hay ruta que lo edite o lo borre, y la base no tiene llaves foráneas al expediente, al virtual ni al proceso:
+si después se renombra o se borra cualquiera de ellos, la ejecución sigue diciendo lo que decía (guarda sus nombres, la revisión del proceso y el dibujo
+completo tal como estaba). Los **nombres y el dibujo los toma el servidor de su base, no de la petición**: lo que se guarda es lo que había, no lo que
+alguien dice que había. Se rechaza con 400 lo que no cuadra con el proceso (una palabra del Resultado que no es la que el proceso tiene para ese caso, un
+valor final que no es de él o viene repetido, una lista sin sus elementos, un valor final «listo» sin valor), y con 409 `proceso_cambio` (con
+`revisionActual`) si el proceso se guardó otra vez desde que se preparó: lo que se corrió ya no es lo que hay, y hay que volver a ejecutar. El estado de la
+ejecución sale del caso: **`incompleta`** si faltaron datos (caso `sin`) y **`completa`** si no; la base lo amarra con un `CHECK`.
+
+**Auditoría.** `PROCESS_RUN_RECORDED` cuando una ejecución queda en el historial (quién, qué proceso, sobre qué expediente virtual y cómo terminó, con la palabra).
+Preparar no deja rastro.
+
+**Límites conocidos:** el historial todavía no tiene filtros por fecha, regla ni estado en pantalla (el back ya filtra por expediente, virtual y proceso; el front
+solo pagina con «Ver más»); una corrida bloqueada (duplicados, regla incompleta) no se guarda; un proceso guardado antes de que el Resultado fuera obligatorio
+no se puede ejecutar hasta que se le agregue.
+
+### Verificarlo
+
+```
+.venv/Scripts/python verificar_ejecuciones.py
+```
+
+Levanta un SQL Server real en Docker (el puerto 14341), le aplica TODAS las migraciones con el corredor de verdad y prueba: preparar (cada código de «no se
+puede ejecutar», los valores vigentes con correcciones, grupos y listas, los duplicados con y sin proceso que los use), guardar y leer lo guardado, cada
+validación, el conflicto de revisión, que el historial sobreviva a borrar su expediente y su proceso, el aislamiento entre organizaciones, los roles y la
+auditoría. La lógica pura que corre el front se prueba aparte, en el front (`verificar-ejecutar.mjs`).
 
 ## Grupos de campos y forma del resultado de la extracción (2026-10-16)
 

@@ -107,6 +107,36 @@ def _nombre_unico(crudo: str, vistos: set[str]) -> str:
     return nombre
 
 
+def nombres_en_google(campos: list[dict]) -> dict[str, tuple[str | None, str]]:
+    """El nombre con que Google conoce cada campo de un tipo documental, por el PUNTO con que lo nombra el motor de reglas: `rfc` para un campo
+    y `socios.nombre` para un subcampo. El valor es `(grupo, nombre)`: `grupo` es el nombre en Google del grupo al que pertenece (`None` si
+    es un campo suelto o el grupo mismo) y `nombre` el suyo. Lo extraído se guarda con esos nombres (`ano_de_registro`, `socios[2].nombre`),
+    así que esto es lo que une lo que el lienzo llama «Año de registro» con lo que dijo Document AI (2026-11-03, Ejecuciones).
+
+    Es el camino de ida de `esquema_desde_campos`: recorre los campos en el MISMO orden y con la misma regla de nombres únicos por nivel
+    (`_nombre_unico`), para que dos campos que colapsan al mismo nombre normalizado («Año» y «ano») caigan en los mismos sufijos que en el
+    esquema que se le mandó a Google. Un grupo sin subcampos usables no se declara en el esquema y aquí tampoco aparece."""
+    vistos: set[str] = set()
+    salida: dict[str, tuple[str | None, str]] = {}
+    for campo in campos:
+        nombre = _nombre_unico(campo.get("nombre", ""), vistos)
+        if campo.get("tipoDato") != TIPO_GRUPO:
+            salida[campo.get("nombre", "")] = (None, nombre)
+            continue
+        vistos_hijos: set[str] = set()
+        hijos: list[tuple[str, str]] = []
+        for sub in campo.get("subcampos", []):
+            if sub.get("tipoDato") == TIPO_GRUPO:
+                continue  # un solo nivel de anidación
+            hijos.append((sub.get("nombre", ""), _nombre_unico(sub.get("nombre", ""), vistos_hijos)))
+        if not hijos:
+            continue
+        salida[campo.get("nombre", "")] = (None, nombre)
+        for crudo, hijo in hijos:
+            salida[f"{campo.get('nombre', '')}.{crudo}"] = (nombre, hijo)
+    return salida
+
+
 def _propiedad(campo: dict, nombre: str, tipos_auxiliares: list[dict], prefijo_auxiliar: str = "") -> dict:
     """La `Property` de un campo que NO es grupo. Si es `lista`, además agrega a `tipos_auxiliares` el EntityType con sus
     `enumValues` (`prefijo_auxiliar` evita que dos subcampos de grupos distintos con el mismo nombre choquen)."""

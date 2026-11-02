@@ -302,13 +302,31 @@ def obtener(tenant: str, proceso_id: str) -> dict | None:
     return _publico(p, _tipos_vigentes(tenant)) if p and p["tenant"] == tenant else None
 
 
+def resultado_conectado(datos: dict) -> bool:
+    """¿El proceso tiene su nodo de Resultado con una regla conectada? Es lo que lo hace EJECUTABLE: desde el 2026-11-03 el Resultado es obligatorio
+    para guardar desde el lienzo (Moibe), pero el back no lo exige (los de antes no lo traen, y activar o desactivar guarda el proceso entero), y
+    uno sin regla en su Resultado no tiene con qué contestar. Es solo mirar el dibujo: el back sigue sin interpretar las reglas."""
+    nodos = datos.get("nodos") or []
+    tipos = {n.get("id"): n.get("type") for n in nodos if isinstance(n, dict)}
+    resultados = {i for i, t in tipos.items() if t == "resultado-final"}
+    return any(
+        isinstance(a, dict) and a.get("target") in resultados and a.get("targetHandle") == "a" and tipos.get(a.get("source")) == "operador"
+        for a in datos.get("aristas") or []
+    )
+
+
 def de_tipo(tenant: str, tipo_id: str) -> list[dict]:
-    """Los procesos ligados a ese tipo de expediente virtual: `{id, nombre, activo}`, en el orden de su creación. Lo enseña cada expediente
-    virtual de ese tipo («qué procesos le aplican»)."""
+    """Los procesos ligados a ese tipo de expediente virtual: `{id, nombre, activo, ejecutable}`, en el orden de su creación. Lo enseña cada
+    expediente virtual de ese tipo («qué procesos le aplican»); `ejecutable` dice si el proceso se puede correr (`resultado_conectado`)."""
     if sql := _sql():
         return sql.de_tipo(tenant, tipo_id)
     return [
-        {"id": p["id"], "nombre": p["datos"]["nombre"], "activo": p["datos"].get("activo") is not False}
+        {
+            "id": p["id"],
+            "nombre": p["datos"]["nombre"],
+            "activo": p["datos"].get("activo") is not False,
+            "ejecutable": resultado_conectado(p["datos"]),
+        }
         for p in listar(tenant)
         if p["datos"].get("tipoExpedienteVirtualId") == tipo_id
     ]
