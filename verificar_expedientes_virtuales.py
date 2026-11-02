@@ -16,7 +16,12 @@ Lo que se prueba (decisión de producto de Moibe, 2026-10-29: el expediente es u
 - el tipo cuenta sus virtuales (`totalExpedientesVirtuales`), un renombre del tipo se ve en ellos y se pueden listar
   (`GET /tipos-expediente/{id}/virtuales`: lo que enseña el mosaico de Configuración al picar la cuenta);
 - lo de otra organización contesta 404 (o 403 con su tenant); los roles que solo leen ven pero no tocan; cada cosa deja su rastro;
-- borrar un tipo mientras se crean virtuales de él: nunca queda uno huérfano.
+- borrar un tipo mientras se crean virtuales de él: nunca queda uno huérfano;
+- el CLASIFICADOR mete SOLO a los virtuales (Moibe, 2026-11-02: «el mínimo sea 75%» y «los dos clasifican»): a todos los de su expediente cuyo
+  tipo espera el tipo documental con que se clasificó (también a los dos del mismo tipo), con 75% justo y no con 74.99, mirando la ÚLTIMA clasificación,
+  sin tocar documentos sueltos ni de otra organización, sin repetir, marcando lo que metió, y sin volver a meter lo que alguien sacó a mano;
+  y por la API, en sus cuatro disparadores: subir un archivo a un expediente (con Document AI falseado: sin clasificador, falla, lento y rechazos que
+  no gastan), meter a un expediente un documento ya clasificado, clasificar uno que ya está en un expediente y crear un virtual nuevo.
 """
 
 import json
@@ -367,6 +372,240 @@ try:
         rev("sin base, `listar_de_tipo` no truena: da una lista vacía", expedientes_virtuales.listar_de_tipo(org, alta) == [])
     finally:
         expedientes_virtuales.SQLSERVER_HOST = guardado
+
+    titulo("11 · El clasificador mete SOLO a los expedientes virtuales (Moibe, 2026-11-02: mínimo 75 %, y a los dos si hay dos del mismo tipo)")
+    import asyncio
+
+    import routers.expedientes as router_expedientes
+    from errores import SinClasificador
+    from servicios import datos_extraidos, expedientes_virtuales as virtuales
+    from servicios import ia as servicio_ia
+    from servicios.esquema import normalizar_nombre
+
+    def clasificar(doc: str, tipo_doc: str | None, confianza: float, tenant: str = org):
+        """Anota una clasificación como la anota `/ia/clasificar`: la categoría es el id normalizado del tipo documental, o `otro`."""
+        categoria = normalizar_nombre(tipo_doc) if tipo_doc else "otro"
+        return datos_extraidos.registrar_clasificacion(tenant, doc, {"categoria": categoria, "confianza": confianza}, "clasificador-de-prueba", "usuario-de-prueba")
+
+    def colocar(**filtros):
+        return virtuales.colocar_clasificados(org, **filtros)
+
+    def marcas(exp: str, v: str) -> dict[str, bool]:
+        return {d["id"]: d["agregadoPorClasificador"] for d in ver_v(adm, org, exp, v).json()["documentos"]}
+
+    def tipo_nuevo(nombre: str, esquema: list[str]) -> str:
+        r = tipo(adm, org, nombre, esquema)
+        assert r.status_code == 201, f"{nombre}: {r.status_code} {r.text[:200]}"
+        return r.json()["id"]
+
+    # `td_cta` se borró en la sección 4: este tipo documental es propio de esta sección.
+    td_cuenta = tipo_documental(adm, org, "Estado de cuenta (clasificador)")
+    td_extra = tipo_documental(adm, org, "Que ningún virtual espera")
+    t_cred = tipo_nuevo("Crédito (clasificador)", [td_ine, td_dom, td_cuenta])
+    t_seg = tipo_nuevo("Seguro (clasificador)", [td_ine])
+    t_cta = tipo_nuevo("Cuentas (clasificador)", [td_cuenta])
+    ana = expediente(adm, org, "Ana Torres")
+    ana_ine, ana_dom, ana_cta, ana_otro = (subir(adm, org, f"ana-{n}.pdf", 100 + i) for i, n in enumerate(("ine", "dom", "cta", "otro")))
+    for d in (ana_ine, ana_dom, ana_cta, ana_otro):
+        meter(adm, org, ana, d)
+    c1, c2 = (crear_v(adm, org, ana, t_cred, f"Crédito {i}").json()["id"] for i in (1, 2))
+    s1 = crear_v(adm, org, ana, t_seg, "Seguro 1").json()["id"]
+    x1 = crear_v(adm, org, ana, t_cta, "Solo cuentas").json()["id"]
+    rev("sin clasificar nada, ninguno de los cuatro virtuales recibió nada solo", all(docs_v(adm, org, ana, v) == [] for v in (c1, c2, s1, x1)))
+    rev("la mínima confianza es 75 y está en un solo lugar", virtuales.CONFIANZA_MINIMA_AUTOMATICA == 75.0)
+
+    anotado = clasificar(ana_ine, td_ine, 92)
+    rev("anotar la clasificación devuelve lo que quedó: el tipo, su nombre y la confianza", anotado == {"tipoId": td_ine, "tipoNombre": "INE", "confianza": 92.0}, str(anotado))
+    metidos = colocar(documento_id=ana_ine)
+    rev("un INE reconocido con 92 % entra a los DOS virtuales de crédito (los dos clasifican) y al de seguro, que también lo espera; al de cuentas no",
+        [m["expedienteVirtual"]["id"] for m in metidos] == [c1, c2, s1] and docs_v(adm, org, ana, x1) == [], str([m["expedienteVirtual"] for m in metidos]))
+    rev("cada uno dice qué documento, de qué tipo, con cuánta confianza y en qué expediente",
+        all(m["documentoId"] == ana_ine and m["nombreOriginal"] == "ana-ine.pdf" and m["tipoDocumental"] == {"id": td_ine, "nombre": "INE"} and m["confianza"] == 92.0
+            and m["expediente"] == {"id": ana, "nombre": "Ana Torres"} for m in metidos), str(metidos[:1]))
+    rev("lo que entró así queda MARCADO como del clasificador, en cada virtual", all(marcas(ana, v) == {ana_ine: True} for v in (c1, c2, s1)))
+    rev("meterlo a mano marca lo contrario", meter_v(adm, org, ana, x1, ana_cta).status_code == 200 and marcas(ana, x1) == {ana_cta: False})
+    rev("repetir la revisión no repite nada (idempotente)", colocar(documento_id=ana_ine) == [] and docs_v(adm, org, ana, c1) == [ana_ine])
+
+    clasificar(ana_dom, td_dom, 74.99)
+    rev("74.99 % NO alcanza: no entra a ninguno", colocar(documento_id=ana_dom) == [] and docs_v(adm, org, ana, c1) == [ana_ine])
+    clasificar(ana_dom, td_dom, 75)
+    rev("75 % justos SÍ (el mínimo cuenta) y solo a los que esperan un comprobante de domicilio",
+        [m["expedienteVirtual"]["id"] for m in colocar(documento_id=ana_dom)] == [c1, c2] and docs_v(adm, org, ana, s1) == [ana_ine])
+
+    clasificar(ana_cta, td_cuenta, 95)
+    clasificar(ana_cta, None, 99)
+    rev("si la ÚLTIMA opinión es «no es ninguno», no se presume la vieja: no entra", colocar(documento_id=ana_cta) == [])
+    clasificar(ana_otro, td_extra, 99)
+    rev("un tipo que ningún virtual del expediente espera: no entra a ninguno", colocar(documento_id=ana_otro) == [])
+    suelto11 = subir(adm, org, "suelto-11.pdf", 140)
+    clasificar(suelto11, td_ine, 99)
+    rev("un documento que no está en ningún expediente no entra a ningún virtual", colocar(documento_id=suelto11) == [])
+    clasificar(d_b, td_b, 99, tenant=otra)
+    rev("lo de otra organización no se toca con el tenant de ésta", colocar(documento_id=d_b) == [])
+    try:
+        virtuales.colocar_clasificados(org)
+        pide_algo = False
+    except ValueError:
+        pide_algo = True
+    rev("sin decir de qué documento o virtual se trata no revisa TODO: lo pide", pide_algo)
+    for malo in ("cualquier-cosa", "documento-" + "0" * 31):
+        rev(f"un id con forma inválida ({malo[:18]}…) no revisa nada ni truena", colocar(documento_id=malo) == [])
+
+    sacar_v(adm, org, ana, c1, ana_ine)
+    c3 = crear_v(adm, org, ana, t_cred, "Crédito 3").json()
+    rev("un virtual NUEVO nace con lo que su expediente ya tiene clasificado (el INE de 92 % y el domicilio de 75 %), y el de 'otro' o sin tipo no",
+        [d["id"] for d in c3["documentos"]] == [ana_ine, ana_dom] and all(d["agregadoPorClasificador"] for d in c3["documentos"]), str([d["id"] for d in c3["documentos"]]))
+    rev("lo que alguien SACÓ a mano de otro virtual no vuelve a entrar solo (c1 sigue sin el INE)", docs_v(adm, org, ana, c1) == [ana_dom])
+    c4 = crear_v(adm, org, ana, t_cred, "Crédito 4", [ana_ine, ana_otro]).json()
+    rev("si se piden documentos a mano Y hay clasificados, nace con la unión, sin repetir y respetando quién lo metió (lo manual NO se re-marca)",
+        [(d["id"], d["agregadoPorClasificador"]) for d in c4["documentos"]] == [(ana_ine, False), (ana_otro, False), (ana_dom, True)], str([(d["id"], d["agregadoPorClasificador"]) for d in c4["documentos"]]))
+    rev("el virtual que ya existía no se tocó al crear otro", docs_v(adm, org, ana, c2) == [ana_ine, ana_dom])
+
+    luis, luis_b = expediente(adm, org, "Luis Ramos"), expediente(adm, org, "Luis Ramos (copia)")
+    l1, l2 = (crear_v(adm, org, luis, t_cred, f"Crédito de Luis {i}").json()["id"] for i in (1, 2))
+    l3 = crear_v(adm, org, luis_b, t_cred, "Crédito de la copia").json()["id"]
+    luis_ine = subir(adm, org, "luis-ine.pdf", 150)
+    clasificar(luis_ine, td_ine, 88)
+    r = meter(adm, org, luis, luis_ine)
+    rev("meter a un expediente un documento YA clasificado lo mete solo a sus virtuales, y la respuesta dice a cuáles",
+        r.status_code == 200 and r.json()["agregado"] is True and [v["id"] for v in r.json()["expedientesVirtuales"]] == [l1, l2]
+        and all(v["expedienteId"] == luis for v in r.json()["expedientesVirtuales"]), r.text[:300])
+    rev("y el expediente que devuelve ya los trae con el documento adentro", [v["documentos"] for v in r.json()["expediente"]["expedientesVirtuales"]] == [[luis_ine], [luis_ine]])
+    r = meter(adm, org, luis, luis_ine)
+    rev("meterlo otra vez (ya estaba): `agregado: false`, nada se repite", r.json()["agregado"] is False and r.json()["expedientesVirtuales"] == [] and docs_v(adm, org, luis, l1) == [luis_ine])
+    r = meter(adm, org, luis_b, luis_ine)
+    rev("meterlo a OTRO expediente solo mueve los virtuales de ese expediente, no los del primero",
+        [v["id"] for v in r.json()["expedientesVirtuales"]] == [l3] and docs_v(adm, org, luis, l2) == [luis_ine])
+    sacar(adm, org, luis, luis_ine)
+    rev("sacarlo del expediente lo saca de sus virtuales; volver a meterlo es un hecho nuevo y los vuelve a llenar",
+        docs_v(adm, org, luis, l1) == [] and [v["id"] for v in meter(adm, org, luis, luis_ine).json()["expedientesVirtuales"]] == [l1, l2])
+    rev("un rol que solo lee no mete (y entonces el clasificador tampoco)", meter(P["VIEWER"], org, luis, luis_ine).status_code == 403)
+
+    titulo("11b · Subir un archivo a un expediente lo CLASIFICA y, con 75 % o más, lo mete solo (Document AI se falsea: no se gasta en pruebas)")
+    CONDUCTA: dict = {"respuesta": None, "error": None, "demora": 0.0}
+    LLAMADAS: list[int] = []
+
+    async def clasificador_falso(contenido, mime_type, tenant):
+        LLAMADAS.append(len(contenido))
+        if CONDUCTA["demora"]:
+            await asyncio.sleep(CONDUCTA["demora"])
+        if CONDUCTA["error"] is not None:
+            raise CONDUCTA["error"]
+        return CONDUCTA["respuesta"]
+
+    def reconoce(tipo_doc: str | None, confianza: float | None):
+        CONDUCTA.update(respuesta={"categoria": normalizar_nombre(tipo_doc) if tipo_doc else "otro", "confianza": confianza}, error=None, demora=0.0)
+
+    def subir_a(bearer: str, tenant: str, exp: str, nombre: str, n: int, tipo_mime: str = "application/pdf"):
+        return c.post(f"/expedientes/{exp}/documentos", files={"archivo": (nombre, pdf(n), tipo_mime)}, data={"tenant": tenant}, headers=cab(bearer))
+
+    original, espera = servicio_ia.clasificar_documento, router_expedientes.ESPERA_CLASIFICAR_AL_SUBIR
+    servicio_ia.clasificar_documento = clasificador_falso
+    try:
+        pia = expediente(adm, org, "Pía Salas")
+        p1, p2 = (crear_v(adm, org, pia, t_cred, f"Crédito de Pía {i}").json()["id"] for i in (1, 2))
+        p_seg = crear_v(adm, org, pia, t_seg, "Seguro de Pía").json()["id"]
+        p_cta = crear_v(adm, org, pia, t_cta, "Cuentas de Pía").json()["id"]
+        antes_audit = len(auditoria("VIRTUAL_CASE_DOCUMENT_ADDED"))
+
+        reconoce(td_ine, 92.5)
+        r = subir_a(adm, org, pia, "pia-ine.pdf", 170)
+        j = r.json() if r.status_code == 201 else {}
+        rev("un archivo que el clasificador reconoce como INE con 92.5 %: 201 y `clasificacion` dice el estado, el tipo, la confianza y el mínimo",
+            r.status_code == 201 and j["clasificacion"] == {"estado": "clasificado", "tipo": {"id": td_ine, "nombre": "INE"}, "confianza": 92.5, "minimo": 75.0}, r.text[:300])
+        rev("…entró solo a los tres virtuales que esperan INE (los dos de crédito y el de seguro) y no al de cuentas; la respuesta dice a cuáles",
+            [(v["id"], v["expedienteId"]) for v in j["expedientesVirtuales"]] == [(p1, pia), (p2, pia), (p_seg, pia)] and docs_v(adm, org, pia, p_cta) == [], str(j.get("expedientesVirtuales")))
+        rev("…con su marca de clasificador", all(marcas(pia, v) == {j["documento"]["id"]: True} for v in (p1, p2, p_seg)))
+        doc_pia = [d for d in ver(adm, org, pia).json()["documentos"] if d["id"] == j["documento"]["id"]][0]
+        rev("…y el expediente ya lo enseña CON su tipo documental (el que dijo el clasificador) y la confianza",
+            doc_pia["tipoDocumental"] is not None and doc_pia["tipoDocumental"]["id"] == td_ine and doc_pia["tipoDocumental"]["confianza"] == 92.5, str(doc_pia["tipoDocumental"]))
+        nuevos = auditoria("VIRTUAL_CASE_DOCUMENT_ADDED")[antes_audit:]
+        rev("deja un `VIRTUAL_CASE_DOCUMENT_ADDED` por virtual, con quién subió, el origen, el tipo y la confianza",
+            len(nuevos) == 3 and all(x.get("origen") == "clasificador" and x.get("usuarioGuid") == guid_rita and x.get("tipoDocumentalId") == td_ine and x.get("confianza") == 92.5
+                                      and x.get("documentoId") == j["documento"]["id"] and x.get("nombreOriginal") == "pia-ine.pdf" for x in nuevos), str(nuevos[:1]))
+        rev("al clasificador solo se le mandaron los bytes del archivo, una vez", LLAMADAS == [len(pdf(170))], str(LLAMADAS))
+
+        reconoce(td_dom, 68)
+        r = subir_a(adm, org, pia, "pia-dom.pdf", 171)
+        rev("con 68 % lo reconoce pero NO alcanza el mínimo: se dice (estado clasificado, 68, mínimo 75), queda su tipo y no entra a ninguno",
+            r.status_code == 201 and r.json()["clasificacion"]["estado"] == "clasificado" and r.json()["clasificacion"]["confianza"] == 68.0
+            and r.json()["clasificacion"]["minimo"] == 75.0 and r.json()["expedientesVirtuales"] == [] and marcas(pia, p1).get(r.json()["documento"]["id"]) is None, r.text[:300])
+        d68 = [d for d in ver(adm, org, pia).json()["documentos"] if d["id"] == r.json()["documento"]["id"]][0]
+        rev("…aunque no entre a un virtual, el documento sí queda tipado como lo reconoció", (d68["tipoDocumental"] or {}).get("id") == td_dom and d68["tipoDocumental"]["confianza"] == 68.0)
+
+        reconoce(None, 88)
+        r = subir_a(adm, org, pia, "pia-rara.pdf", 172)
+        rev("«otro» (no es ninguno de los tipos): estado `sin_tipo`, sin tipo y sin virtual",
+            r.status_code == 201 and r.json()["clasificacion"] == {"estado": "sin_tipo", "tipo": None, "confianza": 88.0, "minimo": 75.0} and r.json()["expedientesVirtuales"] == [], r.text[:300])
+
+        CONDUCTA.update(error=SinClasificador("sin clasificador"))
+        r = subir_a(adm, org, pia, "pia-sin-clasificador.pdf", 173)
+        rev("una organización sin clasificador todavía: el archivo se SUBE igual y la respuesta dice `sin_clasificador`",
+            r.status_code == 201 and r.json()["clasificacion"]["estado"] == "sin_clasificador" and r.json()["clasificacion"]["tipo"] is None
+            and r.json()["documento"]["id"] in [d["id"] for d in ver(adm, org, pia).json()["documentos"]], r.text[:300])
+
+        CONDUCTA.update(error=RuntimeError("Document AI no contesta"))
+        r = subir_a(adm, org, pia, "pia-falla.pdf", 174)
+        rev("si Document AI falla: 201, el archivo está en el expediente sin tipo, y se dice `no_clasificado` (nada de la falla viaja al navegador)",
+            r.status_code == 201 and r.json()["clasificacion"]["estado"] == "no_clasificado" and "Document AI" not in r.text
+            and r.json()["documento"]["id"] in [d["id"] for d in ver(adm, org, pia).json()["documentos"]], r.text[:300])
+
+        router_expedientes.ESPERA_CLASIFICAR_AL_SUBIR = 0.05
+        CONDUCTA.update(error=None, demora=1.0, respuesta={"categoria": normalizar_nombre(td_ine), "confianza": 99})
+        r = subir_a(adm, org, pia, "pia-lenta.pdf", 175)
+        rev("si el clasificador tarda más de la espera, no se cuelga: 201 y `no_clasificado`, sin entrar a ningún virtual",
+            r.status_code == 201 and r.json()["clasificacion"]["estado"] == "no_clasificado" and r.json()["expedientesVirtuales"] == [], r.text[:300])
+        router_expedientes.ESPERA_CLASIFICAR_AL_SUBIR = espera
+
+        reconoce(td_ine, 99)
+        gastadas = len(LLAMADAS)
+        rechazos = [
+            subir_a(P["VIEWER"], org, pia, "viewer.pdf", 176).status_code == 403,
+            subir_a(adm, org, pia, "gif.gif", 177, "image/gif").status_code == 400,
+            subir_a(adm, org, "expediente-" + "0" * 32, "x.pdf", 178).status_code == 404,
+            subir_a(adm, otra, pia, "x.pdf", 179).status_code == 403,
+        ]
+        rev("lo que se rechaza (rol que solo lee, formato, expediente inexistente, otra organización) NO le pregunta al clasificador: no se gasta", all(rechazos) and len(LLAMADAS) == gastadas, f"{rechazos} {len(LLAMADAS) - gastadas}")
+
+        guardada = router_expedientes.SQLSERVER_HOST
+        try:
+            router_expedientes.SQLSERVER_HOST = ""
+            r = subir_a(adm, org, pia, "pia-sin-base.pdf", 180)
+            rev("sin base (no hay dónde anotar ni virtuales): `no_clasificado` y tampoco se gasta", r.status_code == 201 and r.json()["clasificacion"]["estado"] == "no_clasificado" and len(LLAMADAS) == gastadas)
+        finally:
+            router_expedientes.SQLSERVER_HOST = guardada
+
+        titulo("11c · Clasificar un documento que YA está en un expediente (POST /ia/clasificar con `documento`)")
+        marta = expediente(adm, org, "Marta Gil")
+        m1 = crear_v(adm, org, marta, t_seg, "Seguro de Marta").json()["id"]
+        marta_ine, marta_baja, marta_void = (subir(adm, org, f"marta-{n}.pdf", 190 + i) for i, n in enumerate(("ine", "baja", "void")))
+        meter(adm, org, marta, marta_ine)
+        meter(adm, org, marta, marta_baja)
+
+        def clasificar_por_api(doc: str, n: int, bearer: str = adm):
+            return c.post("/ia/clasificar", params={"tenant": org, "documento": doc}, files={"archivo": (f"m{n}.pdf", pdf(n), "application/pdf")}, headers=cab(bearer))
+
+        reconoce(td_ine, 91)
+        r = clasificar_por_api(marta_ine, 190)
+        rev("la respuesta de `/ia/clasificar` es la misma de siempre (no se le agregó nada) y el INE de 91 % entró solo al virtual de seguro",
+            r.status_code == 200 and r.json() == {"categoria": normalizar_nombre(td_ine), "confianza": 91} and marcas(marta, m1) == {marta_ine: True}, r.text[:200])
+        reconoce(td_ine, 60)
+        r = clasificar_por_api(marta_baja, 191)
+        rev("con 60 % queda clasificado pero no entra", r.status_code == 200 and marcas(marta, m1) == {marta_ine: True})
+        reconoce(td_ine, 99)
+        r = clasificar_por_api(marta_void, 192)
+        rev("un documento que no está en ningún expediente se clasifica sin error y sin entrar a nada", r.status_code == 200 and marcas(marta, m1) == {marta_ine: True})
+        sacar_v(adm, org, marta, m1, marta_ine)
+        reconoce(td_ine, 93)
+        clasificar_por_api(marta_ine, 190)
+        rev("volver a clasificar uno que alguien sacó a mano es un hecho nuevo: entra otra vez", marcas(marta, m1) == {marta_ine: True})
+    finally:
+        servicio_ia.clasificar_documento = original
+        router_expedientes.ESPERA_CLASIFICAR_AL_SUBIR = espera
+
+    titulo("11d · La pantalla lee el mínimo de la API (no lo copia)")
+    rev("el expediente trae `clasificacionAutomatica.confianzaMinima`", ver(adm, org, ana).json()["clasificacionAutomatica"] == {"confianzaMinima": 75.0})
+    rev("y el expediente virtual también", ver_v(adm, org, ana, c3["id"]).json()["clasificacionAutomatica"] == {"confianzaMinima": 75.0})
 finally:
     shutil.rmtree(RAIZ, ignore_errors=True)
 

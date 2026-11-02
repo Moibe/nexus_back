@@ -24,27 +24,47 @@ comprueba contra el registro, igual que en tipos documentales, procesos y bandej
 `CASE_CREATED`, `CASE_DOCUMENT_ADDED` (también al subir un archivo directo a un expediente, con `subida: true`) y `CASE_DOCUMENT_REMOVED`,
 con quién lo hizo; de los virtuales, `VIRTUAL_CASE_CREATED`,
 `VIRTUAL_CASE_DOCUMENT_ADDED`, `VIRTUAL_CASE_DOCUMENT_REMOVED` y `VIRTUAL_CASE_DELETED`. Meter un documento que ya estaba no repite el rastro.
+Lo que mete SOLO el clasificador a un virtual también deja `VIRTUAL_CASE_DOCUMENT_ADDED`, con `origen: "clasificador"`, el tipo y la confianza;
+«quién» es la persona que provocó la clasificación (subió el archivo, lo clasificó, lo metió al expediente o creó el virtual).
+
+## El clasificador y los virtuales (Moibe, 2026-11-02)
+
+Subir un archivo a un expediente lo CLASIFICA en la misma llamada (`clasificacion` en la respuesta): se gasta lo que cuestan las dos primeras
+páginas en Document AI, pero el archivo ya queda con su tipo documental. Si el clasificador lo reconoce con `CONFIANZA_MINIMA_AUTOMATICA` (75) o
+más, entra solo a los expedientes virtuales del expediente que esperan ese tipo, también a los dos cuando hay dos del mismo tipo
+(`expedientes_virtuales.colocar_clasificados`). Lo mismo pasa cuando un documento YA clasificado se mete a un expediente, cuando se clasifica
+uno que ya está en uno (`/ia/clasificar` con `documento`) y cuando se crea un virtual (se llena con lo que su expediente ya tiene clasificado).
+Nada de eso puede tumbar lo que lo provocó: sin clasificador, si Document AI falla o tarda, o si la colocación falla, el archivo se sube igual,
+sin tipo, y la respuesta dice qué pasó.
 
 ## Lo que NO hace todavía
 
 No renombra ni borra expedientes, no tiene estado ni folio, y un documento no se descarta desde aquí. Se agregan cuando haga falta.
 """
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
+from config import SQLSERVER_HOST
+from errores import SinClasificador
 from routers.archivos import guardar_subida
 from routers.bandeja import MIME_BANDEJA
 from routers.errores import almacen_no_disponible
-from servicios import aislamiento, auditoria, datos_extraidos, documentos, expedientes, expedientes_virtuales
+from servicios import aislamiento, auditoria, clasificadores, datos_extraidos, documentos, expedientes, expedientes_virtuales, ia
 from servicios.almacen import ErrorAlmacen
 from servicios.subidas import normalizar_tipo
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+#: Cuánto se espera al clasificador al subir un archivo (segundos). Pasado ese tiempo el archivo ya está subido y se queda sin clasificar: subir
+#: nunca se cuelga esperando a Google (el BFF espera 130 s y Document AI suele contestar en pocos segundos).
+ESPERA_CLASIFICAR_AL_SUBIR = 60
 
 _NO_EXISTE = "Ese expediente no existe."
 _VIRTUAL_NO_EXISTE = "Ese expediente virtual no existe."
@@ -79,6 +99,52 @@ def _anotar(accion: str, actor: aislamiento.Actor, tenant: str, **datos) -> None
 
 def _tenant_invalido(exc: ValueError) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+def colocar_clasificados(tenant: str, **filtros) -> list[dict]:
+    """Mete a los expedientes virtuales lo que el clasificador reconoció (ver `expedientes_virtuales.colocar_clasificados`; los `filtros` son
+    los de allá). NUNCA levanta: es una consecuencia de lo que la provocó (subir, clasificar, meter, crear) y no puede tumbarla; si falla,
+    queda en el log y el documento se queda donde estaba, para que una persona lo meta a mano."""
+    try:
+        return expedientes_virtuales.colocar_clasificados(tenant, **filtros)
+    except Exception:  # noqa: BLE001
+        logger.exception("No se pudo meter a los expedientes virtuales lo que el clasificador reconoció (%s)", filtros)
+        return []
+
+
+def anotar_colocados(actor: aislamiento.Actor, tenant: str, colocados: list[dict]) -> None:
+    """El rastro de cada documento que el clasificador metió a un virtual: el mismo `VIRTUAL_CASE_DOCUMENT_ADDED` de siempre, con el origen,
+    el tipo y la confianza. `actor` es quien provocó la clasificación, no el clasificador."""
+    for c in colocados:
+        tipo = c.get("tipoDocumental") or {}
+        _anotar(
+            auditoria.VIRTUAL_CASE_DOCUMENT_ADDED,
+            actor,
+            tenant,
+            expedienteVirtualId=c["expedienteVirtual"]["id"],
+            nombre=c["expedienteVirtual"]["nombre"],
+            expedienteId=c["expediente"]["id"],
+            documentoId=c["documentoId"],
+            nombreOriginal=c.get("nombreOriginal"),
+            origen="clasificador",
+            tipoDocumentalId=tipo.get("id"),
+            tipoDocumentalNombre=tipo.get("nombre"),
+            confianza=c.get("confianza"),
+        )
+
+
+def _regla_automatica() -> dict:
+    """Lo que la pantalla necesita saber de lo que el clasificador hace solo (para decirlo sin copiar el número a otro lado)."""
+    return {"confianzaMinima": expedientes_virtuales.CONFIANZA_MINIMA_AUTOMATICA}
+
+
+def _virtuales_de(colocados: list[dict]) -> list[dict]:
+    """A cuáles virtuales entró el documento (sin repetir), para la respuesta: `[{id, nombre, expedienteId}]`."""
+    vistos: dict[str, dict] = {}
+    for c in colocados:
+        v = c["expedienteVirtual"]
+        vistos.setdefault(v["id"], {"id": v["id"], "nombre": v["nombre"], "expedienteId": c["expediente"]["id"]})
+    return list(vistos.values())
 
 
 @router.get(
@@ -250,7 +316,8 @@ def registrar_documento_manual(
     summary="Ver un expediente con sus documentos y sus expedientes virtuales",
     description=(
         "El expediente y sus documentos completos, en el orden en que se agregaron, y `expedientesVirtuales`: cada uno con su tipo y los ids "
-        "de sus documentos (vacío donde no hay base)."
+        "de sus documentos (vacío donde no hay base). `clasificacionAutomatica.confianzaMinima` es la confianza (0-100) con que el clasificador "
+        "tiene que reconocer un documento para meterlo solo a un expediente virtual."
     ),
 )
 def ver(expediente_id: str, tenant: str = Query(..., description="La organización"), authorization: str | None = Header(default=None)):
@@ -263,7 +330,7 @@ def ver(expediente_id: str, tenant: str = Query(..., description="La organizaci�
         raise almacen_no_disponible(exc) from exc
     if detalle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
-    return {**detalle, "documentos": _con_tipo(tenant, detalle.get("documentos") or [])}
+    return {**detalle, "documentos": _con_tipo(tenant, detalle.get("documentos") or []), "clasificacionAutomatica": _regla_automatica()}
 
 
 @router.put(
@@ -272,7 +339,8 @@ def ver(expediente_id: str, tenant: str = Query(..., description="La organizaci�
     summary="Meter un documento a un expediente",
     description=(
         "Idempotente: si el documento ya estaba, responde `agregado: false` y no hace nada. Un documento puede estar en varios "
-        "expedientes a la vez."
+        "expedientes a la vez. Si el documento ya está clasificado con confianza suficiente, entra solo a los expedientes virtuales de ESTE "
+        "expediente que esperan su tipo documental (`expedientesVirtuales` dice a cuáles)."
     ),
 )
 def agregar_documento(
@@ -282,8 +350,12 @@ def agregar_documento(
     authorization: str | None = Header(default=None),
 ):
     actor = aislamiento.exigir_organizar(authorization, tenant, "expediente")
+    colocados: list[dict] = []
     try:
         agregado = expedientes.agregar_documento(tenant, expediente_id, documento_id, actor.guid)
+        if agregado:
+            # ANTES de leer el expediente, para que lo que devuelve ya traiga lo que el clasificador metió a sus virtuales.
+            colocados = colocar_clasificados(tenant, documento_id=documento_id, expediente_id=expediente_id)
         detalle = expedientes.obtener(tenant, expediente_id)
         documento = documentos.obtener(tenant, documento_id)
     except expedientes.NoEncontrado as exc:
@@ -306,34 +378,13 @@ def agregar_documento(
             documentoId=documento_id,
             nombreOriginal=documento["nombreOriginal"],
         )
-    return {"agregado": agregado, "expediente": detalle}
+        anotar_colocados(actor, tenant, colocados)
+    return {"agregado": agregado, "expediente": detalle, "expedientesVirtuales": _virtuales_de(colocados)}
 
 
-@router.post(
-    "/{expediente_id}/documentos",
-    status_code=status.HTTP_201_CREATED,
-    tags=["Expedientes"],
-    summary="Subir un archivo directamente a un expediente",
-    description=(
-        "Lo que la persona sube desde la pantalla de un expediente: guarda los bytes en el almacén, anota el documento con `canal: MANUAL` "
-        "(como una carga manual: aparece en «Archivos procesados») y lo mete a ESTE expediente, todo en una llamada. Todo se comprueba "
-        "ANTES de guardar nada: el rol (solo quien organiza: Administrador, Supervisor, Analista y Operador), el formato (PDF, JPEG, PNG y "
-        "TIFF, con los mismos límites de tamaño que la bandeja) y el expediente (404 si no es de la organización, 400 si ya tiene el "
-        "máximo de documentos), así que un rechazo no deja un documento suelto. Subir dos veces el mismo archivo crea DOS documentos que "
-        "comparten los bytes, como por la API. El documento queda sin tipo documental hasta que pase por el pipeline."
-    ),
-)
-def subir_documento(
-    expediente_id: str,
-    archivo: UploadFile = File(...),
-    tenant: str = Form(..., description="La organización"),
-    sha256: str | None = Form(None, description="Opcional. El SHA-256 del archivo, para verificar la transferencia.", examples=[""]),
-    authorization: str | None = Header(default=None),
-):
-    actor = aislamiento.exigir_organizar(authorization, tenant, "expediente")
-    mime = normalizar_tipo(archivo.content_type)
-    if mime not in MIME_BANDEJA:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato no admitido. Se aceptan PDF, JPEG, PNG y TIFF.")
+def _recibir_en_expediente(actor: aislamiento.Actor, tenant: str, expediente_id: str, archivo: UploadFile, sha256: str | None, mime: str) -> dict:
+    """La parte de subir un archivo a un expediente que ESCRIBE: guarda los bytes, hace nacer el documento y lo mete al expediente, con todo
+    comprobado antes de guardar nada. Es síncrona (disco y SQL) y la ruta la manda a un hilo; devuelve el documento que nació."""
     # El expediente se comprueba ANTES de guardar los bytes: uno que no existe, o que ya está lleno, no puede dejar un documento suelto.
     try:
         detalle = expedientes.obtener(tenant, expediente_id)
@@ -366,7 +417,89 @@ def subir_documento(
         nombreOriginal=documento["nombreOriginal"],
         subida=True,
     )
-    return {"agregado": True, "documento": documento}
+    return documento
+
+
+def _releer(archivo: UploadFile) -> bytes:
+    """Los bytes del archivo que se acaba de guardar (la subida los leyó una vez; el clasificador los necesita otra)."""
+    archivo.file.seek(0)
+    return archivo.file.read()
+
+
+async def _clasificar_al_subir(actor: aislamiento.Actor, tenant: str, expediente_id: str, documento: dict, archivo: UploadFile) -> tuple[dict, list[dict]]:
+    """Clasifica el archivo recién subido, anota lo que dijo el clasificador y, si lo reconoció con la confianza mínima, lo mete a los virtuales
+    del expediente que esperan ese tipo. Devuelve `(clasificacion, colocados)`; NUNCA levanta: el archivo ya está subido y esto es una
+    consecuencia, así que cualquier falla (sin clasificador, Document AI caído o lento, la base) solo deja el documento sin tipo y se dice en
+    `clasificacion.estado`: `clasificado`, `sin_tipo` (el clasificador dijo que no es ninguno de los tipos), `sin_clasificador` (la organización
+    todavía no tiene ningún tipo documental activo) o `no_clasificado` (se intentó y no se pudo, o esta instalación no tiene base)."""
+    minimo = expedientes_virtuales.CONFIANZA_MINIMA_AUTOMATICA
+
+    def resultado(estado: str, tipo: dict | None = None, confianza: float | None = None) -> dict:
+        return {"estado": estado, "tipo": tipo, "confianza": confianza, "minimo": minimo}
+
+    # Sin base no hay dónde anotar la clasificación ni virtuales a los que meterlo: no se gasta en preguntarle a Google.
+    if not SQLSERVER_HOST:
+        return resultado("no_clasificado"), []
+    try:
+        contenido = await run_in_threadpool(_releer, archivo)
+        respuesta = await asyncio.wait_for(ia.clasificar_documento(contenido, documento["mime"], tenant), timeout=ESPERA_CLASIFICAR_AL_SUBIR)
+    except SinClasificador:
+        return resultado("sin_clasificador"), []
+    except asyncio.TimeoutError:
+        logger.warning("El clasificador tardó más de %s s con el documento %s: queda subido y sin tipo", ESPERA_CLASIFICAR_AL_SUBIR, documento["id"])
+        return resultado("no_clasificado"), []
+    except Exception:  # noqa: BLE001
+        logger.exception("No se pudo clasificar al subir el documento %s", documento["id"])
+        return resultado("no_clasificado"), []
+    try:
+        anotado = await run_in_threadpool(
+            datos_extraidos.registrar_clasificacion, tenant, documento["id"], respuesta, clasificadores.id_de(tenant) or "", actor.guid
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("No se pudo guardar la clasificación del documento %s", documento["id"])
+        return resultado("no_clasificado"), []
+    if not anotado["tipoId"]:
+        return resultado("sin_tipo", confianza=anotado["confianza"]), []
+    colocados: list[dict] = []
+    if anotado["confianza"] is not None and anotado["confianza"] >= minimo:
+        colocados = await run_in_threadpool(colocar_clasificados, tenant, documento_id=documento["id"], expediente_id=expediente_id)
+    return resultado("clasificado", {"id": anotado["tipoId"], "nombre": anotado["tipoNombre"]}, anotado["confianza"]), colocados
+
+
+@router.post(
+    "/{expediente_id}/documentos",
+    status_code=status.HTTP_201_CREATED,
+    tags=["Expedientes"],
+    summary="Subir un archivo directamente a un expediente",
+    description=(
+        "Lo que la persona sube desde la pantalla de un expediente: guarda los bytes en el almacén, anota el documento con `canal: MANUAL` "
+        "(como una carga manual: aparece en «Archivos procesados») y lo mete a ESTE expediente, todo en una llamada. Todo se comprueba "
+        "ANTES de guardar nada: el rol (solo quien organiza: Administrador, Supervisor, Analista y Operador), el formato (PDF, JPEG, PNG y "
+        "TIFF, con los mismos límites de tamaño que la bandeja) y el expediente (404 si no es de la organización, 400 si ya tiene el "
+        "máximo de documentos), así que un rechazo no deja un documento suelto. Subir dos veces el mismo archivo crea DOS documentos que "
+        "comparten los bytes, como por la API. "
+        "Además lo CLASIFICA (lo que cuestan sus dos primeras páginas en Document AI): `clasificacion` dice el `estado` (`clasificado`, "
+        "`sin_tipo`, `sin_clasificador` o `no_clasificado`), el `tipo` y la `confianza` (0-100) si lo reconoció, y el `minimo` con que el "
+        "clasificador puede meterlo solo a un expediente virtual; `expedientesVirtuales` dice a cuáles entró. Clasificar nunca tumba la "
+        "subida: si no se puede, el archivo queda subido y sin tipo documental."
+    ),
+)
+async def subir_documento(
+    expediente_id: str,
+    archivo: UploadFile = File(...),
+    tenant: str = Form(..., description="La organización"),
+    sha256: str | None = Form(None, description="Opcional. El SHA-256 del archivo, para verificar la transferencia.", examples=[""]),
+    authorization: str | None = Header(default=None),
+):
+    actor = aislamiento.exigir_organizar(authorization, tenant, "expediente")
+    mime = normalizar_tipo(archivo.content_type)
+    if mime not in MIME_BANDEJA:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato no admitido. Se aceptan PDF, JPEG, PNG y TIFF.")
+    documento = await run_in_threadpool(_recibir_en_expediente, actor, tenant, expediente_id, archivo, sha256, mime)
+    clasificacion, colocados = await _clasificar_al_subir(actor, tenant, expediente_id, documento, archivo)
+    if colocados:
+        await run_in_threadpool(anotar_colocados, actor, tenant, colocados)
+    return {"agregado": True, "documento": documento, "clasificacion": clasificacion, "expedientesVirtuales": _virtuales_de(colocados)}
 
 
 @router.delete(
@@ -422,7 +555,7 @@ def _virtual_o_404(tenant: str, expediente_id: str, virtual_id: str) -> dict:
     # Ahora que los documentos saben su tipo documental, cada tipo del esquema dice qué documentos lo cubren: uno sin ninguno es lo que FALTA.
     for tipo in virtual["tipo"]["tiposDocumentales"]:
         tipo["documentos"] = [d["id"] for d in docs if (d["tipoDocumental"] or {}).get("id") == tipo["id"]]
-    return {**virtual, "documentos": docs}
+    return {**virtual, "documentos": docs, "clasificacionAutomatica": _regla_automatica()}
 
 
 @router.post(
@@ -433,8 +566,9 @@ def _virtual_o_404(tenant: str, expediente_id: str, virtual_id: str) -> dict:
     description=(
         "Un expediente virtual es un grupito de documentos DE ESTE EXPEDIENTE, instancia de un tipo de expediente virtual (`tipoId`, de "
         "`/tipos-expediente`): por ejemplo, la «Solicitud de crédito» de Juan Pérez. Nace con los `documentos` elegidos (pueden ser ninguno); "
-        "uno que no esté en el expediente responde 404 y no se crea nada. Un expediente puede tener varios, del mismo tipo o de distintos. "
-        "Solo vive en SQL: sin base responde 503."
+        "uno que no esté en el expediente responde 404 y no se crea nada. Además se llena SOLO con lo que su expediente ya tiene clasificado "
+        "como alguno de los tipos documentales de su esquema, con la confianza mínima (los que entraron así traen `agregadoPorClasificador`). "
+        "Un expediente puede tener varios, del mismo tipo o de distintos. Solo vive en SQL: sin base responde 503."
     ),
 )
 def crear_virtual(expediente_id: str, entrada: NuevoVirtual, authorization: str | None = Header(default=None)):
@@ -464,6 +598,12 @@ def crear_virtual(expediente_id: str, entrada: NuevoVirtual, authorization: str 
         tipoNombre=creado["tipo"]["nombre"],
         documentos=[d["id"] for d in creado["documentos"]],
     )
+    # Nace con lo que su expediente ya tiene clasificado y su tipo espera (se revisa DESPUÉS de anotar su nacimiento: el rastro cuenta primero que
+    # nació y luego lo que el clasificador le metió). Si metió algo, se devuelve el virtual ya con eso.
+    colocados = colocar_clasificados(entrada.tenant, virtual_id=creado["id"])
+    if colocados:
+        anotar_colocados(actor, entrada.tenant, colocados)
+        creado = expedientes_virtuales.obtener(entrada.tenant, expediente_id, creado["id"]) or creado
     return creado
 
 

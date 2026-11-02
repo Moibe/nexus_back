@@ -24,7 +24,7 @@ Lo que se prueba:
 - crear, meter y sacar dejan rastro con quién; meter un documento que ya estaba, no;
 - SUBIR un archivo directo a un expediente (`POST /expedientes/{id}/documentos`, 2026-10-30): nace como carga manual y entra al expediente en una
   sola llamada; solo lo hace quien organiza y todo se rechaza ANTES de guardar (formato, vacío, expediente ajeno o inexistente, tope): nunca deja un
-  documento suelto;
+  documento suelto; desde el 2026-11-02 también intenta clasificarlo (aquí, sin clasificador, la respuesta dice que no se clasificó);
 - el tope de documentos por expediente, un corte a media escritura y dos peticiones simultáneas.
 
 Con `--sql` corre LO MISMO contra SQL Server (migración `0003`, en un contenedor desechable: ver `pruebas_sql.py`), que es donde viven estas
@@ -1031,6 +1031,12 @@ try:
     rev("201 con `agregado: true` y el documento que nació: canal MANUAL, su nombre, su tamaño, su tipo y su organización",
         r.status_code == 201 and r.json()["agregado"] is True and nuevo["canal"] == "MANUAL" and nuevo["nombreOriginal"] == "directo-uno.pdf"
         and nuevo["tamanoBytes"] == len(pdf(950)) and nuevo["mime"] == "application/pdf" and nuevo["tenant"] == org_a and nuevo["id"].startswith("documento-"), r.text[:240])
+    # Subir también CLASIFICA (2026-11-02): aquí ninguna organización tiene clasificador (y sin base ni se pregunta), así que el archivo se sube igual
+    # y la respuesta lo dice. El clasificador de verdad (con tipo, confianza y virtuales) se prueba en `verificar_expedientes_virtuales.py` §11b.
+    clasificacion = r.json().get("clasificacion") if r.status_code == 201 else None
+    esperado = {"estado": "sin_clasificador" if SQL else "no_clasificado", "tipo": None, "confianza": None, "minimo": 75.0}
+    rev(f"la respuesta dice que no se clasificó (`{esperado['estado']}`), con el mínimo con que se metería solo a un virtual (75) y sin virtuales",
+        clasificacion == esperado and r.json()["expedientesVirtuales"] == [], str(clasificacion))
     rev("queda EN ese expediente y en ningún otro, en la misma llamada", ids_docs_de(a_admin, org_a, destino) == [nuevo.get("id")] and ids_docs_de(a_admin, org_a, vecino) == [])
     en_lista = [d for d in docs(a_admin, org_a).json()["documentos"] if d["id"] == nuevo.get("id")]
     rev("y es un documento de la organización como cualquier otro: sale en la lista de «Archivos procesados», con su expediente",

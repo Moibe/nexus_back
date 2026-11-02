@@ -17,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 
 from config import MAX_SUBIDA_BYTES, MAX_SUBIDA_MB
 from errores import ErrorDocumentAI, SinClasificador
+from routers.expedientes import anotar_colocados, colocar_clasificados
 from servicios import aislamiento, clasificadores, datos_extraidos, ia
 from servicios.subidas import MIME_SOPORTADOS, SubidaInvalida, revisar_tamano, revisar_tipo
 
@@ -279,7 +280,10 @@ async def _guardar_extraccion(tenant, documento, tipo, procesador, version, inic
         "`\"otro\"` cuando el documento no corresponde a ningún tipo "
         "configurado — en ese caso NO debe llamarse ningún extractor, el "
         "documento debe quedar marcado para revisión manual. `confianza` "
-        "(0-100) es la de la categoría ganadora."
+        "(0-100) es la de la categoría ganadora. Con `documento`, la clasificación "
+        "se guarda y, si ese documento ya está en algún expediente y se reconoce "
+        "con la confianza mínima (75), entra solo a los expedientes virtuales "
+        "de ese expediente que esperan su tipo documental."
     ),
 )
 async def clasificar(
@@ -322,9 +326,16 @@ async def clasificar(
     if documento.strip():
         # Guardarla nunca cambia la respuesta: la clasificación ya se pagó y el Pipeline la necesita para seguir.
         try:
-            await run_in_threadpool(
+            anotado = await run_in_threadpool(
                 datos_extraidos.registrar_clasificacion, tenant, documento.strip(), respuesta, clasificadores.id_de(tenant) or "", actor.guid
             )
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo guardar la clasificación del documento %s", documento)
+        else:
+            # Si el documento ya está en algún expediente, lo recién reconocido lo mete a los expedientes virtuales que esperan ese tipo
+            # (con la confianza mínima). Tampoco cambia la respuesta, y nunca levanta (`colocar_clasificados`).
+            if anotado["tipoId"] and anotado["confianza"] is not None:
+                colocados = await run_in_threadpool(colocar_clasificados, tenant, documento_id=documento.strip())
+                if colocados:
+                    await run_in_threadpool(anotar_colocados, actor, tenant, colocados)
     return respuesta

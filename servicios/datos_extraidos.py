@@ -174,23 +174,28 @@ def comprobar(tenant: str, documento_id: object, tipo_id: object, procesador_id:
         raise TipoNoEncontrado(tipo_id)
 
 
-def registrar_clasificacion(tenant: str, documento_id: object, respuesta: dict[str, Any], procesador_id: str, por: str) -> None:
+def registrar_clasificacion(tenant: str, documento_id: object, respuesta: dict[str, Any], procesador_id: str, por: str) -> dict[str, Any]:
     """Anota lo que dijo el clasificador. La categoría se traduce al tipo documental de la organización con la misma regla con que se
-    armó el clasificador (`esquema.normalizar_nombre` del id); `otro`, o una categoría que ya no corresponde a ningún tipo, quedan sin tipo."""
+    armó el clasificador (`esquema.normalizar_nombre` del id); `otro`, o una categoría que ya no corresponde a ningún tipo, quedan sin tipo.
+
+    Devuelve lo que quedó anotado: `{"tipoId", "tipoNombre", "confianza"}` (el tipo es `None` si no se reconoció ninguno). Con eso quien
+    clasifica sabe si hay algo que hacer con el documento (meterlo a los expedientes virtuales que lo esperan) sin volver a leer la base."""
     from servicios.esquema import normalizar_nombre
 
     tablas = _tablas()
     categoria = respuesta.get("categoria") if isinstance(respuesta.get("categoria"), str) else None
+    confianza = _confianza(respuesta.get("confianza"))
     with tablas.transaccion() as cur:
         documento = _documento(cur, tenant, documento_id)
         tipo = None
         if categoria:
-            cur.execute("SELECT documentTypeId, publicId FROM nexus.documentTypes WHERE tenant = ?", tenant)
-            tipo = next((f[0] for f in cur.fetchall() if normalizar_nombre(f[1]) == categoria), None)
+            cur.execute("SELECT documentTypeId, publicId, name FROM nexus.documentTypes WHERE tenant = ?", tenant)
+            tipo = next((f for f in cur.fetchall() if normalizar_nombre(f[1]) == categoria), None)
         cur.execute(
             "INSERT INTO nexus.documentClassifications (documentId, category, documentTypeId, confidence, processorId, classifiedBy) VALUES (?, ?, ?, ?, ?, ?)",
-            documento, categoria[:120] if categoria else None, tipo, _confianza(respuesta.get("confianza")), procesador_id[:120], por,
+            documento, categoria[:120] if categoria else None, tipo[0] if tipo else None, confianza, procesador_id[:120], por,
         )
+    return {"tipoId": tipo[1] if tipo else None, "tipoNombre": tipo[2] if tipo else None, "confianza": confianza}
 
 
 def registrar_extraccion(

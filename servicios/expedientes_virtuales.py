@@ -10,11 +10,20 @@ expediente virtual:
   del expediente, sale también de sus virtuales. Eso lo cuida la base (`FK_virtualCaseDocuments_caseDocument`, ON DELETE CASCADE);
 - es INSTANCIA de un tipo de expediente virtual de su organización (`servicios/tipos_expediente.py`: nombre + esquema de tipos documentales).
   Un expediente puede tener varios virtuales, del mismo tipo o de tipos distintos;
-- tiene un nombre (dos pueden llamarse igual), y sus documentos se eligen A MANO: los documentos todavía no guardan su tipo documental, así que
-  no se pueden repartir solos según el esquema. El esquema describe, no restringe (como siempre).
+- tiene un nombre (dos pueden llamarse igual), y sus documentos se eligen A MANO o los mete SOLO el clasificador (ver abajo). El esquema describe,
+  no restringe (como siempre): una persona puede meter el documento que quiera.
 
 Para qué sirven: para tomar esos grupitos de documentos y usarlos en el motor de reglas (un proceso compara datos de ciertos tipos documentales;
 un expediente virtual junta justo esos).
+
+## Lo que mete el clasificador (Moibe, 2026-11-02)
+
+Un documento que el clasificador reconoce como de un tipo documental (con `CONFIANZA_MINIMA_AUTOMATICA` o más: «el mínimo sea 75%») entra SOLO a los
+expedientes virtuales de su expediente cuyo tipo lleva ese tipo documental en su esquema (`colocar_clasificados`). Si el expediente tiene dos
+virtuales del mismo tipo, entra a los DOS («los dos clasifican»). Lo que entró así queda marcado (`addedBy = AGREGADO_POR_CLASIFICADOR`) y se puede
+sacar como cualquier otro: quien lo saca no lo vuelve a ver entrar, porque solo se revisa lo que cambió (un documento recién clasificado o metido a
+un expediente, un virtual recién creado), nunca todo. Se mira la ÚLTIMA clasificación del documento: si la última opinión es «no es ninguno», no se
+presume una vieja.
 
 ## Solo en SQL
 
@@ -37,9 +46,17 @@ from servicios import almacen
 
 MAX_NOMBRE = 200
 
+#: La confianza (0-100) con que el clasificador tiene que reconocer un documento para que entre SOLO a un expediente virtual (Moibe, 2026-11-02:
+#: «el mínimo sea 75%, y sea mencionado por ahí»). Lo lee la pantalla de la respuesta de la API, no la copia: este es el único lugar donde se cambia.
+CONFIANZA_MINIMA_AUTOMATICA = 75.0
+
+#: Lo que queda en `virtualCaseDocuments.addedBy` cuando el documento lo metió el clasificador y no una persona (que deja su GUID).
+AGREGADO_POR_CLASIFICADOR = "clasificador"
+
 RE_ID = re.compile(r"^expediente-virtual-[0-9a-f]{32}$")
 _RE_EXPEDIENTE = re.compile(r"^expediente-[0-9a-f]{32}$")
 _RE_TIPO = re.compile(r"^tipo-expediente-[0-9a-f]{32}$")
+_RE_DOCUMENTO = re.compile(r"^documento-[0-9a-f]{32}$")
 
 
 class SinBase(RuntimeError):
@@ -220,11 +237,12 @@ def obtener(tenant: str, expediente_id: object, virtual_id: object) -> dict | No
         )
         esquema = [{"id": f["id"], "nombre": f["nombre"]} for f in tablas.filas(cur)]
         cur.execute(
-            f"SELECT {expedientes_sql.columnas_doc('d')} FROM nexus.virtualCaseDocuments vd JOIN nexus.documents d ON d.documentId = vd.documentId "
-            "WHERE vd.virtualCaseId = ? ORDER BY vd.virtualCaseDocumentId",
+            f"SELECT {expedientes_sql.columnas_doc('d')}, vd.addedBy AS agregadoPor FROM nexus.virtualCaseDocuments vd "
+            "JOIN nexus.documents d ON d.documentId = vd.documentId WHERE vd.virtualCaseId = ? ORDER BY vd.virtualCaseDocumentId",
             v["virtualCaseId"],
         )
-        docs = [expedientes_sql.a_documento(f) for f in tablas.filas(cur)]
+        # `agregadoPorClasificador`: lo metió el clasificador y no una persona. La pantalla lo señala; se saca como cualquier otro.
+        docs = [{**expedientes_sql.a_documento(f), "agregadoPorClasificador": f["agregadoPor"] == AGREGADO_POR_CLASIFICADOR} for f in tablas.filas(cur)]
     from servicios import procesos
 
     return {
@@ -271,6 +289,99 @@ def quitar_documento(tenant: str, expediente_id: object, virtual_id: object, doc
         )
         if cur.rowcount == 0:
             raise DocumentoNoEncontrado(documento_id)
+
+
+# Lo que el clasificador mete SOLO, en una sola sentencia: cada documento a cada virtual de SU expediente cuyo tipo espera el tipo documental con que
+# se clasificó (última clasificación, con la confianza mínima) y donde todavía no está. El `NOT EXISTS` con candado serializa dos llamadas
+# simultáneas: la segunda ya ve lo que metió la primera y no repite (y la restricción única de la tabla es la red de abajo).
+_COLOCAR = (
+    "INSERT INTO nexus.virtualCaseDocuments (virtualCaseId, caseId, documentId, addedBy) "
+    "OUTPUT INSERTED.virtualCaseId, INSERTED.documentId "
+    "SELECT v.virtualCaseId, v.caseId, cd.documentId, ? "
+    "FROM nexus.virtualCases v "
+    "JOIN nexus.cases c ON c.caseId = v.caseId "
+    "JOIN nexus.caseDocuments cd ON cd.caseId = v.caseId "
+    "JOIN nexus.documents d ON d.documentId = cd.documentId "
+    "CROSS APPLY (SELECT TOP (1) k.documentTypeId, k.confidence FROM nexus.documentClassifications k "
+    "WHERE k.documentId = d.documentId ORDER BY k.classificationId DESC) u "
+    "JOIN nexus.documentTypes t ON t.documentTypeId = u.documentTypeId "
+    "JOIN nexus.virtualCaseTypeDocumentTypes s ON s.virtualCaseTypeId = v.virtualCaseTypeId AND s.documentTypePublicId = t.publicId "
+    "WHERE v.tenant = ? AND d.tenant = ? AND u.confidence >= ? {filtros} "
+    "AND NOT EXISTS (SELECT 1 FROM nexus.virtualCaseDocuments x WITH (UPDLOCK, HOLDLOCK) WHERE x.virtualCaseId = v.virtualCaseId AND x.documentId = cd.documentId) "
+    "ORDER BY v.virtualCaseId, cd.caseDocumentId"
+)
+
+
+def colocar_clasificados(tenant: str, documento_id: object = None, expediente_id: object = None, virtual_id: object = None) -> list[dict]:
+    """Mete SOLOS a los expedientes virtuales los documentos que el clasificador reconoció con `CONFIANZA_MINIMA_AUTOMATICA` o más.
+
+    La regla: un documento entra a un expediente virtual cuando (1) está en el expediente de ese virtual, (2) su ÚLTIMA clasificación dice un tipo
+    documental que está en el esquema del tipo del virtual, con la confianza mínima o más, y (3) todavía no está en él. Entra a TODOS los virtuales
+    que lo cumplen, también cuando un expediente tiene dos del mismo tipo.
+
+    Solo mira lo que se le dice, nunca todo: `documento_id` (un documento recién clasificado o recién metido a un expediente; con `expediente_id`,
+    solo en ese expediente) o `virtual_id` (un virtual recién creado, con lo que ya tiene su expediente). Por eso a quien saca un documento de un
+    virtual nadie se lo vuelve a meter. Sin base no hay virtuales: devuelve `[]`; un id que no tiene la forma de lo que dice ser, también.
+
+    Devuelve lo que metió, uno por documento y virtual: `{documentoId, nombreOriginal, tipoDocumental: {id, nombre}, confianza,
+    expedienteVirtual: {id, nombre}, expediente: {id, nombre}}`. El llamador anota el rastro (quién lo provocó) y decide qué hacer si esto
+    falla: no debe tumbar lo que lo provocó."""
+    if not SQLSERVER_HOST:
+        return []
+    if documento_id is None and virtual_id is None:
+        raise ValueError("Hay que decir de qué documento o de qué expediente virtual se trata: no se revisa todo.")
+    filtros: list[str] = []
+    valores: list[object] = []
+    for valor, regex, condicion in (
+        (documento_id, _RE_DOCUMENTO, "d.publicId = ?"),
+        (expediente_id, _RE_EXPEDIENTE, "c.publicId = ?"),
+        (virtual_id, RE_ID, "v.publicId = ?"),
+    ):
+        if valor is None:
+            continue
+        if not isinstance(valor, str) or not regex.match(valor):
+            return []
+        filtros.append(f"AND {condicion}")
+        valores.append(valor)
+    tenant = almacen._validar_tenant(tenant)
+    tablas = _tablas()
+    with tablas.transaccion() as cur:
+        cur.execute(_COLOCAR.format(filtros=" ".join(filtros)), AGREGADO_POR_CLASIFICADOR, tenant, tenant, CONFIANZA_MINIMA_AUTOMATICA, *valores)
+        metidos = [(f[0], f[1]) for f in cur.fetchall()]
+        if not metidos:
+            return []
+        virtuales_ids = sorted({m[0] for m in metidos})
+        documentos_ids = sorted({m[1] for m in metidos})
+        cur.execute(
+            "SELECT v.virtualCaseId, v.publicId, v.name, c.publicId AS expedienteId, c.name AS expedienteNombre FROM nexus.virtualCases v "
+            f"JOIN nexus.cases c ON c.caseId = v.caseId WHERE v.virtualCaseId IN ({', '.join('?' * len(virtuales_ids))})",
+            *virtuales_ids,
+        )
+        virtuales = {f["virtualCaseId"]: f for f in tablas.filas(cur)}
+        documentos: dict[int, dict] = {}
+        for i in range(0, len(documentos_ids), 500):
+            lote = documentos_ids[i : i + 500]
+            # OUTER y LEFT: si entre meterlo y leerlo llegó otra clasificación (de otra petición), el documento se reporta igual, solo sin tipo.
+            cur.execute(
+                "SELECT d.documentId, d.publicId, d.originalName, t.publicId AS tipoId, t.name AS tipoNombre, u.confidence FROM nexus.documents d "
+                "OUTER APPLY (SELECT TOP (1) k.documentTypeId, k.confidence FROM nexus.documentClassifications k "
+                "WHERE k.documentId = d.documentId ORDER BY k.classificationId DESC) u "
+                f"LEFT JOIN nexus.documentTypes t ON t.documentTypeId = u.documentTypeId WHERE d.documentId IN ({', '.join('?' * len(lote))})",
+                *lote,
+            )
+            documentos.update({f["documentId"]: f for f in tablas.filas(cur)})
+    return [
+        {
+            "documentoId": documentos[d]["publicId"],
+            "nombreOriginal": documentos[d]["originalName"],
+            "tipoDocumental": {"id": documentos[d]["tipoId"], "nombre": documentos[d]["tipoNombre"]} if documentos[d]["tipoId"] else None,
+            "confianza": float(documentos[d]["confidence"]) if documentos[d]["confidence"] is not None else None,
+            "expedienteVirtual": {"id": virtuales[v]["publicId"], "nombre": virtuales[v]["name"]},
+            "expediente": {"id": virtuales[v]["expedienteId"], "nombre": virtuales[v]["expedienteNombre"]},
+        }
+        for v, d in sorted(metidos)
+    ]
+
 
 def borrar(tenant: str, expediente_id: object, virtual_id: object) -> dict:
     """Borra el expediente virtual (NO sus documentos: siguen en el expediente). Devuelve `{id, nombre}` de lo que se borró."""
