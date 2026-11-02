@@ -344,14 +344,40 @@ _TIPO_DE_VALUE_TYPE = {
 _SIGLAS = {"rfc", "curp", "cfdi", "iva", "isr", "ieps", "nss", "ine", "imss", "sat", "cp", "clabe", "id", "uuid", "url", "iban", "swift"}
 
 
+#: Palabras de los documentos que en español llevan acento o «ñ» y que Google devuelve sin ellos (su `name` es snake_case ASCII y pedirle un
+#: `displayName` con acentos no sirve: lo ignora). Se restauran PALABRA POR PALABRA al armar el nombre legible de un campo generado
+#: (Moibe, 2026-11-03: «'Ano de registro', yo quiero que sí se use la Ñ»). Es una lista de las que aparecen en documentos de identidad,
+#: fiscales, societarios y de seguros; una palabra que no esté queda como la dio Google y se corrige a mano en el paso 2. «ano» es también
+#: una palabra española, pero en un campo de un documento siempre es «año». Solo cuenta la palabra COMPLETA: «anotacion» no se toca.
+_CON_ACENTO = {
+    "ano": "año", "anos": "años", "seccion": "sección", "secciones": "secciones", "direccion": "dirección", "expedicion": "expedición",
+    "emision": "emisión", "numero": "número", "telefono": "teléfono", "codigo": "código", "razon": "razón", "descripcion": "descripción",
+    "informacion": "información", "identificacion": "identificación", "operacion": "operación", "poblacion": "población",
+    "ubicacion": "ubicación", "pais": "país", "conyuge": "cónyuge", "fotografia": "fotografía", "titulo": "título", "poliza": "póliza",
+    "vehiculo": "vehículo", "dia": "día", "credito": "crédito", "debito": "débito", "administracion": "administración",
+    "constitucion": "constitución", "notaria": "notaría", "publico": "público", "ultimo": "último", "caracter": "carácter",
+    "autorizacion": "autorización", "delegacion": "delegación", "union": "unión", "religion": "religión", "profesion": "profesión",
+    "ocupacion": "ocupación", "relacion": "relación", "inscripcion": "inscripción", "afiliacion": "afiliación", "cotizacion": "cotización",
+    "clasificacion": "clasificación", "ciudadania": "ciudadanía", "categoria": "categoría", "linea": "línea", "cedula": "cédula",
+    "matricula": "matrícula", "nacion": "nación", "region": "región", "domicilio": "domicilio", "garantia": "garantía", "cuota": "cuota",
+    "validacion": "validación", "verificacion": "verificación", "version": "versión", "revision": "revisión", "sesion": "sesión",
+    "cancelacion": "cancelación", "vigencia": "vigencia", "periodo": "periodo", "capitulo": "capítulo", "articulo": "artículo",
+    "pagina": "página", "paginas": "páginas", "biologico": "biológico", "electronico": "electrónico", "electronica": "electrónica",
+    "juridica": "jurídica", "juridico": "jurídico", "fisica": "física", "fisico": "físico", "economica": "económica", "economico": "económico",
+    "publica": "pública", "historico": "histórico", "tramite": "trámite", "tecnico": "técnico", "medico": "médico", "clinica": "clínica",
+    "diagnostico": "diagnóstico", "tambien": "también", "mas": "más", "area": "área", "indice": "índice", "util": "útil",
+}
+
+
 def nombre_legible(nombre: str) -> str:
     """`rfc_cliente` -> «RFC cliente»: el `name` de Google (snake_case, sin acentos) vuelto algo que una persona lee en el wizard.
-    Los acentos no se pueden recuperar; el nombre queda editable en el paso 2. Al activar, `normalizar_nombre` lo devuelve a la
-    forma de Google."""
+    Los acentos y la «ñ» de las palabras comunes de los documentos se restauran (`_CON_ACENTO`: `ano_de_registro` -> «Año de registro»);
+    de las demás no se puede, y el nombre queda editable en el paso 2. Al activar, `normalizar_nombre` lo devuelve a la forma de Google
+    (sin acentos ni «ñ»), así que corregir un nombre aquí NO cambia el esquema que se manda."""
     palabras = [p for p in re.split(r"[_\-\s]+", nombre or "") if p]
     if not palabras:
         return "Campo"
-    legibles = [p.upper() if p.lower() in _SIGLAS else p.lower() for p in palabras]
+    legibles = [p.upper() if p.lower() in _SIGLAS else _CON_ACENTO.get(p.lower(), p.lower()) for p in palabras]
     if legibles[0].islower():
         legibles[0] = legibles[0][:1].upper() + legibles[0][1:]
     return " ".join(legibles)
