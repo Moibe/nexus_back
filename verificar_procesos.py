@@ -376,6 +376,79 @@ try:
     rev("lo que se lee de vuelta es lo mismo que se guardó", leido["datos"]["nodos"] == d["nodos"] and leido["datos"]["aristas"] == d["aristas"])
     c.delete(f"/procesos/{p6}", params={"tenant": org_a}, headers=cab(a_admin))
 
+    titulo("8d · Los nodos FINALES: «Valor final» y «Resultado» (2026-11-03)")
+
+    def nodo_valor_final(nodo_id: str, nombre: str, a: str = "", x: float = 700, y: float = 0) -> dict:
+        return {"id": nodo_id, "type": "valor-final", "position": {"x": x, "y": y}, "data": {"nombre": nombre, "a": a}}
+
+    def nodo_resultado(si: str = "Aprobado", no: str = "Rechazado", sin: str = "Sin datos", nodo_id: str = "resultado-final", x: float = 1000, y: float = 0) -> dict:
+        return {"id": nodo_id, "type": "resultado-final", "position": {"x": x, "y": y}, "data": {"si": si, "no": no, "sin": sin}}
+
+    con_finales = proceso("Con valores finales y resultado")
+    con_finales["nodos"] += [
+        nodo_valor_final("valor-final-1", "RFC del acta", "AB1", y=-200),
+        nodo_valor_final("valor-final-2", "¿Coincide el RFC?", y=-60),
+        nodo_resultado("Certificado", "Rechazado", "Pendiente de documentos"),
+    ]
+    con_finales["aristas"] += [
+        cable("tipo-acta", "rfc", "valor-final-1", "a"),
+        cable("operador-1", "resultado", "valor-final-2", "a"),
+        cable("operador-1", "resultado", "resultado-final", "a"),
+    ]
+    p7 = nuevo_id()
+    r = guardar(a_admin, org_a, p7, con_finales, 0)
+    rev("un proceso con dos valores finales y un resultado se guarda", r.status_code == 200, r.text[:200])
+    d = r.json()["datos"]
+    vf = next(n for n in d["nodos"] if n["id"] == "valor-final-1")
+    res = next(n for n in d["nodos"] if n["id"] == "resultado-final")
+    rev("un valor final guarda su nombre y su ejemplo (nada más)", vf["data"] == {"nombre": "RFC del acta", "a": "AB1"} and set(vf) == {"id", "type", "position", "data"}, str(vf))
+    rev("el resultado guarda sus tres palabras, tal como se escribieron", res["data"] == {"si": "Certificado", "no": "Rechazado", "sin": "Pendiente de documentos"}, str(res))
+    rev("los cables hacia los nodos finales se guardan", {(a["source"], a["target"], a["targetHandle"]) for a in d["aristas"]} >= {("tipo-acta", "valor-final-1", "a"), ("operador-1", "resultado-final", "a")})
+    leido = next(p for p in listar(a_admin, org_a).json()["procesos"] if p["id"] == p7)
+    rev("lo que se lee de vuelta es lo mismo que se guardó", leido["datos"]["nodos"] == d["nodos"] and leido["datos"]["aristas"] == d["aristas"])
+    sucio = proceso("Datos de más")
+    sucio["nodos"] += [
+        {"id": "valor-final-1", "type": "valor-final", "position": {"x": 1, "y": 2}, "data": {"nombre": "X", "a": "", "basura": "x", "valor": "7"}},
+        {"id": "resultado-final", "type": "resultado-final", "position": {"x": 1, "y": 2}, "data": {"si": "Sí", "no": "No", "sin": "?", "basura": "x"}, "selected": True},
+    ]
+    r = guardar(a_admin, org_a, nuevo_id(), sucio, 0)
+    rev("de un nodo final solo se guarda lo suyo (lo que sobra se descarta)", r.status_code == 200 and next(n for n in r.json()["datos"]["nodos"] if n["id"] == "valor-final-1")["data"] == {"nombre": "X", "a": ""} and set(next(n for n in r.json()["datos"]["nodos"] if n["id"] == "resultado-final")["data"]) == {"si", "no", "sin"}, r.text[:200])
+    sin_nombre = proceso("Sin nombre de valor final")
+    sin_nombre["nodos"].append({"id": "valor-final-1", "type": "valor-final", "position": {"x": 1, "y": 2}, "data": {}})
+    r = guardar(a_admin, org_a, nuevo_id(), sin_nombre, 0)
+    rev("un valor final sin nombre se guarda con el nombre vacío (el lienzo le pone el suyo por su número)", r.status_code == 200 and next(n for n in r.json()["datos"]["nodos"] if n["id"] == "valor-final-1")["data"] == {"nombre": "", "a": ""}, r.text[:200])
+    largo = proceso("Nombre de 80")
+    largo["nodos"].append(nodo_valor_final("valor-final-1", "n" * 80))
+    r = guardar(a_admin, org_a, nuevo_id(), largo, 0)
+    rev("un nombre de exactamente 80 caracteres cabe", r.status_code == 200, r.text[:120])
+    largo["nodos"][-1]["data"]["nombre"] = "n" * 81
+    rev("uno de 81 no", guardar(a_admin, org_a, nuevo_id(), largo, 0).status_code == 400)
+    r = guardar(a_admin, org_a, nuevo_id(), {**proceso("Texto de 60"), "nodos": proceso("x")["nodos"] + [nodo_resultado("s" * 60)]}, 0)
+    rev("una palabra del resultado de exactamente 60 caracteres cabe", r.status_code == 200, r.text[:120])
+    rev("una de 61 no", guardar(a_admin, org_a, nuevo_id(), {**proceso("Texto de 61"), "nodos": proceso("x")["nodos"] + [nodo_resultado("s" * 61)]}, 0).status_code == 400)
+    for caso in ("si", "no", "sin"):
+        incompleto = proceso("Resultado incompleto")
+        nodo = nodo_resultado()
+        del nodo["data"][caso]
+        incompleto["nodos"].append(nodo)
+        rev(f"al resultado le falta la palabra «{caso}»: no se guarda", guardar(a_admin, org_a, nuevo_id(), incompleto, 0).status_code == 400)
+        vacio = proceso("Resultado vacío")
+        nodo = nodo_resultado()
+        nodo["data"][caso] = "   "
+        vacio["nodos"].append(nodo)
+        rev(f"la palabra «{caso}» en blanco: no se guarda", guardar(a_admin, org_a, nuevo_id(), vacio, 0).status_code == 400)
+    mala = proceso("Palabra que no es texto")
+    mala["nodos"].append(nodo_resultado(si=7))
+    rev("una palabra del resultado que no es texto: no se guarda", guardar(a_admin, org_a, nuevo_id(), mala, 0).status_code == 400)
+    dos = proceso("Dos resultados")
+    dos["nodos"] += [nodo_resultado(nodo_id="resultado-final"), nodo_resultado("Otra", nodo_id="resultado-final-2", y=200)]
+    r = guardar(a_admin, org_a, nuevo_id(), dos, 0)
+    rev("dos nodos de resultado en un proceso: no se guarda, y dice que es uno solo", r.status_code == 400 and "solo puede tener un resultado" in r.text, r.text[:200])
+    dos_valores = proceso("Dos valores finales")
+    dos_valores["nodos"] += [nodo_valor_final("valor-final-1", "Igual"), nodo_valor_final("valor-final-2", "Igual", y=100)]
+    rev("en cambio puede haber todos los valores finales que hagan falta, aun con el mismo nombre (el lienzo avisa, el servidor no se mete)", guardar(a_admin, org_a, nuevo_id(), dos_valores, 0).status_code == 200)
+    c.delete(f"/procesos/{p7}", params={"tenant": org_a}, headers=cab(a_admin))
+
     titulo("9 · Un proceso vacío y uno con cables a un punto sin nombre")
     p4 = nuevo_id()
     r = guardar(a_admin, org_a, p4, {"nombre": "Vacío", "nodos": [], "aristas": []}, 0)

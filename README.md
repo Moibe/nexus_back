@@ -1995,8 +1995,11 @@ Un **proceso** es un conjunto de reglas y corre sobre un **expediente** (un conj
 los tipos documentales de la organización son sus entradas, las reglas son operadores (igual, distinto, contiene, mayor, menor;
 cantidad, suma, alguno, todos y unicos, que trabajan con **listas**; existe, que pregunta si el expediente trae un documento; y, o, no,
 implica), un **valor fijo** es un dato que se escribe en el lienzo (el «2» de «más de 2 socios») y los cables llevan un campo, el documento
-entero (el punto `@documento` de un tipo, solo para `existe`), un valor fijo o el resultado de una regla a la entrada de un operador. Aquí solo se
-**guarda ese dibujo**: `servicios/procesos.py` (registro provisional, `procesos.jsonl` dentro de `.registro/`) y `routers/procesos.py`.
+entero (el punto `@documento` de un tipo, solo para `existe`), un valor fijo o el resultado de una regla a la entrada de un operador. Desde el
+2026-11-03 hay además dos nodos **finales**, los que dicen qué entrega el proceso al terminar: un **valor final** es un dato que ya no se compara
+más y que entra, con su nombre, a la lista de valores finales de la corrida, y el **resultado** es la palabra con la que termina el proceso
+(«Aprobado», «Certificado»…, la que la organización escriba) según la regla que se le conecte pase, no pase o no se pueda saber por falta de datos.
+Aquí solo se **guarda ese dibujo**: `servicios/procesos.py` (registro provisional, `procesos.jsonl` dentro de `.registro/`) y `routers/procesos.py`.
 **Todavía no hay un motor que corra los procesos sobre un expediente de verdad**: el back no interpreta las reglas, solo
 comprueba que el dibujo esté entero.
 
@@ -2014,10 +2017,12 @@ es 409; **dos personas editando lo mismo**: guardar exige la `revision` que se e
 **Qué es un proceso guardado:** `nombre` (hasta 200), `descripcion`, `nodos` y `aristas`. Cada nodo es `{id, type, position, data}`
 con `type` `tipo-documental` (`data.tipoId`), `operador` (`data.operador` y los valores de ejemplo `a` y `b`, de hasta 5000
 caracteres porque el ejemplo de una lista son varios renglones) o `constante` (`data.familia` —`texto`, `numero`, `fecha` o
-`booleano`— y `data.valor`, de hasta 500); cada cable, `{id,
+`booleano`— y `data.valor`, de hasta 500), `valor-final` (`data.nombre`, de hasta 80 y puede ir vacío, y el valor de ejemplo `data.a`) o
+`resultado-final` (`data.si`, `data.no` y `data.sin`: las tres palabras, de 1 a 60 caracteres cada una, para cuando la regla conectada pasa, no pasa
+o no se puede evaluar; **un proceso tiene a lo más un resultado**); cada cable, `{id,
 source, sourceHandle, target, targetHandle}`. Se rechazan con 400: un id que no sea `proceso-…`, un nodo de un tipo inventado o sin
 posición, posiciones que no son números o pasan de un millón, ids de nodo o de cable repetidos, un cable que une un nodo que no
-existe, más de 300 nodos o 600 cables, y más de 1 MB. **Lo que se guarda sale limpio**: del nodo y del cable solo lo que el lienzo
+existe, más de un resultado, más de 300 nodos o 600 cables, y más de 1 MB. **Lo que se guarda sale limpio**: del nodo y del cable solo lo que el lienzo
 usa (la librería manda también medidas y banderas de selección); lo demás que mande la pantalla (por ejemplo la vista) se conserva
 en `datos`. `revision`, `creadoPor`, `creadoEn`, `modificadoPor`, `modificadoEn` y `tenant` los pone el servidor y no se pueden forzar.
 

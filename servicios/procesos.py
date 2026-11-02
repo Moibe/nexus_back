@@ -10,6 +10,13 @@ un `constante` es un valor fijo que se escribe en el lienzo (por ejemplo el «2�
 el documento entero (el punto `@documento` de un tipo, solo para `existe`), un valor fijo o el resultado de una regla a la entrada
 de un operador. Para «existe», la muestra `a` es el ejemplo elegido (`si` o `no`).
 
+Desde el 2026-11-03 el lienzo tiene dos nodos FINALES, los que dicen qué entrega el proceso al terminar (Moibe: un valor final «es aquel que ya
+no se compara más y que pertenecerá a un listado de valores finales de la corrida»): `valor-final` (un dato que entra a esa lista con su
+`nombre`; recibe un campo, una lista, un valor fijo, un número calculado o el pasa / no pasa de una regla) y `resultado-final` (la palabra con
+la que termina el proceso: recibe una regla y guarda tres textos libres, `si`, `no` y `sin`, para cuando la regla pasa, no pasa o no se puede
+evaluar por falta de datos; «Aprobado», «Certificado»…). Un proceso tiene a lo más UN `resultado-final`. Ninguno de los dos entrega nada a otro
+nodo: solo reciben cable.
+
 Guardado, un proceso es su `nombre`, su `descripcion` y el dibujo: `nodos` y `aristas`. Es lo mismo que maneja el lienzo del
 front, así que el back lo trata como una caja y NO interpreta las reglas: no sabe qué es «igual» ni qué campo es de qué tipo
 (eso vive en el front, en `reglas.ts`, hasta que haya un motor que corra los procesos de verdad). Lo que SÍ comprueba es que el
@@ -78,13 +85,20 @@ ARCHIVO = "procesos.jsonl"
 _RE_ID = re.compile(r"^proceso-[a-z0-9-]{6,58}$")
 
 #: Los tipos de nodo que existen en el lienzo.
-TIPOS_DE_NODO = ("tipo-documental", "operador", "constante")
+TIPOS_DE_NODO = ("tipo-documental", "operador", "constante", "valor-final", "resultado-final")
 
 #: De qué clase es el valor de un nodo `constante`: las cuatro familias que el lienzo sabe comparar.
 FAMILIAS = ("texto", "numero", "fecha", "booleano")
 
+#: Las tres palabras con las que puede terminar un proceso (nodo `resultado-final`): cuando la condición que le llega se cumple (`si`), no se
+#: cumple (`no`) o no se puede evaluar por falta de datos (`sin`). Son texto libre de la organización («Aprobado», «Certificado»…).
+CASOS_DEL_RESULTADO = ("si", "no", "sin")
+
 #: Topes. Un proceso normal tiene unas decenas de nodos; esto es para que un cliente descontrolado no llene el disco.
 MAX_NODOS = 300
+#: El nombre con el que un `valor-final` entra a la lista de valores finales de una corrida, y cada una de las tres palabras del resultado.
+MAX_NOMBRE_FINAL = 80
+MAX_TEXTO_RESULTADO = 60
 MAX_ARISTAS = 600
 MAX_TEXTO = 500
 #: El valor de ejemplo de una LISTA son varios renglones (uno por elemento), así que cabe mucho más que un valor suelto.
@@ -169,6 +183,14 @@ def _nodo(n: object) -> dict:
             raise ProcesoInvalido("La clase de un valor fijo no es válida.")
         limpio_datos["familia"] = datos["familia"]
         limpio_datos["valor"] = _texto(datos.get("valor", ""), "Un valor fijo", obligatorio=False)
+    elif n["type"] == "valor-final":
+        # Lo que el proceso entrega al terminar, con el nombre que lleva en la lista de la corrida (vacío = el que el lienzo le da por su número) y,
+        # como un operador, el valor de EJEMPLO con que se probó mientras el lienzo no corre sobre un expediente de verdad.
+        limpio_datos["nombre"] = _texto(datos.get("nombre", ""), "El nombre de un valor final", MAX_NOMBRE_FINAL, obligatorio=False)
+        limpio_datos["a"] = _texto(datos.get("a", ""), "Un valor de ejemplo", MAX_MUESTRA, obligatorio=False)
+    elif n["type"] == "resultado-final":
+        for caso in CASOS_DEL_RESULTADO:
+            limpio_datos[caso] = _texto(datos.get(caso), "Una palabra del resultado", MAX_TEXTO_RESULTADO)
     else:
         limpio_datos["operador"] = _texto(datos.get("operador"), "El operador de un nodo", 40)
         # Los valores de ejemplo con los que se probó la regla: texto libre, pueden estar vacíos. De una lista, varios renglones.
@@ -214,6 +236,9 @@ def _validar(proceso_id: str, datos: object) -> dict:
     ids_nodos = [n["id"] for n in nodos]
     if len(set(ids_nodos)) != len(ids_nodos):
         raise ProcesoInvalido("Hay dos nodos con el mismo identificador.")
+    if sum(1 for n in nodos if n["type"] == "resultado-final") > 1:
+        # El resultado es UNA palabra por corrida: dos nodos no sabrían cuál decide.
+        raise ProcesoInvalido("Un proceso solo puede tener un resultado.")
     aristas = [_arista(a) for a in aristas_crudas]
     ids_aristas = [a["id"] for a in aristas]
     if len(set(ids_aristas)) != len(ids_aristas):
