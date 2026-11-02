@@ -282,7 +282,7 @@ async def _guardar_extraccion(tenant, documento, tipo, procesador, version, inic
         "documento debe quedar marcado para revisión manual. `confianza` "
         "(0-100) es la de la categoría ganadora. Con `documento`, la clasificación "
         "se guarda y, si ese documento ya está en algún expediente y se reconoce "
-        "con la confianza mínima (75), entra solo a los expedientes virtuales "
+        "como de un tipo, entra solo a los expedientes virtuales "
         "de ese expediente que esperan su tipo documental."
     ),
 )
@@ -333,8 +333,8 @@ async def clasificar(
             logger.exception("No se pudo guardar la clasificación del documento %s", documento)
         else:
             # Si el documento ya está en algún expediente, lo recién reconocido lo mete a los expedientes virtuales que esperan ese tipo
-            # (con la confianza mínima). Tampoco cambia la respuesta, y nunca levanta (`colocar_clasificados`).
-            if anotado["tipoId"] and anotado["confianza"] is not None:
+            # (de cualquier confianza). Tampoco cambia la respuesta, y nunca levanta (`colocar_clasificados`).
+            if anotado["tipoId"]:
                 colocados = await run_in_threadpool(colocar_clasificados, tenant, documento_id=documento.strip())
                 if colocados:
                     await run_in_threadpool(anotar_colocados, actor, tenant, colocados)

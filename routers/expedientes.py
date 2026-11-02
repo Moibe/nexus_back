@@ -30,8 +30,8 @@ Lo que mete SOLO el clasificador a un virtual también deja `VIRTUAL_CASE_DOCUME
 ## El clasificador y los virtuales (Moibe, 2026-11-02)
 
 Subir un archivo a un expediente lo CLASIFICA en la misma llamada (`clasificacion` en la respuesta): se gasta lo que cuestan las dos primeras
-páginas en Document AI, pero el archivo ya queda con su tipo documental. Si el clasificador lo reconoce con `CONFIANZA_MINIMA_AUTOMATICA` (75) o
-más, entra solo a los expedientes virtuales del expediente que esperan ese tipo, también a los dos cuando hay dos del mismo tipo
+páginas en Document AI, pero el archivo ya queda con su tipo documental. Si el clasificador lo reconoce como de un tipo (sin confianza mínima), entra
+solo a los expedientes virtuales del expediente que esperan ese tipo, también a los dos cuando hay dos del mismo tipo
 (`expedientes_virtuales.colocar_clasificados`). Lo mismo pasa cuando un documento YA clasificado se mete a un expediente, cuando se clasifica
 uno que ya está en uno (`/ia/clasificar` con `documento`) y cuando se crea un virtual (se llena con lo que su expediente ya tiene clasificado).
 Nada de eso puede tumbar lo que lo provocó: sin clasificador, si Document AI falla o tarda, o si la colocación falla, el archivo se sube igual,
@@ -131,11 +131,6 @@ def anotar_colocados(actor: aislamiento.Actor, tenant: str, colocados: list[dict
             tipoDocumentalNombre=tipo.get("nombre"),
             confianza=c.get("confianza"),
         )
-
-
-def _regla_automatica() -> dict:
-    """Lo que la pantalla necesita saber de lo que el clasificador hace solo (para decirlo sin copiar el número a otro lado)."""
-    return {"confianzaMinima": expedientes_virtuales.CONFIANZA_MINIMA_AUTOMATICA}
 
 
 def _virtuales_de(colocados: list[dict]) -> list[dict]:
@@ -316,8 +311,7 @@ def registrar_documento_manual(
     summary="Ver un expediente con sus documentos y sus expedientes virtuales",
     description=(
         "El expediente y sus documentos completos, en el orden en que se agregaron, y `expedientesVirtuales`: cada uno con su tipo y los ids "
-        "de sus documentos (vacío donde no hay base). `clasificacionAutomatica.confianzaMinima` es la confianza (0-100) con que el clasificador "
-        "tiene que reconocer un documento para meterlo solo a un expediente virtual."
+        "de sus documentos (vacío donde no hay base)."
     ),
 )
 def ver(expediente_id: str, tenant: str = Query(..., description="La organización"), authorization: str | None = Header(default=None)):
@@ -330,7 +324,7 @@ def ver(expediente_id: str, tenant: str = Query(..., description="La organizaci�
         raise almacen_no_disponible(exc) from exc
     if detalle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE)
-    return {**detalle, "documentos": _con_tipo(tenant, detalle.get("documentos") or []), "clasificacionAutomatica": _regla_automatica()}
+    return {**detalle, "documentos": _con_tipo(tenant, detalle.get("documentos") or [])}
 
 
 @router.put(
@@ -427,15 +421,13 @@ def _releer(archivo: UploadFile) -> bytes:
 
 
 async def _clasificar_al_subir(actor: aislamiento.Actor, tenant: str, expediente_id: str, documento: dict, archivo: UploadFile) -> tuple[dict, list[dict]]:
-    """Clasifica el archivo recién subido, anota lo que dijo el clasificador y, si lo reconoció con la confianza mínima, lo mete a los virtuales
+    """Clasifica el archivo recién subido, anota lo que dijo el clasificador y, si lo reconoció como de un tipo, lo mete a los virtuales
     del expediente que esperan ese tipo. Devuelve `(clasificacion, colocados)`; NUNCA levanta: el archivo ya está subido y esto es una
     consecuencia, así que cualquier falla (sin clasificador, Document AI caído o lento, la base) solo deja el documento sin tipo y se dice en
     `clasificacion.estado`: `clasificado`, `sin_tipo` (el clasificador dijo que no es ninguno de los tipos), `sin_clasificador` (la organización
     todavía no tiene ningún tipo documental activo) o `no_clasificado` (se intentó y no se pudo, o esta instalación no tiene base)."""
-    minimo = expedientes_virtuales.CONFIANZA_MINIMA_AUTOMATICA
-
     def resultado(estado: str, tipo: dict | None = None, confianza: float | None = None) -> dict:
-        return {"estado": estado, "tipo": tipo, "confianza": confianza, "minimo": minimo}
+        return {"estado": estado, "tipo": tipo, "confianza": confianza}
 
     # Sin base no hay dónde anotar la clasificación ni virtuales a los que meterlo: no se gasta en preguntarle a Google.
     if not SQLSERVER_HOST:
@@ -460,9 +452,7 @@ async def _clasificar_al_subir(actor: aislamiento.Actor, tenant: str, expediente
         return resultado("no_clasificado"), []
     if not anotado["tipoId"]:
         return resultado("sin_tipo", confianza=anotado["confianza"]), []
-    colocados: list[dict] = []
-    if anotado["confianza"] is not None and anotado["confianza"] >= minimo:
-        colocados = await run_in_threadpool(colocar_clasificados, tenant, documento_id=documento["id"], expediente_id=expediente_id)
+    colocados = await run_in_threadpool(colocar_clasificados, tenant, documento_id=documento["id"], expediente_id=expediente_id)
     return resultado("clasificado", {"id": anotado["tipoId"], "nombre": anotado["tipoNombre"]}, anotado["confianza"]), colocados
 
 
@@ -479,8 +469,8 @@ async def _clasificar_al_subir(actor: aislamiento.Actor, tenant: str, expediente
         "máximo de documentos), así que un rechazo no deja un documento suelto. Subir dos veces el mismo archivo crea DOS documentos que "
         "comparten los bytes, como por la API. "
         "Además lo CLASIFICA (lo que cuestan sus dos primeras páginas en Document AI): `clasificacion` dice el `estado` (`clasificado`, "
-        "`sin_tipo`, `sin_clasificador` o `no_clasificado`), el `tipo` y la `confianza` (0-100) si lo reconoció, y el `minimo` con que el "
-        "clasificador puede meterlo solo a un expediente virtual; `expedientesVirtuales` dice a cuáles entró. Clasificar nunca tumba la "
+        "`sin_tipo`, `sin_clasificador` o `no_clasificado`), el `tipo` y la `confianza` (0-100) si lo reconoció; "
+        "`expedientesVirtuales` dice a cuáles virtuales entró solo por ser de ese tipo. Clasificar nunca tumba la "
         "subida: si no se puede, el archivo queda subido y sin tipo documental."
     ),
 )
@@ -555,7 +545,7 @@ def _virtual_o_404(tenant: str, expediente_id: str, virtual_id: str) -> dict:
     # Ahora que los documentos saben su tipo documental, cada tipo del esquema dice qué documentos lo cubren: uno sin ninguno es lo que FALTA.
     for tipo in virtual["tipo"]["tiposDocumentales"]:
         tipo["documentos"] = [d["id"] for d in docs if (d["tipoDocumental"] or {}).get("id") == tipo["id"]]
-    return {**virtual, "documentos": docs, "clasificacionAutomatica": _regla_automatica()}
+    return {**virtual, "documentos": docs}
 
 
 @router.post(
@@ -567,7 +557,7 @@ def _virtual_o_404(tenant: str, expediente_id: str, virtual_id: str) -> dict:
         "Un expediente virtual es un grupito de documentos DE ESTE EXPEDIENTE, instancia de un tipo de expediente virtual (`tipoId`, de "
         "`/tipos-expediente`): por ejemplo, la «Solicitud de crédito» de Juan Pérez. Nace con los `documentos` elegidos (pueden ser ninguno); "
         "uno que no esté en el expediente responde 404 y no se crea nada. Además se llena SOLO con lo que su expediente ya tiene clasificado "
-        "como alguno de los tipos documentales de su esquema, con la confianza mínima (los que entraron así traen `agregadoPorClasificador`). "
+        "como alguno de los tipos documentales de su esquema (los que entraron así traen `agregadoPorClasificador`). "
         "Un expediente puede tener varios, del mismo tipo o de distintos. Solo vive en SQL: sin base responde 503."
     ),
 )

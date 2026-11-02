@@ -18,12 +18,12 @@ un expediente virtual junta justo esos).
 
 ## Lo que mete el clasificador (Moibe, 2026-11-02)
 
-Un documento que el clasificador reconoce como de un tipo documental (con `CONFIANZA_MINIMA_AUTOMATICA` o más: «el mínimo sea 75%») entra SOLO a los
-expedientes virtuales de su expediente cuyo tipo lleva ese tipo documental en su esquema (`colocar_clasificados`). Si el expediente tiene dos
-virtuales del mismo tipo, entra a los DOS («los dos clasifican»). Lo que entró así queda marcado (`addedBy = AGREGADO_POR_CLASIFICADOR`) y se puede
-sacar como cualquier otro: quien lo saca no lo vuelve a ver entrar, porque solo se revisa lo que cambió (un documento recién clasificado o metido a
-un expediente, un virtual recién creado), nunca todo. Se mira la ÚLTIMA clasificación del documento: si la última opinión es «no es ninguno», no se
-presume una vieja.
+Un documento que el clasificador reconoce como de un tipo documental entra SOLO a los expedientes virtuales de su expediente cuyo tipo lleva ese
+tipo documental en su esquema (`colocar_clasificados`). Basta con ser de ese tipo: no hay confianza mínima (Moibe, 2026-11-02, primero pidió 75% y
+horas después lo quitó: «pasa simplemente por ser de ese tipo»). Si el expediente tiene dos virtuales del mismo tipo, entra a los DOS («los dos
+clasifican»). Lo que entró así queda marcado (`addedBy = AGREGADO_POR_CLASIFICADOR`) y se puede sacar como cualquier otro: quien lo saca no lo
+vuelve a ver entrar, porque solo se revisa lo que cambió (un documento recién clasificado o metido a un expediente, un virtual recién creado),
+nunca todo. Se mira la ÚLTIMA clasificación del documento: si la última opinión es «no es ninguno», no se presume una vieja.
 
 ## Solo en SQL
 
@@ -45,10 +45,6 @@ from config import SQLSERVER_HOST
 from servicios import almacen
 
 MAX_NOMBRE = 200
-
-#: La confianza (0-100) con que el clasificador tiene que reconocer un documento para que entre SOLO a un expediente virtual (Moibe, 2026-11-02:
-#: «el mínimo sea 75%, y sea mencionado por ahí»). Lo lee la pantalla de la respuesta de la API, no la copia: este es el único lugar donde se cambia.
-CONFIANZA_MINIMA_AUTOMATICA = 75.0
 
 #: Lo que queda en `virtualCaseDocuments.addedBy` cuando el documento lo metió el clasificador y no una persona (que deja su GUID).
 AGREGADO_POR_CLASIFICADOR = "clasificador"
@@ -292,7 +288,7 @@ def quitar_documento(tenant: str, expediente_id: object, virtual_id: object, doc
 
 
 # Lo que el clasificador mete SOLO, en una sola sentencia: cada documento a cada virtual de SU expediente cuyo tipo espera el tipo documental con que
-# se clasificó (última clasificación, con la confianza mínima) y donde todavía no está. El `NOT EXISTS` con candado serializa dos llamadas
+# se clasificó (última clasificación, de cualquier confianza) y donde todavía no está. El `NOT EXISTS` con candado serializa dos llamadas
 # simultáneas: la segunda ya ve lo que metió la primera y no repite (y la restricción única de la tabla es la red de abajo).
 _COLOCAR = (
     "INSERT INTO nexus.virtualCaseDocuments (virtualCaseId, caseId, documentId, addedBy) "
@@ -306,17 +302,17 @@ _COLOCAR = (
     "WHERE k.documentId = d.documentId ORDER BY k.classificationId DESC) u "
     "JOIN nexus.documentTypes t ON t.documentTypeId = u.documentTypeId "
     "JOIN nexus.virtualCaseTypeDocumentTypes s ON s.virtualCaseTypeId = v.virtualCaseTypeId AND s.documentTypePublicId = t.publicId "
-    "WHERE v.tenant = ? AND d.tenant = ? AND u.confidence >= ? {filtros} "
+    "WHERE v.tenant = ? AND d.tenant = ? {filtros} "
     "AND NOT EXISTS (SELECT 1 FROM nexus.virtualCaseDocuments x WITH (UPDLOCK, HOLDLOCK) WHERE x.virtualCaseId = v.virtualCaseId AND x.documentId = cd.documentId) "
     "ORDER BY v.virtualCaseId, cd.caseDocumentId"
 )
 
 
 def colocar_clasificados(tenant: str, documento_id: object = None, expediente_id: object = None, virtual_id: object = None) -> list[dict]:
-    """Mete SOLOS a los expedientes virtuales los documentos que el clasificador reconoció con `CONFIANZA_MINIMA_AUTOMATICA` o más.
+    """Mete SOLOS a los expedientes virtuales los documentos que el clasificador reconoció como de un tipo (sin confianza mínima).
 
     La regla: un documento entra a un expediente virtual cuando (1) está en el expediente de ese virtual, (2) su ÚLTIMA clasificación dice un tipo
-    documental que está en el esquema del tipo del virtual, con la confianza mínima o más, y (3) todavía no está en él. Entra a TODOS los virtuales
+    documental que está en el esquema del tipo del virtual y (3) todavía no está en él. Entra a TODOS los virtuales
     que lo cumplen, también cuando un expediente tiene dos del mismo tipo.
 
     Solo mira lo que se le dice, nunca todo: `documento_id` (un documento recién clasificado o recién metido a un expediente; con `expediente_id`,
@@ -346,7 +342,7 @@ def colocar_clasificados(tenant: str, documento_id: object = None, expediente_id
     tenant = almacen._validar_tenant(tenant)
     tablas = _tablas()
     with tablas.transaccion() as cur:
-        cur.execute(_COLOCAR.format(filtros=" ".join(filtros)), AGREGADO_POR_CLASIFICADOR, tenant, tenant, CONFIANZA_MINIMA_AUTOMATICA, *valores)
+        cur.execute(_COLOCAR.format(filtros=" ".join(filtros)), AGREGADO_POR_CLASIFICADOR, tenant, tenant, *valores)
         metidos = [(f[0], f[1]) for f in cur.fetchall()]
         if not metidos:
             return []

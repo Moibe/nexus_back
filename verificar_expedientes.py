@@ -1034,8 +1034,8 @@ try:
     # Subir también CLASIFICA (2026-11-02): aquí ninguna organización tiene clasificador (y sin base ni se pregunta), así que el archivo se sube igual
     # y la respuesta lo dice. El clasificador de verdad (con tipo, confianza y virtuales) se prueba en `verificar_expedientes_virtuales.py` §11b.
     clasificacion = r.json().get("clasificacion") if r.status_code == 201 else None
-    esperado = {"estado": "sin_clasificador" if SQL else "no_clasificado", "tipo": None, "confianza": None, "minimo": 75.0}
-    rev(f"la respuesta dice que no se clasificó (`{esperado['estado']}`), con el mínimo con que se metería solo a un virtual (75) y sin virtuales",
+    esperado = {"estado": "sin_clasificador" if SQL else "no_clasificado", "tipo": None, "confianza": None}
+    rev(f"la respuesta dice que no se clasificó (`{esperado['estado']}`) y sin virtuales",
         clasificacion == esperado and r.json()["expedientesVirtuales"] == [], str(clasificacion))
     rev("queda EN ese expediente y en ningún otro, en la misma llamada", ids_docs_de(a_admin, org_a, destino) == [nuevo.get("id")] and ids_docs_de(a_admin, org_a, vecino) == [])
     en_lista = [d for d in docs(a_admin, org_a).json()["documentos"] if d["id"] == nuevo.get("id")]
