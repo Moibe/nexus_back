@@ -1974,7 +1974,8 @@ decisiones y lo que falta están en [`docs/modelo-entidades.md`](docs/modelo-ent
 | `GET /expedientes/{id}?tenant=` | el expediente (con los mismos totales) y sus documentos completos, en el orden en que se agregaron | ídem |
 | `POST /expedientes/documentos` (formulario: `archivo`, `tenant`, `sha256?`) | **registra el documento de una carga manual** (la del Pipeline del front): guarda los bytes y lo anota con `canal: MANUAL`; mismo formato que la bandeja (PDF, JPEG, PNG, TIFF) y mismos límites; cualquier persona de la organización (la sesión manda, como en `/archivos`); dos cargas del mismo archivo son dos documentos con los mismos bytes. Es lo que llena «Archivos procesados» con lo que no llegó por la API (desde el 2026-10-29; antes solo nacían los de la API) |
 | `GET /expedientes/documentos?tenant=&sin_expediente=` | los documentos y los expedientes en que está cada uno; `true` = solo el void, `false` = solo los organizados | ídem |
-| `POST /expedientes/` `{tenant, nombre, tipoId}` | crea un expediente vacío (201) como instancia de ese tipo, que debe ser de la misma organización (si no, 404) | `roles.PUEDEN_ORGANIZAR` |
+| `POST /expedientes/` `{tenant, nombre, grupoId}` | crea un expediente vacío (201) DENTRO de un grupo (desde el 2026-11-03, ver «Grupos» abajo): `grupoId` es obligatorio donde hay base (400 sin él; 404 si el grupo no es de la organización). El expediente ya no tiene tipo (desde el 2026-10-29) | `roles.PUEDEN_ORGANIZAR` |
+| `PUT /expedientes/{id}/grupo` `{tenant, grupoId}` | asigna el expediente a un grupo o lo pasa a otro (nunca queda sin grupo); idempotente (`cambiado: false` si ya estaba) | ídem |
 | `PUT /expedientes/{id}/documentos/{documento_id}?tenant=` | mete un documento; idempotente (`agregado: false` si ya estaba) | ídem |
 | `DELETE /expedientes/{id}/documentos/{documento_id}?tenant=` | lo saca; el documento NO se borra y, si era su último expediente, vuelve al void | ídem |
 
@@ -1988,6 +1989,37 @@ crean tipos (propuesta de producto, pendiente de confirmar con César).
 `/expedientes` y no de `/documentos` porque ese prefijo ya es del grupo que habla con SQL Server.
 
 Verificarlo, offline: `venv/bin/python verificar_expedientes.py`.
+
+## Grupos: el nivel de arriba de los expedientes (2026-11-03)
+
+Decisión de producto (Moibe, 2026-11-03): varios expedientes viven juntos en un **grupo**. Cada organización lo usa como quiere —áreas, departamentos,
+trimestres del año…—, así que el nombre genérico es «Grupo». Es **un solo nivel**: un grupo tiene expedientes y nada más; los expedientes no se anidan
+dentro de expedientes ni los grupos dentro de grupos. El grupo se crea ANTES (módulo de configuración) y al crear un expediente se elige a cuál pertenece.
+
+| Ruta | Qué hace | Quién |
+|---|---|---|
+| `GET /grupos/?tenant=` | los grupos de la organización, en el orden de su creación, cada uno con su `totalExpedientes` | cualquiera que opere en ella |
+| `GET /grupos/{id}?tenant=` | un grupo y cuántos expedientes tiene | ídem |
+| `POST /grupos/` `{tenant, nombre}` | crea un grupo vacío (201); el nombre es único en la organización sin distinguir mayúsculas ni espacios de más (409 `ya_existe`) | `roles.PUEDEN_ADMINISTRAR` |
+| `PATCH /grupos/{id}` `{tenant, nombre}` | lo renombra (el `id` no cambia: sus expedientes ven el nombre nuevo); solo cambiar las mayúsculas del propio nombre sí se puede; idempotente (`cambiado: false`) | ídem |
+| `DELETE /grupos/{id}?tenant=` | lo borra y libera su nombre; **solo si no tiene expedientes** (409 `con_expedientes`, con cuántos): un expediente con grupo no puede quedarse sin él | ídem |
+| `POST /expedientes/` con `grupoId` · `PUT /expedientes/{id}/grupo` | meter un expediente a un grupo, al crearlo o después (ver la tabla de expedientes) | `roles.PUEDEN_ORGANIZAR` |
+
+- **Los expedientes de antes no tienen grupo** (la migración `0010` agrega `cases.caseGroupId` NULLABLE a propósito) y salen con `grupo: null`: se les asigna después con
+  `PUT /expedientes/{id}/grupo`. Uno que ya tiene grupo se puede pasar a otro, pero **no dejarlo sin grupo** (no hay forma de quitarlo: `grupoId` es obligatorio). Los
+  expedientes nuevos sí lo exigen.
+- **Lo cuida la base, no solo el servicio:** la llave foránea `FK_cases_caseGroup` es compuesta (organización + grupo), así que un expediente no puede apuntar a un
+  grupo de otra organización; los nombres no se repiten por debajo (`UQ_caseGroups_tenant_name`, base CI) y un grupo con expedientes no se borra aunque alguien lo intente
+  por fuera (sin `ON DELETE`). Crear, asignar y borrar bloquean la fila del grupo (`UPDLOCK, HOLDLOCK`), así que un expediente nuevo no se cuela entre la cuenta y el borrado.
+- **La lista y el detalle de un expediente traen `grupo`** (`{id, nombre}` o `null`). El detalle de un expediente de un grupo borrado no existe: no se puede borrar un grupo con expedientes.
+- **Solo en SQL** (decisión del 2026-10-28: todo lo nuevo directo a SQL): sin base (la laptop, las pruebas offline) `/grupos` responde 503, los expedientes se crean sin grupo
+  y se ven con `grupo: null`.
+- **Auditoría:** `CASE_GROUP_CREATED`, `CASE_GROUP_RENAMED` (nombre `antes` y `despues`), `CASE_GROUP_DELETED` y `CASE_GROUP_ASSIGNED` (el expediente, el grupo y el que tenía:
+  `grupoAnteriorId`, `null` si no tenía; no se anota si ya estaba en ese); `CASE_CREATED` ahora lleva `grupoId` y `grupoNombre`.
+- Quién puede qué es una propuesta de producto, pendiente de confirmar con César: crear, renombrar y borrar grupos es de quien administra (Administrador y Supervisor); asignar
+  un expediente a un grupo es de quien organiza (también Analista y Operador).
+
+Verificarlo (contra SQL Server en Docker, con todas las migraciones aplicadas por el corredor de verdad): `.venv/Scripts/python verificar_grupos.py`.
 
 ## Procesos: el motor de reglas guarda su dibujo, por organización (2026-10-20)
 

@@ -71,6 +71,17 @@ def cab(bearer: str | None = None, servicio: bool = True) -> dict:
 
 c = TestClient(app)
 
+#: Un grupo «General» por organización, creado la primera vez que se necesita: desde la migración 0010 un expediente nuevo nace en un grupo.
+_GRUPOS: dict[str, str] = {}
+
+
+def grupo_de(bearer: str, tenant: str) -> str:
+    if tenant not in _GRUPOS:
+        r = c.post("/grupos/", json={"tenant": tenant, "nombre": "General"}, headers=cab(bearer))
+        assert r.status_code == 201, r.text
+        _GRUPOS[tenant] = r.json()["id"]
+    return _GRUPOS[tenant]
+
 
 def entrar(correo: str, contrasena: str) -> dict:
     r = c.post("/auth/login", json={"email": correo, "password": contrasena, "ip": "127.0.0.1", "userAgent": "verificar"}, headers=cab())
@@ -533,7 +544,7 @@ try:
         and not servicio_procesos.resultado_conectado({**con_resultado, "aristas": [cable("operador-1", "resultado", "resultado-final", "b")]}))
     c.delete(f"/procesos/{p_res}", params={"tenant": org_a}, headers=cab(a_admin))
     if SQL:
-        exp = c.post("/expedientes/", json={"tenant": org_a, "nombre": "Juan Pérez"}, headers=cab(a_admin)).json()["id"]
+        exp = c.post("/expedientes/", json={"tenant": org_a, "nombre": "Juan Pérez", "grupoId": grupo_de(a_admin, org_a)}, headers=cab(a_admin)).json()["id"]
         v = c.post(f"/expedientes/{exp}/virtuales", json={"tenant": org_a, "tipoId": credito, "nombre": "Crédito", "documentos": []}, headers=cab(a_admin))
         rev("el expediente virtual de ese tipo enseña los procesos que le aplican", v.status_code == 201 and [x["id"] for x in v.json()["procesos"]] == [pl, otro], v.text[:250])
         c.delete(f"/expedientes/{exp}/virtuales/{v.json()['id']}", params={"tenant": org_a}, headers=cab(a_admin))

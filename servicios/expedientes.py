@@ -8,6 +8,13 @@ donde cae todo lo suyo. NO tiene tipo (antes era instancia de un tipo de expedie
 (`servicios/tipos_expediente.py`), que son los grupitos que usará el motor de reglas. Un expediente solo tiene un `nombre`; estado, folio o
 una referencia del cliente se agregan cuando haya una necesidad real, no antes.
 
+## Grupos (desde el 2026-11-03)
+
+Un expediente vive en un GRUPO (`servicios/grupos.py`: áreas, departamentos, trimestres… cada organización lo usa como quiere). El grupo se elige al
+crearlo y es obligatorio; los expedientes de antes de la migración `0010` no tienen y se les asigna después (`asignar_grupo`, que también pasa un
+expediente de un grupo a otro, pero nunca lo deja sin grupo). Los grupos solo viven en SQL: sin base los expedientes se crean sin grupo y se ven
+con `grupo: null`.
+
 ## Documentos y expedientes: muchos a muchos
 
 Un documento puede estar en ningún expediente, en uno o en varios (`servicios/documentos.py`; el documento no sabe de ellos). El «void» NO
@@ -76,6 +83,17 @@ class DocumentoNoEncontrado(LookupError):
     """El documento no existe en esa organización, o no está en ese expediente."""
 
 
+class GrupoRequerido(ExpedienteInvalido):
+    """Un expediente nuevo tiene que nacer en un grupo (donde hay base)."""
+
+    def __init__(self):
+        super().__init__("Elige el grupo al que pertenece el expediente.")
+
+
+class GrupoNoEncontrado(LookupError):
+    """El grupo no existe en esa organización (uno de otra se contesta igual que uno que no existe)."""
+
+
 def _nombre(tenant: str) -> str:
     # Valida el tenant con la MISMA regla que el almacén: es también la defensa contra un `../` en el nombre del archivo de registro.
     return f"expedientes-{almacen._validar_tenant(tenant)}.jsonl"
@@ -101,7 +119,7 @@ def _doblar(tenant: str) -> dict[str, dict]:
     for e in registro.eventos(_nombre(tenant)):
         op = e.get("op")
         if op == "crear" and isinstance(e.get("id"), str) and isinstance(e.get("nombre"), str):
-            expedientes[e["id"]] = {"id": e["id"], "nombre": e["nombre"], "creadoPor": e.get("por"), "creadoEn": e.get("en"), "documentos": []}
+            expedientes[e["id"]] = {"id": e["id"], "nombre": e["nombre"], "grupo": None, "creadoPor": e.get("por"), "creadoEn": e.get("en"), "documentos": []}
         elif op in ("agregar", "quitar"):
             exp, doc = expedientes.get(e.get("expediente")), e.get("documento")
             if exp is None or not isinstance(doc, str):
@@ -121,6 +139,7 @@ def _resumen(e: dict, por_id: dict[str, dict]) -> dict:
     return {
         "id": e["id"],
         "nombre": e["nombre"],
+        "grupo": e["grupo"],
         "creadoPor": e["creadoPor"],
         "creadoEn": e["creadoEn"],
         "totalDocumentos": len(e["documentos"]),
@@ -133,16 +152,42 @@ def _detalle(e: dict, por_id: dict[str, dict]) -> dict:
     return {**_resumen(e, por_id), "documentos": [por_id[i] for i in e["documentos"] if i in por_id], "expedientesVirtuales": []}
 
 
-def crear(tenant: str, nombre: object, por: str) -> dict:
-    """Crea un expediente vacío y lo devuelve. `ExpedienteInvalido` si el nombre no sirve."""
+def crear(tenant: str, nombre: object, por: str, grupo_id: object = None) -> dict:
+    """Crea un expediente vacío y lo devuelve. `ExpedienteInvalido` si el nombre no sirve.
+
+    Donde hay base el expediente nace EN un grupo (`grupo_id`): sin él, `GrupoRequerido`; uno que no es de la organización, `GrupoNoEncontrado`.
+    Sin base no hay grupos: se crea sin grupo, y si llega un `grupo_id`, `grupos.SinBase` (el router contesta 503)."""
     limpio = _limpiar_nombre(nombre)
     if sql := _sql():
-        return sql.expedientes_crear(almacen._validar_tenant(tenant), limpio, por)
+        if grupo_id is not None and not isinstance(grupo_id, str):
+            raise GrupoNoEncontrado(grupo_id)
+        return sql.expedientes_crear(almacen._validar_tenant(tenant), limpio, por, grupo_id)
+    if grupo_id is not None:
+        from servicios import grupos
+
+        raise grupos.SinBase("Los grupos necesitan la base de datos, y esta instancia no tiene.")
     expediente_id = f"expediente-{uuid.uuid4().hex}"
     en = _ahora()
     with registro.candado:
         registro.agregar(_nombre(tenant), {"op": "crear", "id": expediente_id, "tenant": tenant, "nombre": limpio, "por": por, "en": en})
-    return {"id": expediente_id, "nombre": limpio, "creadoPor": por, "creadoEn": en, "totalDocumentos": 0, "tamanoBytes": 0}
+    return {"id": expediente_id, "nombre": limpio, "grupo": None, "creadoPor": por, "creadoEn": en, "totalDocumentos": 0, "tamanoBytes": 0}
+
+
+def asignar_grupo(tenant: str, expediente_id: str, grupo_id: object, por: str) -> tuple[dict, dict | None]:
+    """Mete el expediente a un grupo, o lo pasa de uno a otro (nunca lo deja sin grupo). Devuelve `(expediente, grupo_anterior)`, con `None` si no
+    tenía; si ya estaba en ese grupo no escribe nada y el anterior es ese mismo.
+
+    `NoEncontrado` si el expediente no es de esa organización, `GrupoNoEncontrado` si el grupo no lo es, `grupos.SinBase` sin base (los grupos solo
+    viven en SQL)."""
+    if not (sql := _sql()):
+        from servicios import grupos
+
+        raise grupos.SinBase("Los grupos necesitan la base de datos, y esta instancia no tiene.")
+    if not isinstance(expediente_id, str) or not _RE_ID.match(expediente_id):
+        raise NoEncontrado(expediente_id)
+    if not isinstance(grupo_id, str):
+        raise GrupoNoEncontrado(grupo_id)
+    return sql.expedientes_asignar_grupo(almacen._validar_tenant(tenant), expediente_id, grupo_id, por)
 
 
 def listar(tenant: str) -> list[dict]:

@@ -68,6 +68,17 @@ def cab(bearer: str | None = None) -> dict:
 
 c = TestClient(app)
 
+#: Un grupo «General» por organización, creado la primera vez que se necesita: desde la migración 0010 un expediente nuevo nace en un grupo.
+_GRUPOS: dict[str, str] = {}
+
+
+def grupo_de(bearer: str, tenant: str) -> str:
+    if tenant not in _GRUPOS:
+        r = c.post("/grupos/", json={"tenant": tenant, "nombre": "General"}, headers=cab(bearer))
+        assert r.status_code == 201, r.text
+        _GRUPOS[tenant] = r.json()["id"]
+    return _GRUPOS[tenant]
+
 
 def entrar(correo: str, contrasena: str) -> str:
     r = c.post("/auth/login", json={"email": correo, "password": contrasena, "ip": "127.0.0.1", "userAgent": "verificar"}, headers=cab())
@@ -244,7 +255,7 @@ try:
     rev("extraído: el tipo de su extracción", tipos[d1] and tipos[d1]["id"] == acta and tipos[d1]["origen"] == "extraccion", tipos[d1])
     rev("clasificado `otro` y sin extraer: sin tipo", tipos[d2] is None and tipos[d3] is None, (tipos[d2], tipos[d3]))
     t = c.post("/tipos-expediente/", json={"tenant": org, "nombre": "Alta de empresa", "tiposDocumentales": [acta, ine]}, headers=cab(adm)).json()["id"]
-    exp = c.post("/expedientes/", json={"tenant": org, "nombre": "ACME"}, headers=cab(adm)).json()["id"]
+    exp = c.post("/expedientes/", json={"tenant": org, "nombre": "ACME", "grupoId": grupo_de(adm, org)}, headers=cab(adm)).json()["id"]
     for d in (d1, d2):
         c.put(f"/expedientes/{exp}/documentos/{d}", params={"tenant": org}, headers=cab(adm))
     rev("el expediente enseña el tipo", next(d for d in c.get(f"/expedientes/{exp}", params={"tenant": org}, headers=cab(adm)).json()["documentos"] if d["id"] == d1)["tipoDocumental"]["id"] == acta)

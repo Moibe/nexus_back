@@ -128,8 +128,20 @@ def tipo_virtual(bearer: str, tenant: str, nombre: str, esquema_ids: list[str]) 
     return r.json()["id"]
 
 
+#: Un grupo «General» por organización, creado la primera vez que se necesita: desde la migración 0010 un expediente nuevo nace en un grupo.
+_GRUPOS: dict[str, str] = {}
+
+
+def grupo_de(bearer: str, tenant: str) -> str:
+    if tenant not in _GRUPOS:
+        r = c.post("/grupos/", json={"tenant": tenant, "nombre": "General"}, headers=cab(bearer))
+        assert r.status_code == 201, r.text
+        _GRUPOS[tenant] = r.json()["id"]
+    return _GRUPOS[tenant]
+
+
 def expediente(bearer: str, tenant: str, nombre: str) -> str:
-    r = c.post("/expedientes/", json={"tenant": tenant, "nombre": nombre}, headers=cab(bearer))
+    r = c.post("/expedientes/", json={"tenant": tenant, "nombre": nombre, "grupoId": grupo_de(bearer, tenant)}, headers=cab(bearer))
     assert r.status_code == 201, r.text
     return r.json()["id"]
 
