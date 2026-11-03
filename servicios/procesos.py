@@ -10,10 +10,21 @@ un `constante` es un valor fijo que se escribe en el lienzo (por ejemplo el «2�
 el documento entero (el punto `@documento` de un tipo, solo para `existe`), un valor fijo o el resultado de una regla a la entrada
 de un operador. Para «existe», la muestra `a` es el ejemplo elegido (`si` o `no`).
 
+Desde el 2026-11-03 el lienzo tiene dos nodos FINALES, los que dicen qué entrega el proceso al terminar (Moibe: un valor final «es aquel que ya
+no se compara más y que pertenecerá a un listado de valores finales de la corrida»): `valor-final` (un dato que entra a esa lista con su
+`nombre`; recibe un campo, una lista, un valor fijo, un número calculado o el pasa / no pasa de una regla) y `resultado-final` (la palabra con
+la que termina el proceso: recibe una regla y guarda tres textos libres, `si`, `no` y `sin`, para cuando la regla pasa, no pasa o no se puede
+evaluar por falta de datos; «Aprobado», «Certificado»…). Un proceso tiene a lo más UN `resultado-final`. Ninguno de los dos entrega nada a otro
+nodo: solo reciben cable.
+
 Guardado, un proceso es su `nombre`, su `descripcion` y el dibujo: `nodos` y `aristas`. Es lo mismo que maneja el lienzo del
 front, así que el back lo trata como una caja y NO interpreta las reglas: no sabe qué es «igual» ni qué campo es de qué tipo
 (eso vive en el front, en `reglas.ts`, hasta que haya un motor que corra los procesos de verdad). Lo que SÍ comprueba es que el
 dibujo esté entero: ids de nodos únicos, cables que unen nodos que existen, números donde van números, y un tope de tamaño.
+
+Lo demás que mande el cliente dentro de `datos` (la vista del lienzo, y desde el 2026-10-29 `activo`, que la lista de procesos del front usa
+para marcar un proceso activo o inactivo; ausente = activo) se conserva tal cual: el back no lo interpreta. El front DEPENDE de eso, y
+`verificar_procesos.py` lo vigila.
 
 ## Lo que pone el servidor y el cliente no puede escribir
 
@@ -29,13 +40,24 @@ editó, y si en el ínterin otra persona lo guardó es un 409 con la revisión v
 Los inventa el cliente (`proceso-` + 32 hexadecimales) y el servidor exige que no se repitan en NINGUNA organización: un id que ya
 existe en OTRA se contesta igual que uno repetido en la propia, sin nombrar de quién es.
 
+## El tipo de expediente virtual sobre el que corre (2026-10-29)
+
+Desde que el expediente es un receptáculo y los grupitos con tipo son los EXPEDIENTES VIRTUALES (`servicios/expedientes_virtuales.py`), un
+proceso se LIGA a un tipo de expediente virtual: `datos.tipoExpedienteVirtualId` («Solicitud de crédito»), o `null` mientras no se elija.
+Es el contrato entre el proceso y los documentos: el proceso compara datos de ciertos tipos documentales y el tipo dice qué tipos
+documentales trae cada expediente virtual. El servidor exige que sea un tipo de la MISMA organización (uno ajeno se contesta igual que uno
+que no existe) y, si el tipo se borra después, el proceso se queda sin liga (en SQL lo hace la base, ON DELETE SET NULL; en el almacén se
+lee como `null`). Todavía no hay motor que corra el proceso sobre las instancias: los documentos aún no guardan su tipo documental ni los
+datos extraídos, que es lo que las reglas comparan.
+
 ## Cómo se guarda
 
-Un solo archivo de solo-agregar (`procesos.jsonl`, ver `servicios/registro.py`) con dos clases de evento: `guardar` (el proceso
-COMPLETO, con su revisión nueva) y `eliminar`. El estado vigente se arma doblando el archivo de principio a fin.
+Desde el 2026-10-29, donde hay base, en `nexus.processes` (migración `0005`, `servicios/procesos_sql.py`), con la liga en su propia columna.
+Este módulo valida igual en los dos casos y elige por `SQLSERVER_HOST` en cada llamada. Donde no hay base (la laptop, las pruebas offline),
+un solo archivo de solo-agregar (`procesos.jsonl`, ver `servicios/registro.py`) con dos clases de evento: `guardar` (el proceso COMPLETO,
+con su revisión nueva) y `eliminar`. El estado vigente se arma doblando el archivo de principio a fin.
 
-⚠️ Cada guardado escribe el proceso entero y el archivo crece con cada edición. Con el uso de hoy basta; si crece, la salida es
-compactar o la base.
+⚠️ En el almacén cada guardado escribe el proceso entero y el archivo crece con cada edición; la salida de verdad es la base, que ya existe.
 """
 
 import json
@@ -44,7 +66,17 @@ import math
 import re
 from datetime import datetime, timezone
 
-from servicios import registro
+from config import SQLSERVER_HOST
+from servicios import registro, tipos_expediente
+
+
+def _sql():
+    """El módulo de SQL si el `.env` dice que hay base; `None` si no. Se importa tarde: sin base, `pyodbc` ni se carga."""
+    if not SQLSERVER_HOST:
+        return None
+    from servicios import procesos_sql
+
+    return procesos_sql
 
 logger = logging.getLogger(__name__)
 
@@ -53,13 +85,20 @@ ARCHIVO = "procesos.jsonl"
 _RE_ID = re.compile(r"^proceso-[a-z0-9-]{6,58}$")
 
 #: Los tipos de nodo que existen en el lienzo.
-TIPOS_DE_NODO = ("tipo-documental", "operador", "constante")
+TIPOS_DE_NODO = ("tipo-documental", "operador", "constante", "valor-final", "resultado-final")
 
 #: De qué clase es el valor de un nodo `constante`: las cuatro familias que el lienzo sabe comparar.
 FAMILIAS = ("texto", "numero", "fecha", "booleano")
 
+#: Las tres palabras con las que puede terminar un proceso (nodo `resultado-final`): cuando la condición que le llega se cumple (`si`), no se
+#: cumple (`no`) o no se puede evaluar por falta de datos (`sin`). Son texto libre de la organización («Aprobado», «Certificado»…).
+CASOS_DEL_RESULTADO = ("si", "no", "sin")
+
 #: Topes. Un proceso normal tiene unas decenas de nodos; esto es para que un cliente descontrolado no llene el disco.
 MAX_NODOS = 300
+#: El nombre con el que un `valor-final` entra a la lista de valores finales de una corrida, y cada una de las tres palabras del resultado.
+MAX_NOMBRE_FINAL = 80
+MAX_TEXTO_RESULTADO = 60
 MAX_ARISTAS = 600
 MAX_TEXTO = 500
 #: El valor de ejemplo de una LISTA son varios renglones (uno por elemento), así que cabe mucho más que un valor suelto.
@@ -144,6 +183,14 @@ def _nodo(n: object) -> dict:
             raise ProcesoInvalido("La clase de un valor fijo no es válida.")
         limpio_datos["familia"] = datos["familia"]
         limpio_datos["valor"] = _texto(datos.get("valor", ""), "Un valor fijo", obligatorio=False)
+    elif n["type"] == "valor-final":
+        # Lo que el proceso entrega al terminar, con el nombre que lleva en la lista de la corrida (vacío = el que el lienzo le da por su número) y,
+        # como un operador, el valor de EJEMPLO con que se probó mientras el lienzo no corre sobre un expediente de verdad.
+        limpio_datos["nombre"] = _texto(datos.get("nombre", ""), "El nombre de un valor final", MAX_NOMBRE_FINAL, obligatorio=False)
+        limpio_datos["a"] = _texto(datos.get("a", ""), "Un valor de ejemplo", MAX_MUESTRA, obligatorio=False)
+    elif n["type"] == "resultado-final":
+        for caso in CASOS_DEL_RESULTADO:
+            limpio_datos[caso] = _texto(datos.get(caso), "Una palabra del resultado", MAX_TEXTO_RESULTADO)
     else:
         limpio_datos["operador"] = _texto(datos.get("operador"), "El operador de un nodo", 40)
         # Los valores de ejemplo con los que se probó la regla: texto libre, pueden estar vacíos. De una lista, varios renglones.
@@ -189,6 +236,9 @@ def _validar(proceso_id: str, datos: object) -> dict:
     ids_nodos = [n["id"] for n in nodos]
     if len(set(ids_nodos)) != len(ids_nodos):
         raise ProcesoInvalido("Hay dos nodos con el mismo identificador.")
+    if sum(1 for n in nodos if n["type"] == "resultado-final") > 1:
+        # El resultado es UNA palabra por corrida: dos nodos no sabrían cuál decide.
+        raise ProcesoInvalido("Un proceso solo puede tener un resultado.")
     aristas = [_arista(a) for a in aristas_crudas]
     ids_aristas = [a["id"] for a in aristas]
     if len(set(ids_aristas)) != len(ids_aristas):
@@ -196,18 +246,26 @@ def _validar(proceso_id: str, datos: object) -> dict:
     existentes = set(ids_nodos)
     if any(a["source"] not in existentes or a["target"] not in existentes for a in aristas):
         raise ProcesoInvalido("Un cable une un nodo que no existe.")
+    tipo = datos.get("tipoExpedienteVirtualId")
+    if tipo is not None and (not isinstance(tipo, str) or not tipos_expediente._RE_ID.match(tipo)):
+        raise ProcesoInvalido("Ese tipo de expediente virtual no existe en esta organización.")
     limpio = {k: v for k, v in datos.items() if k not in _RESERVADAS and k not in ("id", "nodos", "aristas", "nombre", "descripcion")}
-    limpio.update({"nombre": nombre, "descripcion": descripcion, "nodos": nodos, "aristas": aristas})
+    limpio.update({"nombre": nombre, "descripcion": descripcion, "nodos": nodos, "aristas": aristas, "tipoExpedienteVirtualId": tipo})
     if len(json.dumps(limpio, ensure_ascii=False).encode("utf-8")) > TOPE_BYTES:
         raise ProcesoInvalido("El proceso es demasiado grande para guardarse.")
     return limpio
 
 
-def _publico(p: dict) -> dict:
+def _publico(p: dict, tipos_vigentes: set[str] | None = None) -> dict:
+    """El proceso como lo ve quien consulta. Con `tipos_vigentes` (los tipos de expediente virtual que existen en su organización), una liga
+    a un tipo que ya no existe se lee como `null`: lo mismo que hace la base con ON DELETE SET NULL."""
+    datos = {**p["datos"], "id": p["id"]}
+    tipo = datos.get("tipoExpedienteVirtualId")
+    datos["tipoExpedienteVirtualId"] = tipo if tipo and (tipos_vigentes is None or tipo in tipos_vigentes) else None
     return {
         "id": p["id"],
         "revision": p["revision"],
-        "datos": {**p["datos"], "id": p["id"]},
+        "datos": datos,
         "creadoPor": p["creadoPor"],
         "creadoEn": p["creadoEn"],
         "modificadoPor": p["modificadoPor"],
@@ -215,18 +273,63 @@ def _publico(p: dict) -> dict:
     }
 
 
+def _tipos_vigentes(tenant: str) -> set[str]:
+    return {t["id"] for t in tipos_expediente.listar(tenant)}
+
+
+def _sin_id(p: dict) -> dict:
+    """Lo que devuelve SQL ya trae la liga resuelta; solo falta el `id` dentro de `datos`, como en el almacén."""
+    return {**p, "datos": {**p["datos"], "id": p["id"]}}
+
+
 def listar(tenant: str) -> list[dict]:
     """Los procesos de UNA organización, en el orden de su creación."""
+    if sql := _sql():
+        return [_sin_id(p) for p in sql.listar(tenant)]
     with registro.candado:
         procesos = _doblar()
-    return [_publico(p) for p in procesos.values() if p["tenant"] == tenant]
+    vigentes = _tipos_vigentes(tenant)
+    return [_publico(p, vigentes) for p in procesos.values() if p["tenant"] == tenant]
 
 
 def obtener(tenant: str, proceso_id: str) -> dict | None:
+    if sql := _sql():
+        p = sql.obtener(tenant, proceso_id)
+        return _sin_id(p) if p else None
     with registro.candado:
         procesos = _doblar()
     p = procesos.get(proceso_id)
-    return _publico(p) if p and p["tenant"] == tenant else None
+    return _publico(p, _tipos_vigentes(tenant)) if p and p["tenant"] == tenant else None
+
+
+def resultado_conectado(datos: dict) -> bool:
+    """¿El proceso tiene su nodo de Resultado con una regla conectada? Es lo que lo hace EJECUTABLE: desde el 2026-11-03 el Resultado es obligatorio
+    para guardar desde el lienzo (Moibe), pero el back no lo exige (los de antes no lo traen, y activar o desactivar guarda el proceso entero), y
+    uno sin regla en su Resultado no tiene con qué contestar. Es solo mirar el dibujo: el back sigue sin interpretar las reglas."""
+    nodos = datos.get("nodos") or []
+    tipos = {n.get("id"): n.get("type") for n in nodos if isinstance(n, dict)}
+    resultados = {i for i, t in tipos.items() if t == "resultado-final"}
+    return any(
+        isinstance(a, dict) and a.get("target") in resultados and a.get("targetHandle") == "a" and tipos.get(a.get("source")) == "operador"
+        for a in datos.get("aristas") or []
+    )
+
+
+def de_tipo(tenant: str, tipo_id: str) -> list[dict]:
+    """Los procesos ligados a ese tipo de expediente virtual: `{id, nombre, activo, ejecutable}`, en el orden de su creación. Lo enseña cada
+    expediente virtual de ese tipo («qué procesos le aplican»); `ejecutable` dice si el proceso se puede correr (`resultado_conectado`)."""
+    if sql := _sql():
+        return sql.de_tipo(tenant, tipo_id)
+    return [
+        {
+            "id": p["id"],
+            "nombre": p["datos"]["nombre"],
+            "activo": p["datos"].get("activo") is not False,
+            "ejecutable": resultado_conectado(p["datos"]),
+        }
+        for p in listar(tenant)
+        if p["datos"].get("tipoExpedienteVirtualId") == tipo_id
+    ]
 
 
 def guardar(tenant: str, proceso_id: str, datos: object, revision: int, por: str) -> tuple[dict, dict | None]:
@@ -238,6 +341,12 @@ def guardar(tenant: str, proceso_id: str, datos: object, revision: int, por: str
     limpio = _validar(proceso_id, datos)
     if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
         raise ProcesoInvalido("La revisión no es válida.")
+    if sql := _sql():
+        nuevo, actual = sql.guardar(tenant, proceso_id, limpio, revision, por)
+        return _sin_id(nuevo), _sin_id(actual) if actual else None
+    tipo = limpio.get("tipoExpedienteVirtualId")
+    if tipo is not None and tipos_expediente.obtener(tenant, tipo) is None:
+        raise ProcesoInvalido("Ese tipo de expediente virtual no existe en esta organización.")
     with registro.candado:
         procesos = _doblar()
         actual = procesos.get(proceso_id)
@@ -262,6 +371,8 @@ def guardar(tenant: str, proceso_id: str, datos: object, revision: int, por: str
 
 def eliminar(tenant: str, proceso_id: str, por: str) -> dict:
     """Quita un proceso de la organización. Devuelve el que se quitó. `NoEncontrado` si no es de ella."""
+    if sql := _sql():
+        return _sin_id(sql.eliminar(tenant, proceso_id))
     with registro.candado:
         procesos = _doblar()
         actual = procesos.get(proceso_id)

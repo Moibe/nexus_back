@@ -87,7 +87,7 @@ def sembrar(tenant: str, contenido: bytes) -> dict:
     td_id = "tipo-" + (tenant.replace("-", "") + "0" * 32)[:32]
     tipos_documentales.guardar(tenant, td_id, datos_tipo("INE", guardado["rutaRelativa"], tenant), 0, "guid-de-prueba")
     te = tipos_expediente.crear(tenant, "Expediente médico", [td_id], "guid-de-prueba")
-    ex = expedientes.crear(tenant, "Juan Pérez", "guid-de-prueba", te["id"])
+    ex = expedientes.crear(tenant, "Juan Pérez", "guid-de-prueba")
     expedientes.agregar_documento(tenant, ex["id"], entrada["documentoId"], "guid-de-prueba")
     registro.agregar("procesos.jsonl", {"op": "guardar", "id": f"proceso-{tenant}", "tenant": tenant, "revision": 1, "datos": {"nombre": "P"}, "por": "x", "en": "2026-10-20T00:00:00+00:00"})
     registro.agregar("llaves.jsonl", {"evento": "emitida", "id": f"llave-{tenant}", "tenant": tenant, "hash": "h" * 8, "creadaEn": "2026-10-20T00:00:00+00:00"})

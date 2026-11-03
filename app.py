@@ -437,7 +437,19 @@ app.include_router(
     dependencies=[Depends(exigir_llave)],
 )
 
-# Los tipos de expediente de cada organización («expediente médico», «expediente de un choque»): la clase de la que salen los expedientes.
+# Las ejecuciones: correr un proceso sobre un expediente virtual y su historial inmutable (migración 0009). El back prepara los datos reales y
+# guarda lo que salió; las reglas las corre el servidor del front con la misma lógica del lienzo. Llave de servicio Y JWT (HU11).
+from routers.ejecuciones import router as ejecuciones_router  # noqa: E402
+
+app.include_router(
+    ejecuciones_router,
+    prefix="/ejecuciones",
+    tags=["Ejecuciones"],
+    dependencies=[Depends(exigir_llave)],
+)
+
+# Los tipos de expediente VIRTUAL de cada organización («Solicitud de crédito»): la clase de la que salen los expedientes virtuales (desde el
+# 2026-10-29 el expediente no tiene tipo; la ruta conservó su nombre).
 from routers.tipos_expediente import router as tipos_expediente_router  # noqa: E402
 
 app.include_router(
@@ -628,6 +640,22 @@ def calentar_uso_de_llaves() -> None:
         uso_llaves.calentar()
     except Exception:  # noqa: BLE001
         logger.warning("No se pudo cargar el índice de uso de llaves al arrancar; se intentará al usarse.")
+
+
+@app.on_event("startup")
+def importar_registros_json() -> None:
+    """Migraciones `0006` y `0008`: importa UNA vez a SQL lo que traían sus JSONL —las organizaciones, los clasificadores, la bandeja y la
+    auditoría; los enlaces de un solo uso, las llaves de cliente, su uso, los webhooks y sus entregas— (`servicios/importacion_json.py`). Se hace
+    al arrancar para que ninguna petición escriba en una tabla con llave foránea a organizaciones antes de que existan; si falla (la base o el NAS
+    no responden), no tumba la app: se reintenta al usar cada uno."""
+    if not SQLSERVER_HOST:
+        return
+    try:
+        from servicios import importacion_json
+
+        importacion_json.asegurar_todo()
+    except Exception:  # noqa: BLE001
+        logger.warning("No se pudieron importar los registros JSON al arrancar; se intentará al usarse.", exc_info=True)
 
 
 @app.on_event("startup")

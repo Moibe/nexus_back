@@ -107,6 +107,36 @@ def _nombre_unico(crudo: str, vistos: set[str]) -> str:
     return nombre
 
 
+def nombres_en_google(campos: list[dict]) -> dict[str, tuple[str | None, str]]:
+    """El nombre con que Google conoce cada campo de un tipo documental, por el PUNTO con que lo nombra el motor de reglas: `rfc` para un campo
+    y `socios.nombre` para un subcampo. El valor es `(grupo, nombre)`: `grupo` es el nombre en Google del grupo al que pertenece (`None` si
+    es un campo suelto o el grupo mismo) y `nombre` el suyo. Lo extraído se guarda con esos nombres (`ano_de_registro`, `socios[2].nombre`),
+    así que esto es lo que une lo que el lienzo llama «Año de registro» con lo que dijo Document AI (2026-11-03, Ejecuciones).
+
+    Es el camino de ida de `esquema_desde_campos`: recorre los campos en el MISMO orden y con la misma regla de nombres únicos por nivel
+    (`_nombre_unico`), para que dos campos que colapsan al mismo nombre normalizado («Año» y «ano») caigan en los mismos sufijos que en el
+    esquema que se le mandó a Google. Un grupo sin subcampos usables no se declara en el esquema y aquí tampoco aparece."""
+    vistos: set[str] = set()
+    salida: dict[str, tuple[str | None, str]] = {}
+    for campo in campos:
+        nombre = _nombre_unico(campo.get("nombre", ""), vistos)
+        if campo.get("tipoDato") != TIPO_GRUPO:
+            salida[campo.get("nombre", "")] = (None, nombre)
+            continue
+        vistos_hijos: set[str] = set()
+        hijos: list[tuple[str, str]] = []
+        for sub in campo.get("subcampos", []):
+            if sub.get("tipoDato") == TIPO_GRUPO:
+                continue  # un solo nivel de anidación
+            hijos.append((sub.get("nombre", ""), _nombre_unico(sub.get("nombre", ""), vistos_hijos)))
+        if not hijos:
+            continue
+        salida[campo.get("nombre", "")] = (None, nombre)
+        for crudo, hijo in hijos:
+            salida[f"{campo.get('nombre', '')}.{crudo}"] = (nombre, hijo)
+    return salida
+
+
 def _propiedad(campo: dict, nombre: str, tipos_auxiliares: list[dict], prefijo_auxiliar: str = "") -> dict:
     """La `Property` de un campo que NO es grupo. Si es `lista`, además agrega a `tipos_auxiliares` el EntityType con sus
     `enumValues` (`prefijo_auxiliar` evita que dos subcampos de grupos distintos con el mismo nombre choquen)."""
@@ -137,7 +167,7 @@ def _propiedad(campo: dict, nombre: str, tipos_auxiliares: list[dict], prefijo_a
     }
 
 
-def esquema_desde_campos(nombre_tipo: str, descripcion_tipo: str, campos: list[dict]) -> dict:
+def esquema_desde_campos(nombre_tipo: str, descripcion_tipo: str, campos: list[dict], instrucciones: str = "") -> dict:
     """Arma el `DocumentSchema` (forma v1beta3) para un tipo documental.
 
     Forma v1beta3 y no v1 porque la Property de v1 NO tiene `description` — y
@@ -159,6 +189,14 @@ def esquema_desde_campos(nombre_tipo: str, descripcion_tipo: str, campos: list[d
     fecha, moneda, casilla o lista), no otro grupo. Un grupo sin subcampos no se
     puede declarar (un objeto sin propiedades no dice qué extraer) y se omite;
     quien llama —`/procesadores/activar`— ya lo rechaza antes con un 422.
+
+    `instrucciones` (2026-10-30) son las «Instrucciones para la extracción» del tipo, opcionales: viajan como el `documentPrompt` del
+    esquema, el texto que Google inyecta en el prompt del modelo para TODO el documento (campo de Google de enero de 2026, en v1 y
+    v1beta3). Medido contra el servicio real el mismo día: se acepta y se guarda, y sirve para ORIENTAR qué se extrae (con «la persona
+    que interesa es el titular» el campo de nombre pasó del beneficiario al titular y, al quitarla, volvió). NO sirve para reescribir
+    valores («escribe las fechas AAAA-MM-DD», «nombres con los apellidos al final»): el extractor devuelve texto anclado en lo impreso
+    y el campo cuyo valor ya no coincide desaparece de la respuesta. Por eso la pantalla se lo advierte a quien las escribe. Sin
+    instrucciones, o en blanco, la clave NO se manda y el esquema sale igual que antes.
     """
     tipo_raiz = "custom_extraction_document_type"
     propiedades: list[dict] = []
@@ -193,7 +231,7 @@ def esquema_desde_campos(nombre_tipo: str, descripcion_tipo: str, campos: list[d
             }
         )
 
-    return {
+    esquema: dict = {
         "displayName": nombre_tipo.strip() or "Tipo documental",
         "description": (descripcion_tipo or "").strip(),
         "entityTypes": [
@@ -205,6 +243,9 @@ def esquema_desde_campos(nombre_tipo: str, descripcion_tipo: str, campos: list[d
             *tipos_auxiliares,
         ],
     }
+    if (instrucciones or "").strip():
+        esquema["documentPrompt"] = instrucciones.strip()
+    return esquema
 
 
 def esquema_clasificador_desde_tipos(tipos: list[dict]) -> dict:
@@ -333,14 +374,40 @@ _TIPO_DE_VALUE_TYPE = {
 _SIGLAS = {"rfc", "curp", "cfdi", "iva", "isr", "ieps", "nss", "ine", "imss", "sat", "cp", "clabe", "id", "uuid", "url", "iban", "swift"}
 
 
+#: Palabras de los documentos que en español llevan acento o «ñ» y que Google devuelve sin ellos (su `name` es snake_case ASCII y pedirle un
+#: `displayName` con acentos no sirve: lo ignora). Se restauran PALABRA POR PALABRA al armar el nombre legible de un campo generado
+#: (Moibe, 2026-11-03: «'Ano de registro', yo quiero que sí se use la Ñ»). Es una lista de las que aparecen en documentos de identidad,
+#: fiscales, societarios y de seguros; una palabra que no esté queda como la dio Google y se corrige a mano en el paso 2. «ano» es también
+#: una palabra española, pero en un campo de un documento siempre es «año». Solo cuenta la palabra COMPLETA: «anotacion» no se toca.
+_CON_ACENTO = {
+    "ano": "año", "anos": "años", "seccion": "sección", "secciones": "secciones", "direccion": "dirección", "expedicion": "expedición",
+    "emision": "emisión", "numero": "número", "telefono": "teléfono", "codigo": "código", "razon": "razón", "descripcion": "descripción",
+    "informacion": "información", "identificacion": "identificación", "operacion": "operación", "poblacion": "población",
+    "ubicacion": "ubicación", "pais": "país", "conyuge": "cónyuge", "fotografia": "fotografía", "titulo": "título", "poliza": "póliza",
+    "vehiculo": "vehículo", "dia": "día", "credito": "crédito", "debito": "débito", "administracion": "administración",
+    "constitucion": "constitución", "notaria": "notaría", "publico": "público", "ultimo": "último", "caracter": "carácter",
+    "autorizacion": "autorización", "delegacion": "delegación", "union": "unión", "religion": "religión", "profesion": "profesión",
+    "ocupacion": "ocupación", "relacion": "relación", "inscripcion": "inscripción", "afiliacion": "afiliación", "cotizacion": "cotización",
+    "clasificacion": "clasificación", "ciudadania": "ciudadanía", "categoria": "categoría", "linea": "línea", "cedula": "cédula",
+    "matricula": "matrícula", "nacion": "nación", "region": "región", "domicilio": "domicilio", "garantia": "garantía", "cuota": "cuota",
+    "validacion": "validación", "verificacion": "verificación", "version": "versión", "revision": "revisión", "sesion": "sesión",
+    "cancelacion": "cancelación", "vigencia": "vigencia", "periodo": "periodo", "capitulo": "capítulo", "articulo": "artículo",
+    "pagina": "página", "paginas": "páginas", "biologico": "biológico", "electronico": "electrónico", "electronica": "electrónica",
+    "juridica": "jurídica", "juridico": "jurídico", "fisica": "física", "fisico": "físico", "economica": "económica", "economico": "económico",
+    "publica": "pública", "historico": "histórico", "tramite": "trámite", "tecnico": "técnico", "medico": "médico", "clinica": "clínica",
+    "diagnostico": "diagnóstico", "tambien": "también", "mas": "más", "area": "área", "indice": "índice", "util": "útil",
+}
+
+
 def nombre_legible(nombre: str) -> str:
     """`rfc_cliente` -> «RFC cliente»: el `name` de Google (snake_case, sin acentos) vuelto algo que una persona lee en el wizard.
-    Los acentos no se pueden recuperar; el nombre queda editable en el paso 2. Al activar, `normalizar_nombre` lo devuelve a la
-    forma de Google."""
+    Los acentos y la «ñ» de las palabras comunes de los documentos se restauran (`_CON_ACENTO`: `ano_de_registro` -> «Año de registro»);
+    de las demás no se puede, y el nombre queda editable en el paso 2. Al activar, `normalizar_nombre` lo devuelve a la forma de Google
+    (sin acentos ni «ñ»), así que corregir un nombre aquí NO cambia el esquema que se manda."""
     palabras = [p for p in re.split(r"[_\-\s]+", nombre or "") if p]
     if not palabras:
         return "Campo"
-    legibles = [p.upper() if p.lower() in _SIGLAS else p.lower() for p in palabras]
+    legibles = [p.upper() if p.lower() in _SIGLAS else _CON_ACENTO.get(p.lower(), p.lower()) for p in palabras]
     if legibles[0].islower():
         legibles[0] = legibles[0][:1].upper() + legibles[0][1:]
     return " ".join(legibles)

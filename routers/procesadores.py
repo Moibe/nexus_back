@@ -17,7 +17,7 @@ import logging
 
 import httpx
 from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from errores import SinClasificador
 from routers.ia import _leer_subida
@@ -34,6 +34,7 @@ from servicios.procesadores import (
     generar_campos as _generar_campos,
     sincronizar_clasificador as _sincronizar_clasificador,
 )
+from servicios.tipos_documentales_comun import MAX_INSTRUCCIONES
 
 logger = logging.getLogger(__name__)
 
@@ -63,11 +64,25 @@ class CampoEntrada(BaseModel):
     # Solo con `tipoDato == "grupo"` (2026-10-16): los campos de cada fila. Un grupo sin ninguno no se puede activar.
     subcampos: list[SubcampoEntrada] = []
 
+    @model_validator(mode="before")
+    @classmethod
+    def _subcampos_solo_en_grupos(cls, datos):
+        """Los subcampos solo existen en un `grupo`. El asistente CONSERVA los de un campo que dejó de ser grupo (para no perder
+        lo escrito si regresa), así que un campo de texto puede traer un residuo, incluso uno en blanco: el subcampo vacío que
+        nace al elegir «Grupo de campos». Validarlo daba un 422 de pydantic que la pantalla mostraba como «HTTP 422» (incidencia
+        de QA en staging, 2026-10-30). Fuera de un grupo se descartan antes de validar; el esquema tampoco los usaba."""
+        if isinstance(datos, dict) and datos.get("tipoDato") != TIPO_GRUPO:
+            return {**datos, "subcampos": []}
+        return datos
+
 
 class TipoDocumentalEntrada(BaseModel):
     id: str = Field(min_length=1, max_length=100)
     nombre: str = Field(min_length=1, max_length=200)
     descripcion: str = ""
+    # Opcional (2026-10-30): contexto para leer el documento, que viaja como el `documentPrompt` del extractor. Orienta qué se
+    # extrae; no sirve para reescribir valores. Ver `esquema_desde_campos`.
+    instrucciones: str = Field(default="", max_length=MAX_INSTRUCCIONES)
     campos: list[CampoEntrada]
     # La versión YA publicada (0 = nunca activado). "Activar" siempre manda 0;
     # "Crear nueva versión" manda la actual, para que el back publique la
@@ -99,7 +114,11 @@ def _mensaje_para(exc: DocumentAIError, *, mensaje_4xx: str) -> str:
     description=(
         "Crea (o adopta, si un intento anterior ya lo dejó a medias) el Custom "
         "Extractor de Document AI para la SIGUIENTE versión del tipo documental "
-        "(`version` + 1) y le sube el esquema armado desde sus campos. Una "
+        "(`version` + 1) y le sube el esquema armado desde sus campos. Las "
+        "`instrucciones` opcionales del tipo viajan como el `documentPrompt` "
+        "del esquema: contexto para leer el documento que orienta qué se "
+        "extrae (no reescribe valores: el campo cuyo valor ya no coincide con "
+        "lo impreso desaparece de la respuesta). Una "
         "versión nunca reutiliza el procesador de la anterior — esa se queda "
         "viva sin tocarse. El procesador nace en modalidad zero-shot: extrae "
         "leyendo solo el esquema, sin entrenamiento. Devuelve `procesadorId` y "
@@ -138,7 +157,7 @@ async def activar(tipo: TipoDocumentalEntrada):
             )
 
     esquema = esquema_desde_campos(
-        tipo.nombre, tipo.descripcion, [c.model_dump() for c in tipo.campos]
+        tipo.nombre, tipo.descripcion, [c.model_dump() for c in tipo.campos], tipo.instrucciones
     )
     try:
         resultado = await activar_tipo_documental(tipo.id, tipo.nombre, esquema, tipo.version)

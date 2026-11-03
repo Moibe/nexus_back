@@ -1,11 +1,13 @@
-"""Registro de los TIPOS DE EXPEDIENTE de cada organización — registro PROVISIONAL, en JSON y con forma de tabla.
+"""Registro de los TIPOS DE EXPEDIENTE VIRTUAL de cada organización.
 
-## Qué es un tipo de expediente
+## Qué es un tipo de expediente virtual (desde el 2026-10-29)
 
-Es la CLASE de la que salen los expedientes: «expediente médico», «expediente de un choque». Se crea una vez; cada expediente de ese tipo es una
-INSTANCIA: la carpeta de UN paciente, de UN choque, con SUS documentos (`servicios/expedientes.py`). El tipo no guarda documentos: los guardan
-sus expedientes. Tiene un `nombre` y un esquema (los tipos documentales que lo describen); lo demás (qué procesos le corren) se agrega cuando
-haga falta, no antes.
+Hasta el 2026-10-29 era el «tipo de expediente»: la clase de la que salían los expedientes. Ese día cambió el modelo (decisión de producto de
+Moibe): el expediente es solo un receptáculo de documentos, sin tipo, y los tipos son de EXPEDIENTE VIRTUAL (`servicios/expedientes_virtuales.py`):
+un subconjunto de los documentos de un expediente, por ejemplo la «Solicitud de crédito» de Juan Pérez con su INE, su comprobante y su estado de
+cuenta. El tipo sigue siendo lo mismo —un `nombre` y un esquema de tipos documentales—, así que el módulo, el id (`tipo-expediente-…`), la ruta
+(`/tipos-expediente`) y lo ya dado de alta se conservan; lo que cambió es de QUÉ es instancia. Lo de abajo dice «expediente» donde hoy debe
+leerse «expediente virtual».
 
 ## Esquema: qué documentos describe (sin restringir)
 
@@ -36,16 +38,21 @@ mismo). Todo se comprueba antes de escribir: si algo falla, no cambia ni el nomb
 Si cambian los dos van DOS eventos seguidos, con el candado puesto: una caída justo entre ellos dejaría el nombre nuevo con el esquema anterior
 (un tipo válido) y repetir la edición lo completa; a diferencia de `crear`, ahí no hay un estado que la regla prohíba.
 
-**Borrar** solo se puede si el tipo NO tiene expedientes (`TipoConExpedientes`): todo expediente es instancia de un tipo, y borrarlo dejaría carpetas
-sin clase —o habría que borrarlas con él—. Hasta que haya cómo mover o borrar expedientes, un tipo con expedientes no desaparece. La cuenta y el
-borrado ocurren con el MISMO candado que crear un expediente, así que un expediente de ese tipo no se cuela entre una cosa y la otra. Borrar
-libera el nombre; los eventos del tipo se quedan en el archivo (es de solo agregar) y el id no se reutiliza.
+**Borrar** solo se puede si el tipo NO tiene expedientes virtuales (`TipoConExpedientes`): todo expediente virtual es instancia de un tipo. Para
+borrarlo hay que borrar antes sus expedientes virtuales (eso sí se puede, y no toca documentos). En SQL la cuenta y el borrado van con el tipo
+bloqueado, el mismo bloqueo con que se crea un expediente virtual, así que uno de ese tipo no se cuela entre una cosa y la otra. Borrar libera el
+nombre. (En el almacén no hay expedientes virtuales: ahí siempre se puede.)
 
 ## Qué decide el servidor
 
 El `id` (`tipo-expediente-` + 32 hexadecimales), `creadoPor` y `creadoEn`. El nombre se limpia (espacios de más) y tiene tope de 200 caracteres.
 
 ## Cómo se guarda
+
+Desde el 2026-10-29, donde hay base, en `nexus.virtualCaseTypes` y su esquema en `nexus.virtualCaseTypeDocumentTypes` (migraciones `0003` y `0004`, ver
+`servicios/expedientes_sql.py`), con una llave foránea REAL a los tipos documentales: allí borrar un tipo documental lo QUITA de los
+esquemas, en vez de dejarlo como un id sin nombre. Este módulo valida igual en los dos casos y solo cambia dónde se escribe; se elige por
+`SQLSERVER_HOST` en cada llamada. Lo de abajo es el almacén, lo que corre donde no hay base (la laptop, las pruebas offline):
 
 Un archivo de solo agregar por organización, `tipos-expediente-{tenant}.jsonl` (ver `servicios/registro.py`), con cuatro eventos: `crear` (con el
 esquema inicial en `tiposDocumentales`), `esquema` (la lista completa de tipos documentales, que reemplaza a la anterior), `renombrar` (el nombre
@@ -55,10 +62,20 @@ existe.
 
 import re
 import uuid
-from collections.abc import Callable
 from datetime import datetime, timezone
 
+from config import SQLSERVER_HOST
 from servicios import almacen, registro, tipos_documentales
+
+
+def _sql():
+    """El módulo de SQL si el `.env` dice que hay base; `None` si no. Se importa tarde: sin base, `pyodbc` ni se carga."""
+    if not SQLSERVER_HOST:
+        return None
+    from servicios import expedientes_sql
+
+    return expedientes_sql
+
 
 MAX_NOMBRE = 200
 #: Tope de tipos documentales en un esquema: un tipo de expediente normal describe unas decenas como mucho.
@@ -84,7 +101,7 @@ class NombreRepetido(Exception):
 
 
 class TipoConExpedientes(Exception):
-    """El tipo tiene expedientes y por eso no se puede borrar. `total` es cuántos tiene."""
+    """El tipo tiene expedientes virtuales y por eso no se puede borrar. `total` es cuántos tiene."""
 
     def __init__(self, total: int):
         super().__init__("tipo con expedientes")
@@ -166,6 +183,8 @@ def crear(tenant: str, nombre: object, tipos_documentales_ids: object, por: str)
     ids = _validar_esquema(tipos_documentales_ids)
     if not ids:
         raise TipoInvalido("Un tipo de expediente necesita al menos un tipo documental en su esquema.")
+    if sql := _sql():
+        return sql.tipos_crear(almacen._validar_tenant(tenant), limpio, ids, por)
     tipo_id = f"tipo-expediente-{uuid.uuid4().hex}"
     en = _ahora()
     with registro.candado:
@@ -194,6 +213,10 @@ def editar(tenant: str, tipo_id: object, nombre: object, tipos_documentales_ids:
     ids = _validar_esquema(tipos_documentales_ids) if tipos_documentales_ids is not None else None
     if ids is not None and not ids:
         raise TipoInvalido("Un tipo de expediente necesita al menos un tipo documental en su esquema.")
+    if sql := _sql():
+        if not isinstance(tipo_id, str) or not _RE_ID.match(tipo_id):
+            raise NoEncontrado(tipo_id)
+        return sql.tipos_editar(almacen._validar_tenant(tenant), tipo_id, limpio, ids, por)
     with registro.candado:
         tipos = _doblar(tenant)
         actual = tipos.get(tipo_id) if isinstance(tipo_id, str) and _RE_ID.match(tipo_id) else None
@@ -219,20 +242,20 @@ def editar(tenant: str, tipo_id: object, nombre: object, tipos_documentales_ids:
         )
 
 
-def borrar(tenant: str, tipo_id: object, por: str, cuantos_expedientes: Callable[[], int]) -> dict:
-    """Borra un tipo SIN expedientes y lo devuelve como estaba (para anotar qué se borró).
+def borrar(tenant: str, tipo_id: object, por: str) -> dict:
+    """Borra un tipo SIN expedientes virtuales y lo devuelve como estaba (para anotar qué se borró).
 
-    `NoEncontrado` si no es de esa organización; `TipoConExpedientes` si todavía tiene: todo expediente es instancia de un tipo, así que uno con
-    expedientes no puede desaparecer. `cuantos_expedientes` cuenta los de ESTE tipo y se llama con el candado puesto, el mismo con que
-    `expedientes.crear` comprueba el tipo: un expediente nuevo no se cuela entre la cuenta y el borrado. (Es una función porque `expedientes`
-    importa este módulo y no al revés.)"""
+    `NoEncontrado` si no es de esa organización; `TipoConExpedientes` si todavía tiene: todo expediente virtual es instancia de un tipo, así que
+    uno con expedientes virtuales no puede desaparecer. En SQL la cuenta y el borrado van en la misma transacción, con el tipo bloqueado. En el
+    almacén no hay expedientes virtuales (solo viven en SQL), así que ahí siempre se puede."""
+    if sql := _sql():
+        if not isinstance(tipo_id, str) or not _RE_ID.match(tipo_id):
+            raise NoEncontrado(tipo_id)
+        return sql.tipos_borrar(almacen._validar_tenant(tenant), tipo_id)
     with registro.candado:
         actual = _doblar(tenant).get(tipo_id) if isinstance(tipo_id, str) and _RE_ID.match(tipo_id) else None
         if actual is None:
             raise NoEncontrado(tipo_id)
-        total = cuantos_expedientes()
-        if total:
-            raise TipoConExpedientes(total)
         registro.agregar(_nombre(tenant), {"op": "borrar", "id": tipo_id, "tenant": tenant, "por": por, "en": _ahora()})
         return actual
 
@@ -249,6 +272,8 @@ def con_esquema_resuelto(tipo: dict, nombres: dict[str, str | None]) -> dict:
 
 def listar(tenant: str) -> list[dict]:
     """Los tipos de UNA organización, en el orden de su creación."""
+    if sql := _sql():
+        return sql.tipos_listar(almacen._validar_tenant(tenant))
     with registro.candado:
         return list(_doblar(tenant).values())
 
@@ -257,5 +282,7 @@ def obtener(tenant: str, tipo_id: object) -> dict | None:
     """El tipo de esa organización, o `None` si no existe (o es de otra: no se distingue)."""
     if not isinstance(tipo_id, str) or not _RE_ID.match(tipo_id):
         return None
+    if sql := _sql():
+        return sql.tipos_obtener(almacen._validar_tenant(tenant), tipo_id)
     with registro.candado:
         return _doblar(tenant).get(tipo_id)

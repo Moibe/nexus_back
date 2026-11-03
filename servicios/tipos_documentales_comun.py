@@ -18,6 +18,10 @@ RE_ID = re.compile(r"^tipo-[a-z0-9-]{6,58}$")
 #: Tope del documento de un tipo, ya serializado. Un tipo normal pesa unos KB; con muchos ejemplos recortados, decenas.
 TOPE_BYTES = 1_000_000
 
+#: Largo máximo de las «instrucciones para la extracción» de un tipo (`datos.instrucciones`, opcionales). Viajan a Google como el
+#: `documentPrompt` del extractor (ver `esquema.esquema_desde_campos`): un párrafo de contexto, no un manual.
+MAX_INSTRUCCIONES = 1000
+
 #: Lo que NO se acepta dentro de `datos`: lo pone el servidor.
 RESERVADAS = frozenset({"revision", "creadoPor", "creadoEn", "modificadoPor", "modificadoEn", "tenant", "meta"})
 
@@ -62,6 +66,9 @@ def validar(tipo_id: str, datos: object) -> dict:
         raise TipoInvalido("El tipo documental necesita un nombre de hasta 200 caracteres.")
     if not isinstance(datos.get("descripcion", ""), str):
         raise TipoInvalido("La descripción del tipo documental debe ser texto.")
+    instrucciones = datos.get("instrucciones", "")
+    if not isinstance(instrucciones, str) or len(instrucciones) > MAX_INSTRUCCIONES:
+        raise TipoInvalido(f"Las instrucciones para la extracción deben ser texto de hasta {MAX_INSTRUCCIONES} caracteres.")
     if datos.get("estado") not in ESTADOS:
         raise TipoInvalido("El estado del tipo documental no es válido.")
     if not isinstance(datos.get("procesadorId", ""), str):

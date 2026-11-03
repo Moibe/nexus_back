@@ -129,6 +129,22 @@ try:
     rev("y su EntityType es `object` con los dos subcampos en orden", grupo.get("baseTypes") == ["object"] and [h["name"] for h in grupo.get("properties", [])] == ["nombre", "acciones"], str(grupo))
     rev("la obligatoriedad del subcampo se respeta", grupo["properties"][0]["occurrenceType"] == "REQUIRED_ONCE" and grupo["properties"][1]["occurrenceType"] == "OPTIONAL_ONCE")
 
+    titulo("4b · Instrucciones para la extracción (2026-10-30): llegan al esquema como el `documentPrompt` de Google")
+    recibido.clear()
+    r = c.post("/procesadores/activar", json=cuerpo, headers=LLAVE)
+    rev("sin instrucciones: 200 y el esquema NO lleva `documentPrompt`", r.status_code == 200 and "documentPrompt" not in recibido["esquema"], r.text[:200])
+    recibido.clear()
+    r = c.post("/procesadores/activar", json={**cuerpo, "instrucciones": "  La persona que interesa es el titular.  "}, headers=LLAVE)
+    rev(
+        "con instrucciones: 200 y el esquema trae `documentPrompt`, sin los espacios de los extremos",
+        r.status_code == 200 and recibido["esquema"].get("documentPrompt") == "La persona que interesa es el titular.",
+        str(recibido.get("esquema", {}).get("documentPrompt")),
+    )
+    recibido.clear()
+    r = c.post("/procesadores/activar", json={**cuerpo, "instrucciones": "x" * 1001}, headers=LLAVE)
+    rev("de más de 1000 caracteres: 422 y a Google no se le llamó", r.status_code == 422 and not recibido, r.text[:160])
+    rev("de justo 1000: se aceptan", c.post("/procesadores/activar", json={**cuerpo, "instrucciones": "x" * 1000}, headers=LLAVE).status_code == 200)
+
     titulo("5 · Activar rechaza lo que no se puede activar (422, sin llamar a Google)")
     recibido.clear()
     casos = {

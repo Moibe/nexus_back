@@ -34,7 +34,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from routers.errores import almacen_no_disponible
-from servicios import auditoria, auth, invitaciones, registro, tenants_registro, tokens, usuarios
+from servicios import auditoria, auth, invitaciones, tenants_registro, tokens, usuarios
 from servicios.almacen import ErrorAlmacen
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,7 @@ def _creados_por_actor() -> dict[str, list[dict]]:
     saliendo, con estado `retirado` y el correo que dejó su `USER_DELETED`: haber creado una cuenta no se borra al retirarla."""
     altas: list[dict] = []
     retiros: dict[str, dict] = {}
-    for e in registro.eventos(auditoria.ARCHIVO):
+    for e in auditoria.eventos({auditoria.USER_CREATED, auditoria.USER_DELETED}):
         if e.get("accion") == auditoria.USER_CREATED and e.get("actor") and e.get("usuarioGuid"):
             altas.append(e)
         elif e.get("accion") == auditoria.USER_DELETED and e.get("usuarioGuid"):

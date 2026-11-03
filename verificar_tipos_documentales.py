@@ -185,6 +185,14 @@ try:
     rev("estado inventado: 400", guardar(a_admin, org_a, nuevo_id(), tipo("X", estado="publicado"), 0).status_code == 400)
     rev("sin estado: 400", guardar(a_admin, org_a, nuevo_id(), {"nombre": "X"}, 0).status_code == 400)
     rev("descripción que no es texto: 400", guardar(a_admin, org_a, nuevo_id(), {**tipo("X"), "descripcion": 5}, 0).status_code == 400)
+    rev("instrucciones para la extracción que no son texto: 400", guardar(a_admin, org_a, nuevo_id(), {**tipo("X"), "instrucciones": 5}, 0).status_code == 400)
+    rev("instrucciones de más de 1000 caracteres: 400", guardar(a_admin, org_a, nuevo_id(), {**tipo("X"), "instrucciones": "x" * 1001}, 0).status_code == 400)
+    # Directo a `validar`, sin crear un tipo: uno de más en la lista movería el orden y las revisiones de las secciones de abajo, y
+    # borrarlo dejaría otro `DOCUMENT_TYPE_DELETED` que la sección de borrado cuenta uno por uno.
+    from servicios.tipos_documentales_comun import MAX_INSTRUCCIONES, validar
+
+    largas = "x" * MAX_INSTRUCCIONES
+    rev("de justo el tope (1000) se aceptan y se conservan tal cual", validar("tipo-abcdef", {**tipo("X"), "instrucciones": largas})["instrucciones"] == largas)
     rev("un tipo de más de 1 MB: 400", guardar(a_admin, org_a, nuevo_id(), tipo("X", relleno="z" * 1_100_000), 0).status_code == 400)
     rev("revisión negativa: 422", c.put(f"/tipos-documentales/{nuevo_id()}", json={"tenant": org_a, "revision": -1, "datos": tipo("X")}, headers=cab(a_admin)).status_code == 422)
     rev("ninguno de esos dejó rastro en la lista", ids(a_admin, org_a) == [ine])

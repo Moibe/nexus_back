@@ -34,7 +34,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app import app  # noqa: E402
 from servicios import auth, procesadores as svc, usuarios  # noqa: E402
-from servicios.esquema import campos_desde_esquema, esquema_desde_campos, nombre_legible  # noqa: E402
+from servicios.esquema import campos_desde_esquema, esquema_desde_campos, nombre_legible, normalizar_nombre  # noqa: E402
 from servicios.procesadores import DocumentAIError  # noqa: E402
 
 fallos = 0
@@ -176,7 +176,14 @@ def generaciones() -> list[tuple]:
 
 try:
     titulo("1 · Nombres legibles")
-    rev("snake_case → palabras, la primera con mayúscula", nombre_legible("fecha_emision") == "Fecha emision")
+    rev("snake_case → palabras, la primera con mayúscula", nombre_legible("fecha_de_nacimiento") == "Fecha de nacimiento")
+    rev("la «ñ» y los acentos de las palabras comunes se restauran (Moibe, 2026-11-03: «'Ano de registro', yo quiero que sí se use la Ñ»)",
+        nombre_legible("ano_de_registro") == "Año de registro" and nombre_legible("seccion") == "Sección" and nombre_legible("fecha_emision") == "Fecha emisión"
+        and nombre_legible("clave_pais_expedicion") == "Clave país expedición" and nombre_legible("numero_pasaporte") == "Número pasaporte"
+        and nombre_legible("anos_de_servicio") == "Años de servicio", f"{nombre_legible('ano_de_registro')} / {nombre_legible('seccion')}")
+    rev("solo cuenta la palabra COMPLETA: «anotacion» y «anual» no se tocan", nombre_legible("anotacion") == "Anotacion" and nombre_legible("ingreso_anual") == "Ingreso anual")
+    rev("las siglas siguen ganando y lo que no está en la lista queda como lo dio Google", nombre_legible("rfc_del_ano") == "RFC del año" and nombre_legible("clave_de_elector") == "Clave de elector")
+    rev("el campo con ñ sigue generando el MISMO nombre para Google (sin ñ): el esquema que se manda no cambia", normalizar_nombre(nombre_legible("ano_de_registro")) == "ano_de_registro")
     rev("las siglas van en mayúsculas", nombre_legible("rfc_cliente") == "RFC cliente" and nombre_legible("uso_cfdi") == "Uso CFDI")
     rev("una sigla al inicio también", nombre_legible("curp") == "CURP")
     rev("guiones y espacios de más no dejan huecos", nombre_legible("_total__con-letra_") == "Total con letra")
@@ -186,17 +193,17 @@ try:
     campos = campos_desde_esquema(FACTURA)
     por_nombre = {c["nombre"]: c for c in campos}
     rev("un campo por propiedad, en el mismo orden", [c["nombre"] for c in campos] == [
-        "Nombre proveedor", "RFC proveedor", "Direccion proveedor", "Colonia proveedor", "Fecha emision", "Uso CFDI", "Line item",
+        "Nombre proveedor", "RFC proveedor", "Dirección proveedor", "Colonia proveedor", "Fecha emisión", "Uso CFDI", "Line item",
         "Porcentaje IVA", "Total"], [c["nombre"] for c in campos])
     rev("string → texto, datetime → fecha, number → número, money → moneda", [por_nombre[n]["tipoDato"] for n in (
-        "Nombre proveedor", "Fecha emision", "Porcentaje IVA", "Total")] == ["texto", "fecha", "numero", "moneda"])
-    rev("address (domicilio entero) → texto, porque el asistente no tiene ese tipo", por_nombre["Direccion proveedor"]["tipoDato"] == "texto")
+        "Nombre proveedor", "Fecha emisión", "Porcentaje IVA", "Total")] == ["texto", "fecha", "numero", "moneda"])
+    rev("address (domicilio entero) → texto, porque el asistente no tiene ese tipo", por_nombre["Dirección proveedor"]["tipoDato"] == "texto")
     rev("la descripción del modelo viaja tal cual", por_nombre["Uso CFDI"]["descripcion"] == "Uso que se le dará al Comprobante Fiscal Digital por Internet.")
     rev("OPTIONAL_ONCE → opcional y único", por_nombre["Total"]["obligatorio"] is False and por_nombre["Total"]["cardinalidad"] == "unico")
     conceptos = por_nombre["Line item"]
     rev("los conceptos son un grupo repetible", conceptos["tipoDato"] == "grupo" and conceptos["cardinalidad"] == "multiple")
     rev("con sus tres campos y sus tipos", [(s["nombre"], s["tipoDato"]) for s in conceptos["subcampos"]] == [
-        ("Cantidad", "numero"), ("Descripcion", "texto"), ("Precio unitario", "moneda")], conceptos["subcampos"])
+        ("Cantidad", "numero"), ("Descripción", "texto"), ("Precio unitario", "moneda")], conceptos["subcampos"])
     rev("cada subcampo trae su descripción", conceptos["subcampos"][0]["descripcion"] == "Cantidad de unidades del artículo.")
     rev("un campo suelto no trae subcampos ni valores de lista", por_nombre["Total"]["subcampos"] == [] and por_nombre["Total"]["valoresLista"] == [])
 
@@ -228,7 +235,7 @@ try:
     r = {c["nombre"]: c for c in raros}
     rev("enumValues → lista con sus valores (sin los vacíos)", r["Estado civil"]["tipoDato"] == "lista" and r["Estado civil"]["valoresLista"] == ["Soltero", "Casado"])
     rev("REQUIRED_ONCE → obligatorio", r["Estado civil"]["obligatorio"] is True and r["Estado civil"]["cardinalidad"] == "unico")
-    rev("REQUIRED_MULTIPLE → obligatorio y múltiple", r["Telefono"]["obligatorio"] is True and r["Telefono"]["cardinalidad"] == "multiple")
+    rev("REQUIRED_MULTIPLE → obligatorio y múltiple", r["Teléfono"]["obligatorio"] is True and r["Teléfono"]["cardinalidad"] == "multiple")
     rev("checkbox → booleano", r["Aceptado"]["tipoDato"] == "booleano")
     rev("un grupo con una lista adentro: la lista queda como texto (el asistente no captura listas en un grupo)",
         [(s["nombre"], s["tipoDato"]) for s in r["Socio"]["subcampos"]][:2] == [("Nombre", "texto"), ("Rol", "texto")])
