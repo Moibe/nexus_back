@@ -20,6 +20,9 @@ corre, se avisa y los documentos quedan marcados; el historial es inmutable):
   niega a lo que no cuadra (una palabra que no es la del proceso, un valor final ajeno, una revisión vieja, formas imposibles);
 - el historial: de la más reciente a la más antigua, filtros, paginación, abrir una; sigue igual si el proceso se renombra, se edita o el virtual se
   borra; es inmutable (ninguna ruta lo edita ni lo borra) y la base misma rechaza una fila incoherente;
+- los FILTROS del historial (Moibe, 2026-11-03: «agrega dichos filtros»): fecha (`desde` incluido, `hasta` no, con zona o sin ella), proceso, persona y
+  estado (varios valores por filtro, basta con uno; entre filtros, Y), junto con la paginación; y `/ejecuciones/filtros`, que dice qué se puede elegir
+  (lo que está EN el historial, por orden de nombre sin acentos);
 - roles (ver todos; ejecutar solo quien organiza), aislamiento entre organizaciones y rastro.
 """
 
@@ -669,6 +672,132 @@ try:
         "nodos": [{"id": "operador-1", "type": "operador"}, {"id": "resultado-final", "type": "resultado-final"}],
         "aristas": [{"source": "operador-1", "target": "resultado-final", "targetHandle": "b"}],
     }) is False)
+
+    titulo("15 · Los filtros del historial: fecha, proceso, estado y persona, y qué opciones se ofrecen")
+    # Las corridas se siembran directo en la tabla para fijar CUÁNDO, QUIÉN, CON QUÉ PROCESO y CÓMO terminaron (por el servicio, la fecha sería la de ahora).
+    # Se meten en orden cronológico porque el historial va por el orden en que se guardaron. Organización Beta: hasta aquí su historial está vacío.
+    for correo, nombre, apellido, rol in (("alvaro@ejemplo.com", "Álvaro", "Zúñiga", "OPERADOR"), ("zoe@ejemplo.com", "Zoé", "Prueba", "SUPERVISOR")):
+        r = c.post("/usuarios/", json={"nombre": nombre, "apellidoPaterno": apellido, "email": correo, "rol": rol}, headers=cab(adm_b))
+        assert r.status_code == 201, r.text
+    U1 = usuarios.para_login("beto@ejemplo.com")["guid"]
+    U2 = usuarios.para_login("alvaro@ejemplo.com")["guid"]
+    U4 = usuarios.para_login("zoe@ejemplo.com")["guid"]
+    U3 = "persona-que-ya-no-esta"
+    P1, P2, P3, P4 = ("proceso-" + uuid.uuid4().hex for _ in range(4))
+    X1, X2 = "expediente-uno", "expediente-dos"
+    PALABRA = {"si": "Aprobado", "no": "Rechazado", "sin": "Pendiente"}
+    con = BASE["conectar"]("usrNexus", BASE["app"], BASE["base"])
+    cur = con.cursor()
+
+    def sembrar(tenant: str, expediente_id: str, quien: str, proceso_id: str, nombre_proceso: str, caso: str, cuando: datetime) -> str:
+        publico = "ejecucion-" + uuid.uuid4().hex
+        cur.execute(
+            "INSERT INTO nexus.processRuns (publicId, tenant, caseId, caseName, virtualCaseId, virtualCaseName, processId, processName, processRevision, outcomeCase, "
+            "outcomeText, status, detailJson, definitionJson, executedAt, executedBy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            publico, tenant, expediente_id, "Expediente " + expediente_id, "expediente-virtual-x", "Virtual", proceso_id, nombre_proceso, 1, caso, PALABRA[caso],
+            "incompleta" if caso == "sin" else "completa", "{}", "{}", cuando, quien,
+        )
+        return publico
+
+    L: dict[str, str] = {}  # id público → la letra con que la prueba la nombra
+    for letra, pr, nombre_pr, exp_, quien, caso, cuando in (
+        ("A", P1, "Nombre viejo", X1, U1, "si", datetime(2026, 10, 1, 5, 0, 0)),
+        ("B", P1, "Validar identidad", X1, U1, "no", datetime(2026, 10, 15, 12, 0, 0)),
+        ("C", P1, "Validar identidad", X1, U2, "sin", datetime(2026, 10, 31, 23, 30, 0)),
+        ("D", P2, "revisar domicilio", X1, U2, "si", datetime(2026, 11, 1, 1, 0, 0)),
+        ("E", P2, "revisar domicilio", X1, U1, "no", datetime(2026, 11, 2, 3, 30, 0)),
+        ("F", P2, "revisar domicilio", X2, U3, "sin", datetime(2026, 11, 2, 12, 0, 0)),
+        ("G", P3, "Árbol de decisión", X2, U4, "si", datetime(2026, 11, 2, 13, 0, 0)),
+        ("H", P4, "Asignar gestor", X2, U4, "no", datetime(2026, 11, 2, 14, 0, 0)),
+    ):
+        L[sembrar(otra, exp_, quien, pr, nombre_pr, caso, cuando)] = letra
+
+    def F(bearer: str = adm_b, tenant: str = otra, **filtros) -> dict:
+        r = historial(bearer, tenant, **filtros)
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    def letras(r: dict) -> str:
+        return "".join(sorted(L.get(e["id"], "?") for e in r["ejecuciones"]))
+
+    def orden(r: dict) -> str:
+        return "".join(L.get(e["id"], "?") for e in r["ejecuciones"])
+
+    todo = F()
+    rev("sin filtros trae todo, de la más reciente a la más antigua (el orden en que se guardaron)", orden(todo) == "HGFEDCBA" and todo["total"] == 8, orden(todo))
+    rev("lo sembrado quedó con la fecha que se le puso (control de la prueba)", todo["ejecuciones"][-1]["ejecutadaEn"].startswith("2026-10-01T05:00:00"), todo["ejecuciones"][-1]["ejecutadaEn"])
+
+    rev("por proceso: uno", letras(F(proceso=P1)) == "ABC" and F(proceso=P1)["total"] == 3)
+    rev("por proceso: varios (el parámetro se repite), y basta con ser de UNO", letras(F(proceso=[P1, P3])) == "ABCG")
+    rev("un proceso que no está en el historial no trae nada, y un valor vacío no filtra", F(proceso="proceso-" + uuid.uuid4().hex)["total"] == 0 and F(proceso="")["total"] == 8)
+    rev("por persona: una", letras(F(persona=U1)) == "ABE")
+    rev("por persona: varias", letras(F(persona=[U1, U4])) == "ABEGH")
+    rev("alguien que ya no existe también se filtra, por su id", letras(F(persona=U3)) == "F")
+    rev("y nadie que no esté en el historial: una persona de otra organización no trae nada", F(persona=guid_rita)["total"] == 0)
+    rev("por estado (el caso): `sin` son las incompletas", letras(F(caso="sin")) == "CF" and all(e["estado"] == "incompleta" for e in F(caso="sin")["ejecuciones"]))
+    rev("por estado: varios, y «se cumplió» más «no se cumplió» son las completas", letras(F(caso=["si", "no"])) == "ABDEGH" and all(e["estado"] == "completa" for e in F(caso=["si", "no"])["ejecuciones"]))
+    rev("los tres estados juntos no dejan fuera nada", F(caso=["si", "no", "sin"])["total"] == 8)
+    for malo in ("quizá", "SI", "completa"):
+        r = historial(adm_b, otra, caso=malo)
+        rev(f"un estado que no existe ({malo!r}): 400, y lo dice", r.status_code == 400 and "«si», «no» o «sin»" in r.text, f"{r.status_code} {r.text[:120]}")
+
+    rev("`desde` incluye el instante exacto", letras(F(desde="2026-10-15T12:00:00Z")) == "BCDEFGH" and letras(F(desde="2026-10-15T12:00:01Z")) == "CDEFGH")
+    rev("`hasta` NO incluye el instante exacto", letras(F(hasta="2026-10-15T12:00:00Z")) == "A" and letras(F(hasta="2026-10-15T12:00:01Z")) == "AB")
+    dia_local = F(desde="2026-10-31T00:00:00-06:00", hasta="2026-11-01T00:00:00-06:00")
+    rev("un rango con zona (el 31 de octubre en la hora de México, UTC-6) trae lo de ese día local aunque en UTC ya fuera 1 de noviembre", letras(dia_local) == "CD", letras(dia_local))
+    rev("el mismo rango escrito en UTC (06:00 a 06:00) es el mismo", letras(F(desde="2026-10-31T06:00:00Z", hasta="2026-11-01T06:00:00Z")) == "CD")
+    rev("sin zona se toma por UTC: el mismo día «a secas» trae solo lo que cayó en ese día UTC", letras(F(desde="2026-10-31T00:00:00", hasta="2026-11-01T00:00:00")) == "C")
+    rev("una zona con signo más (`+01:00`, que viaja como `%2B`) también cuenta", letras(F(desde="2026-11-02T04:30:00+01:00")) == "EFGH" and letras(F(desde="2026-11-02T04:31:00+01:00")) == "FGH")
+    rev("un rango al revés no trae nada, y no es un error", F(desde="2026-11-02T00:00:00Z", hasta="2026-10-01T00:00:00Z")["total"] == 0)
+    rev("una fecha que no es fecha se rechaza (422)", historial(adm_b, otra, desde="ayer").status_code == 422 and historial(adm_b, otra, hasta="2026-13-45").status_code == 422)
+
+    rev("los filtros se combinan con Y: proceso y estado", letras(F(proceso=P2, caso="no")) == "E")
+    rev("persona y estado", letras(F(persona=U2, caso="si")) == "D")
+    rev("proceso y persona", letras(F(proceso=P1, persona=U2)) == "C")
+    rev("proceso, persona, estado y fechas a la vez", letras(F(proceso=P1, persona=U1, caso="no", desde="2026-10-10T00:00:00Z", hasta="2026-10-20T00:00:00Z")) == "B")
+    rev("el expediente sigue filtrando junto con los demás", letras(F(expediente=X2, caso="sin")) == "F" and letras(F(expediente=X2)) == "FGH")
+    rev("lo que un filtro deja pasar y otro no, no sale", F(proceso=P1, caso="sin", persona=U1)["total"] == 0)
+
+    p1 = F(proceso=[P1, P2], limite=2)
+    p2 = F(proceso=[P1, P2], limite=2, antes=p1["ejecuciones"][-1]["id"])
+    p3 = F(proceso=[P1, P2], limite=2, antes=p2["ejecuciones"][-1]["id"])
+    rev("paginar con filtros: el total es el de lo que cumple (no el de todo) y `antes` sigue donde iba, hasta el final",
+        p1["total"] == p2["total"] == p3["total"] == 6 and (p1["hayMas"], p2["hayMas"], p3["hayMas"]) == (True, True, False) and orden(p1) + orden(p2) + orden(p3) == "FEDCBA",
+        f"{orden(p1)} {orden(p2)} {orden(p3)}")
+
+    r = historial(adm_b, otra, proceso=[f"proceso-{i}" for i in range(51)])
+    rev("más de 50 valores distintos en un filtro: 400", r.status_code == 400 and "hasta 50" in r.text, f"{r.status_code} {r.text[:120]}")
+    rev("50 sí", historial(adm_b, otra, persona=[f"persona-{i}" for i in range(50)]).status_code == 200)
+    rev("repetir el mismo valor no cuenta de más", F(proceso=[P1] * 60)["total"] == 3)
+    rev("el servicio acepta un proceso suelto, no solo una lista", ejecuciones_servicio.listar(otra, proceso=P1)["total"] == 3)
+    largo = "x" * 100
+    con_largo = "largo-" + uuid.uuid4().hex[:8]
+    sembrar(con_largo, X1, largo, P1, "Largo", "si", datetime(2026, 11, 2, 15, 0, 0))
+    rev("el id de una persona puede ser largo (la columna admite 254): filtrar por él lo encuentra", ejecuciones_servicio.listar(con_largo, persona=[largo])["total"] == 1)
+    con.close()
+
+    rev("lo de otra organización no se cuela por más que se pida su proceso, su persona o su expediente",
+        all(F(bearer=adm, tenant=org, **f)["total"] == 0 for f in ({"proceso": P1}, {"persona": U1}, {"expediente": X1}, {"proceso": P2, "caso": "sin"})))
+    rev("el historial filtrado lo ven todos los roles: Viewer y Auditor",
+        F(bearer=P["VIEWER"], tenant=org, caso="si")["total"] == F(bearer=adm, tenant=org, caso="si")["total"] > 0 and F(bearer=P["AUDITOR"], tenant=org, caso="si")["total"] > 0)
+
+    opc = c.get("/ejecuciones/filtros", params={"tenant": otra}, headers=cab(adm_b))
+    rev("las opciones de filtro: 200", opc.status_code == 200, opc.text[:200])
+    opc = opc.json()
+    rev("procesos: los que están en el historial, UNA vez cada uno, con el nombre más reciente y por orden de nombre sin importar los acentos",
+        [(p["id"], p["nombre"]) for p in opc["procesos"]] == [(P3, "Árbol de decisión"), (P4, "Asignar gestor"), (P2, "revisar domicilio"), (P1, "Validar identidad")], str(opc["procesos"]))
+    per = opc["personas"]
+    rev("personas: con su nombre, por orden de nombre sin importar los acentos (Álvaro antes que Zoé), y quien ya no se puede leer al final, solo con su id",
+        [p["id"] for p in per] == [U1, U2, U4, U3] and per[0]["nombre"].startswith("Admin") and per[1]["nombre"].startswith("Álvaro") and per[2]["nombre"].startswith("Zoé") and per[3] == {"id": U3, "nombre": None}, str(per))
+    otras = c.get("/ejecuciones/filtros", params={"tenant": org}, headers=cab(adm)).json()
+    rev("las opciones de una organización no traen nada de otra",
+        all(p["id"] not in {P1, P2, P3} for p in otras["procesos"]) and all(p["id"] not in {U1, U2, U3, U4} for p in otras["personas"]), str(otras)[:300])
+    rev("un proceso borrado sigue ofreciéndose, porque sus ejecuciones siguen en el historial", pid in {p["id"] for p in otras["procesos"]} and any(p["id"] == guid_rita for p in otras["personas"]))
+    rev("lo ven todos los roles", all(c.get("/ejecuciones/filtros", params={"tenant": org}, headers=cab(P[rol_])).status_code == 200 for rol_ in ("VIEWER", "AUDITOR", "ANALISTA")))
+    r = c.get("/ejecuciones/filtros", params={"tenant": org}, headers=cab(adm_b))
+    rev("con el tenant de otra organización: 403 `sin_acceso`; sin sesión: 401", r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_acceso" and c.get("/ejecuciones/filtros", params={"tenant": org}, headers=cab()).status_code == 401)
+    gamma, adm_g = organizacion(bearer_super, "Gamma", "gina@ejemplo.com")
+    rev("una organización sin ejecuciones: listas vacías, no un error", c.get("/ejecuciones/filtros", params={"tenant": gamma}, headers=cab(adm_g)).json() == {"procesos": [], "personas": []})
 finally:
     shutil.rmtree(RAIZ, ignore_errors=True)
 

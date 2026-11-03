@@ -2063,13 +2063,30 @@ automático) se porta esa lógica con la suite del front como oráculo.
 |---|---|
 | `GET /ejecuciones/preparar?tenant=&expediente=&virtual=&proceso=` | El proceso con su dibujo y su `revision`, los tipos documentales que usa con sus campos, y por cada uno el documento del expediente virtual que lo cubre con sus **valores vigentes** (los de su última extracción, con las correcciones a mano), o los `duplicados`. |
 | `POST /ejecuciones/` | Guarda UNA ejecución, todo o nada: `{tenant, expedienteId, virtualId, procesoId, procesoRevision, resultado: {caso, texto}, valoresFinales, detalle}`. 201 con la ejecución completa. |
-| `GET /ejecuciones/?tenant=` | El historial de la organización, de la más reciente a la más antigua. Filtros opcionales `expediente`, `virtual` y `proceso` (sus ids); `limite` (1 a 200, por omisión 50) y `antes` (el id de la última que ya se vio) para pedir las siguientes. Devuelve `{ejecuciones, total, hayMas}`. |
+| `GET /ejecuciones/?tenant=` | El historial de la organización, de la más reciente a la más antigua. Filtros opcionales (ver «Filtros del historial»): `expediente`, `virtual`, `proceso`, `persona`, `caso`, `desde` y `hasta`; `limite` (1 a 200, por omisión 50) y `antes` (el id de la última que ya se vio) para pedir las siguientes. Devuelve `{ejecuciones, total, hayMas}`. |
+| `GET /ejecuciones/filtros?tenant=` | Lo que se puede elegir para filtrar el historial: `{procesos: [{id, nombre}], personas: [{id, nombre}]}`. |
 | `GET /ejecuciones/{id}?tenant=` | Una ejecución completa: su resumen, `valoresFinales`, `detalle` (reglas, evidencia, condición, faltantes) y `definicion` (el proceso tal como estaba). |
 
-**Quién puede qué.** Ver el historial (listar y abrir) es de cualquiera que opere en la organización; **ejecutar** (preparar y guardar) es de quien
+**Quién puede qué.** Ver el historial (listar, filtrar y abrir) es de cualquiera que opere en la organización; **ejecutar** (preparar y guardar) es de quien
 organiza (`roles.PUEDEN_ORGANIZAR`: Administrador, Supervisor, Analista y Operador, como subir archivos a un expediente); los demás roles reciben 403
-`sin_permiso`. Es una propuesta de producto pendiente de confirmar con César. Piden la llave de servicio **y** el JWT de la persona (HU11): una
-ejecución de otra organización, o que no existe, es 404 sin distinguir.
+`sin_permiso`. Moibe lo confirmó el 2026-11-03 («no hace falta confirmarlo con César, así está ok»). Piden la llave de servicio **y** el JWT de la persona
+(HU11): una ejecución de otra organización, o que no existe, es 404 sin distinguir.
+
+**Filtros del historial** (Moibe, 2026-11-03: «agrega dichos filtros»: fecha, regla, estado y persona). `GET /ejecuciones/` filtra por:
+
+| Filtro | Qué es |
+|---|---|
+| `desde` y `hasta` | El rango de fechas, en ISO 8601. `desde` **incluye** el instante y `hasta` **no** lo incluye; sin zona se toma por UTC. La pantalla manda días de la hora de quien mira como «del inicio del primer día al inicio del día siguiente al último», y así no importa a cuántas horas de UTC esté. |
+| `proceso` | Uno o varios ids de proceso (el parámetro se repite: `proceso=a&proceso=b`); basta con ser de UNO. Es la «regla» de las HU. |
+| `persona` | Uno o varios ids de quien ejecutó (se repite igual). |
+| `caso` | Cómo terminó: `si` (se cumplió), `no` (no se cumplió) o `sin` (faltaron datos: las incompletas); se repite. Las **palabras** del Resultado las escribe cada organización, así que el caso es lo que no cambia. 400 si no es uno de los tres. |
+| `expediente`, `virtual` | Un id; los de siempre. |
+
+Los filtros se combinan con **Y**; dentro de uno de lista basta con cumplir **uno**. Cada filtro de lista admite hasta 50 valores distintos (400 si pasa);
+un valor vacío se ignora. `total` es el de lo que cumple los filtros (no el de todo el historial) y `antes` sigue funcionando con ellos puestos.
+`GET /ejecuciones/filtros` dice qué se puede elegir y **sale de lo que está en el historial, no del catálogo vivo**: un proceso borrado, o alguien que ya no
+está, siguen ahí (cada proceso con el nombre de su ejecución más reciente; cada persona con su nombre si todavía se puede leer, `null` si no), por orden de
+nombre sin importar mayúsculas ni acentos.
 
 **Qué se exige para ejecutar** (`preparar`, 409 con su `codigo` para que la pantalla explique qué hacer): `proceso_inactivo` (está apagado), `no_corre_aqui`
 (corre sobre otro tipo de expediente virtual), `sin_resultado` (no trae su nodo de Resultado) y `resultado_sin_regla` (su Resultado no tiene ninguna
@@ -2100,9 +2117,8 @@ ejecución sale del caso: **`incompleta`** si faltaron datos (caso `sin`) y **`c
 **Auditoría.** `PROCESS_RUN_RECORDED` cuando una ejecución queda en el historial (quién, qué proceso, sobre qué expediente virtual y cómo terminó, con la palabra).
 Preparar no deja rastro.
 
-**Límites conocidos:** el historial todavía no tiene filtros por fecha, regla ni estado en pantalla (el back ya filtra por expediente, virtual y proceso; el front
-solo pagina con «Ver más»); una corrida bloqueada (duplicados, regla incompleta) no se guarda; un proceso guardado antes de que el Resultado fuera obligatorio
-no se puede ejecutar hasta que se le agregue.
+**Límites conocidos:** una corrida bloqueada (duplicados, regla incompleta) no se guarda (Moibe, 2026-11-03: «está ok que no se guarde una corrida filtrada
+por ahora»); un proceso guardado antes de que el Resultado fuera obligatorio no se puede ejecutar hasta que se le agregue.
 
 ### Verificarlo
 
@@ -2112,8 +2128,9 @@ no se puede ejecutar hasta que se le agregue.
 
 Levanta un SQL Server real en Docker (el puerto 14341), le aplica TODAS las migraciones con el corredor de verdad y prueba: preparar (cada código de «no se
 puede ejecutar», los valores vigentes con correcciones, grupos y listas, los duplicados con y sin proceso que los use), guardar y leer lo guardado, cada
-validación, el conflicto de revisión, que el historial sobreviva a borrar su expediente y su proceso, el aislamiento entre organizaciones, los roles y la
-auditoría. La lógica pura que corre el front se prueba aparte, en el front (`verificar-ejecutar.mjs`).
+validación, el conflicto de revisión, que el historial sobreviva a borrar su expediente y su proceso, los filtros del historial (fecha con y sin zona,
+proceso, persona y estado, combinados y paginados, y las opciones que se ofrecen), el aislamiento entre organizaciones, los roles y la auditoría. La lógica
+pura que corre el front se prueba aparte, en el front (`verificar-ejecutar.mjs`).
 
 ## Grupos de campos y forma del resultado de la extracción (2026-10-16)
 

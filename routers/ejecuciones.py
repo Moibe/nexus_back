@@ -10,7 +10,7 @@ Todas las rutas van detrás de la llave de servicio y exigen TAMBIÉN el JWT de 
 
 - **Ver el historial** (listar y abrir una ejecución): cualquiera que opere en la organización, de cualquier rol.
 - **Ejecutar** (preparar y guardar): `roles.PUEDEN_ORGANIZAR` (Administrador, Supervisor, Analista y Operador), igual que subir archivos a un expediente;
-  Compliance, Auditor y Viewer reciben 403 `sin_permiso`. Es una propuesta de producto pendiente de confirmar con César.
+  Compliance, Auditor y Viewer reciben 403 `sin_permiso`. Confirmado por Moibe el 2026-11-03 («no hace falta confirmarlo con César, así está ok»).
 
 ## Qué se anota
 
@@ -19,6 +19,7 @@ una ejecución que no se corrió por duplicados, no dejan rastro.
 """
 
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -146,27 +147,51 @@ def guardar(entrada: NuevaEjecucion, authorization: str | None = Header(default=
     tags=["Ejecuciones"],
     summary="El historial de ejecuciones de la organización",
     description=(
-        "De la más reciente a la más antigua. Filtros opcionales por `expediente`, `virtual` y `proceso` (sus ids). `limite` (1 a 200, por omisión 50) "
-        "dice cuántas entrega y `antes` es el id de la última que ya se vio, para pedir las siguientes. Devuelve `ejecuciones`, `total` (de las que cumplen "
-        "los filtros) y `hayMas`. Sin base, vacío."
+        "De la más reciente a la más antigua. Filtros opcionales, que se combinan con Y: `expediente` y `virtual` (un id); `proceso` y `persona` (ids; el "
+        "parámetro se repite, `proceso=a&proceso=b`, y basta con que sea de UNO); `caso` (`si`, `no` o `sin`, también repetible: cómo terminó, y `sin` son "
+        "las incompletas); y el rango de fechas, `desde` (incluido) y `hasta` (NO incluido), en ISO 8601, sin zona se toma por UTC. `limite` (1 a 200, por "
+        "omisión 50) dice cuántas entrega y `antes` es el id de la última que ya se vio, para pedir las siguientes. Devuelve `ejecuciones`, `total` (de las "
+        "que cumplen los filtros) y `hayMas`. 400 si un filtro no vale (un caso que no existe, más de 50 valores en uno). Sin base, vacío."
     ),
 )
 def listar(
     tenant: str = Query(..., description="La organización"),
     expediente: str | None = Query(None, description="Solo las de este expediente"),
     virtual: str | None = Query(None, description="Solo las de este expediente virtual"),
-    proceso: str | None = Query(None, description="Solo las de este proceso"),
+    proceso: list[str] | None = Query(None, description="Solo las de estos procesos (sus ids; el parámetro se repite)"),
+    persona: list[str] | None = Query(None, description="Solo las que ejecutaron estas personas (sus ids; el parámetro se repite)"),
+    caso: list[str] | None = Query(None, description="Solo las que terminaron así: `si` (se cumplió), `no` (no se cumplió) o `sin` (faltaron datos); se repite"),
+    desde: datetime | None = Query(None, description="Solo las ejecutadas desde este instante, él incluido (ISO 8601; sin zona, UTC)"),
+    hasta: datetime | None = Query(None, description="Solo las ejecutadas ANTES de este instante, él no incluido (ISO 8601; sin zona, UTC)"),
     limite: int = Query(ejecuciones.LIMITE_POR_OMISION, ge=1, le=ejecuciones.LIMITE_MAXIMO, description="Cuántas entregar"),
     antes: str | None = Query(None, description="El id de la última ejecución que ya se vio"),
     authorization: str | None = Header(default=None),
 ):
     aislamiento.exigir(authorization, tenant, "ejecucion")
     try:
-        return ejecuciones.listar(tenant, expediente, virtual, proceso, limite, antes)
+        return ejecuciones.listar(tenant, expediente, virtual, proceso, limite, antes, persona=persona, caso=caso, desde=desde, hasta=hasta)
     except ejecuciones.SinBase as exc:
         raise _sin_base(exc) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.get(
+    "/filtros",
+    tags=["Ejecuciones"],
+    summary="Lo que se puede elegir para filtrar el historial",
+    description=(
+        "`procesos` (id y nombre) y `personas` (id y nombre, `null` si ya no se puede leer), cada lista por orden de nombre. Salen de lo que está EN el "
+        "historial, no del catálogo vivo: un proceso borrado, o alguien que ya no está, siguen ahí y se pueden filtrar. Cada proceso trae el nombre de su "
+        "ejecución más reciente. Lo ven todos los roles. Sin base, vacío."
+    ),
+)
+def filtros(tenant: str = Query(..., description="La organización"), authorization: str | None = Header(default=None)):
+    aislamiento.exigir(authorization, tenant, "ejecucion")
+    try:
+        return ejecuciones.opciones_de_filtro(tenant)
+    except ejecuciones.SinBase as exc:
+        raise _sin_base(exc) from exc
 
 
 @router.get(

@@ -10,7 +10,16 @@ oráculo. Este módulo hace las dos cosas que sí son del back:
 
 1. `preparar`: arma, en UNA lectura, todo lo que una ejecución necesita: el proceso, los tipos documentales que usa y, por cada uno, el documento del
    expediente virtual que lo cubre con sus valores VIGENTES (los de su última extracción, con las correcciones a mano), o la lista de duplicados.
-2. `registrar`, `listar` y `obtener`: el historial. Es una FOTO y es inmutable: no hay forma de editarlo ni de borrarlo.
+2. `registrar`, `listar`, `opciones_de_filtro` y `obtener`: el historial. Es una FOTO y es inmutable: no hay forma de editarlo ni de borrarlo.
+
+## Filtros del historial (Moibe, 2026-11-03: «agrega dichos filtros»)
+
+`listar` filtra por fecha, proceso, estado y persona (y, desde antes, por expediente y por expediente virtual). Los filtros se combinan con Y; dentro de uno
+de lista (proceso, persona, caso) basta con que la ejecución cumpla UNO. `desde` incluye el instante y `hasta` NO lo incluye: quien arma el rango (la
+pantalla) piensa en días de SU hora local, del inicio del primer día al inicio del día siguiente al último, y así no importa a cuántas horas de UTC esté.
+El «estado» es el caso con el que terminó (`si`, `no` o `sin`): las palabras del Resultado las escribe cada organización, el caso es lo que no cambia.
+Qué se puede elegir lo dice `opciones_de_filtro`, y sale de lo que ESTÁ en el historial y no del catálogo vivo: un proceso borrado, o alguien que ya no
+está, siguen en la foto y se pueden filtrar.
 
 ## Duplicados (Moibe, 2026-11-03)
 
@@ -33,7 +42,9 @@ Solo SQL (decisión del 2026-10-28): sin base, escribir y leer levantan `SinBase
 """
 
 import json
+import unicodedata
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from config import SQLSERVER_HOST
@@ -56,6 +67,8 @@ MAX_DETALLE_BYTES = 400_000
 #: Cuántas ejecuciones entrega una lectura del historial, y el tope de lo que se puede pedir.
 LIMITE_POR_OMISION = 50
 LIMITE_MAXIMO = 200
+#: Cuántos valores acepta cada filtro de lista (proceso, persona, caso): un tope contra peticiones absurdas (SQL Server admite 2100 parámetros por consulta).
+MAX_FILTROS = 50
 
 
 class SinBase(RuntimeError):
@@ -380,26 +393,65 @@ def _resumen(f: dict, cache: dict[str, dict]) -> dict:
     }
 
 
+def _valores(nombre: str, valor: object, largo: int = 63) -> list[str]:
+    """Un filtro de lista como lista de textos, sin repetidos ni vacíos: `None` son ninguno y un texto suelto es uno solo. Más del tope, se rechaza."""
+    if valor is None:
+        return []
+    crudo = [valor] if isinstance(valor, str) else list(valor)  # type: ignore[call-overload]
+    limpios = list(dict.fromkeys(v[:largo] for v in crudo if isinstance(v, str) and v))
+    if len(limpios) > MAX_FILTROS:
+        raise ValueError(f"El filtro «{nombre}» admite hasta {MAX_FILTROS} valores.")
+    return limpios
+
+
+def _instante(valor: datetime | None) -> datetime | None:
+    """Un instante de la petición como lo guarda la base (`executedAt`): hora UTC y sin zona. Uno que llega sin zona se toma por UTC."""
+    if valor is None:
+        return None
+    return valor.astimezone(timezone.utc).replace(tzinfo=None) if valor.tzinfo else valor
+
+
 def listar(
     tenant: str,
     expediente: str | None = None,
     virtual: str | None = None,
-    proceso: str | None = None,
+    proceso: str | list[str] | None = None,
     limite: int = LIMITE_POR_OMISION,
     antes: str | None = None,
+    *,
+    persona: list[str] | None = None,
+    caso: list[str] | None = None,
+    desde: datetime | None = None,
+    hasta: datetime | None = None,
 ) -> dict:
-    """El historial de la organización, de la más reciente a la más antigua, con filtros opcionales por expediente, expediente virtual y proceso (por
-    su id). `limite` (1 a 200) es cuántas entrega; `antes` es el id de la última que ya se vio, para pedir las siguientes. Devuelve
-    `{ejecuciones, total, hayMas}`: `total` cuenta todas las que cumplen los filtros. Sin base: vacío."""
+    """El historial de la organización, de la más reciente a la más antigua. Filtros opcionales, que se combinan con Y: `expediente` y `virtual` (un id),
+    `proceso` y `persona` (uno o varios ids: basta con que sea de UNO), `caso` (`si`, `no` o `sin`, uno o varios: cómo terminó) y el rango de fechas, `desde`
+    (incluido) y `hasta` (NO incluido; sin zona se toma por UTC). `limite` (1 a 200) es cuántas entrega; `antes` es el id de la última que ya se vio, para
+    pedir las siguientes. Devuelve `{ejecuciones, total, hayMas}`: `total` cuenta todas las que cumplen los filtros. Sin base: vacío. Un filtro que no
+    vale (un caso que no existe, más de `MAX_FILTROS` valores) es `ValueError`."""
+    procesos = _valores("proceso", proceso)
+    personas = _valores("persona", persona, 254)
+    casos = _valores("caso", caso)
+    for un_caso in casos:
+        if un_caso not in CASOS:
+            raise ValueError("El caso de una ejecución es «si», «no» o «sin».")
     if not SQLSERVER_HOST:
         return {"ejecuciones": [], "total": 0, "hayMas": False}
     tablas = _tablas()
     limite = max(1, min(int(limite), LIMITE_MAXIMO))
     condiciones, parametros = ["r.tenant = ?"], [tenant]
-    for columna, valor in (("r.caseId", expediente), ("r.virtualCaseId", virtual), ("r.processId", proceso)):
+    for columna, valor in (("r.caseId", expediente), ("r.virtualCaseId", virtual)):
         if valor:
             condiciones.append(f"{columna} = ?")
             parametros.append(valor[:63])
+    for columna, valores in (("r.processId", procesos), ("r.executedBy", personas), ("r.outcomeCase", casos)):
+        if valores:
+            condiciones.append(f"{columna} IN ({', '.join('?' * len(valores))})")
+            parametros.extend(valores)
+    for operador, instante in ((">=", _instante(desde)), ("<", _instante(hasta))):
+        if instante is not None:
+            condiciones.append(f"r.executedAt {operador} ?")
+            parametros.append(instante)
     donde = " AND ".join(condiciones)
     with tablas.lectura() as cur:
         cur.execute(f"SELECT count(*) FROM nexus.processRuns r WHERE {donde}", *parametros)
@@ -411,6 +463,34 @@ def listar(
         filas = tablas.filas(cur)
     cache: dict[str, dict] = {}
     return {"ejecuciones": [_resumen(f, cache) for f in filas[:limite]], "total": total, "hayMas": len(filas) > limite}
+
+
+def _sin_acentos(texto: str) -> str:
+    """Para ordenar nombres como se leen: sin mayúsculas ni acentos (Álvaro entre Alberto y Beatriz, no después de Zoé)."""
+    return "".join(c for c in unicodedata.normalize("NFKD", texto.casefold()) if not unicodedata.combining(c))
+
+
+def opciones_de_filtro(tenant: str) -> dict:
+    """Lo que se puede elegir para filtrar el historial: `procesos` (id y nombre) y `personas` (id y nombre, `None` si ya no se puede leer), cada lista por
+    orden de nombre. Salen de lo que ESTÁ en el historial y no del catálogo vivo (un proceso borrado, o alguien que ya no está, siguen en la foto). Cada
+    proceso lleva el nombre de su ejecución más reciente, que es el que tiene ahora si se renombró. Sin base: vacío."""
+    if not SQLSERVER_HOST:
+        return {"procesos": [], "personas": []}
+    tablas = _tablas()
+    with tablas.lectura() as cur:
+        cur.execute(
+            "SELECT r.processId, r.processName FROM nexus.processRuns r "
+            "JOIN (SELECT processId, MAX(processRunId) AS ultima FROM nexus.processRuns WHERE tenant = ? GROUP BY processId) u ON u.ultima = r.processRunId",
+            tenant,
+        )
+        procesos = [{"id": f["processId"], "nombre": f["processName"]} for f in tablas.filas(cur)]
+        cur.execute("SELECT DISTINCT executedBy FROM nexus.processRuns WHERE tenant = ?", tenant)
+        guids = [f["executedBy"] for f in tablas.filas(cur)]
+    cache: dict[str, dict] = {}
+    personas = [_quien(g, cache) for g in guids]
+    procesos.sort(key=lambda p: (_sin_acentos(p["nombre"]), p["id"]))
+    personas.sort(key=lambda p: (p["nombre"] is None, _sin_acentos(p["nombre"] or ""), p["id"]))
+    return {"procesos": procesos, "personas": personas}
 
 
 def obtener(tenant: str, ejecucion_id: object) -> dict | None:
