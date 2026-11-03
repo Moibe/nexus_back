@@ -1142,6 +1142,7 @@ recibe el enlace**: la HU está completa pero el correo se lee del disco.
 `FRONT_URL` tiene que apuntar al front real de cada ambiente (en dev de CSI es
 `https://dev-biblioratum.buzzword.com.mx` —el dominio, no la IP—, no el localhost del
 default), porque de ahí sale el enlace de todos los correos. Los `.eml` no se limpian solos.
+Si `FRONT_URL` es una IP (`http://172.10.30.15:3401`), el arranque lo AVISA (2026-11-03: `avisos_configuracion` de `/health` sube y el log dice «los enlaces de los correos llevan la IP del servidor»): cada ambiente pone su dominio —dev, staging o producción— en el `.env` de su carpeta del servidor y reinicia su pm2. Lo prueba `verificar_avisos_configuracion.py`.
 
 #### Salir por el servicio de ART Broker (`CORREO_MODO=api`, desde el 2026-10-13)
 
