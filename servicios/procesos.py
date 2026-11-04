@@ -117,6 +117,22 @@ class NoEncontrado(LookupError):
     """No hay tal proceso EN ESA organización (o no existe: no se distingue)."""
 
 
+class NombreRepetido(Exception):
+    """Ya hay OTRO proceso con ese nombre en la organización (sin distinguir mayúsculas ni espacios de más)."""
+
+
+def clave_de_nombre(nombre: str) -> str:
+    """Con qué se compara un nombre para saber si choca con otro: sin espacios de más y sin distinguir mayúsculas."""
+    return " ".join(str(nombre).split()).casefold()
+
+
+def exigir_nombre_libre(nombre: str, otros: list[str]) -> None:
+    """`NombreRepetido` si alguno de los nombres de `otros` (los demás procesos de la organización) es ése."""
+    clave = clave_de_nombre(nombre)
+    if any(clave_de_nombre(o) == clave for o in otros):
+        raise NombreRepetido()
+
+
 class Conflicto(Exception):
     """Alguien lo guardó antes: `revision_actual` es la vigente, o `None` si el id ya es de otro."""
 
@@ -178,6 +194,12 @@ def _nodo(n: object) -> dict:
     limpio_datos: dict = {}
     if n["type"] == "tipo-documental":
         limpio_datos["tipoId"] = _texto(datos.get("tipoId"), "El tipo documental de un nodo", 100)
+        # La versión del tipo con la que se armó (o se confirmó por última vez) el proceso. Opcional: los procesos de antes no la traen.
+        version = datos.get("version")
+        if version is not None:
+            if isinstance(version, bool) or not isinstance(version, int) or not 0 <= version <= 100_000:
+                raise ProcesoInvalido("La versión de un tipo documental no es válida.")
+            limpio_datos["version"] = version
     elif n["type"] == "constante":
         if datos.get("familia") not in FAMILIAS:
             raise ProcesoInvalido("La clase de un valor fijo no es válida.")
@@ -361,6 +383,12 @@ def guardar(tenant: str, proceso_id: str, datos: object, revision: int, por: str
             if actual["revision"] != revision:
                 raise Conflicto(actual["revision"])
             nueva = revision + 1
+        # El nombre es único en la organización. Solo se revisa si es nuevo o si cambió: guardar sin tocar el nombre (activar o desactivar desde la
+        # lista, por ejemplo) no puede fallar por un duplicado que ya existía antes de esta regla.
+        if actual is None or clave_de_nombre(actual["datos"]["nombre"]) != clave_de_nombre(limpio["nombre"]):
+            exigir_nombre_libre(
+                limpio["nombre"], [p["datos"]["nombre"] for i, p in procesos.items() if p["tenant"] == tenant and i != proceso_id]
+            )
         registro.agregar(
             ARCHIVO,
             {"op": "guardar", "id": proceso_id, "tenant": tenant, "revision": nueva, "datos": limpio, "por": por, "en": _ahora()},

@@ -552,6 +552,39 @@ try:
     rev("borrar el tipo (sin expedientes virtuales) se puede aunque tenga procesos", r.status_code == 200, r.text[:160])
     leidos = {x["id"]: x["datos"]["tipoExpedienteVirtualId"] for x in listar(a_admin, org_a).json()["procesos"]}
     rev("y sus procesos se quedan, sin liga", leidos.get(pl, "falta") is None and leidos.get(otro, "falta") is None, str(leidos))
+    titulo("8d · (2026-11-04, NEX-529 y NEX-542) el nombre es único en la organización; el nodo del tipo recuerda su versión")
+    mio = nuevo_id()
+    r = guardar(a_admin, org_a, mio, proceso("Nombre único"), 0)
+    rev("un nombre que nadie tiene se guarda", r.status_code == 200, r.text[:160])
+    r = guardar(a_admin, org_a, nuevo_id(), proceso("Nombre único"), 0)
+    rev("crear otro con el MISMO nombre: 409 `ya_existe`, con su mensaje", r.status_code == 409 and r.json()["detail"]["codigo"] == "ya_existe" and "ese nombre" in r.json()["detail"]["mensaje"], r.text[:200])
+    r = guardar(a_admin, org_a, nuevo_id(), proceso("  NOMBRE   único "), 0)
+    rev("…también con otras mayúsculas y espacios de más", r.status_code == 409 and r.json()["detail"]["codigo"] == "ya_existe", r.text[:200])
+    rev("…y no se creó nada (en la lista sigue uno solo con ese nombre)", [x["datos"]["nombre"] for x in listar(a_admin, org_a).json()["procesos"]].count("Nombre único") == 1)
+    r = guardar(b_admin, org_b, nuevo_id(), proceso("Nombre único"), 0)
+    rev("otra organización SÍ puede usar ese nombre (la regla es por organización)", r.status_code == 200, r.text[:160])
+    otro_nombre = nuevo_id()
+    guardar(a_admin, org_a, otro_nombre, proceso("Otro nombre distinto"), 0)
+    r = guardar(a_admin, org_a, otro_nombre, proceso("nombre único"), 1)
+    rev("renombrar a uno que ya tiene OTRO proceso: 409 `ya_existe` y el proceso se queda como estaba", r.status_code == 409 and r.json()["detail"]["codigo"] == "ya_existe" and next(x for x in listar(a_admin, org_a).json()["procesos"] if x["id"] == otro_nombre)["datos"]["nombre"] == "Otro nombre distinto", r.text[:200])
+    r = guardar(a_admin, org_a, mio, proceso("NOMBRE ÚNICO".replace("Ú", "ú").replace("NOMBRE ", "Nombre ")), 1)
+    rev("cambiar solo las mayúsculas del PROPIO nombre sí se puede (no choca consigo mismo)", r.status_code == 200, r.text[:160])
+    r = guardar(a_admin, org_a, mio, proceso("Nombre único", activo=False), 2)
+    rev("guardar sin cambiar el nombre (activar o desactivar) no se revisa ni falla", r.status_code == 200 and r.json()["datos"]["activo"] is False, r.text[:160])
+    r = guardar(a_admin, org_a, otro_nombre, proceso("Otro nombre libre"), 1)
+    rev("renombrar a uno libre funciona, y el nombre anterior queda libre", r.status_code == 200 and guardar(a_admin, org_a, nuevo_id(), proceso("Otro nombre distinto"), 0).status_code == 200, r.text[:160])
+    rev("sin nombre sigue siendo 400 (no es un conflicto)", guardar(a_admin, org_a, nuevo_id(), proceso("  "), 0).status_code == 400)
+
+    con_version = proceso("Con versión del tipo")
+    con_version["nodos"][0]["data"]["version"] = 3
+    pv = nuevo_id()
+    r = guardar(a_admin, org_a, pv, con_version, 0)
+    rev("el nodo de un tipo documental guarda la versión con la que se armó", r.status_code == 200 and r.json()["datos"]["nodos"][0]["data"].get("version") == 3, r.text[:200])
+    rev("…y los nodos sin versión (procesos de antes) se guardan igual, sin inventarla", "version" not in r.json()["datos"]["nodos"][1]["data"])
+    for malo in (-1, 1.5, "3", True, 10**9):
+        d = proceso(f"Versión mala {malo!r}")
+        d["nodos"][0]["data"]["version"] = malo
+        rev(f"una versión que no es un entero razonable ({malo!r}) se rechaza con 400", guardar(a_admin, org_a, nuevo_id(), d, 0).status_code == 400)
 finally:
     shutil.rmtree(RAIZ, ignore_errors=True)
 
