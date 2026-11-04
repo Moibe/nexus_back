@@ -68,7 +68,7 @@ try:
     rev("el ayudante de errores sigue ahí", callable(getattr(router, "_mensaje_para", None)))
 
     titulo("2 · Activar: sin la llave de servicio, 401")
-    rev("sin llave: 401", c.post("/procesadores/activar", json={"id": "tipo-x", "nombre": "X", "campos": []}).status_code == 401)
+    rev("sin llave: 401", c.post("/procesadores/activar", json={"tenant": "demo", "id": "tipo-x", "nombre": "X", "campos": []}).status_code == 401)
 
     # El doble de Document AI: anota lo que le llega y contesta como contestaría Google.
     recibido: dict = {}
@@ -85,6 +85,7 @@ try:
 
     titulo("3 · Activar con campos sueltos: pasa tal cual y el esquema sale del generador")
     cuerpo = {
+        "tenant": "demo",
         "id": "tipo-abc",
         "nombre": "Póliza",
         "descripcion": "Póliza de seguro",
@@ -103,6 +104,7 @@ try:
     titulo("4 · Activar con un GRUPO: los subcampos viajan al esquema como un EntityType `object`")
     recibido.clear()
     cuerpo_grupo = {
+        "tenant": "demo",
         "id": "tipo-acta",
         "nombre": "Acta",
         "campos": [
@@ -189,9 +191,14 @@ try:
     router.consultar_procesador = consultar_falso  # type: ignore[assignment]
     router.eliminar_procesador = eliminar_falso  # type: ignore[assignment]
     router.consultar_esquema_clasificador = esquema_falso  # type: ignore[assignment]
-    r = c.get("/procesadores/proc-1", headers=LLAVE)
+    # Desde NEX-550 consultar y borrar piden `tenant` y que el procesador sea de un tipo de esa organización: `proc-1` lo es de uno de «demo».
+    from servicios import tipos_documentales as registro_tipos
+
+    registro_tipos.guardar("demo", "tipo-con-proc1", {"nombre": "Con proc-1", "estado": "activo", "procesadorId": "proc-1", "campos": []}, 0, "verificar")
+    DEMO = {"tenant": "demo"}
+    r = c.get("/procesadores/proc-1", params=DEMO, headers=LLAVE)
     rev("consultar con un 5xx: 502, no 500", r.status_code == 502, r.text[:160])
-    r = c.delete("/procesadores/proc-1", headers=LLAVE)
+    r = c.delete("/procesadores/proc-1", params=DEMO, headers=LLAVE)
     rev("borrar con un 4xx: 502 con SU frase (no la de «revisa los campos»)", r.status_code == 502 and "no permitió borrar" in r.json()["detail"] and "campos" not in r.json()["detail"], r.text[:200])
     # Desde el 2026-10-26 el clasificador es de cada organización: pide `tenant` y la sesión de quien administra (aquí, el administrador
     # de plataforma en su espacio, que es el que pone `verificacion_comun`). `verificar_tipos_documentales.py` prueba el aislamiento.
@@ -203,8 +210,8 @@ try:
 
     router.consultar_procesador = inexistente  # type: ignore[assignment]
     router.eliminar_procesador = inexistente  # type: ignore[assignment]
-    rev("consultar uno que ya no existe: 404", c.get("/procesadores/proc-1", headers=LLAVE).status_code == 404)
-    r = c.delete("/procesadores/proc-1", headers=LLAVE)
+    rev("consultar uno que ya no existe: 404", c.get("/procesadores/proc-1", params=DEMO, headers=LLAVE).status_code == 404)
+    r = c.delete("/procesadores/proc-1", params=DEMO, headers=LLAVE)
     rev("borrar uno que ya no existe: éxito (el objetivo ya se cumplió)", r.status_code == 200 and r.json() == {"eliminado": True}, r.text[:160])
 
     titulo("8 · La estructura del procesador se lee de Google UNA vez y se invalida al subir un esquema nuevo")

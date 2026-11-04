@@ -19,6 +19,7 @@ from config import MAX_SUBIDA_BYTES, MAX_SUBIDA_MB
 from errores import ErrorDocumentAI, SinClasificador
 from routers.expedientes import anotar_colocados, colocar_clasificados
 from servicios import aislamiento, clasificadores, datos_extraidos, ia
+from servicios.tipos_documentales import procesadores_con_dueno
 from servicios.subidas import MIME_SOPORTADOS, SubidaInvalida, revisar_tamano, revisar_tipo
 
 logger = logging.getLogger(__name__)
@@ -216,6 +217,16 @@ async def extraer_generico(
     # pagarle a Google: quién pide, que el documento y el tipo sean de su organización y que el procesador sea el del tipo.
     guardar = documento.strip()
     actor = None
+    # Con `tenant` (el BFF siempre lo manda, desde la sesión) el procesador tiene que ser de esa organización aunque no se guarde nada (NEX-550):
+    # sin eso, cualquiera con sesión pagaba extracciones con el procesador de otra. Sin `tenant` (Swagger y las pruebas, con la llave de servicio)
+    # se conserva el comportamiento de siempre.
+    if tenant.strip() and not guardar:
+        actor = aislamiento.exigir(authorization, tenant, "documento")
+        dueno = await run_in_threadpool(procesadores_con_dueno)
+        if (dueno.get(procesador) or {}).get("tenant") != tenant:
+            aislamiento.intento_cruzado(actor, "procesador", procesador, tenant_pedido=tenant)
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ese procesador no existe en tu organización.")
+        actor = None  # no se guarda nada: solo se comprobó quién pide
     if guardar:
         actor = aislamiento.exigir(authorization, tenant, "documento")
         try:

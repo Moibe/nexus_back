@@ -77,6 +77,8 @@ class CampoEntrada(BaseModel):
 
 
 class TipoDocumentalEntrada(BaseModel):
+    #: La organización que activa (NEX-550). La pone el BFF desde la sesión; el back comprueba con el JWT que quien pide pueda administrarla.
+    tenant: str = Field(min_length=1, max_length=64)
     id: str = Field(min_length=1, max_length=100)
     nombre: str = Field(min_length=1, max_length=200)
     descripcion: str = ""
@@ -107,6 +109,20 @@ def _mensaje_para(exc: DocumentAIError, *, mensaje_4xx: str) -> str:
     return "No se pudo contactar a Document AI en este momento. Intenta de nuevo en unos minutos."
 
 
+_NO_EXISTE_PROCESADOR = "Ese procesador no existe en tu organización."
+
+
+def _exigir_dueno(actor: aislamiento.Actor, tenant: str, procesador_id: str) -> None:
+    """NEX-550: el procesador tiene que ser de un tipo documental DE ESA organización. Si es de otra, o de ninguna (uno que ningún tipo conoce, como
+    el heredado del `.env`), se responde lo mismo que si no existiera —sin decir de quién es— y, si era de otra, queda `CROSS_TENANT_ACCESS`."""
+    dueno = registro_tipos.procesadores_con_dueno().get(procesador_id)
+    if dueno is not None and dueno["tenant"] == tenant:
+        return
+    if dueno is not None:
+        aislamiento.intento_cruzado(actor, "procesador", procesador_id, tenant_pedido=tenant)
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE_PROCESADOR)
+
+
 @router.post(
     "/activar",
     tags=["Procesadores"],
@@ -130,7 +146,14 @@ def _mensaje_para(exc: DocumentAIError, *, mensaje_4xx: str) -> str:
         "el procesador que ve en Document AI."
     ),
 )
-async def activar(tipo: TipoDocumentalEntrada):
+async def activar(tipo: TipoDocumentalEntrada, authorization: str | None = Header(default=None)):
+    # Quién pide y de qué organización (NEX-550): sin esto cualquiera con la llave de servicio creaba procesadores a nombre de otra organización.
+    actor = aislamiento.exigir_administrar(authorization, tipo.tenant, "procesador")
+    # Un tipo cuyo procesador ya es de OTRA organización no se activa desde esta.
+    for dueno in registro_tipos.procesadores_con_dueno().values():
+        if dueno["tipo"] == tipo.id and dueno["tenant"] != tipo.tenant:
+            aislamiento.intento_cruzado(actor, "procesador", tipo.id, tenant_pedido=tipo.tenant)
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE_PROCESADOR)
     # Sin campos no hay nada que extraer: un procesador con esquema vacío se
     # crearía bien y fallaría después, en la primera extracción, lejos de la
     # causa. Mejor el error aquí, donde todavía se llama por su nombre.
@@ -417,7 +440,13 @@ async def ver_clasificador(
         "página PROCESADA) y no modifica nada."
     ),
 )
-async def consultar(procesador_id: str):
+async def consultar(
+    procesador_id: str,
+    tenant: str = Query(..., description="La organización dueña del procesador"),
+    authorization: str | None = Header(default=None),
+):
+    actor = aislamiento.exigir_administrar(authorization, tenant, "procesador")
+    _exigir_dueno(actor, tenant, procesador_id)
     try:
         return await consultar_procesador(procesador_id)
     except DocumentAIError as exc:
@@ -462,7 +491,13 @@ async def consultar(procesador_id: str):
         "quede ahí, y si ya no está, el objetivo ya se cumplió."
     ),
 )
-async def eliminar(procesador_id: str):
+async def eliminar(
+    procesador_id: str,
+    tenant: str = Query(..., description="La organización dueña del procesador"),
+    authorization: str | None = Header(default=None),
+):
+    actor = aislamiento.exigir_administrar(authorization, tenant, "procesador")
+    _exigir_dueno(actor, tenant, procesador_id)
     try:
         await eliminar_procesador(procesador_id)
     except DocumentAIError as exc:

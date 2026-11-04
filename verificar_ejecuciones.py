@@ -341,7 +341,7 @@ try:
 
     # Un tipo documental que ya no está en la biblioteca, o puesto dos veces en el dibujo, no estorba: se prepara con los que sí hay, cada uno UNA vez.
     pid_raro = "proceso-" + uuid.uuid4().hex
-    raro = proceso_base()
+    raro = proceso_base(nombre="Validar identidad (con tipos raros)")  # el nombre de un proceso es único en la organización (NEX-529)
     raro["nodos"] = raro["nodos"] + [n_tipo("tipo-" + uuid.uuid4().hex), {**n_tipo(td_ine), "id": "tipo-repetido"}]
     assert guardar_proceso(adm, org, pid_raro, raro, 0).status_code == 200
     r = preparar(adm, org, juan, v1, pid_raro)
@@ -654,10 +654,10 @@ try:
     pid2 = "proceso-" + uuid.uuid4().hex
     guardar_proceso(adm, org, pid2, proceso_base(nombre="Ejecutable"), 0)
     p_sin2 = "proceso-" + uuid.uuid4().hex
-    guardar_proceso(adm, org, p_sin2, {**sin_res, "nombre": "Sin Resultado"}, 0)
+    guardar_proceso(adm, org, p_sin2, {**sin_res, "nombre": "Sin Resultado conectado"}, 0)
     v_n = crear_v(adm, org, juan, credito, "Nuevo", [ine1])
     ofrecidos = {p["nombre"]: p for p in ver_v(adm, org, juan, v_n)["procesos"]}
-    rev("el expediente virtual dice cuáles de sus procesos se pueden ejecutar", ofrecidos["Ejecutable"]["ejecutable"] is True and ofrecidos["Sin Resultado"]["ejecutable"] is False and ofrecidos["Apagado"]["activo"] is False and ofrecidos["Resultado suelto"]["ejecutable"] is False and ofrecidos["Resultado de un campo"]["ejecutable"] is False, str(ofrecidos)[:300])
+    rev("el expediente virtual dice cuáles de sus procesos se pueden ejecutar", ofrecidos["Ejecutable"]["ejecutable"] is True and ofrecidos["Sin Resultado conectado"]["ejecutable"] is False and ofrecidos["Apagado"]["activo"] is False and ofrecidos["Resultado suelto"]["ejecutable"] is False and ofrecidos["Resultado de un campo"]["ejecutable"] is False, str(ofrecidos)[:300])
     rev("`resultado_conectado` es solo mirar el dibujo", __import__("servicios.procesos", fromlist=["x"]).resultado_conectado({"nodos": [], "aristas": []}) is False)
 
     titulo("14 · Detalles del servicio")
