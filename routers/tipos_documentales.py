@@ -9,6 +9,12 @@ llaves, webhooks y bandeja.
 Crear, borrar, cambiar de estado (borrador ↔ activo ↔ archivado) y CALIBRAR un tipo dejan su rastro en la bitácora, con quién
 lo hizo. Guardar a secas (editar un campo, subir un ejemplo) no: son muchos guardados y no cambian lo que el tipo ES.
 
+## Sugerir una descripción (2026-11-05)
+
+`POST /sugerir-descripcion` le pide a Gemini (Vertex AI, ver `servicios/gemini.py`) una descripción para el tipo que se está capturando, a partir
+de su nombre y de los nombres de los demás tipos de la organización. No guarda nada: devuelve el texto y la persona lo revisa. Lo puede pedir
+quien puede editar tipos (el mismo rol que guardarlos), porque cada llamada cuesta (centavos).
+
 ## Lo que NO hace todavía
 
 - **No distingue roles.** Cualquier persona que pueda operar en la organización lee y escribe sus tipos, como en llaves y
@@ -20,9 +26,10 @@ import logging
 
 from fastapi import APIRouter, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from routers.errores import almacen_no_disponible
-from servicios import aislamiento, auditoria, tipos_documentales as registro_tipos
+from servicios import aislamiento, auditoria, gemini, tipos_documentales as registro_tipos
 from servicios.almacen import ErrorAlmacen
 
 logger = logging.getLogger(__name__)
@@ -41,6 +48,12 @@ class Guardado(BaseModel):
 class Orden(BaseModel):
     tenant: str
     ids: list[str] = Field(..., max_length=500)
+
+
+class PedidoSugerencia(BaseModel):
+    tenant: str = Field(..., description="La organización")
+    nombre: str = Field(..., max_length=200, description="El nombre del tipo documental que se está capturando")
+    tipoId: str | None = Field(None, description="El tipo que se está editando, si ya existe: no cuenta entre «los otros tipos»")
 
 
 def _anotar(accion: str, actor: aislamiento.Actor, tenant: str, tipo_id: str, **datos) -> None:
@@ -80,6 +93,34 @@ def ordenar(entrada: Orden, authorization: str | None = Header(default=None)):
     except ErrorAlmacen as exc:
         raise almacen_no_disponible(exc) from exc
     return {"ok": True}
+
+
+@router.post(
+    "/sugerir-descripcion",
+    tags=["Tipos documentales"],
+    summary="Sugerir la descripción de un tipo documental (Gemini)",
+    description=(
+        "A partir del nombre del tipo y de los nombres de los demás tipos de la organización (los archivados y el propio `tipoId` no cuentan), "
+        "Gemini propone una descripción para el clasificador: qué documento es y cómo distinguirlo. Devuelve `{descripcion, modelo}`. No guarda "
+        "nada. Lo puede pedir quien puede editar tipos. 400 si el nombre está en blanco; 503 si el servidor no tiene acceso a Gemini; 429 si "
+        "Google pide esperar; 502 si falla, tarda o no devuelve texto."
+    ),
+)
+async def sugerir_descripcion(entrada: PedidoSugerencia, authorization: str | None = Header(default=None)):
+    aislamiento.exigir_administrar(authorization, entrada.tenant, "tipo_documental")
+    nombre = " ".join(entrada.nombre.split())
+    if not nombre:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Escribe primero el nombre del tipo documental.")
+    try:
+        tipos = await run_in_threadpool(registro_tipos.listar, entrada.tenant)
+    except ErrorAlmacen as exc:
+        raise almacen_no_disponible(exc) from exc
+    # Los «otros»: los que la organización ve (no archivados) y que no son este mismo tipo.
+    otros = [t["datos"].get("nombre", "") for t in tipos if t["id"] != entrada.tipoId and t["datos"].get("estado") != "archivado"]
+    try:
+        return await gemini.sugerir_descripcion(nombre, otros)
+    except gemini.ErrorSugerencia as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.put(

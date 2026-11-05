@@ -1719,9 +1719,17 @@ versiones, ejemplos recortados) vivía en el `localStorage` de **cada navegador*
 | `PUT /tipos-documentales/{id}` | Crea (`revision: 0`) o guarda (`revision: n`) el tipo completo. |
 | `PUT /tipos-documentales/orden` | Guarda el orden de la biblioteca de la organización. |
 | `DELETE /tipos-documentales/{id}?tenant=` | Lo quita (no toca Google: el front borra antes el procesador con `/procesadores`). |
+| `POST /tipos-documentales/sugerir-descripcion` | Gemini propone la descripción de un tipo a partir de su nombre (ver «Sugerir la descripción de un tipo»). No guarda nada. |
 
 Piden la llave de servicio **y** el JWT de la persona (HU11): leer los de otra organización es 403 `sin_acceso` y un id ajeno
 responde 404 igual que uno que no existe.
+
+**El nombre es único en la organización (2026-11-04).** Sin distinguir mayúsculas ni espacios de más (la misma regla que procesos, grupos y
+tipos de expediente virtual): crear, renombrar o desarchivar un tipo con el nombre de otro es 409 `ya_existe`. Los **archivados no ocupan
+nombre**. Solo se revisa cuando el tipo ENTRA a un nombre: los duplicados que ya existían se siguen guardando mientras no se toque su
+nombre (activarlos, calibrarlos, editar la descripción), y se resuelven renombrando, archivando o borrando uno. Lo cuida el servicio
+(`exigir_nombre_libre` en `tipos_documentales_comun.py`, igual en el JSONL y en SQL, con candado dentro de la transacción), no un índice
+único: la regla depende del estado, que vive dentro del JSON.
 
 **Dos personas editando lo mismo.** Cada tipo lleva una `revision`. Guardar exige la que se editó; si otra persona guardó antes,
 es un 409 `conflicto` con `revisionActual` y no se pisa nada. Crear con un id que ya existe —en esta organización o en
@@ -1754,6 +1762,34 @@ responde `{campos}` y la persona elige cuáles agregar. Por dentro es `schemas.s
 versión guardada en él, que se borra en cuanto se leyó. Tarda unos segundos (~13 con una factura de una página) y lo propuesto
 varía un poco de una vez a otra. Pide sesión y el rol que administra tipos documentales; si Google no puede leer el documento
 responde 422 con un mensaje para la persona, y nunca el texto de Google. Prueba: `verificar_generar_campos.py`.
+
+### Sugerir la descripción de un tipo (Gemini, 2026-11-05)
+
+`POST /tipos-documentales/sugerir-descripcion` (JSON: `tenant`, `nombre` y, si el tipo ya existe, `tipoId`) es el «Sugerir descripción» del paso 1
+del alta: **Gemini** (Vertex AI) propone la `descripcion` del tipo —la etiqueta con la que el clasificador lo reconoce: qué documento es y cómo
+distinguirlo— a partir de su nombre y de los nombres de los OTROS tipos de la organización (los archivados y el propio `tipoId` no cuentan; hasta 30,
+sin repetidos). Responde `{descripcion, modelo}` y **no guarda nada**: la persona la revisa y la edita. Lo pide quien puede editar tipos
+(Administrador y Supervisor; los demás, 403 `sin_permiso`, y no se llama a Google).
+
+Es lo ÚNICO del sistema que usa un modelo de lenguaje de texto (el resto es Document AI) y no agrega proveedor ni llave: usa la **misma credencial de
+Google** y se cobra al proyecto `DOCAI_PROJECT_ID`. Hay que saber:
+
+- **Cuánto cuesta** (precios de agregadores, no de Google; confirmar en la consola): con `gemini-3.1-flash-lite` (el default), unos US$0.0002 a 0.0003
+  por sugerencia, ~1.5 a 3 s. Los modelos que «piensan» (`gemini-3-flash-preview`, `gemini-3.5-flash`) salen ~10 a 40 veces más caros por el razonamiento
+  y no mejoran la tarea. El front limita a 20 sugerencias por minuto por persona.
+- **Configuración** (`.env`, con default; ver `.env.example`): `GEMINI_MODELO` (los nombres caducan rápido: los Gemini 2.5 ya no existen para este
+  proyecto; los vigentes se listan con `GET https://aiplatform.googleapis.com/v1beta1/publishers/google/models`), `GEMINI_REGION` (`global`) y
+  `GEMINI_TIMEOUT` (30 s). Requiere que la API de Vertex AI esté habilitada en el proyecto de Document AI y que la cuenta de servicio pueda usarla; se
+  manda la cabecera `x-goog-user-project` porque la cuenta de servicio es de OTRO proyecto, donde Vertex AI no está habilitada.
+- **Los tokens de salida se dejan holgados** (1500): estos modelos gastan el tope razonando y con 200 la respuesta salía cortada. Si aun así sale
+  cortada por `MAX_TOKENS`, se entrega solo hasta la última frase completa, o nada.
+- **Los fallos** nunca filtran lo que dijo Google (proyecto, modelo, mensaje: eso va al log): 503 si el servidor no tiene proyecto o credencial, o Google
+  contesta 401/403/404 (API sin habilitar, sin permiso, modelo retirado); 429 si hay cuota agotada; 502 si Google falla, tarda o devuelve algo vacío o
+  bloqueado; 400 si el nombre está en blanco.
+- Un modelo barato **afirma con seguridad detalles que no sabe** («incluye obligatoriamente el logotipo»): el prompt pide no inventar, pero lo que de
+  verdad lo cubre es que la pantalla lo presenta como borrador («revísala antes de guardar») y nunca lo guarda solo.
+
+Prueba: `verificar_sugerir_descripcion.py` (offline, con Gemini sustituido por un doble; 17 mutaciones atrapadas de 17).
 
 **Un clasificador por organización (2026-10-26).** Hasta entonces era UNO para todo el sistema, con los tipos activos de todas: un
 documento de una organización podía caer en un tipo de otra, lo que una guardaba cambiaba el clasificador de las demás y los
@@ -1803,6 +1839,7 @@ Google: lo creado antes del 2026-10-15 (cuando el catálogo pasó al servidor) n
 ```
 .venv/Scripts/python verificar_tipos_documentales.py
 .venv/Scripts/python verificar_clasificadores.py
+.venv/Scripts/python verificar_sugerir_descripcion.py
 ```
 
 Offline: crear, ver desde otra persona, 409 por revisión, aislamiento, validación, orden, auditoría, clasificador sin cuerpo con
