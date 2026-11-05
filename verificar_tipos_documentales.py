@@ -12,6 +12,7 @@ Lo que se prueba:
 - un tipo de otra organización responde como si no existiera (404), y su tenant, 403 `sin_acceso`;
 - lo que no es un tipo (id raro, sin nombre, estado inventado, enorme) se rechaza, y lo que el servidor pone no se puede forzar;
 - el orden de la biblioteca se guarda por organización;
+- el nombre es único en la organización (409 `ya_existe`, sin distinguir mayúsculas ni espacios de más; los archivados no cuentan);
 - crear, borrar, cambiar de estado y calibrar dejan rastro con quién; guardar a secas, no;
 - el clasificador de CADA organización se sincroniza SIN cuerpo, con los tipos activos de ESA organización, y `asegurar` solo corrige
   si hay desfase (o lo crea si falta); quien no es de la organización recibe 403 y el administrador de plataforma solo toca el suyo.
@@ -406,6 +407,39 @@ try:
     n = nuevo_id()
     r = guardar(a_admin, org_a, n, tipo("Después del corte"), 0)
     rev("y el guardado siguiente no queda pegado a ella", r.status_code == 200 and n in ids(a_admin, org_a))
+
+    titulo("14 · El nombre es único en la organización: 409 `ya_existe` (2026-11-04)")
+
+    def ya_existe(r) -> bool:
+        d = r.json().get("detail") if r.status_code == 409 else None
+        return isinstance(d, dict) and d.get("codigo") == "ya_existe" and d.get("mensaje") == "Ya hay un tipo documental con ese nombre."
+
+    cf = nuevo_id()
+    r = guardar(a_admin, org_a, cf, tipo("Constancia Fiscal"), 0)
+    rev("crear «Constancia Fiscal»: 200", r.status_code == 200, r.text[:200])
+    altas_antes = len(auditoria("DOCUMENT_TYPE_CREATED"))
+    otro = nuevo_id()
+    r = guardar(a_otra, org_a, otro, tipo("  constancia   FISCAL "), 0)
+    rev("otra persona de la organización NO puede crear otro con ese nombre (mayúsculas y espacios de más no cuentan): 409 `ya_existe`", ya_existe(r), r.text[:200])
+    rev("…el repetido no quedó, ni dejó rastro de alta", otro not in ids(a_admin, org_a) and len(auditoria("DOCUMENT_TYPE_CREATED")) == altas_antes)
+    r = guardar(b_admin, org_b, nuevo_id(), tipo("Constancia Fiscal"), 0)
+    rev("otra organización sí puede llamar así a uno suyo", r.status_code == 200, r.text[:200])
+    r = guardar(a_otra, org_a, otro, tipo("Constancia Fiscal 2"), 0)
+    rev("con otro nombre, sí", r.status_code == 200, r.text[:200])
+    r = guardar(a_otra, org_a, otro, tipo("CONSTANCIA FISCAL"), 1)
+    nombre_otro = next(t["datos"]["nombre"] for t in listar(a_admin, org_a).json()["tipos"] if t["id"] == otro)
+    rev("renombrarlo a uno ocupado: 409 `ya_existe`, y conserva su nombre", ya_existe(r) and nombre_otro == "Constancia Fiscal 2", f"{r.text[:160]} / {nombre_otro}")
+    r = guardar(a_admin, org_a, cf, tipo("constancia fiscal"), 1)
+    rev("cambiarle solo las mayúsculas al suyo propio sí se puede", r.status_code == 200, r.text[:200])
+    r = guardar(a_admin, org_a, cf, tipo("constancia fiscal", estado="archivado"), 2)
+    r2 = guardar(a_otra, org_a, otro, tipo("CONSTANCIA FISCAL"), 1)
+    rev("archivar libera el nombre: el otro ya puede tomarlo", r.status_code == 200 and r2.status_code == 200, f"{r.text[:120]} / {r2.text[:120]}")
+    r = guardar(a_admin, org_a, cf, tipo("constancia fiscal", estado="borrador"), 3)
+    rev("desarchivar cuando otro ya tomó su nombre: 409 `ya_existe`", ya_existe(r), r.text[:200])
+    r = guardar(a_admin, org_a, cf, tipo("constancia fiscal", estado="archivado", descripcion="Otra"), 3)
+    rev("guardar el archivado sin desarchivarlo sí se puede", r.status_code == 200, r.text[:200])
+    r = guardar(a_otra, org_a, otro, tipo("Constancia Fiscal 3"), 1)
+    rev("una revisión vieja sigue siendo `conflicto` (no `ya_existe`)", r.status_code == 409 and r.json()["detail"].get("codigo") == "conflicto", r.text[:200])
 finally:
     shutil.rmtree(RAIZ, ignore_errors=True)
 

@@ -88,8 +88,10 @@ def ordenar(entrada: Orden, authorization: str | None = Header(default=None)):
     summary="Crear o guardar un tipo documental",
     description=(
         "Con `revision: 0` crea el tipo; con otra, lo actualiza SI esa sigue siendo la revisión vigente. Si alguien lo guardó "
-        "antes, responde 409 con `revisionActual`: hay que volver a leerlo y no se pisa nada. Devuelve el tipo con su "
-        "revisión nueva."
+        "antes, responde 409 `conflicto` con `revisionActual`: hay que volver a leerlo y no se pisa nada. El nombre es único en la "
+        "organización (sin distinguir mayúsculas ni espacios de más; los archivados no cuentan): crear, renombrar o desarchivar un "
+        "tipo con el nombre de otro responde 409 `ya_existe`. Guardar sin tocar el nombre no choca, aunque ya hubiera un duplicado "
+        "de antes de esta regla. Devuelve el tipo con su revisión nueva."
     ),
 )
 def guardar(tipo_id: str, entrada: Guardado, authorization: str | None = Header(default=None)):
@@ -108,6 +110,11 @@ def guardar(tipo_id: str, entrada: Guardado, authorization: str | None = Header(
                 "mensaje": "Otra persona guardó este tipo documental antes que tú.",
                 "revisionActual": exc.revision_actual,
             },
+        ) from exc
+    except registro_tipos.NombreRepetido as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"codigo": "ya_existe", "mensaje": "Ya hay un tipo documental con ese nombre."},
         ) from exc
     except ErrorAlmacen as exc:
         raise almacen_no_disponible(exc) from exc
