@@ -1142,6 +1142,7 @@ recibe el enlace**: la HU está completa pero el correo se lee del disco.
 `FRONT_URL` tiene que apuntar al front real de cada ambiente (en dev de CSI es
 `https://dev-biblioratum.buzzword.com.mx` —el dominio, no la IP—, no el localhost del
 default), porque de ahí sale el enlace de todos los correos. Los `.eml` no se limpian solos.
+Si `FRONT_URL` es una IP (`http://172.10.30.15:3401`), el arranque lo AVISA (2026-11-03: `avisos_configuracion` de `/health` sube y el log dice «los enlaces de los correos llevan la IP del servidor»): cada ambiente pone su dominio —dev, staging o producción— en el `.env` de su carpeta del servidor y reinicia su pm2. Lo prueba `verificar_avisos_configuracion.py`.
 
 #### Salir por el servicio de ART Broker (`CORREO_MODO=api`, desde el 2026-10-13)
 
@@ -1718,9 +1719,17 @@ versiones, ejemplos recortados) vivía en el `localStorage` de **cada navegador*
 | `PUT /tipos-documentales/{id}` | Crea (`revision: 0`) o guarda (`revision: n`) el tipo completo. |
 | `PUT /tipos-documentales/orden` | Guarda el orden de la biblioteca de la organización. |
 | `DELETE /tipos-documentales/{id}?tenant=` | Lo quita (no toca Google: el front borra antes el procesador con `/procesadores`). |
+| `POST /tipos-documentales/sugerir-descripcion` | Gemini propone la descripción de un tipo a partir de su nombre (ver «Sugerir la descripción de un tipo»). No guarda nada. |
 
 Piden la llave de servicio **y** el JWT de la persona (HU11): leer los de otra organización es 403 `sin_acceso` y un id ajeno
 responde 404 igual que uno que no existe.
+
+**El nombre es único en la organización (2026-11-04).** Sin distinguir mayúsculas ni espacios de más (la misma regla que procesos, grupos y
+tipos de expediente virtual): crear, renombrar o desarchivar un tipo con el nombre de otro es 409 `ya_existe`. Los **archivados no ocupan
+nombre**. Solo se revisa cuando el tipo ENTRA a un nombre: los duplicados que ya existían se siguen guardando mientras no se toque su
+nombre (activarlos, calibrarlos, editar la descripción), y se resuelven renombrando, archivando o borrando uno. Lo cuida el servicio
+(`exigir_nombre_libre` en `tipos_documentales_comun.py`, igual en el JSONL y en SQL, con candado dentro de la transacción), no un índice
+único: la regla depende del estado, que vive dentro del JSON.
 
 **Dos personas editando lo mismo.** Cada tipo lleva una `revision`. Guardar exige la que se editó; si otra persona guardó antes,
 es un 409 `conflicto` con `revisionActual` y no se pisa nada. Crear con un id que ya existe —en esta organización o en
@@ -1745,7 +1754,7 @@ administrador de plataforma solo toca el clasificador de SU espacio, nunca el de
 
 ### Generar campos a partir de un documento
 
-`POST /procesadores/generar-campos` (multipart: `archivo`, `tenant`, y opcionales `nombre` y `descripcion` del tipo) es el «Generar a
+`POST /procesadores/generar-campos` (multipart: `archivo`, `tenant`, y opcionales `nombre`, `descripcion` e `instrucciones` del tipo) es el «Generar a
 partir de un documento» del paso 2 del alta: Document AI lee un documento de ejemplo y **propone** campos (nombre legible, tipo de
 dato, descripción, obligatorio, cardinalidad, valores de lista y subcampos de cada grupo). No guarda nada ni crea procesadores:
 responde `{campos}` y la persona elige cuáles agregar. Por dentro es `schemas.schemaVersions:generate` (v1beta3), bajo UN recurso
@@ -1753,6 +1762,43 @@ responde `{campos}` y la persona elige cuáles agregar. Por dentro es `schemas.s
 versión guardada en él, que se borra en cuanto se leyó. Tarda unos segundos (~13 con una factura de una página) y lo propuesto
 varía un poco de una vez a otra. Pide sesión y el rol que administra tipos documentales; si Google no puede leer el documento
 responde 422 con un mensaje para la persona, y nunca el texto de Google. Prueba: `verificar_generar_campos.py`.
+
+**Las `instrucciones` del tipo (2026-11-05)** son las mismas «Instrucciones para la extracción» que luego viajan al extractor como su
+`documentPrompt` (hasta `MAX_INSTRUCCIONES`, 1000 caracteres; más es 422). Si llegan, se añaden al `prompt` de la generación como
+«Indicaciones del cliente para leer este tipo de documento: …», entre el contexto del tipo y la instrucción fija. Medido contra Google
+(3 corridas por condición, dos documentos de una página): el generador las **obedece de forma estable, como filtro de campos**: con «la
+persona que interesa es el titular, no el beneficiario» el campo del beneficiario salió 0 de 3 veces (sin instrucciones, 3 de 3), y con
+«ignora la fecha de inicio de operaciones» también 0 de 3. Efecto lateral visto: con un PDF en inglés, sin instrucciones los nombres de
+campo salieron en inglés y con ellas en español. No se midió con instrucciones que no hablen de campos (formatos, etc.). El texto exacto
+del prompt es lo que se midió: cambiarlo es cambiar lo medido.
+
+### Sugerir la descripción de un tipo (Gemini, 2026-11-05)
+
+`POST /tipos-documentales/sugerir-descripcion` (JSON: `tenant`, `nombre` y, si el tipo ya existe, `tipoId`) es el «Sugerir descripción» del paso 1
+del alta: **Gemini** (Vertex AI) propone la `descripcion` del tipo —la etiqueta con la que el clasificador lo reconoce: qué documento es y cómo
+distinguirlo— a partir de su nombre y de los nombres de los OTROS tipos de la organización (los archivados y el propio `tipoId` no cuentan; hasta 30,
+sin repetidos). Responde `{descripcion, modelo}` y **no guarda nada**: la persona la revisa y la edita. Lo pide quien puede editar tipos
+(Administrador y Supervisor; los demás, 403 `sin_permiso`, y no se llama a Google).
+
+Es lo ÚNICO del sistema que usa un modelo de lenguaje de texto (el resto es Document AI) y no agrega proveedor ni llave: usa la **misma credencial de
+Google** y se cobra al proyecto `DOCAI_PROJECT_ID`. Hay que saber:
+
+- **Cuánto cuesta** (precios de agregadores, no de Google; confirmar en la consola): con `gemini-3.1-flash-lite` (el default), unos US$0.0002 a 0.0003
+  por sugerencia, ~1.5 a 3 s. Los modelos que «piensan» (`gemini-3-flash-preview`, `gemini-3.5-flash`) salen ~10 a 40 veces más caros por el razonamiento
+  y no mejoran la tarea. El front limita a 20 sugerencias por minuto por persona.
+- **Configuración** (`.env`, con default; ver `.env.example`): `GEMINI_MODELO` (los nombres caducan rápido: los Gemini 2.5 ya no existen para este
+  proyecto; los vigentes se listan con `GET https://aiplatform.googleapis.com/v1beta1/publishers/google/models`), `GEMINI_REGION` (`global`) y
+  `GEMINI_TIMEOUT` (30 s). Requiere que la API de Vertex AI esté habilitada en el proyecto de Document AI y que la cuenta de servicio pueda usarla; se
+  manda la cabecera `x-goog-user-project` porque la cuenta de servicio es de OTRO proyecto, donde Vertex AI no está habilitada.
+- **Los tokens de salida se dejan holgados** (1500): estos modelos gastan el tope razonando y con 200 la respuesta salía cortada. Si aun así sale
+  cortada por `MAX_TOKENS`, se entrega solo hasta la última frase completa, o nada.
+- **Los fallos** nunca filtran lo que dijo Google (proyecto, modelo, mensaje: eso va al log): 503 si el servidor no tiene proyecto o credencial, o Google
+  contesta 401/403/404 (API sin habilitar, sin permiso, modelo retirado); 429 si hay cuota agotada; 502 si Google falla, tarda o devuelve algo vacío o
+  bloqueado; 400 si el nombre está en blanco.
+- Un modelo barato **afirma con seguridad detalles que no sabe** («incluye obligatoriamente el logotipo»): el prompt pide no inventar, pero lo que de
+  verdad lo cubre es que la pantalla lo presenta como borrador («revísala antes de guardar») y nunca lo guarda solo.
+
+Prueba: `verificar_sugerir_descripcion.py` (offline, con Gemini sustituido por un doble; 17 mutaciones atrapadas de 17).
 
 **Un clasificador por organización (2026-10-26).** Hasta entonces era UNO para todo el sistema, con los tipos activos de todas: un
 documento de una organización podía caer en un tipo de otra, lo que una guardaba cambiaba el clasificador de las demás y los
@@ -1802,6 +1848,7 @@ Google: lo creado antes del 2026-10-15 (cuando el catálogo pasó al servidor) n
 ```
 .venv/Scripts/python verificar_tipos_documentales.py
 .venv/Scripts/python verificar_clasificadores.py
+.venv/Scripts/python verificar_sugerir_descripcion.py
 ```
 
 Offline: crear, ver desde otra persona, 409 por revisión, aislamiento, validación, orden, auditoría, clasificador sin cuerpo con
@@ -1974,7 +2021,8 @@ decisiones y lo que falta están en [`docs/modelo-entidades.md`](docs/modelo-ent
 | `GET /expedientes/{id}?tenant=` | el expediente (con los mismos totales) y sus documentos completos, en el orden en que se agregaron | ídem |
 | `POST /expedientes/documentos` (formulario: `archivo`, `tenant`, `sha256?`) | **registra el documento de una carga manual** (la del Pipeline del front): guarda los bytes y lo anota con `canal: MANUAL`; mismo formato que la bandeja (PDF, JPEG, PNG, TIFF) y mismos límites; cualquier persona de la organización (la sesión manda, como en `/archivos`); dos cargas del mismo archivo son dos documentos con los mismos bytes. Es lo que llena «Archivos procesados» con lo que no llegó por la API (desde el 2026-10-29; antes solo nacían los de la API) |
 | `GET /expedientes/documentos?tenant=&sin_expediente=` | los documentos y los expedientes en que está cada uno; `true` = solo el void, `false` = solo los organizados | ídem |
-| `POST /expedientes/` `{tenant, nombre, tipoId}` | crea un expediente vacío (201) como instancia de ese tipo, que debe ser de la misma organización (si no, 404) | `roles.PUEDEN_ORGANIZAR` |
+| `POST /expedientes/` `{tenant, nombre, grupoId}` | crea un expediente vacío (201) DENTRO de un grupo (desde el 2026-11-03, ver «Grupos» abajo): `grupoId` es obligatorio donde hay base (400 sin él; 404 si el grupo no es de la organización). El expediente ya no tiene tipo (desde el 2026-10-29) | `roles.PUEDEN_ORGANIZAR` |
+| `PUT /expedientes/{id}/grupo` `{tenant, grupoId}` | asigna el expediente a un grupo o lo pasa a otro (nunca queda sin grupo); idempotente (`cambiado: false` si ya estaba) | ídem |
 | `PUT /expedientes/{id}/documentos/{documento_id}?tenant=` | mete un documento; idempotente (`agregado: false` si ya estaba) | ídem |
 | `DELETE /expedientes/{id}/documentos/{documento_id}?tenant=` | lo saca; el documento NO se borra y, si era su último expediente, vuelve al void | ídem |
 
@@ -1988,6 +2036,37 @@ crean tipos (propuesta de producto, pendiente de confirmar con César).
 `/expedientes` y no de `/documentos` porque ese prefijo ya es del grupo que habla con SQL Server.
 
 Verificarlo, offline: `venv/bin/python verificar_expedientes.py`.
+
+## Grupos: el nivel de arriba de los expedientes (2026-11-03)
+
+Decisión de producto (Moibe, 2026-11-03): varios expedientes viven juntos en un **grupo**. Cada organización lo usa como quiere —áreas, departamentos,
+trimestres del año…—, así que el nombre genérico es «Grupo». Es **un solo nivel**: un grupo tiene expedientes y nada más; los expedientes no se anidan
+dentro de expedientes ni los grupos dentro de grupos. El grupo se crea ANTES (módulo de configuración) y al crear un expediente se elige a cuál pertenece.
+
+| Ruta | Qué hace | Quién |
+|---|---|---|
+| `GET /grupos/?tenant=` | los grupos de la organización, en el orden de su creación, cada uno con su `totalExpedientes` | cualquiera que opere en ella |
+| `GET /grupos/{id}?tenant=` | un grupo y cuántos expedientes tiene | ídem |
+| `POST /grupos/` `{tenant, nombre}` | crea un grupo vacío (201); el nombre es único en la organización sin distinguir mayúsculas ni espacios de más (409 `ya_existe`) | `roles.PUEDEN_ADMINISTRAR` |
+| `PATCH /grupos/{id}` `{tenant, nombre}` | lo renombra (el `id` no cambia: sus expedientes ven el nombre nuevo); solo cambiar las mayúsculas del propio nombre sí se puede; idempotente (`cambiado: false`) | ídem |
+| `DELETE /grupos/{id}?tenant=` | lo borra y libera su nombre; **solo si no tiene expedientes** (409 `con_expedientes`, con cuántos): un expediente con grupo no puede quedarse sin él | ídem |
+| `POST /expedientes/` con `grupoId` · `PUT /expedientes/{id}/grupo` | meter un expediente a un grupo, al crearlo o después (ver la tabla de expedientes) | `roles.PUEDEN_ORGANIZAR` |
+
+- **Los expedientes de antes no tienen grupo** (la migración `0010` agrega `cases.caseGroupId` NULLABLE a propósito) y salen con `grupo: null`: se les asigna después con
+  `PUT /expedientes/{id}/grupo`. Uno que ya tiene grupo se puede pasar a otro, pero **no dejarlo sin grupo** (no hay forma de quitarlo: `grupoId` es obligatorio). Los
+  expedientes nuevos sí lo exigen.
+- **Lo cuida la base, no solo el servicio:** la llave foránea `FK_cases_caseGroup` es compuesta (organización + grupo), así que un expediente no puede apuntar a un
+  grupo de otra organización; los nombres no se repiten por debajo (`UQ_caseGroups_tenant_name`, base CI) y un grupo con expedientes no se borra aunque alguien lo intente
+  por fuera (sin `ON DELETE`). Crear, asignar y borrar bloquean la fila del grupo (`UPDLOCK, HOLDLOCK`), así que un expediente nuevo no se cuela entre la cuenta y el borrado.
+- **La lista y el detalle de un expediente traen `grupo`** (`{id, nombre}` o `null`). El detalle de un expediente de un grupo borrado no existe: no se puede borrar un grupo con expedientes.
+- **Solo en SQL** (decisión del 2026-10-28: todo lo nuevo directo a SQL): sin base (la laptop, las pruebas offline) `/grupos` responde 503, los expedientes se crean sin grupo
+  y se ven con `grupo: null`.
+- **Auditoría:** `CASE_GROUP_CREATED`, `CASE_GROUP_RENAMED` (nombre `antes` y `despues`), `CASE_GROUP_DELETED` y `CASE_GROUP_ASSIGNED` (el expediente, el grupo y el que tenía:
+  `grupoAnteriorId`, `null` si no tenía; no se anota si ya estaba en ese); `CASE_CREATED` ahora lleva `grupoId` y `grupoNombre`.
+- Quién puede qué es una propuesta de producto, pendiente de confirmar con César: crear, renombrar y borrar grupos es de quien administra (Administrador y Supervisor); asignar
+  un expediente a un grupo es de quien organiza (también Analista y Operador).
+
+Verificarlo (contra SQL Server en Docker, con todas las migraciones aplicadas por el corredor de verdad): `.venv/Scripts/python verificar_grupos.py`.
 
 ## Procesos: el motor de reglas guarda su dibujo, por organización (2026-10-20)
 

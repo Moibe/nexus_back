@@ -4,6 +4,11 @@ Un expediente es un RECEPTÁCULO de documentos (desde el 2026-10-29 no tiene tip
 reúne documentos; un documento puede estar en ninguno (el «void»), en uno o en varios. Los documentos NACEN al entrar al sistema
 (`servicios/documentos.py`), no aquí: este router solo los organiza.
 
+Cada expediente vive en un GRUPO (`/grupos`, ver `servicios/grupos.py`): el nivel de arriba, que cada organización usa como quiere (áreas, departamentos,
+trimestres…). El grupo se elige AL CREAR el expediente y es obligatorio (400 sin él; 404 si no es de la organización); los expedientes anteriores a
+los grupos no tienen y se les asigna después con `PUT /{id}/grupo`, que también pasa un expediente de un grupo a otro pero nunca lo deja sin grupo.
+Los grupos solo viven en SQL: sin base, las rutas que los usan responden 503 y los expedientes se crean sin grupo.
+
 Dentro de un expediente viven sus EXPEDIENTES VIRTUALES (`/expedientes/{id}/virtuales`, ver `servicios/expedientes_virtuales.py`): grupitos
 de sus documentos, cada uno instancia de un tipo de expediente virtual (`/tipos-expediente`), que son lo que usará el motor de reglas. Solo
 viven en SQL: sin base, sus rutas responden 503.
@@ -14,14 +19,15 @@ comprueba contra el registro, igual que en tipos documentales, procesos y bandej
 ## Quién puede qué
 
 - **Leer** (listar, ver un expediente, listar documentos): cualquiera que opere en la organización.
-- **Organizar** (crear un expediente, meter o sacar un documento, o SUBIRLE un archivo directo; crear, llenar y borrar sus expedientes
+- **Organizar** (crear un expediente, asignarle grupo, meter o sacar un documento, o SUBIRLE un archivo directo; crear, llenar y borrar sus expedientes
   virtuales): `roles.PUEDEN_ORGANIZAR`
   (Administrador, Supervisor, Analista y Operador); Compliance, Auditor y Viewer reciben 403 `sin_permiso`. Es una propuesta de producto
   pendiente de confirmar con César.
 
 ## Qué se anota (auditoría)
 
-`CASE_CREATED`, `CASE_DOCUMENT_ADDED` (también al subir un archivo directo a un expediente, con `subida: true`) y `CASE_DOCUMENT_REMOVED`,
+`CASE_CREATED` (con el grupo en `grupoId` y `grupoNombre`), `CASE_GROUP_ASSIGNED` (al asignar o cambiar de grupo; no se anota si ya estaba en ese),
+`CASE_DOCUMENT_ADDED` (también al subir un archivo directo a un expediente, con `subida: true`) y `CASE_DOCUMENT_REMOVED`,
 con quién lo hizo; de los virtuales, `VIRTUAL_CASE_CREATED`,
 `VIRTUAL_CASE_DOCUMENT_ADDED`, `VIRTUAL_CASE_DOCUMENT_REMOVED` y `VIRTUAL_CASE_DELETED`. Meter un documento que ya estaba no repite el rastro.
 Lo que mete SOLO el clasificador a un virtual también deja `VIRTUAL_CASE_DOCUMENT_ADDED`, con `origen: "clasificador"`, el tipo y la confianza;
@@ -54,7 +60,7 @@ from errores import SinClasificador
 from routers.archivos import guardar_subida
 from routers.bandeja import MIME_BANDEJA
 from routers.errores import almacen_no_disponible
-from servicios import aislamiento, auditoria, clasificadores, datos_extraidos, documentos, expedientes, expedientes_virtuales, ia
+from servicios import aislamiento, auditoria, clasificadores, datos_extraidos, documentos, expedientes, expedientes_virtuales, grupos, ia
 from servicios.almacen import ErrorAlmacen
 from servicios.subidas import normalizar_tipo
 
@@ -69,6 +75,7 @@ ESPERA_CLASIFICAR_AL_SUBIR = 60
 _NO_EXISTE = "Ese expediente no existe."
 _VIRTUAL_NO_EXISTE = "Ese expediente virtual no existe."
 _TIPO_NO_EXISTE = "Ese tipo de expediente virtual no existe."
+_GRUPO_NO_EXISTE = "Ese grupo no existe."
 _DOCUMENTO_NO_EXISTE = "Ese documento no existe."
 _DOCUMENTO_NO_ESTA = "Ese documento no está en el expediente."
 _DOCUMENTO_NO_ESTA_EN_VIRTUAL = "Ese documento no está en el expediente virtual."
@@ -77,6 +84,15 @@ _DOCUMENTO_NO_ESTA_EN_VIRTUAL = "Ese documento no está en el expediente virtual
 class NuevoExpediente(BaseModel):
     tenant: str = Field(..., description="La organización a la que pertenece el expediente")
     nombre: str = Field(..., description="Cómo se llama el expediente (hasta 200 caracteres)")
+    grupoId: str | None = Field(
+        default=None,
+        description="El grupo en que vive el expediente (`/grupos`), de la misma organización. Obligatorio donde hay base: sin él, 400.",
+    )
+
+
+class AsignacionDeGrupo(BaseModel):
+    tenant: str = Field(..., description="La organización")
+    grupoId: str = Field(..., description="El grupo al que pasa el expediente (`/grupos`), de la misma organización")
 
 
 class NuevoVirtual(BaseModel):
@@ -166,20 +182,68 @@ def listar(tenant: str = Query(..., description="La organización"), authorizati
     status_code=status.HTTP_201_CREATED,
     tags=["Expedientes"],
     summary="Crear un expediente",
-    description="Crea un expediente vacío con ese nombre. Dos expedientes pueden llamarse igual. No tiene tipo: lo tienen sus expedientes virtuales.",
+    description=(
+        "Crea un expediente vacío con ese nombre, dentro del grupo `grupoId` (obligatorio donde hay base: sin él, 400; uno que no es de la "
+        "organización, 404). Dos expedientes pueden llamarse igual. No tiene tipo: lo tienen sus expedientes virtuales."
+    ),
 )
 def crear(entrada: NuevoExpediente, authorization: str | None = Header(default=None)):
     actor = aislamiento.exigir_organizar(authorization, entrada.tenant, "expediente")
     try:
-        creado = expedientes.crear(entrada.tenant, entrada.nombre, actor.guid)
+        creado = expedientes.crear(entrada.tenant, entrada.nombre, actor.guid, entrada.grupoId)
     except expedientes.ExpedienteInvalido as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except expedientes.GrupoNoEncontrado as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_GRUPO_NO_EXISTE) from exc
+    except grupos.SinBase as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except ValueError as exc:
         raise _tenant_invalido(exc) from exc
     except ErrorAlmacen as exc:
         raise almacen_no_disponible(exc) from exc
-    _anotar(auditoria.CASE_CREATED, actor, entrada.tenant, expedienteId=creado["id"], nombre=creado["nombre"])
+    grupo = creado.get("grupo") or {}
+    _anotar(auditoria.CASE_CREATED, actor, entrada.tenant, expedienteId=creado["id"], nombre=creado["nombre"], grupoId=grupo.get("id"), grupoNombre=grupo.get("nombre"))
     return creado
+
+
+@router.put(
+    "/{expediente_id}/grupo",
+    tags=["Expedientes"],
+    summary="Asignar un expediente a un grupo (o pasarlo a otro)",
+    description=(
+        "Los expedientes anteriores a los grupos no tienen y se les asigna aquí; uno que ya tiene grupo se puede pasar a otro, pero nunca queda sin "
+        "grupo. Idempotente: si ya estaba en ese grupo responde `cambiado: false` y no hace nada. Devuelve el expediente como queda y el grupo en "
+        "que estaba (`grupoAnterior`, `null` si no tenía). Un grupo o un expediente que no son de la organización: 404. Sin base, 503."
+    ),
+)
+def asignar_grupo(expediente_id: str, entrada: AsignacionDeGrupo, authorization: str | None = Header(default=None)):
+    actor = aislamiento.exigir_organizar(authorization, entrada.tenant, "expediente")
+    try:
+        expediente, anterior = expedientes.asignar_grupo(entrada.tenant, expediente_id, entrada.grupoId, actor.guid)
+    except expedientes.NoEncontrado as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE) from exc
+    except expedientes.GrupoNoEncontrado as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_GRUPO_NO_EXISTE) from exc
+    except grupos.SinBase as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise _tenant_invalido(exc) from exc
+    except ErrorAlmacen as exc:
+        raise almacen_no_disponible(exc) from exc
+    cambiado = anterior is None or anterior["id"] != entrada.grupoId
+    if cambiado:
+        grupo = expediente["grupo"] or {}
+        _anotar(
+            auditoria.CASE_GROUP_ASSIGNED,
+            actor,
+            entrada.tenant,
+            expedienteId=expediente_id,
+            nombre=expediente["nombre"],
+            grupoId=grupo.get("id"),
+            grupoNombre=grupo.get("nombre"),
+            grupoAnteriorId=(anterior or {}).get("id"),
+        )
+    return {"cambiado": cambiado, "expediente": expediente, "grupoAnterior": anterior}
 
 
 # Va ANTES de `/{expediente_id}`: si no, «documentos» se tomaría por el id de un expediente. Cuelga de /expedientes y no de /documentos

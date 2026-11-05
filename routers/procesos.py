@@ -71,7 +71,8 @@ def listar(tenant: str = Query(..., description="La organización"), authorizati
     summary="Crear o guardar un proceso",
     description=(
         "Con `revision: 0` crea el proceso; con otra, lo actualiza SI esa sigue siendo la revisión vigente. Si alguien lo guardó "
-        "antes, responde 409 con `revisionActual`: hay que volver a leerlo y no se pisa nada. Devuelve el proceso con su "
+        "antes, responde 409 con `revisionActual`: hay que volver a leerlo y no se pisa nada. El nombre es único en la organización "
+        "(sin distinguir mayúsculas ni espacios de más): otro proceso con ese nombre responde 409 `ya_existe`. Devuelve el proceso con su "
         "revisión nueva."
     ),
 )
@@ -83,6 +84,11 @@ def guardar(proceso_id: str, entrada: Guardado, authorization: str | None = Head
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except registro_procesos.NoEncontrado as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE) from exc
+    except registro_procesos.NombreRepetido as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"codigo": "ya_existe", "mensaje": "Ya hay un proceso con ese nombre en tu organización."},
+        ) from exc
     except registro_procesos.Conflicto as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

@@ -289,6 +289,32 @@ try:
     asyncio.run(svc.generar_campos(b"x", "image/png"))
     rev("la segunda vez ya no busca el recurso: lo recuerda", [ll[0] for ll in google["llamadas"][antes:]] == ["POST", "DELETE"])
     rev("sin nombre ni descripción, la instrucción no inventa contexto", "El documento es de este tipo" not in generaciones()[-1][2]["generateSchemaVersionParams"]["prompt"])
+    rev("y sin instrucciones del tipo tampoco hay «indicaciones» (el prompt de siempre)", "Indicaciones del cliente" not in generaciones()[-1][2]["generateSchemaVersionParams"]["prompt"])
+
+    # Las instrucciones para la extracción orientan la propuesta (medido contra Google el 2026-11-05: el generador las obedece como filtro).
+    asyncio.run(
+        svc.generar_campos(b"x", "application/pdf", "Certificado", "De una oficina", "  La persona que interesa es el titular,\n no el beneficiario.  ")
+    )
+    prompt = generaciones()[-1][2]["generateSchemaVersionParams"]["prompt"]
+    rev(
+        "las instrucciones del tipo viajan en el prompt, con el texto que midió la prueba real",
+        "Indicaciones del cliente para leer este tipo de documento: La persona que interesa es el titular, no el beneficiario. " in prompt,
+        prompt,
+    )
+    rev("en una sola línea: sin saltos ni espacios de sobra", "\n" not in prompt and "  " not in prompt, repr(prompt))
+    rev("junto al contexto del tipo y a la instrucción fija", "El documento es de este tipo: Certificado De una oficina." in prompt and "snake_case" in prompt)
+    rev(
+        "en este orden: contexto del tipo, indicaciones, instrucción fija",
+        prompt.index("El documento es de este tipo") < prompt.index("Indicaciones del cliente") < prompt.index("snake_case"),
+    )
+    asyncio.run(svc.generar_campos(b"x", "application/pdf", "Certificado", "", "  \n \t "))
+    rev("instrucciones en blanco no agregan nada al prompt", "Indicaciones del cliente" not in generaciones()[-1][2]["generateSchemaVersionParams"]["prompt"])
+    asyncio.run(svc.generar_campos(b"x", "application/pdf", "", "", "Ignora la fecha de inicio de operaciones."))
+    rev(
+        "las instrucciones viajan aunque el tipo todavía no tenga nombre ni descripción",
+        "Ignora la fecha de inicio de operaciones." in generaciones()[-1][2]["generateSchemaVersionParams"]["prompt"]
+        and "El documento es de este tipo" not in generaciones()[-1][2]["generateSchemaVersionParams"]["prompt"],
+    )
 
     reiniciar_google()
 
@@ -342,6 +368,21 @@ try:
     rev("con la forma que entiende el paso 2", set(r.json()["campos"][0]) == {"nombre", "tipoDato", "descripcion", "obligatorio", "cardinalidad", "valoresLista", "subcampos"})
     rev("y el contexto del tipo llegó a Google", "Factura De proveedor" in generaciones()[-1][2]["generateSchemaVersionParams"]["prompt"])
     rev("el supervisor también puede (administra tipos documentales)", generar(personas["SUPERVISOR"], org_a).status_code == 200)
+
+    r = generar(a_admin, org_a, nombre="Certificado", instrucciones="La persona que interesa es el titular.")
+    rev(
+        "las instrucciones del tipo llegan a Google por la ruta",
+        r.status_code == 200
+        and "Indicaciones del cliente para leer este tipo de documento: La persona que interesa es el titular. "
+        in generaciones()[-1][2]["generateSchemaVersionParams"]["prompt"],
+        r.text[:200],
+    )
+    r = generar(a_admin, org_a, nombre="Certificado")
+    rev("sin ellas, la ruta sigue igual: sin «indicaciones» en el prompt", r.status_code == 200 and "Indicaciones del cliente" not in generaciones()[-1][2]["generateSchemaVersionParams"]["prompt"])
+    antes_largas = len(generaciones())
+    r = generar(a_admin, org_a, instrucciones="x" * 1001)
+    rev("instrucciones de más de 1000 caracteres se rechazan (422) sin ir a Google", r.status_code == 422 and len(generaciones()) == antes_largas, f"{r.status_code} {r.text[:160]}")
+    rev("justo 1000 caracteres sí caben", generar(a_admin, org_a, instrucciones="x" * 1000).status_code == 200)
 
     antes = len(generaciones())
     r = generar(personas["OPERADOR"], org_a)

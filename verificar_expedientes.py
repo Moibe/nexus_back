@@ -117,9 +117,13 @@ def subir(bearer: str, tenant: str, nombre: str, contenido: bytes):
 TIPOS: dict[str, str] = {}
 
 
+#: Un grupo de cada organización (con `--sql`; se llena en el montaje): desde la migración 0010 un expediente nuevo nace en un grupo.
+GRUPOS: dict[str, str] = {}
+
+
 def crear(bearer: str, tenant: str, nombre):
-    """Crea un expediente. Desde el 2026-10-29 no lleva tipo (lo llevan sus expedientes virtuales)."""
-    return c.post("/expedientes/", json={"tenant": tenant, "nombre": nombre}, headers=cab(bearer))
+    """Crea un expediente. Desde el 2026-10-29 no lleva tipo (lo llevan sus expedientes virtuales); con `--sql`, desde el 2026-11-03, lleva grupo."""
+    return c.post("/expedientes/", json={"tenant": tenant, "nombre": nombre, **({"grupoId": GRUPOS[tenant]} if SQL else {})}, headers=cab(bearer))
 
 
 def virtual(bearer: str, tenant: str, exp: str, tipo: str, nombre: str = "Virtual", documentos: list[str] | None = None):
@@ -219,6 +223,11 @@ try:
     org_a, a_admin = crear_organizacion(bearer_super, "Alfa", "rita@ejemplo.com", "Rumbo-Sereno-Azul-47!")
     org_b, b_admin = crear_organizacion(bearer_super, "Beta", "beto@ejemplo.com", "Rumbo-Sereno-Rojo-48!")
     guid_rita = usuarios.para_login("rita@ejemplo.com")["guid"]
+    if SQL:
+        for t_org, t_adm in ((org_a, a_admin), (org_b, b_admin)):
+            r = c.post("/grupos/", json={"tenant": t_org, "nombre": "General"}, headers=cab(t_adm))
+            assert r.status_code == 201, r.text
+            GRUPOS[t_org] = r.json()["id"]
     P = {}
     for rol in ORGANIZAN + SOLO_LEEN:
         correo = f"{rol.lower()}@ejemplo.com"
@@ -355,6 +364,14 @@ try:
     e1 = r.json()
     rev("el nombre sale limpio (espacios de más fuera) y lo demás lo pone el servidor", e1["nombre"] == "Solicitud de crédito" and e1["id"].startswith("expediente-") and len(e1["id"]) == 11 + 32 and e1["creadoPor"] == guid_rita and e1["creadoEn"] and e1["totalDocumentos"] == 0, str(e1))
     rev("el expediente NO trae tipo: es solo un receptáculo (los tipos son de sus expedientes virtuales)", "tipo" not in e1, str(e1))
+    if SQL:
+        rev("con base nace EN un grupo y lo trae (migración 0010; lo demás de los grupos lo prueba verificar_grupos.py)", e1["grupo"]["id"] == GRUPOS[org_a] and e1["grupo"]["nombre"] == "General", str(e1))
+    else:
+        rev("sin base no hay grupos: se crea sin grupo y se ve con `grupo: null`", e1["grupo"] is None, str(e1))
+        r_g = c.post("/expedientes/", json={"tenant": org_a, "nombre": "Con grupo", "grupoId": "grupo-" + "0" * 32}, headers=cab(a_admin))
+        rev("pedirle un grupo sin base: 503 (los grupos solo viven en SQL) y no crea nada", r_g.status_code == 503 and len(listar(a_admin, org_a).json()["expedientes"]) == 1, r_g.text[:200])
+        rev("las rutas de grupos sin base: 503", c.get("/grupos/", params={"tenant": org_a}, headers=cab(a_admin)).status_code == 503 and c.post("/grupos/", json={"tenant": org_a, "nombre": "X"}, headers=cab(a_admin)).status_code == 503)
+        rev("asignar grupo sin base: 503", c.put(f"/expedientes/{e1['id']}/grupo", json={"tenant": org_a, "grupoId": "grupo-" + "0" * 32}, headers=cab(a_admin)).status_code == 503)
     e1 = e1["id"]
     e2 = crear(a_admin, org_a, "Constitución de sociedad").json()["id"]
     e3 = crear(a_admin, org_a, "Solicitud de crédito").json()["id"]
@@ -366,7 +383,7 @@ try:
         rev(f"un nombre {que} se rechaza (400)", r.status_code == 400, f"{r.status_code} {r.text[:100]}")
     rev("un nombre que ni es texto se rechaza", crear(a_admin, org_a, 123).status_code in (400, 422))
     rev("ningún expediente de la lista trae tipo", all("tipo" not in e for e in lista), str(lista[:1]))
-    r = c.post("/expedientes/", json={"tenant": org_a, "nombre": "Con un tipo de los de antes", "tipoId": tipo_a}, headers=cab(a_admin))
+    r = c.post("/expedientes/", json={"tenant": org_a, "nombre": "Con un tipo de los de antes", "tipoId": tipo_a, **({"grupoId": GRUPOS[org_a]} if SQL else {})}, headers=cab(a_admin))
     rev("un cliente viejo que todavía manda `tipoId` no rompe nada: el expediente se crea, sin tipo", r.status_code == 201 and "tipo" not in r.json(), r.text[:150])
     rev("uno de exactamente 200 caracteres sí cabe", crear(a_admin, org_a, "x" * 200).status_code == 201)
     rev("lo rechazado no creó nada (los tres de antes, el del cliente viejo y el de 200)", len(listar(a_admin, org_a).json()["expedientes"]) == 5)

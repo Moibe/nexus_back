@@ -44,9 +44,16 @@ def obtener(tenant: str, proceso_id: str) -> dict | None:
     return _a_proceso(f) if f else None
 
 
+def _exigir_nombre_libre(cur, tenant: str, proceso_id: str, nombre: str, exigir) -> None:
+    """El nombre es único en la organización. Se leen los de los DEMÁS procesos con candado hasta el final de la transacción: dos guardados a la
+    vez con el mismo nombre no pasan los dos. Se compara en Python, con la misma regla que el JSONL (sin espacios de más ni mayúsculas)."""
+    cur.execute("SELECT name FROM nexus.processes WITH (UPDLOCK, HOLDLOCK) WHERE tenant = ? AND publicId <> ?", tenant, proceso_id)
+    exigir(nombre, [f["name"] for f in tablas.filas(cur)])
+
+
 def guardar(tenant: str, proceso_id: str, limpio: dict, revision: int, por: str) -> tuple[dict, dict | None]:
     """`limpio` ya viene validado. En una transacción, con el renglón bloqueado: dos guardados a la vez no se pisan (409)."""
-    from servicios.procesos import Conflicto, NoEncontrado, ProcesoInvalido
+    from servicios.procesos import Conflicto, NoEncontrado, ProcesoInvalido, clave_de_nombre, exigir_nombre_libre
 
     tipo = limpio.get("tipoExpedienteVirtualId")
     caja = {k: v for k, v in limpio.items() if k != "tipoExpedienteVirtualId"}
@@ -63,6 +70,7 @@ def guardar(tenant: str, proceso_id: str, limpio: dict, revision: int, por: str)
         if revision == 0:
             if actual is not None:
                 raise Conflicto(actual["revision"] if actual["tenant"] == tenant else None)
+            _exigir_nombre_libre(cur, tenant, proceso_id, limpio["nombre"], exigir_nombre_libre)
             cur.execute(
                 "INSERT INTO nexus.processes (publicId, tenant, revision, dataJson, virtualCaseTypePublicId, createdBy) VALUES (?, ?, 1, ?, ?, ?)",
                 proceso_id, tenant, serializado, tipo, por,
@@ -72,6 +80,8 @@ def guardar(tenant: str, proceso_id: str, limpio: dict, revision: int, por: str)
                 raise NoEncontrado(proceso_id)
             if actual["revision"] != revision:
                 raise Conflicto(actual["revision"])
+            if clave_de_nombre(actual["datos"]["nombre"]) != clave_de_nombre(limpio["nombre"]):
+                _exigir_nombre_libre(cur, tenant, proceso_id, limpio["nombre"], exigir_nombre_libre)
             cur.execute(
                 "UPDATE nexus.processes SET dataJson = ?, virtualCaseTypePublicId = ?, revision = ?, updatedAt = sysutcdatetime(), updatedBy = ? "
                 "WHERE publicId = ? AND revision = ?",

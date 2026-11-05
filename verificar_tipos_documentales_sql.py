@@ -235,7 +235,66 @@ def bateria(m, comun) -> dict:
     obs["borrar.ya_no_esta"] = m.obtener(ORG, ID_C)
     obs["borrar.otra_vez"] = cae("", lambda: m.eliminar(ORG, ID_C, YO))
     obs["borrar.listar"] = sorted(t["id"] for t in m.listar(ORG))
+
+    # Nombre único en la organización (2026-11-04): sin distinguir mayúsculas ni espacios de más; los archivados no cuentan; solo se
+    # revisa cuando el tipo ENTRA a un nombre (crear, renombrar, desarchivar). A esta altura la organización tiene «INE 2» y «Pasaporte».
+    n1, n2, n3, n4, n5, n6 = ("tipo-" + c * 32 for c in "123456")
+    m.guardar(ORG, n1, datos("Cédula Profesional", estado="borrador"), 0, YO)
+    obs["nombre.crear_repetido"] = cae("", lambda: m.guardar(ORG, n2, datos("  cédula   PROFESIONAL "), 0, YO))
+    obs["nombre.el_repetido_no_quedo"] = m.obtener(ORG, n2)
+    obs["nombre.sin_acento_es_otro"] = m.guardar(ORG, n2, datos("Cedula Profesional", estado="borrador"), 0, YO)[0]["revision"]
+    obs["nombre.renombrar_a_repetido"] = cae("", lambda: m.guardar(ORG, n2, datos("CÉDULA PROFESIONAL", estado="borrador"), 1, YO))
+    obs["nombre.sigue_con_el_suyo"] = (m.obtener(ORG, n2)["datos"]["nombre"], m.obtener(ORG, n2)["revision"])
+    obs["nombre.sus_propias_mayusculas"] = m.guardar(ORG, n1, datos("cédula  profesional", estado="borrador"), 1, YO)[0]["datos"]["nombre"]
+    obs["nombre.otra_org_puede"] = m.guardar(OTRA, n3, datos("Cédula Profesional"), 0, TU)[0]["revision"]
+    # Archivar libera el nombre; desarchivar cuando ya lo tomó otro choca; guardar el archivado a secas, no.
+    m.guardar(ORG, n1, datos("cédula  profesional", estado="archivado"), 2, YO)
+    obs["nombre.archivado_libera"] = m.guardar(ORG, n2, datos("Cédula Profesional", estado="borrador"), 1, YO)[0]["revision"]
+    obs["nombre.desarchivar_choca"] = cae("", lambda: m.guardar(ORG, n1, datos("cédula  profesional", estado="borrador"), 3, YO))
+    obs["nombre.archivado_se_guarda"] = m.guardar(ORG, n1, datos("cédula  profesional", estado="archivado", descripcion="otra"), 3, YO)[0]["revision"]
+    obs["nombre.crear_ya_archivado"] = m.guardar(ORG, n4, datos("Cédula Profesional", estado="archivado"), 0, YO)[0]["revision"]
+    obs["nombre.desarchivar_libre"] = m.guardar(ORG, n4, datos("Cédula Profesional Vieja", estado="borrador"), 1, YO)[0]["revision"]
+    # Un duplicado de ANTES de la regla (se simula apagándola un momento): se sigue guardando sin tocar su nombre (activarlo, otra
+    # descripción, solo mayúsculas), pero no puede pasar a otro nombre ocupado; a uno libre, sí.
+    regla = m.exigir_nombre_libre
+    m.exigir_nombre_libre = lambda *a, **k: None
+    try:
+        m.guardar(ORG, n5, datos("Cédula Profesional", estado="borrador"), 0, YO)
+    finally:
+        m.exigir_nombre_libre = regla
+    obs["nombre.duplicado_viejo_existe"] = sorted(t["id"] for t in m.listar(ORG) if t["datos"]["nombre"] == "Cédula Profesional")
+    obs["nombre.duplicado_viejo_se_activa"] = m.guardar(ORG, n5, datos("Cédula Profesional", estado="activo"), 1, YO)[0]["revision"]
+    obs["nombre.duplicado_viejo_otra_descripcion"] = m.guardar(ORG, n5, datos("Cédula Profesional", descripcion="Nueva"), 2, YO)[0]["revision"]
+    obs["nombre.duplicado_viejo_mayusculas"] = m.guardar(ORG, n5, datos("CÉDULA PROFESIONAL"), 3, YO)[0]["revision"]
+    obs["nombre.duplicado_viejo_a_otro_ocupado"] = cae("", lambda: m.guardar(ORG, n5, datos("pasaporte"), 4, YO))
+    obs["nombre.duplicado_viejo_a_uno_libre"] = m.guardar(ORG, n5, datos("Cédula Profesional (federal)"), 4, YO)[0]["datos"]["nombre"]
+    obs["nombre.sigue_ocupado_por_el_otro"] = cae("", lambda: m.guardar(ORG, n6, datos("cédula profesional"), 0, YO))
     return obs
+
+
+#: Lo que DEBE observarse en el bloque del nombre único (las demás observaciones solo se comparan entre los dos almacenamientos;
+#: estas, además, contra lo que pide la regla, para que no puedan estar los dos igual de mal).
+ESPERADO_NOMBRE = {
+    "nombre.crear_repetido": "NombreRepetido",
+    "nombre.el_repetido_no_quedo": None,
+    "nombre.sin_acento_es_otro": 1,
+    "nombre.renombrar_a_repetido": "NombreRepetido",
+    "nombre.sigue_con_el_suyo": ("Cedula Profesional", 1),
+    "nombre.sus_propias_mayusculas": "cédula  profesional",
+    "nombre.otra_org_puede": 1,
+    "nombre.archivado_libera": 2,
+    "nombre.desarchivar_choca": "NombreRepetido",
+    "nombre.archivado_se_guarda": 4,
+    "nombre.crear_ya_archivado": 1,
+    "nombre.desarchivar_libre": 2,
+    "nombre.duplicado_viejo_existe": sorted(["tipo-" + "2" * 32, "tipo-" + "5" * 32]),
+    "nombre.duplicado_viejo_se_activa": 2,
+    "nombre.duplicado_viejo_otra_descripcion": 3,
+    "nombre.duplicado_viejo_mayusculas": 4,
+    "nombre.duplicado_viejo_a_otro_ocupado": "NombreRepetido",
+    "nombre.duplicado_viejo_a_uno_libre": "Cédula Profesional (federal)",
+    "nombre.sigue_ocupado_por_el_otro": "NombreRepetido",
+}
 
 
 # ── Corrida ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -276,6 +335,11 @@ try:
         if k in distintas:
             rev(f"{k}", False, f"almacén={obs_archivo[k]!r}  sql={obs_sql.get(k)!r}")
     rev(f"las {len(obs_archivo)} observaciones coinciden entre los dos almacenamientos", not distintas)
+
+    titulo("4b · El nombre único hace lo que pide la regla (en los dos)")
+    for clave, esperado in ESPERADO_NOMBRE.items():
+        for nombre_almacen, obs in (("almacén", obs_archivo), ("sql", obs_sql)):
+            rev(f"{clave} ({nombre_almacen})", obs.get(clave) == esperado, f"se observó {obs.get(clave)!r}, se esperaba {esperado!r}")
 
     titulo("5 · Lo que SOLO la base puede cuidar")
     con = conectar("usrNexus", APP, BASE)

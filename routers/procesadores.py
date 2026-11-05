@@ -77,6 +77,8 @@ class CampoEntrada(BaseModel):
 
 
 class TipoDocumentalEntrada(BaseModel):
+    #: La organización que activa (NEX-550). La pone el BFF desde la sesión; el back comprueba con el JWT que quien pide pueda administrarla.
+    tenant: str = Field(min_length=1, max_length=64)
     id: str = Field(min_length=1, max_length=100)
     nombre: str = Field(min_length=1, max_length=200)
     descripcion: str = ""
@@ -107,6 +109,20 @@ def _mensaje_para(exc: DocumentAIError, *, mensaje_4xx: str) -> str:
     return "No se pudo contactar a Document AI en este momento. Intenta de nuevo en unos minutos."
 
 
+_NO_EXISTE_PROCESADOR = "Ese procesador no existe en tu organización."
+
+
+def _exigir_dueno(actor: aislamiento.Actor, tenant: str, procesador_id: str) -> None:
+    """NEX-550: el procesador tiene que ser de un tipo documental DE ESA organización. Si es de otra, o de ninguna (uno que ningún tipo conoce, como
+    el heredado del `.env`), se responde lo mismo que si no existiera —sin decir de quién es— y, si era de otra, queda `CROSS_TENANT_ACCESS`."""
+    dueno = registro_tipos.procesadores_con_dueno().get(procesador_id)
+    if dueno is not None and dueno["tenant"] == tenant:
+        return
+    if dueno is not None:
+        aislamiento.intento_cruzado(actor, "procesador", procesador_id, tenant_pedido=tenant)
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE_PROCESADOR)
+
+
 @router.post(
     "/activar",
     tags=["Procesadores"],
@@ -130,7 +146,14 @@ def _mensaje_para(exc: DocumentAIError, *, mensaje_4xx: str) -> str:
         "el procesador que ve en Document AI."
     ),
 )
-async def activar(tipo: TipoDocumentalEntrada):
+async def activar(tipo: TipoDocumentalEntrada, authorization: str | None = Header(default=None)):
+    # Quién pide y de qué organización (NEX-550): sin esto cualquiera con la llave de servicio creaba procesadores a nombre de otra organización.
+    actor = aislamiento.exigir_administrar(authorization, tipo.tenant, "procesador")
+    # Un tipo cuyo procesador ya es de OTRA organización no se activa desde esta.
+    for dueno in registro_tipos.procesadores_con_dueno().values():
+        if dueno["tipo"] == tipo.id and dueno["tenant"] != tipo.tenant:
+            aislamiento.intento_cruzado(actor, "procesador", tipo.id, tenant_pedido=tipo.tenant)
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE_PROCESADOR)
     # Sin campos no hay nada que extraer: un procesador con esquema vacío se
     # crearía bien y fallaría después, en la primera extracción, lejos de la
     # causa. Mejor el error aquí, donde todavía se llama por su nombre.
@@ -199,7 +222,8 @@ async def activar(tipo: TipoDocumentalEntrada):
         "«Generar a partir de un documento» del paso 2 del alta de un tipo documental: Document AI lee el documento y propone "
         "los campos a extraer (nombre, tipo de dato, descripción, si se repite, y los campos de cada grupo). No guarda nada ni "
         "crea procesadores: devuelve `campos` para que la persona los revise y agregue los que quiera. Tarda unos segundos. Lo "
-        "propuesto puede variar un poco de una vez a otra. Pide el rol que administra tipos documentales."
+        "propuesto puede variar un poco de una vez a otra. Si se mandan `instrucciones` (las del tipo para la extracción), orientan la "
+        "propuesta: sirven, sobre todo, para dejar fuera campos que no interesan. Pide el rol que administra tipos documentales."
     ),
 )
 async def generar_campos(
@@ -207,12 +231,17 @@ async def generar_campos(
     tenant: str = Form(..., description="La organización"),
     nombre: str = Form("", max_length=200, description="El nombre del tipo documental, si ya se capturó: viaja como contexto"),
     descripcion: str = Form("", max_length=2000, description="Su descripción, si ya se capturó: viaja como contexto"),
+    instrucciones: str = Form(
+        "",
+        max_length=MAX_INSTRUCCIONES,
+        description="Sus instrucciones para la extracción, si ya se escribieron: también orientan la propuesta (p. ej. qué persona interesa o qué dato dejar fuera)",
+    ),
     authorization: str | None = Header(default=None),
 ):
     aislamiento.exigir_administrar(authorization, tenant, "tipo_documental")
     contenido = await _leer_subida(archivo)
     try:
-        campos = await _generar_campos(contenido, archivo.content_type or "application/pdf", nombre, descripcion)
+        campos = await _generar_campos(contenido, archivo.content_type or "application/pdf", nombre, descripcion, instrucciones)
     except DocumentAIError as exc:
         logger.exception("Falló la generación de campos a partir de un documento")
         if 400 <= exc.status_code < 500:
@@ -417,7 +446,13 @@ async def ver_clasificador(
         "página PROCESADA) y no modifica nada."
     ),
 )
-async def consultar(procesador_id: str):
+async def consultar(
+    procesador_id: str,
+    tenant: str = Query(..., description="La organización dueña del procesador"),
+    authorization: str | None = Header(default=None),
+):
+    actor = aislamiento.exigir_administrar(authorization, tenant, "procesador")
+    _exigir_dueno(actor, tenant, procesador_id)
     try:
         return await consultar_procesador(procesador_id)
     except DocumentAIError as exc:
@@ -462,7 +497,13 @@ async def consultar(procesador_id: str):
         "quede ahí, y si ya no está, el objetivo ya se cumplió."
     ),
 )
-async def eliminar(procesador_id: str):
+async def eliminar(
+    procesador_id: str,
+    tenant: str = Query(..., description="La organización dueña del procesador"),
+    authorization: str | None = Header(default=None),
+):
+    actor = aislamiento.exigir_administrar(authorization, tenant, "procesador")
+    _exigir_dueno(actor, tenant, procesador_id)
     try:
         await eliminar_procesador(procesador_id)
     except DocumentAIError as exc:

@@ -128,8 +128,20 @@ def tipo_virtual(bearer: str, tenant: str, nombre: str, esquema_ids: list[str]) 
     return r.json()["id"]
 
 
+#: Un grupo «General» por organización, creado la primera vez que se necesita: desde la migración 0010 un expediente nuevo nace en un grupo.
+_GRUPOS: dict[str, str] = {}
+
+
+def grupo_de(bearer: str, tenant: str) -> str:
+    if tenant not in _GRUPOS:
+        r = c.post("/grupos/", json={"tenant": tenant, "nombre": "General"}, headers=cab(bearer))
+        assert r.status_code == 201, r.text
+        _GRUPOS[tenant] = r.json()["id"]
+    return _GRUPOS[tenant]
+
+
 def expediente(bearer: str, tenant: str, nombre: str) -> str:
-    r = c.post("/expedientes/", json={"tenant": tenant, "nombre": nombre}, headers=cab(bearer))
+    r = c.post("/expedientes/", json={"tenant": tenant, "nombre": nombre, "grupoId": grupo_de(bearer, tenant)}, headers=cab(bearer))
     assert r.status_code == 201, r.text
     return r.json()["id"]
 
@@ -329,7 +341,7 @@ try:
 
     # Un tipo documental que ya no está en la biblioteca, o puesto dos veces en el dibujo, no estorba: se prepara con los que sí hay, cada uno UNA vez.
     pid_raro = "proceso-" + uuid.uuid4().hex
-    raro = proceso_base()
+    raro = proceso_base(nombre="Validar identidad (con tipos raros)")  # el nombre de un proceso es único en la organización (NEX-529)
     raro["nodos"] = raro["nodos"] + [n_tipo("tipo-" + uuid.uuid4().hex), {**n_tipo(td_ine), "id": "tipo-repetido"}]
     assert guardar_proceso(adm, org, pid_raro, raro, 0).status_code == 200
     r = preparar(adm, org, juan, v1, pid_raro)
@@ -642,10 +654,10 @@ try:
     pid2 = "proceso-" + uuid.uuid4().hex
     guardar_proceso(adm, org, pid2, proceso_base(nombre="Ejecutable"), 0)
     p_sin2 = "proceso-" + uuid.uuid4().hex
-    guardar_proceso(adm, org, p_sin2, {**sin_res, "nombre": "Sin Resultado"}, 0)
+    guardar_proceso(adm, org, p_sin2, {**sin_res, "nombre": "Sin Resultado conectado"}, 0)
     v_n = crear_v(adm, org, juan, credito, "Nuevo", [ine1])
     ofrecidos = {p["nombre"]: p for p in ver_v(adm, org, juan, v_n)["procesos"]}
-    rev("el expediente virtual dice cuáles de sus procesos se pueden ejecutar", ofrecidos["Ejecutable"]["ejecutable"] is True and ofrecidos["Sin Resultado"]["ejecutable"] is False and ofrecidos["Apagado"]["activo"] is False and ofrecidos["Resultado suelto"]["ejecutable"] is False and ofrecidos["Resultado de un campo"]["ejecutable"] is False, str(ofrecidos)[:300])
+    rev("el expediente virtual dice cuáles de sus procesos se pueden ejecutar", ofrecidos["Ejecutable"]["ejecutable"] is True and ofrecidos["Sin Resultado conectado"]["ejecutable"] is False and ofrecidos["Apagado"]["activo"] is False and ofrecidos["Resultado suelto"]["ejecutable"] is False and ofrecidos["Resultado de un campo"]["ejecutable"] is False, str(ofrecidos)[:300])
     rev("`resultado_conectado` es solo mirar el dibujo", __import__("servicios.procesos", fromlist=["x"]).resultado_conectado({"nodos": [], "aristas": []}) is False)
 
     titulo("14 · Detalles del servicio")

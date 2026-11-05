@@ -159,6 +159,15 @@ DOCAI_VERSION_CLASIFICADOR = os.getenv("DOCAI_VERSION_CLASIFICADOR", "")
 DOCAI_VERSION_INE = os.getenv("DOCAI_VERSION_INE", "")
 IA_TIMEOUT = _numero("IA_TIMEOUT", 120)
 
+# ── Gemini (Vertex AI): «Sugerir descripción» de un tipo documental (2026-11-05) ──────────────────────────────────────────
+# Es lo ÚNICO del sistema que usa un modelo de lenguaje de texto; todo lo demás es Document AI. Se llama con la MISMA credencial de Google
+# (GOOGLE_APPLICATION_CREDENTIALS) y se cobra al proyecto de Document AI (DOCAI_PROJECT_ID): no hay proveedor ni llave nueva. Los nombres de
+# modelo caducan rápido (los Gemini 2.5 ya no existen para este proyecto), por eso el modelo es configurable y no está escrito en el código.
+GEMINI_MODELO = os.getenv("GEMINI_MODELO", "gemini-3.1-flash-lite")
+# `global` es la región donde respondieron los modelos 3.x al probarlos (2026-11-05); se puede cambiar por una regional si Google lo pide.
+GEMINI_REGION = os.getenv("GEMINI_REGION", "global")
+GEMINI_TIMEOUT = _numero("GEMINI_TIMEOUT", 30)
+
 # ── Documentos largos (más de 15 páginas) ─────────────────────────────────────
 # El procesamiento EN LÍNEA de Document AI rechaza un documento de más de 15 páginas ("Document pages exceed the limit: 15 got
 # 20"), y un acta constitutiva ronda las 20. Cuando eso pasa, la extracción se hace por BLOQUES de páginas y se unen los
@@ -324,6 +333,18 @@ CORREO_SOPORTE_TELEFONO = (os.getenv("CORREO_SOPORTE_TELEFONO") or "").strip()
 #   2. Devuelve datos, no loguea. Cuando `config` se importa, `configurar_logging`
 #      todavía no corrió, así que un `logger.warning` aquí se perdería o saldría
 #      sin formato. Quien llama (`app.py`) lo loguea en el momento correcto.
+def _host_es_ip(url: str) -> bool:
+    """¿La URL apunta a una dirección IP en vez de a un dominio? (`http://172.10.30.15:3401` sí; `https://dev-nexus-doc.buzzword.com.mx` no)."""
+    from urllib.parse import urlparse
+
+    try:
+        host = urlparse(url).hostname or ""
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
 def avisos_de_produccion() -> list[str]:
     """Variables que se quedaron en un default que no sirve fuera de `local`.
 
@@ -344,6 +365,13 @@ def avisos_de_produccion() -> list[str]:
             f"FRONT_URL={FRONT_URL!r} — los enlaces de activación y de "
             "recuperación de contraseña apuntarían a la máquina de quien RECIBE "
             "el correo, no al servidor. Los correos llegan y el link está muerto."
+        )
+
+    elif _host_es_ip(FRONT_URL):
+        avisos.append(
+            f"FRONT_URL={FRONT_URL!r} — los enlaces de los correos llevan la IP del servidor y no el dominio "
+            "de este ambiente (dev, staging o producción). Funcionan solo dentro de la red de CSI, sin el "
+            "certificado del dominio, y se rompen si el servidor cambia de IP. Pon ahí el dominio del front."
         )
 
     if CORREO_MODO in {"archivo", "silencio"}:

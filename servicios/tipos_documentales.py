@@ -18,6 +18,15 @@ y `tenant`. Se guardan junto al tipo, nunca dentro de `datos`.
 Cada tipo lleva un número de `revision`. Para guardar hay que decir sobre cuál se editó: si en el ínterin otra persona lo
 guardó, es un 409 con la revisión vigente, y NO se pisa nada en silencio. `0` significa «es nuevo».
 
+## Nombre único (2026-11-04)
+
+El nombre de un tipo es único en su organización, sin distinguir mayúsculas ni espacios de más (`NombreRepetido`, que el router
+contesta con 409 `ya_existe`). Antes no había regla y se colaron duplicados: dos tipos con el mismo nombre son dos categorías
+iguales para el clasificador y no se distinguen en ningún lado donde se listan por nombre. Los ARCHIVADOS no ocupan nombre (se
+puede reusar), y solo se revisa cuando un tipo entra a un nombre —crearse, renombrarse, desarchivarse—: los duplicados de antes de
+la regla se siguen pudiendo guardar sin tocar su nombre (activar, calibrar…), y se resuelven renombrando uno. Detalle en
+`tipos_documentales_comun.exigir_nombre_libre`.
+
 ## Ids
 
 Los inventa el cliente (`tipo-` + 32 hexadecimales de un UUID) y el servidor exige que no se repitan EN NINGUNA organización:
@@ -52,6 +61,7 @@ from servicios.tipos_documentales_comun import (  # noqa: F401
     TOPE_BYTES,
     Conflicto,
     NoEncontrado,
+    NombreRepetido,
     TipoInvalido,
 )
 
@@ -85,7 +95,8 @@ def guardar(tenant: str, tipo_id: str, datos: object, revision: int, por: str) -
     """Crea (`revision == 0`) o actualiza (`revision` = la que se editó) un tipo.
 
     Devuelve `(el tipo como quedó, el tipo ANTERIOR o None)`; el anterior es para que quien llama anote el cambio de estado.
-    Levanta `TipoInvalido`, `NoEncontrado` (actualizar uno que no es de esta organización) o `Conflicto`.
+    Levanta `TipoInvalido`, `NoEncontrado` (actualizar uno que no es de esta organización), `Conflicto` o `NombreRepetido` (otro
+    tipo de la organización ya se llama así; ver «Nombre único» arriba).
     """
     return _almacenamiento().guardar(tenant, tipo_id, datos, revision, por)
 

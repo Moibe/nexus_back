@@ -190,9 +190,10 @@ try:
         rev(f"{rol}: crea una API Key (201)", r.status_code == 201, r.text[:120])
         r = c.post("/webhooks/", json={"tenant": O["guid"], "url": f"https://api.{rol.lower()}.com/x", "eventos": ["documento.completado"]}, headers=h)
         rev(f"{rol}: crea un webhook (201)", r.status_code == 201, r.text[:120])
-        r = c.put(f"/procesos/proceso-{rol.lower()}-ok", json={"tenant": O["guid"], "revision": 0, "datos": PROCESO}, headers=h)
+        r = c.put(f"/procesos/proceso-{rol.lower()}-ok", json={"tenant": O["guid"], "revision": 0, "datos": {**PROCESO, "nombre": f"{PROCESO['nombre']} de {rol}"}}, headers=h)
         rev(f"{rol}: guarda un proceso (200)", r.status_code in (200, 201), f"{r.status_code} {r.text[:120]}")
-        r = c.put(f"/tipos-documentales/tipo-{rol.lower()}-ok", json={"tenant": O["guid"], "revision": 0, "datos": DATOS_TIPO}, headers=h)
+        # Un nombre por rol: desde el 2026-11-04 el nombre de un tipo es único en la organización (como ya pasaba con los procesos).
+        r = c.put(f"/tipos-documentales/tipo-{rol.lower()}-ok", json={"tenant": O["guid"], "revision": 0, "datos": {**DATOS_TIPO, "nombre": f"{DATOS_TIPO['nombre']} de {rol}"}}, headers=h)
         rev(f"{rol}: guarda un tipo documental (200)", r.status_code in (200, 201), f"{r.status_code} {r.text[:120]}")
     r = c.post("/webhooks/", json={"tenant": "demo", "url": "https://api.plataforma.com/x", "eventos": ["documento.completado"]}, headers=cab(bearer_super))
     rev("el administrador de plataforma, en su espacio, también (201)", r.status_code == 201, f"{r.status_code} {r.text[:120]}")

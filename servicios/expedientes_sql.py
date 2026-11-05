@@ -245,10 +245,13 @@ def documentos_obtener(tenant: str, documento_id: str) -> dict | None:
 # ── Expedientes ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 # Cada expediente con cuántos documentos tiene y cuánto pesan: se calcula en la consulta, no se guarda.
+# Desde la `0010` trae también su grupo (`grupoId` y `grupoNombre`, nulos si todavía no tiene).
 _RESUMEN = (
-    "SELECT c.caseId, c.publicId, c.name, c.createdBy, c.createdAt, count(d.documentId) AS total, coalesce(sum(d.sizeBytes), 0) AS peso "
-    "FROM nexus.cases c LEFT JOIN nexus.caseDocuments cd ON cd.caseId = c.caseId LEFT JOIN nexus.documents d ON d.documentId = cd.documentId "
-    "WHERE c.tenant = ? {filtro} GROUP BY c.caseId, c.publicId, c.name, c.createdBy, c.createdAt ORDER BY c.caseId"
+    "SELECT c.caseId, c.publicId, c.name, c.createdBy, c.createdAt, g.publicId AS grupoId, g.name AS grupoNombre, "
+    "count(d.documentId) AS total, coalesce(sum(d.sizeBytes), 0) AS peso "
+    "FROM nexus.cases c LEFT JOIN nexus.caseGroups g ON g.caseGroupId = c.caseGroupId "
+    "LEFT JOIN nexus.caseDocuments cd ON cd.caseId = c.caseId LEFT JOIN nexus.documents d ON d.documentId = cd.documentId "
+    "WHERE c.tenant = ? {filtro} GROUP BY c.caseId, c.publicId, c.name, c.createdBy, c.createdAt, g.publicId, g.name ORDER BY c.caseId"
 )
 
 
@@ -256,6 +259,7 @@ def _a_resumen(f: dict) -> dict:
     return {
         "id": f["publicId"],
         "nombre": f["name"],
+        "grupo": {"id": f["grupoId"], "nombre": f["grupoNombre"]} if f["grupoId"] else None,
         "creadoPor": f["createdBy"],
         "creadoEn": momento(f["createdAt"]),
         "totalDocumentos": int(f["total"]),
@@ -269,15 +273,65 @@ def expediente_bloqueado(cur, tenant: str, expediente_id: str) -> dict | None:
     return tablas.una(cur)
 
 
-def expedientes_crear(tenant: str, nombre: str, por: str) -> dict:
+def expedientes_crear(tenant: str, nombre: str, por: str, grupo_id: str | None) -> dict:
+    """Desde la `0010` el expediente nace EN un grupo: sin él, `GrupoRequerido`; uno que no es de la organización, `GrupoNoEncontrado`. El grupo se
+    bloquea hasta el final, así que nadie lo borra entre la comprobación y el alta (`grupos.borrar` bloquea la misma fila)."""
+    from servicios import grupos
+    from servicios.expedientes import GrupoNoEncontrado, GrupoRequerido
+
+    if grupo_id is None:
+        raise GrupoRequerido()
     expediente_id = f"expediente-{uuid.uuid4().hex}"
     with tablas.transaccion() as cur:
+        g = grupos.bloqueado(cur, tenant, grupo_id) if grupos.RE_ID.match(grupo_id) else None
+        if g is None:
+            raise GrupoNoEncontrado(grupo_id)
         cur.execute(
-            "INSERT INTO nexus.cases (publicId, tenant, name, createdBy) OUTPUT INSERTED.createdAt VALUES (?, ?, ?, ?)",
-            expediente_id, tenant, nombre, por,
+            "INSERT INTO nexus.cases (publicId, tenant, name, caseGroupId, createdBy) OUTPUT INSERTED.createdAt VALUES (?, ?, ?, ?, ?)",
+            expediente_id, tenant, nombre, g["caseGroupId"], por,
         )
         creado = tablas.una(cur)["createdAt"]
-    return {"id": expediente_id, "nombre": nombre, "creadoPor": por, "creadoEn": momento(creado), "totalDocumentos": 0, "tamanoBytes": 0}
+    return {
+        "id": expediente_id,
+        "nombre": nombre,
+        "grupo": {"id": g["publicId"], "nombre": g["name"]},
+        "creadoPor": por,
+        "creadoEn": momento(creado),
+        "totalDocumentos": 0,
+        "tamanoBytes": 0,
+    }
+
+
+def expedientes_asignar_grupo(tenant: str, expediente_id: str, grupo_id: str, por: str) -> tuple[dict, dict | None]:
+    """Mete el expediente a ese grupo (o lo pasa de uno a otro). Devuelve `(expediente, grupo_anterior)`; `grupo_anterior` es `None` si no tenía, y si
+    ya estaba en ese mismo grupo no escribe nada y devuelve el mismo grupo como anterior (el router no anota rastro en ese caso)."""
+    from servicios import grupos
+    from servicios.expedientes import GrupoNoEncontrado, NoEncontrado
+
+    with tablas.transaccion() as cur:
+        cur.execute(
+            "SELECT c.caseId, g.caseGroupId AS grupoActual, g.publicId AS grupoActualId, g.name AS grupoActualNombre "
+            "FROM nexus.cases c WITH (UPDLOCK, HOLDLOCK) LEFT JOIN nexus.caseGroups g ON g.caseGroupId = c.caseGroupId "
+            "WHERE c.publicId = ? AND c.tenant = ?",
+            expediente_id, tenant,
+        )
+        e = tablas.una(cur)
+        if e is None:
+            raise NoEncontrado(expediente_id)
+        g = grupos.bloqueado(cur, tenant, grupo_id) if grupos.RE_ID.match(grupo_id) else None
+        if g is None:
+            raise GrupoNoEncontrado(grupo_id)
+        anterior = {"id": e["grupoActualId"], "nombre": e["grupoActualNombre"]} if e["grupoActualId"] else None
+        if e["grupoActual"] != g["caseGroupId"]:
+            cur.execute("UPDATE nexus.cases SET caseGroupId = ? WHERE caseId = ?", g["caseGroupId"], e["caseId"])
+    return expedientes_obtener_resumen(tenant, expediente_id), anterior
+
+
+def expedientes_obtener_resumen(tenant: str, expediente_id: str) -> dict:
+    """El expediente como en la lista (sin sus documentos)."""
+    with tablas.lectura() as cur:
+        cur.execute(_RESUMEN.format(filtro="AND c.publicId = ?"), tenant, expediente_id)
+        return _a_resumen(tablas.una(cur))
 
 
 def expedientes_listar(tenant: str) -> list[dict]:
