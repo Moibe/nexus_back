@@ -1754,7 +1754,7 @@ administrador de plataforma solo toca el clasificador de SU espacio, nunca el de
 
 ### Generar campos a partir de un documento
 
-`POST /procesadores/generar-campos` (multipart: `archivo`, `tenant`, y opcionales `nombre` y `descripcion` del tipo) es el «Generar a
+`POST /procesadores/generar-campos` (multipart: `archivo`, `tenant`, y opcionales `nombre`, `descripcion` e `instrucciones` del tipo) es el «Generar a
 partir de un documento» del paso 2 del alta: Document AI lee un documento de ejemplo y **propone** campos (nombre legible, tipo de
 dato, descripción, obligatorio, cardinalidad, valores de lista y subcampos de cada grupo). No guarda nada ni crea procesadores:
 responde `{campos}` y la persona elige cuáles agregar. Por dentro es `schemas.schemaVersions:generate` (v1beta3), bajo UN recurso
@@ -1762,6 +1762,15 @@ responde `{campos}` y la persona elige cuáles agregar. Por dentro es `schemas.s
 versión guardada en él, que se borra en cuanto se leyó. Tarda unos segundos (~13 con una factura de una página) y lo propuesto
 varía un poco de una vez a otra. Pide sesión y el rol que administra tipos documentales; si Google no puede leer el documento
 responde 422 con un mensaje para la persona, y nunca el texto de Google. Prueba: `verificar_generar_campos.py`.
+
+**Las `instrucciones` del tipo (2026-11-05)** son las mismas «Instrucciones para la extracción» que luego viajan al extractor como su
+`documentPrompt` (hasta `MAX_INSTRUCCIONES`, 1000 caracteres; más es 422). Si llegan, se añaden al `prompt` de la generación como
+«Indicaciones del cliente para leer este tipo de documento: …», entre el contexto del tipo y la instrucción fija. Medido contra Google
+(3 corridas por condición, dos documentos de una página): el generador las **obedece de forma estable, como filtro de campos**: con «la
+persona que interesa es el titular, no el beneficiario» el campo del beneficiario salió 0 de 3 veces (sin instrucciones, 3 de 3), y con
+«ignora la fecha de inicio de operaciones» también 0 de 3. Efecto lateral visto: con un PDF en inglés, sin instrucciones los nombres de
+campo salieron en inglés y con ellas en español. No se midió con instrucciones que no hablen de campos (formatos, etc.). El texto exacto
+del prompt es lo que se midió: cambiarlo es cambiar lo medido.
 
 ### Sugerir la descripción de un tipo (Gemini, 2026-11-05)
 

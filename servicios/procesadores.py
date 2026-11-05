@@ -586,7 +586,9 @@ async def _recurso_de_generacion(cliente: httpx.AsyncClient) -> str:
         return creado["name"]
 
 
-async def generar_campos(contenido: bytes, mime_type: str, nombre_tipo: str = "", descripcion_tipo: str = "") -> list[dict]:
+async def generar_campos(
+    contenido: bytes, mime_type: str, nombre_tipo: str = "", descripcion_tipo: str = "", instrucciones_tipo: str = ""
+) -> list[dict]:
     """«Generar a partir de un documento» (paso 2 del alta de un tipo documental): Google lee un documento de ejemplo y propone
     los campos a extraer. Devuelve campos del wizard (`esquema.campos_desde_esquema`), que la persona revisa antes de agregar.
 
@@ -595,8 +597,18 @@ async def generar_campos(contenido: bytes, mime_type: str, nombre_tipo: str = ""
     toca ningún tipo documental. Cada llamada deja una `schemaVersion` guardada en el recurso padre: se borra en cuanto se leyó,
     para que no se acumulen (si el borrado falla solo se avisa en el log: la propuesta ya está). El nombre y la descripción del
     tipo, si ya se capturaron en el paso 1, viajan como contexto. Lo propuesto cambia un poco de una corrida a otra (una vez el
-    domicilio sale entero y otra en calle, colonia y ciudad): es una sugerencia, no un resultado reproducible."""
+    domicilio sale entero y otra en calle, colonia y ciudad): es una sugerencia, no un resultado reproducible.
+
+    Las «instrucciones para la extracción» del tipo (opcionales; las que luego viajan al extractor como su `documentPrompt`) también
+    orientan la propuesta: medido contra Google el 2026-11-05 (3 corridas por condición, dos documentos de una página), el generador las
+    obedece y de forma estable, como FILTRO de campos: con «la persona que interesa es el titular, no el beneficiario» el campo del
+    beneficiario salió 0 de 3 veces (sin instrucciones, 3 de 3); con «ignora la fecha de inicio de operaciones», igual. Por eso el texto
+    va tal cual lo midió esa prueba: «Indicaciones del cliente para leer este tipo de documento: …»; cambiarlo es cambiar lo medido."""
     instruccion = _INSTRUCCION_GENERAR
+    # Una sola línea: los saltos de línea de la caja no le aportan nada al modelo y así el prompt queda como el que se midió.
+    indicaciones = " ".join((instrucciones_tipo or "").split())
+    if indicaciones:
+        instruccion = f"Indicaciones del cliente para leer este tipo de documento: {indicaciones} {instruccion}"
     contexto = " ".join(p for p in ((nombre_tipo or "").strip(), (descripcion_tipo or "").strip()) if p)
     if contexto:
         instruccion = f"El documento es de este tipo: {contexto}. {instruccion}"

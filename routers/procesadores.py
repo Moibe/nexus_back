@@ -222,7 +222,8 @@ async def activar(tipo: TipoDocumentalEntrada, authorization: str | None = Heade
         "«Generar a partir de un documento» del paso 2 del alta de un tipo documental: Document AI lee el documento y propone "
         "los campos a extraer (nombre, tipo de dato, descripción, si se repite, y los campos de cada grupo). No guarda nada ni "
         "crea procesadores: devuelve `campos` para que la persona los revise y agregue los que quiera. Tarda unos segundos. Lo "
-        "propuesto puede variar un poco de una vez a otra. Pide el rol que administra tipos documentales."
+        "propuesto puede variar un poco de una vez a otra. Si se mandan `instrucciones` (las del tipo para la extracción), orientan la "
+        "propuesta: sirven, sobre todo, para dejar fuera campos que no interesan. Pide el rol que administra tipos documentales."
     ),
 )
 async def generar_campos(
@@ -230,12 +231,17 @@ async def generar_campos(
     tenant: str = Form(..., description="La organización"),
     nombre: str = Form("", max_length=200, description="El nombre del tipo documental, si ya se capturó: viaja como contexto"),
     descripcion: str = Form("", max_length=2000, description="Su descripción, si ya se capturó: viaja como contexto"),
+    instrucciones: str = Form(
+        "",
+        max_length=MAX_INSTRUCCIONES,
+        description="Sus instrucciones para la extracción, si ya se escribieron: también orientan la propuesta (p. ej. qué persona interesa o qué dato dejar fuera)",
+    ),
     authorization: str | None = Header(default=None),
 ):
     aislamiento.exigir_administrar(authorization, tenant, "tipo_documental")
     contenido = await _leer_subida(archivo)
     try:
-        campos = await _generar_campos(contenido, archivo.content_type or "application/pdf", nombre, descripcion)
+        campos = await _generar_campos(contenido, archivo.content_type or "application/pdf", nombre, descripcion, instrucciones)
     except DocumentAIError as exc:
         logger.exception("Falló la generación de campos a partir de un documento")
         if 400 <= exc.status_code < 500:
