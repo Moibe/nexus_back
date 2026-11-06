@@ -116,9 +116,10 @@ PROCESS_RUN_RECORDED = "PROCESS_RUN_RECORDED"
 CASE_CREATED = "CASE_CREATED"
 CASE_DOCUMENT_ADDED = "CASE_DOCUMENT_ADDED"
 CASE_DOCUMENT_REMOVED = "CASE_DOCUMENT_REMOVED"
-# ── HISTÓRICAS: ya NO SE ESCRIBEN (Moibe, 2026-11-05: se quitaron los expedientes virtuales y sus tipos) ──────────────────────────────────────
-# Las constantes de los tipos de expediente (`CASE_TYPE_*`) y de los expedientes virtuales (`VIRTUAL_CASE_*`) se conservan, y siguen en `ACCIONES`,
-# porque la bitácora es de solo agregar: los renglones que ya están ahí se siguen leyendo y filtrando con estos nombres. Nada del código los emite.
+# ── HISTÓRICAS: ya NO SE ESCRIBEN (Moibe, 2026-11-05: se quitaron los expedientes virtuales y sus tipos; 2026-11-06: se quitaron los grupos) ───────
+# Las constantes de los tipos de expediente (`CASE_TYPE_*`), de los expedientes virtuales (`VIRTUAL_CASE_*`) y de los grupos (`CASE_GROUP_*`) se
+# conservan, y siguen en `ACCIONES`, porque la bitácora es de solo agregar: los renglones que ya están ahí se siguen leyendo y filtrando con estos
+# nombres. Nada del código los emite.
 #
 # Un tipo de expediente VIRTUAL (antes `servicios/tipos_expediente.py`; hasta el 2026-10-29 era «tipo de expediente» y el nombre de las acciones
 # se conservó): la clase de la que salían los expedientes virtuales. Llevaba quién (`usuarioGuid`, `sesionGuid`), de qué organización (`tenant`)
@@ -140,17 +141,17 @@ VIRTUAL_CASE_CREATED = "VIRTUAL_CASE_CREATED"
 VIRTUAL_CASE_DOCUMENT_ADDED = "VIRTUAL_CASE_DOCUMENT_ADDED"
 VIRTUAL_CASE_DOCUMENT_REMOVED = "VIRTUAL_CASE_DOCUMENT_REMOVED"
 VIRTUAL_CASE_DELETED = "VIRTUAL_CASE_DELETED"
-# ── fin de las históricas ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-# Una persona corrigió a mano un dato extraído (`servicios/datos_extraidos.py`): qué documento (`documentoId`) y qué campo (`ruta`).
-FIELD_CORRECTED = "FIELD_CORRECTED"
-# Grupos (`servicios/grupos.py`): el nivel de arriba de los expedientes. Llevan quién, de qué organización y qué grupo (`grupoId`, `nombre`).
-# Renombrar lleva además el nombre `antes` y `despues` (no se anota si, ya limpio, era el mismo). Asignar un expediente a un grupo
-# (`CASE_GROUP_ASSIGNED`) lleva el expediente (`expedienteId`, `nombre`) y el grupo en que estaba (`grupoAnteriorId`, `null` si no tenía); no se anota
-# si ya estaba en ese grupo.
+# Grupos de expedientes (antes `servicios/grupos.py`, migración `0010`, del 2026-11-03 al 2026-11-06): el nivel de arriba de los expedientes. Llevaban
+# quién, de qué organización y qué grupo (`grupoId`, `nombre`). Renombrar llevaba además el nombre `antes` y `despues`. Asignar un expediente a un grupo
+# (`CASE_GROUP_ASSIGNED`) llevaba el expediente (`expedienteId`, `nombre`) y el grupo en que estaba (`grupoAnteriorId`, `null` si no tenía). Los
+# `CASE_CREATED` de esos días llevan además `grupoId` y `grupoNombre`; los de después, no.
 CASE_GROUP_CREATED = "CASE_GROUP_CREATED"
 CASE_GROUP_RENAMED = "CASE_GROUP_RENAMED"
 CASE_GROUP_DELETED = "CASE_GROUP_DELETED"
 CASE_GROUP_ASSIGNED = "CASE_GROUP_ASSIGNED"
+# ── fin de las históricas ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+# Una persona corrigió a mano un dato extraído (`servicios/datos_extraidos.py`): qué documento (`documentoId`) y qué campo (`ruta`).
+FIELD_CORRECTED = "FIELD_CORRECTED"
 
 ACCIONES = frozenset({CASE_GROUP_CREATED, CASE_GROUP_RENAMED, CASE_GROUP_DELETED, CASE_GROUP_ASSIGNED, PROCESS_RUN_RECORDED, ROLE_DENIED, FIELD_CORRECTED,VIRTUAL_CASE_CREATED, VIRTUAL_CASE_DOCUMENT_ADDED, VIRTUAL_CASE_DOCUMENT_REMOVED, VIRTUAL_CASE_DELETED,CASE_TYPE_CREATED, CASE_TYPE_SCHEMA_CHANGED, CASE_TYPE_RENAMED, CASE_TYPE_DELETED, CASE_CREATED, CASE_DOCUMENT_ADDED, CASE_DOCUMENT_REMOVED, PROCESS_CREATED, PROCESS_DELETED, DOCUMENT_TYPE_CREATED, DOCUMENT_TYPE_DELETED, DOCUMENT_TYPE_STATE_CHANGED, DOCUMENT_TYPE_CALIBRATED, DOCUMENT_DISCARDED, PASSWORD_RESET_REQUESTED, PASSWORD_RESET_COMPLETED, PASSWORD_CHANGED, FIRST_LOGIN_PASSWORD_CHANGED, PROFILE_UPDATED, CROSS_TENANT_ACCESS, LOGOUT, FORCED_LOGOUT, USER_CREATED, INVITATION_REISSUED, USER_DELETED})
 

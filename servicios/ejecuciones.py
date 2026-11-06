@@ -4,7 +4,7 @@
 
 Una ejecución junta UN expediente con UN proceso. Hasta el 2026-11-05 se corría sobre un EXPEDIENTE VIRTUAL (un subconjunto de los documentos de un
 expediente, instancia de un tipo al que el proceso estaba ligado). Moibe quitó los expedientes virtuales («ahora podremos meter el expediente completo a
-la ejecución de un proceso»): el proceso corre sobre cualquier expediente de su organización (ni el grupo del expediente lo limita) y toma del expediente
+la ejecución de un proceso»): el proceso corre sobre cualquier expediente de su organización y toma del expediente
 COMPLETO los documentos de los tipos documentales que dibuja en su lienzo; esos nodos son la declaración de las entradas del proceso. Ya no hay «este
 proceso no corre aquí»: el motivo de rechazo `no_corre_aqui` desapareció.
 

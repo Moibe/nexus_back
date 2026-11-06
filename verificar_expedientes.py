@@ -21,6 +21,10 @@ Lo que se prueba:
 - (Moibe, 2026-11-05) el expediente ya NO sabe de tipos de expediente ni de expedientes virtuales (se quitaron: sus rutas dan 404, su detalle no trae
   `expedientesVirtuales`) y calcula sus DUPLICADOS al leer: `duplicado` en cada documento y `duplicados` en el expediente entero (con `--sql`, que es donde
   un documento tiene tipo);
+- (Moibe, 2026-11-06) tampoco vive en un GRUPO (se quitaron): crear pide solo `{tenant, nombre}` y un `grupoId` que todavía llegue de un cliente viejo se IGNORA
+  (con o sin base, de cualquier forma: el expediente se crea igual y sin `grupo`); ni la lista, ni el detalle, ni la respuesta de crear traen `grupo`;
+  `CASE_CREATED` no anota grupo; `/grupos…` y `PUT /expedientes/{id}/grupo` dan 404 y el servicio ya no tiene con qué atenderlos; con `--sql`, la base ya
+  no tiene la tabla de grupos ni la columna del expediente (migración `0013`);
 - (con `--sql`, Document AI falseado) subir un archivo a un expediente lo CLASIFICA y guarda lo que dijo el clasificador, sin meterlo a ningún lado:
   `clasificado`, `sin_tipo`, `sin_clasificador` y `no_clasificado` (falla, lento, sin base), lo rechazado no gasta, y `/ia/clasificar` con `documento` guarda la
   misma clasificación.
@@ -111,13 +115,9 @@ def subir(bearer: str, tenant: str, nombre: str, contenido: bytes):
     return c.post("/bandeja/", files={"archivo": (nombre, contenido, "application/pdf")}, data={"tenant": tenant}, headers=cab(bearer))
 
 
-#: Un grupo de cada organización (con `--sql`; se llena en el montaje): desde la migración 0010 un expediente nuevo nace en un grupo.
-GRUPOS: dict[str, str] = {}
-
-
 def crear(bearer: str, tenant: str, nombre):
-    """Crea un expediente. Desde el 2026-10-29 no lleva tipo; con `--sql`, desde el 2026-11-03, lleva grupo."""
-    return c.post("/expedientes/", json={"tenant": tenant, "nombre": nombre, **({"grupoId": GRUPOS[tenant]} if SQL else {})}, headers=cab(bearer))
+    """Crea un expediente: solo lleva organización y nombre (sin tipo desde el 2026-10-29 y sin grupo desde el 2026-11-06)."""
+    return c.post("/expedientes/", json={"tenant": tenant, "nombre": nombre}, headers=cab(bearer))
 
 
 def crear_tipo_documental(bearer: str, tenant: str, nombre: str) -> str:
@@ -175,11 +175,6 @@ try:
     org_a, a_admin = crear_organizacion(bearer_super, "Alfa", "rita@ejemplo.com", "Rumbo-Sereno-Azul-47!")
     org_b, b_admin = crear_organizacion(bearer_super, "Beta", "beto@ejemplo.com", "Rumbo-Sereno-Rojo-48!")
     guid_rita = usuarios.para_login("rita@ejemplo.com")["guid"]
-    if SQL:
-        for t_org, t_adm in ((org_a, a_admin), (org_b, b_admin)):
-            r = c.post("/grupos/", json={"tenant": t_org, "nombre": "General"}, headers=cab(t_adm))
-            assert r.status_code == 201, r.text
-            GRUPOS[t_org] = r.json()["id"]
     P = {}
     for rol in ORGANIZAN + SOLO_LEEN:
         correo = f"{rol.lower()}@ejemplo.com"
@@ -234,14 +229,7 @@ try:
     e1 = r.json()
     rev("el nombre sale limpio (espacios de más fuera) y lo demás lo pone el servidor", e1["nombre"] == "Solicitud de crédito" and e1["id"].startswith("expediente-") and len(e1["id"]) == 11 + 32 and e1["creadoPor"] == guid_rita and e1["creadoEn"] and e1["totalDocumentos"] == 0, str(e1))
     rev("el expediente NO trae tipo: es solo un receptáculo", "tipo" not in e1, str(e1))
-    if SQL:
-        rev("con base nace EN un grupo y lo trae (migración 0010; lo demás de los grupos lo prueba verificar_grupos.py)", e1["grupo"]["id"] == GRUPOS[org_a] and e1["grupo"]["nombre"] == "General", str(e1))
-    else:
-        rev("sin base no hay grupos: se crea sin grupo y se ve con `grupo: null`", e1["grupo"] is None, str(e1))
-        r_g = c.post("/expedientes/", json={"tenant": org_a, "nombre": "Con grupo", "grupoId": "grupo-" + "0" * 32}, headers=cab(a_admin))
-        rev("pedirle un grupo sin base: 503 (los grupos solo viven en SQL) y no crea nada", r_g.status_code == 503 and len(listar(a_admin, org_a).json()["expedientes"]) == 1, r_g.text[:200])
-        rev("las rutas de grupos sin base: 503", c.get("/grupos/", params={"tenant": org_a}, headers=cab(a_admin)).status_code == 503 and c.post("/grupos/", json={"tenant": org_a, "nombre": "X"}, headers=cab(a_admin)).status_code == 503)
-        rev("asignar grupo sin base: 503", c.put(f"/expedientes/{e1['id']}/grupo", json={"tenant": org_a, "grupoId": "grupo-" + "0" * 32}, headers=cab(a_admin)).status_code == 503)
+    rev("ni grupo (se quitaron el 2026-11-06): la respuesta de crear no trae `grupo`, con o sin base", "grupo" not in e1 and "grupoId" not in e1 and "grupoNombre" not in e1, str(e1))
     e1 = e1["id"]
     e2 = crear(a_admin, org_a, "Constitución de sociedad").json()["id"]
     e3 = crear(a_admin, org_a, "Solicitud de crédito").json()["id"]
@@ -253,8 +241,9 @@ try:
         rev(f"un nombre {que} se rechaza (400)", r.status_code == 400, f"{r.status_code} {r.text[:100]}")
     rev("un nombre que ni es texto se rechaza", crear(a_admin, org_a, 123).status_code in (400, 422))
     rev("ningún expediente de la lista trae tipo", all("tipo" not in e for e in lista), str(lista[:1]))
-    r = c.post("/expedientes/", json={"tenant": org_a, "nombre": "Con un tipo de los de antes", "tipoId": "tipo-expediente-" + "a" * 32, **({"grupoId": GRUPOS[org_a]} if SQL else {})}, headers=cab(a_admin))
-    rev("un cliente viejo que todavía manda `tipoId` no rompe nada: el expediente se crea, sin tipo", r.status_code == 201 and "tipo" not in r.json(), r.text[:150])
+    rev("ni grupo", all("grupo" not in e and "grupoId" not in e and "grupoNombre" not in e for e in lista), str(lista[:1]))
+    r = c.post("/expedientes/", json={"tenant": org_a, "nombre": "Con un tipo de los de antes", "tipoId": "tipo-expediente-" + "a" * 32, "grupoId": "grupo-" + "a" * 32}, headers=cab(a_admin))
+    rev("un cliente viejo que todavía manda `tipoId` y `grupoId` no rompe nada: el expediente se crea, sin tipo y sin grupo", r.status_code == 201 and "tipo" not in r.json() and "grupo" not in r.json(), r.text[:150])
     rev("uno de exactamente 200 caracteres sí cabe", crear(a_admin, org_a, "x" * 200).status_code == 201)
     rev("lo rechazado no creó nada (los tres de antes, el del cliente viejo y el de 200)", len(listar(a_admin, org_a).json()["expedientes"]) == 5)
     rev("el expediente aparece entero al pedirlo por su id", ver(a_admin, org_a, e1).status_code == 200 and ver(a_admin, org_a, e1).json()["documentos"] == [])
@@ -409,7 +398,7 @@ try:
         rev("cada expediente y cada pertenencia, también, y de solo agregar", {e["op"] for e in eventos_exp} == {"crear", "agregar", "quitar"} and all(e["tenant"] == org_a for e in eventos_exp))
         rev("el registro de una organización no lleva nada de otra", not (RAIZ / ".registro" / f"documentos-{org_b}.jsonl").exists() and all(b_exp not in json.dumps(e) for e in eventos_exp))
 
-    titulo("13 · El expediente ya no sabe de tipos ni de virtuales (Moibe, 2026-11-05) y las rutas que quitamos dan 404")
+    titulo("13 · El expediente ya no sabe de tipos, de virtuales (Moibe, 2026-11-05) ni de grupos (2026-11-06) y las rutas que quitamos dan 404")
     rev("pedir el listado con `?tipo=` no filtra: el expediente no tiene tipo", [e["id"] for e in c.get("/expedientes/", params={"tenant": org_a, "tipo": "tipo-expediente-" + "a" * 32}, headers=cab(a_admin)).json()["expedientes"]] == [e["id"] for e in listar(a_admin, org_a).json()["expedientes"]])
     detalle_e1 = ver(a_admin, org_a, e1).json()
     rev("el detalle trae `duplicados` y NO trae `expedientesVirtuales` ni la marca vieja `duplicadoEn`", detalle_e1["duplicados"] == [] and "expedientesVirtuales" not in detalle_e1 and "duplicadoEn" not in json.dumps(detalle_e1), str(sorted(detalle_e1)))
@@ -417,6 +406,10 @@ try:
     rev("lo que devuelve meter un documento es `{agregado, expediente}`: ya sin `expedientesVirtuales`", sorted(meter(a_admin, org_a, e1, d1).json()) == ["agregado", "expediente"] and "expedientesVirtuales" not in meter(a_admin, org_a, e1, d1).json()["expediente"])
     creado_e1 = [x for x in auditoria("CASE_CREATED") if x.get("expedienteId") == e1]
     rev("`CASE_CREATED` ya no anota tipo", len(creado_e1) == 1 and "tipoId" not in creado_e1[0], str(creado_e1))
+    rev("ni grupo (`grupoId`, `grupoNombre`)", len(creado_e1) == 1 and "grupoId" not in creado_e1[0] and "grupoNombre" not in creado_e1[0], str(creado_e1))
+    rev("el detalle de un expediente no trae `grupo`", "grupo" not in detalle_e1 and "grupoId" not in detalle_e1 and "grupoNombre" not in detalle_e1, str(sorted(detalle_e1)))
+    fila_e1 = next(e for e in listar(a_admin, org_a).json()["expedientes"] if e["id"] == e1)
+    rev("tampoco la fila de la lista, que solo trae lo suyo: id, nombre, quién lo creó, cuándo y cuánto tiene", sorted(fila_e1) == ["creadoEn", "creadoPor", "id", "nombre", "tamanoBytes", "totalDocumentos"], str(sorted(fila_e1)))
     inexistente_v = "expediente-virtual-" + "0" * 32
     inexistente_t = "tipo-expediente-" + "0" * 32
     quitadas = {
@@ -435,6 +428,17 @@ try:
     }
     rev("las rutas de los tipos de expediente y de los expedientes virtuales ya no existen: las doce dan 404", all(r_.status_code == 404 for r_ in quitadas.values()), str({k_: v_.status_code for k_, v_ in quitadas.items() if v_.status_code != 404}))
     rev("y el servicio no tiene de dónde sacarlas", all(not hasattr(expedientes, n_) for n_ in ("expedientes_virtuales", "tipos_expediente")) and not any(m_ in sys.modules for m_ in ("servicios.tipos_expediente", "servicios.expedientes_virtuales", "routers.tipos_expediente")))
+    inexistente_g = "grupo-" + "0" * 32
+    grupos_quitados = {
+        "GET /grupos/": c.get("/grupos/", params={"tenant": org_a}, headers=cab(a_admin)),
+        "POST /grupos/": c.post("/grupos/", json={"tenant": org_a, "nombre": "X"}, headers=cab(a_admin)),
+        "GET /grupos/{id}": c.get(f"/grupos/{inexistente_g}", params={"tenant": org_a}, headers=cab(a_admin)),
+        "PATCH /grupos/{id}": c.patch(f"/grupos/{inexistente_g}", json={"tenant": org_a, "nombre": "X"}, headers=cab(a_admin)),
+        "DELETE /grupos/{id}": c.delete(f"/grupos/{inexistente_g}", params={"tenant": org_a}, headers=cab(a_admin)),
+        "PUT /expedientes/{id}/grupo": c.put(f"/expedientes/{e1}/grupo", json={"tenant": org_a, "grupoId": inexistente_g}, headers=cab(a_admin)),
+    }
+    rev("las rutas de los grupos y la de asignar un expediente a uno ya no existen: las seis dan 404", all(r_.status_code == 404 for r_ in grupos_quitados.values()), str({k_: v_.status_code for k_, v_ in grupos_quitados.items() if v_.status_code != 404}))
+    rev("y el servicio no tiene de dónde sacarlas: ni `grupos` ni `asignar_grupo` ni sus errores, y ningún módulo de grupos se cargó", all(not hasattr(expedientes, n_) for n_ in ("grupos", "asignar_grupo", "GrupoNoEncontrado", "GrupoRequerido")) and not any(m_ in sys.modules for m_ in ("servicios.grupos", "routers.grupos")))
 
     titulo("14 · A un expediente le entra cualquier documento, y quitar un tipo documental de la biblioteca no lo toca")
     docs_de_e1 = ids_docs_de(a_admin, org_a, e1)
@@ -625,6 +629,10 @@ try:
         rev("…y uno bien formado sí entra (las dos de arriba no fallaban por otra cosa)", not rechaza(
             "INSERT INTO nexus.cases (publicId, tenant, name, createdBy) VALUES (?, ?, 'x', 'x')", "expediente-" + "f" * 32, org_a))
         k.execute("DELETE FROM nexus.cases WHERE publicId = ?", "expediente-" + "f" * 32)
+        rev("los grupos ya no existen en la base (migración 0013): ni la tabla `caseGroups` ni la columna `cases.caseGroupId` (y `cases.caseId`, de control, sí se ve)",
+            k.execute("SELECT OBJECT_ID('nexus.caseGroups', 'U')").fetchone()[0] is None
+            and k.execute("SELECT COL_LENGTH('nexus.cases', 'caseGroupId')").fetchone()[0] is None
+            and k.execute("SELECT COL_LENGTH('nexus.cases', 'caseId')").fetchone()[0] is not None)
         con.close()
     if SQL:
         titulo("20 · Duplicados: dos documentos del mismo tipo en UN expediente se marcan al leer (Moibe, 2026-11-05: sobre el expediente entero)")
@@ -782,6 +790,29 @@ try:
         finally:
             servicio_ia.clasificar_documento = original
             router_expedientes.ESPERA_CLASIFICAR_AL_SUBIR = espera
+
+    # Al final a propósito: cada petición crea un expediente más en Alfa, y las secciones de arriba cuentan los que hay.
+    titulo("22 · Un cliente viejo que todavía manda `grupoId` (Moibe, 2026-11-06: se quitaron los grupos): se IGNORA, sea lo que sea, y el expediente se crea igual")
+    antes_g = len(listar(a_admin, org_a).json()["expedientes"])
+    variantes = (
+        ("un id con la forma de uno que existió", "grupo-" + "b" * 32),
+        ("un id que ni parece de grupo", "cualquier-cosa"),
+        ("vacío", ""),
+        ("nulo", None),
+        ("un número", 123),
+        ("una lista", ["grupo-" + "c" * 32]),
+        ("un objeto", {"id": "grupo-" + "d" * 32}),
+    )
+    creados_g = []
+    for que, valor in variantes:
+        r = c.post("/expedientes/", json={"tenant": org_a, "nombre": f"Con grupoId {que}", "grupoId": valor}, headers=cab(a_admin))
+        rev(f"con `grupoId` {que}: 201 y sin `grupo` (ni 400 ni 422)", r.status_code == 201 and "grupo" not in r.json() and "grupoId" not in r.json(), f"{r.status_code} {r.text[:150]}")
+        creados_g.append(r.json().get("id"))
+    rev("los siete se crearon, cada uno con su id", len(variantes) == 7 and len({i_ for i_ in creados_g if i_}) == 7 and len(listar(a_admin, org_a).json()["expedientes"]) == antes_g + 7)
+    rev("y al abrirlos no traen grupo, igual que los demás", all("grupo" not in ver(a_admin, org_a, i_).json() for i_ in creados_g))
+    rev("`grupoId` no se guarda en ningún lado: ni en el rastro de `CASE_CREATED`", all("grupoId" not in x and "grupoNombre" not in x for x in auditoria("CASE_CREATED") if x.get("expedienteId") in creados_g) and len([x for x in auditoria("CASE_CREATED") if x.get("expedienteId") in creados_g]) == 7)
+    rev("y crear sigue exigiendo lo de siempre: sin nombre, 422; sin organización, 422", c.post("/expedientes/", json={"tenant": org_a, "grupoId": "grupo-" + "e" * 32}, headers=cab(a_admin)).status_code == 422 and c.post("/expedientes/", json={"nombre": "X", "grupoId": "grupo-" + "e" * 32}, headers=cab(a_admin)).status_code == 422)
+    rev("un nombre malo con `grupoId` también se rechaza (400): el grupo no cambia las reglas del nombre", c.post("/expedientes/", json={"tenant": org_a, "nombre": "   ", "grupoId": "grupo-" + "e" * 32}, headers=cab(a_admin)).status_code == 400)
 except Exception:  # noqa: BLE001 — una excepción que no es una aserción (p. ej. un resultado sin la forma que se esperaba) se anota como falla, y la prueba llega a su resumen
     import traceback
 

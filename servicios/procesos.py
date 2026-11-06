@@ -45,7 +45,7 @@ existe en OTRA se contesta igual que uno repetido en la propia, sin nombrar de q
 
 Entre el 2026-10-29 y el 2026-11-05 un proceso se LIGABA a un tipo de expediente virtual (`datos.tipoExpedienteVirtualId`) y corría sobre los
 expedientes virtuales de ese tipo. Moibe quitó los expedientes virtuales («ahora podremos meter el expediente completo a la ejecución de un
-proceso»): un proceso ya no se limita a nada y corre sobre CUALQUIER expediente de su organización (ni el grupo del expediente lo limita), tomando
+proceso»): un proceso ya no se limita a nada y corre sobre CUALQUIER expediente de su organización, tomando
 del expediente completo los documentos de los tipos documentales que dibuja en su lienzo (`servicios/ejecuciones.py`).
 
 Por eso `datos.tipoExpedienteVirtualId` ya no existe: si un cliente viejo todavía lo manda, el servidor lo IGNORA (no lo guarda ni falla) y las

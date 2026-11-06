@@ -52,7 +52,7 @@ class NombreRepetido(Exception):
 def clave_de_nombre(nombre: object) -> str:
     """Con qué se compara un nombre para saber si choca con otro: sin espacios de más y sin distinguir mayúsculas.
 
-    Es la misma regla que ya usan procesos y grupos. «Cédula  profesional » y «CÉDULA PROFESIONAL» chocan;
+    Es la misma regla que ya usan los procesos. «Cédula  profesional » y «CÉDULA PROFESIONAL» chocan;
     «Cedula profesional» (sin acento) no: es otra palabra.
     """
     return " ".join(str(nombre).split()).casefold()
