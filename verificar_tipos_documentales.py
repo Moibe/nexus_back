@@ -13,7 +13,8 @@ Lo que se prueba:
 - lo que no es un tipo (id raro, sin nombre, estado inventado, enorme) se rechaza, y lo que el servidor pone no se puede forzar;
 - el orden de la biblioteca se guarda por organización;
 - el nombre es único en la organización (409 `ya_existe`, sin distinguir mayúsculas ni espacios de más; los archivados no cuentan);
-- crear, borrar, cambiar de estado y calibrar dejan rastro con quién; guardar a secas, no;
+- crear, borrar y cambiar de estado dejan rastro con quién; guardar a secas, no (tampoco cambiar el `calibradoEn` de un tipo: el paso «Calibrar» se quitó el
+  2026-11-06 y `DOCUMENT_TYPE_CALIBRATED` ya no se escribe, aunque sigue siendo una acción válida de la bitácora);
 - el clasificador de CADA organización se sincroniza SIN cuerpo, con los tipos activos de ESA organización, y `asegurar` solo corrige
   si hay desfase (o lo crea si falta); quien no es de la organización recibe 403 y el administrador de plataforma solo toca el suyo.
 """
@@ -232,12 +233,32 @@ try:
     rev("activar: 200", r.status_code == 200, r.text[:160])
     cambios = auditoria("DOCUMENT_TYPE_STATE_CHANGED")
     rev("deja `DOCUMENT_TYPE_STATE_CHANGED` borrador → activo, con quién", len(cambios) == 1 and cambios[0].get("de") == "borrador" and cambios[0].get("a") == "activo" and cambios[0].get("usuarioGuid") == guid_omar and cambios[0].get("tipoId") == ine, str(cambios))
+    # Desde el 2026-11-06 no existe el paso «Calibrar»: que cambie el `calibradoEn` en la caja de un tipo (los de antes lo traen) es un guardado a secas.
     r = guardar(a_admin, org_a, ine, {**activo, "calibradoEn": "2026-10-15T01:00:00Z"}, r.json()["revision"])
     cal = auditoria("DOCUMENT_TYPE_CALIBRATED")
-    rev("calibrar deja `DOCUMENT_TYPE_CALIBRATED` con quién", r.status_code == 200 and len(cal) == 1 and cal[0].get("usuarioGuid") == guid_rita and cal[0].get("version") == 1, str(cal))
-    rev("y calibrar NO cuenta como cambio de estado", len(auditoria("DOCUMENT_TYPE_STATE_CHANGED")) == 1)
-    r = guardar(a_admin, org_a, ine, {**activo, "calibradoEn": "2026-10-15T01:00:00Z", "descripcion": "otra"}, r.json()["revision"])
-    rev("guardar otra vez lo ya calibrado no repite el rastro", len(auditoria("DOCUMENT_TYPE_CALIBRATED")) == 1)
+    rev("guardar un tipo cuyo `calibradoEn` cambia (de nulo a una fecha) es un guardado a secas: 200 y YA NO deja `DOCUMENT_TYPE_CALIBRATED` (0 renglones)", r.status_code == 200 and len(cal) == 0, str(cal))
+    rev("y tampoco cuenta como cambio de estado: `DOCUMENT_TYPE_STATE_CHANGED` sigue siendo solo el de activar", len(auditoria("DOCUMENT_TYPE_STATE_CHANGED")) == 1)
+    r = guardar(a_admin, org_a, ine, {**activo, "calibradoEn": "2026-10-15T02:00:00Z", "descripcion": "otra"}, r.json()["revision"])
+    rev("cambiarlo a otra fecha y editar otra cosa en el mismo guardado tampoco deja rastro: sigue en 0", r.status_code == 200 and len(auditoria("DOCUMENT_TYPE_CALIBRATED")) == 0, str(auditoria("DOCUMENT_TYPE_CALIBRATED")))
+    # `DOCUMENT_TYPE_STATE_CHANGED` sigue funcionando aunque el mismo guardado cambie también el `calibradoEn` (aquí se archiva `pasaporte`, que ningún otro apartado usa)
+    rev_pasaporte = next(t["revision"] for t in listar(a_admin, org_a).json()["tipos"] if t["id"] == pasaporte)
+    antes_cambios = len(auditoria("DOCUMENT_TYPE_STATE_CHANGED"))
+    r = guardar(a_admin, org_a, pasaporte, tipo("Pasaporte", estado="archivado", calibradoEn="2026-10-15T03:00:00Z"), rev_pasaporte)
+    cambios = auditoria("DOCUMENT_TYPE_STATE_CHANGED")
+    rev("un guardado que cambia el estado Y el `calibradoEn` deja UN `DOCUMENT_TYPE_STATE_CHANGED` (borrador → archivado, con quién y de qué tipo) y ningún `DOCUMENT_TYPE_CALIBRATED`",
+        r.status_code == 200 and len(cambios) == antes_cambios + 1 and cambios[-1].get("tipoId") == pasaporte and cambios[-1].get("de") == "borrador" and cambios[-1].get("a") == "archivado"
+        and cambios[-1].get("usuarioGuid") == guid_rita and len(auditoria("DOCUMENT_TYPE_CALIBRATED")) == 0, str(cambios[-1:]))
+    # La bitácora es de solo agregar: `DOCUMENT_TYPE_CALIBRATED` ya no se escribe, pero sigue siendo una acción válida (los renglones de antes se siguen leyendo y filtrando con ese nombre).
+    from servicios import auditoria as servicio_auditoria  # noqa: E402
+
+    rev("la acción histórica `DOCUMENT_TYPE_CALIBRATED` conserva su nombre y su lugar en `ACCIONES`", servicio_auditoria.DOCUMENT_TYPE_CALIBRATED == "DOCUMENT_TYPE_CALIBRATED" and "DOCUMENT_TYPE_CALIBRATED" in servicio_auditoria.ACCIONES)
+    try:
+        servicio_auditoria.registrar(servicio_auditoria.DOCUMENT_TYPE_CALIBRATED, guid_rita, tenant=org_a, tipoId=ine, nombre="INE", version=1)  # un renglón «de antes»
+        escrito = True
+    except ValueError:  # la acción dejó de ser válida: la bitácora ya no aceptaría ni leería los renglones de antes con ese nombre
+        escrito = False
+    de_antes = servicio_auditoria.eventos({"DOCUMENT_TYPE_CALIBRATED"})
+    rev("y un renglón de antes se escribe y se lee igual (filtrando por ese nombre), con quién y qué tipo", escrito and len(de_antes) == 1 and de_antes[0].get("usuarioGuid") == guid_rita and de_antes[0].get("tipoId") == ine and de_antes[0].get("version") == 1, str(de_antes))
 
     titulo("10 · Cada organización tiene SU clasificador, armado con SUS tipos activos de ESTE registro")
     guardar(b_admin, org_b, otro_b, tipo("De Beta", estado="activo", version=1, procesadorId="proc-beta-1"), 1)

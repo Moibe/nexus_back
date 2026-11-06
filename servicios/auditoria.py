@@ -92,12 +92,17 @@ USER_DELETED = "USER_DELETED"
 # `canal`) y el motivo que escribió la persona (`detalle`, opcional).
 DOCUMENT_DISCARDED = "DOCUMENT_DISCARDED"
 
-# Tipos documentales de una organización (la biblioteca de Configuración). Crear, borrar, cambiar de estado y calibrar dejan
+# Tipos documentales de una organización (la biblioteca de Configuración). Crear, borrar y cambiar de estado dejan
 # rastro; guardar a secas no. Llevan quién (`usuarioGuid`, `sesionGuid`), de qué organización (`tenant`), qué tipo (`tipoId`,
-# `nombre`) y, según el caso, `estado` / `de` y `a` / `version`.
+# `nombre`) y, según el caso, `estado` / `de` y `a`.
 DOCUMENT_TYPE_CREATED = "DOCUMENT_TYPE_CREATED"
 DOCUMENT_TYPE_DELETED = "DOCUMENT_TYPE_DELETED"
 DOCUMENT_TYPE_STATE_CHANGED = "DOCUMENT_TYPE_STATE_CHANGED"
+# HISTÓRICA: ya NO SE ESCRIBE desde el 2026-11-06 (Moibe decidió quitar el paso «Calibrar» de los tipos documentales: un tipo activo con procesador extrae
+# en cuanto está activo, y ya nadie marca un tipo como calibrado). Hasta ese día se anotaba al cambiar el `calibradoEn` de un tipo, y llevaba quién
+# (`usuarioGuid`, `sesionGuid`), de qué organización (`tenant`), qué tipo (`tipoId`, `nombre`) y su `version`. Se conserva, y sigue en `ACCIONES`, porque la
+# bitácora es de solo agregar: los renglones que ya están ahí se siguen leyendo y filtrando con este nombre (mismo criterio que las históricas de
+# expedientes virtuales y grupos, más abajo). Nada del código la emite.
 DOCUMENT_TYPE_CALIBRATED = "DOCUMENT_TYPE_CALIBRATED"
 
 # Procesos de una organización (el motor de reglas, `servicios/procesos.py`). Crear y borrar dejan rastro; guardar a secas no.

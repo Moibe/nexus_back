@@ -45,9 +45,11 @@ y la respuesta dice qué pasó.
 Justo después de clasificar, si el clasificador reconoció un tipo, se EXTRAEN los datos del archivo (`extraccion` en la respuesta) con el procesador de ese
 tipo y se guardan igual que desde `/ia/extraer` (`datos_extraidos.registrar_extraccion`): es lo que leen los procesos, que antes no encontraban nada en
 los archivos subidos directo a un expediente (solo el pipeline de las bandejas extraía; Moibe: «cuando corremos los archivos en las bandejas sí se
-extraen los datos, pero en expedientes no»). Mismas condiciones que el pipeline: el tipo está activo, tiene procesador y ya está calibrado. Cuesta una
+extraen los datos, pero en expedientes no»). Las condiciones: el clasificador reconoció un tipo, y ese tipo está ACTIVO y tiene procesador; nada más. Desde
+el 2026-11-06 el paso «Calibrar» de los tipos documentales ya no existe (Moibe decidió quitarlo), así que un tipo activo con procesador extrae en cuanto está
+activo, y el `calibradoEn` que un tipo viejo todavía traiga en su caja se ignora. Cuesta una
 llamada más a Document AI por archivo reconocido. Tampoco puede tumbar la subida: si no se puede, el archivo queda subido con su tipo y `extraccion.estado`
-dice por qué (`sin_procesador`, `sin_calibrar`, `error`, `no_extraido`…). Los archivos subidos ANTES de este cambio no se extraen solos.
+dice por qué (`sin_procesador`, `error`, `no_extraido`…). Los archivos subidos ANTES de este cambio no se extraen solos.
 
 ## Duplicados (Moibe, 2026-11-03; sobre el expediente entero desde el 2026-11-05)
 
@@ -430,13 +432,15 @@ async def _clasificar_al_subir(actor: aislamiento.Actor, tenant: str, documento:
 
 async def _extraer_al_subir(actor: aislamiento.Actor, tenant: str, documento: dict, archivo: UploadFile, clasificacion: dict) -> dict:
     """Extrae los datos del archivo recién subido, DESPUÉS de clasificarlo (Moibe, 2026-11-06: «cuando corremos los archivos en las bandejas sí se
-    extraen los datos, pero en expedientes no»). Es la MISMA extracción del pipeline, con las mismas condiciones: el clasificador reconoció un tipo y ese
-    tipo está activo, tiene su procesador y ya pasó la calibración (mandar documentos de producción a un extractor sin verificar es justo lo que esa
-    regla evita). La corrida y sus datos se guardan igual que desde `/ia/extraer` (`registrar_extraccion`), y es lo que luego leen los procesos.
+    extraen los datos, pero en expedientes no»). Es la MISMA extracción del pipeline (`ia.extraer_con_procesador`) y se hace si el clasificador reconoció un
+    tipo y ese tipo está ACTIVO y tiene su procesador: nada más. Desde el 2026-11-06 no existe el paso «Calibrar» de los tipos documentales (antes se exigía
+    además `calibradoEn`, la marca que ponía), así que un tipo activo con procesador extrae en cuanto está activo, y el `calibradoEn` que un tipo viejo
+    todavía traiga en su caja no se mira. La corrida y sus datos se guardan igual que desde `/ia/extraer` (`registrar_extraccion`), y es lo que luego
+    leen los procesos.
     Devuelve `extraccion`; NUNCA levanta: el archivo ya está subido y esto es una consecuencia, así que cualquier falla solo deja el documento sin datos
     y se dice en `estado`: `extraido`, `no_reconocido` (Document AI no reconoció los campos: la corrida se guarda con esa marca), `sin_tipo` (no se
-    clasificó, así que no hay con qué extraer), `sin_procesador` o `sin_calibrar` (el tipo está mal configurado: lo que falta es trabajo de
-    configuración, no reintentar), `error` (Document AI falló: la corrida fallida queda anotada) o `no_extraido` (tardó demasiado o no se pudo guardar)."""
+    clasificó, o el tipo ya no está activo, así que no hay con qué extraer), `sin_procesador` (el tipo está activo pero sin procesador: lo que falta es
+    trabajo de configuración, no reintentar), `error` (Document AI falló: la corrida fallida queda anotada) o `no_extraido` (tardó demasiado o no se pudo guardar)."""
     def resultado(estado: str, **mas) -> dict:
         return {"estado": estado, **mas}
 
@@ -454,8 +458,6 @@ async def _extraer_al_subir(actor: aislamiento.Actor, tenant: str, documento: di
     procesador = str(datos.get("procesadorId") or "").strip()
     if not procesador:
         return resultado("sin_procesador")
-    if not datos.get("calibradoEn"):
-        return resultado("sin_calibrar")
     version = str(datos.get("procesadorVersion") or "").strip()
 
     iniciada = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -500,8 +502,8 @@ async def _extraer_al_subir(actor: aislamiento.Actor, tenant: str, documento: di
         "Además lo CLASIFICA (lo que cuestan sus dos primeras páginas en Document AI): `clasificacion` dice el `estado` (`clasificado`, "
         "`sin_tipo`, `sin_clasificador` o `no_clasificado`), el `tipo` y la `confianza` (0-100) si lo reconoció: esa clasificación se guarda y es lo "
         "que dice de qué tipo es el documento. Clasificar nunca tumba la subida: si no se puede, el archivo queda subido y sin tipo documental. "
-        "Si el clasificador reconoció un tipo activo, con procesador y ya calibrado, EXTRAE sus datos con ese procesador, igual que el pipeline de las "
-        "bandejas (lo que luego leen los procesos): `extraccion.estado` es `extraido`, `no_reconocido`, `sin_tipo`, `sin_procesador`, `sin_calibrar`, "
+        "Si el clasificador reconoció un tipo activo y con procesador, EXTRAE sus datos con ese procesador, igual que el pipeline de las "
+        "bandejas (lo que luego leen los procesos): `extraccion.estado` es `extraido`, `no_reconocido`, `sin_tipo`, `sin_procesador`, "
         "`error` o `no_extraido` (y `extraccionId` si se guardó la corrida). Tampoco tumba la subida. "
         "Devuelve `{agregado, documento, clasificacion, extraccion}`."
     ),

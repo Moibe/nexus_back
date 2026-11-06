@@ -6,8 +6,9 @@ llaves, webhooks y bandeja.
 
 ## Qué se anota (auditoría)
 
-Crear, borrar, cambiar de estado (borrador ↔ activo ↔ archivado) y CALIBRAR un tipo dejan su rastro en la bitácora, con quién
-lo hizo. Guardar a secas (editar un campo, subir un ejemplo) no: son muchos guardados y no cambian lo que el tipo ES.
+Crear, borrar y cambiar de estado (borrador ↔ activo ↔ archivado) un tipo dejan su rastro en la bitácora, con quién
+lo hizo. Guardar a secas (editar un campo, subir un ejemplo) no: son muchos guardados y no cambian lo que el tipo ES. Hasta el 2026-11-06 también se
+anotaba CALIBRAR un tipo (`DOCUMENT_TYPE_CALIBRATED`); el paso «Calibrar» se quitó, así que ya no se escribe (lo que quedó en la bitácora se sigue leyendo).
 
 ## Sugerir una descripción (2026-11-05)
 
@@ -167,9 +168,8 @@ def guardar(tipo_id: str, entrada: Guardado, authorization: str | None = Header(
         antes = previo["datos"]
         if antes["estado"] != nuevo["estado"]:
             _anotar(auditoria.DOCUMENT_TYPE_STATE_CHANGED, actor, entrada.tenant, tipo_id, nombre=nuevo["nombre"], de=antes["estado"], a=nuevo["estado"])
-        # Calibrar es lo que permite que un tipo extraiga: quién y cuándo importa.
-        if nuevo.get("calibradoEn") and nuevo.get("calibradoEn") != antes.get("calibradoEn"):
-            _anotar(auditoria.DOCUMENT_TYPE_CALIBRATED, actor, entrada.tenant, tipo_id, nombre=nuevo["nombre"], version=nuevo.get("version"))
+        # Ya no se anota `DOCUMENT_TYPE_CALIBRATED` (2026-11-06): el paso «Calibrar» se quitó y un tipo activo con procesador extrae sin él. Si una caja
+        # vieja todavía trae `calibradoEn` y cambia, es un guardado a secas.
     return tipo
 
 

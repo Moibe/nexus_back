@@ -555,7 +555,7 @@ conoce el cliente, el `id` que recibió al subir. Lo subido a mano no se avisa.
 | procesado | `documento.completado` | — |
 | no soportado / no reconocido / sin tipo que aplique | `documento.rechazado` | `formato_no_soportado` / `documento_no_reconocido` / `tipo_no_identificado` |
 | error del servicio | `documento.fallido` | `error_del_servicio` |
-| tipo reconocido pero sin extractor o sin calibrar | `documento.fallido` | `tipo_sin_configurar` |
+| tipo reconocido pero sin extractor | `documento.fallido` | `tipo_sin_configurar` |
 
 **No se le cree a ciegas al front** (hasta el 2026-10-07 se alcanzaba desde internet sin
 iniciar sesión; hoy pide login y esta ruta, además, comprueba por su cuenta que la persona sea de ese cliente: ver
@@ -1727,7 +1727,7 @@ responde 404 igual que uno que no existe.
 **El nombre es único en la organización (2026-11-04).** Sin distinguir mayúsculas ni espacios de más (la misma regla que procesos y
 grupos): crear, renombrar o desarchivar un tipo con el nombre de otro es 409 `ya_existe`. Los **archivados no ocupan
 nombre**. Solo se revisa cuando el tipo ENTRA a un nombre: los duplicados que ya existían se siguen guardando mientras no se toque su
-nombre (activarlos, calibrarlos, editar la descripción), y se resuelven renombrando, archivando o borrando uno. Lo cuida el servicio
+nombre (activarlos, editar la descripción), y se resuelven renombrando, archivando o borrando uno. Lo cuida el servicio
 (`exigir_nombre_libre` en `tipos_documentales_comun.py`, igual en el JSONL y en SQL, con candado dentro de la transacción), no un índice
 único: la regla depende del estado, que vive dentro del JSON.
 
@@ -1738,8 +1738,10 @@ otra— también es 409.
 **Ids.** Los inventa el cliente (`tipo-` + 32 hexadecimales). Tienen que ser únicos en TODAS las organizaciones, porque el id
 nombra cada categoría del clasificador y cada procesador en Google, y el registro lo busca sin mirar el tenant.
 
-**Auditoría.** Crear, borrar, cambiar de estado y calibrar dejan `DOCUMENT_TYPE_CREATED`, `DOCUMENT_TYPE_DELETED`,
-`DOCUMENT_TYPE_STATE_CHANGED` y `DOCUMENT_TYPE_CALIBRATED`, con quién y de qué organización. Guardar a secas, no.
+**Auditoría.** Crear, borrar y cambiar de estado dejan `DOCUMENT_TYPE_CREATED`, `DOCUMENT_TYPE_DELETED` y
+`DOCUMENT_TYPE_STATE_CHANGED`, con quién y de qué organización. Guardar a secas, no. (`DOCUMENT_TYPE_CALIBRATED`, que se anotaba al marcar un
+tipo como calibrado, ya no se escribe desde el 2026-11-06, cuando se quitó el paso «Calibrar»; los renglones que ya estaban en la bitácora se
+siguen leyendo.)
 
 ### El clasificador sale de este registro, y es de cada organización
 

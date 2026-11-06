@@ -121,7 +121,7 @@ def tipo_documental(bearer: str, tenant: str, nombre: str, campos: list[dict]) -
     tid = "tipo-" + uuid.uuid4().hex
     datos = {
         "nombre": nombre, "descripcion": "", "vertical": "", "campos": campos, "pasoMaximo": 3, "guardadoEn": "2026-11-03T00:00:00Z", "estado": "activo", "version": 1,
-        "procesadorId": "", "procesadorVersion": "", "procesadorDisplayName": "", "ejemploDocumental": False, "activadoEn": None, "calibradoEn": None,
+        "procesadorId": "", "procesadorVersion": "", "procesadorDisplayName": "", "ejemploDocumental": False, "activadoEn": None,
         "historialVersiones": [], "versionEnEdicion": None, "documentosEjemplo": [], "recortesPorDocumento": {},
     }
     r = c.put(f"/tipos-documentales/{tid}", json={"tenant": tenant, "revision": 0, "datos": datos}, headers=cab(bearer))

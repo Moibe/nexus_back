@@ -27,11 +27,17 @@ Lo que se prueba:
   no tiene la tabla de grupos ni la columna del expediente (migración `0013`);
 - (con `--sql`, Document AI falseado) subir un archivo a un expediente lo CLASIFICA y guarda lo que dijo el clasificador, sin meterlo a ningún lado:
   `clasificado`, `sin_tipo`, `sin_clasificador` y `no_clasificado` (falla, lento, sin base), lo rechazado no gasta, y `/ia/clasificar` con `documento` guarda la
-  misma clasificación.
+  misma clasificación;
+- (con `--sql`, Document AI falseado, sección 23) subir un archivo a un expediente también EXTRAE sus datos si el clasificador reconoció un tipo ACTIVO con
+  procesador, y nada más (Moibe, 2026-11-06: se quitó el paso «Calibrar» de los tipos documentales, así que un tipo activo con procesador extrae aunque no tenga
+  `calibradoEn` —sin la llave, nulo o vacío— y los de antes que sí lo traen también): cada estado de `extraccion` (`extraido`, `no_reconocido`, `error`,
+  `no_extraido`, `sin_tipo` y `sin_procesador`; `sin_calibrar` ya no existe) con lo que queda en la base y en `/datos`, que Google solo se llame con el procesador
+  y la versión DEL TIPO y los bytes del archivo y nunca sin tipo ni sin procesador, que un tipo archivado en el aire no se extraiga, que la corrida quede en la
+  organización de quien sube, subidas seguidas y a la vez, y que lo rechazado, la bandeja y la carga manual no extraigan.
 
 Con `--sql` corre LO MISMO contra SQL Server (migración `0003`, en un contenedor desechable: ver `pruebas_sql.py`), que es donde viven los documentos y
 los expedientes en dev, staging y producción desde el 2026-10-29. Las comprobaciones que leen el JSONL a mano se saltan ahí (no hay archivo) y
-se agregan las que solo la base puede cuidar (secciones 19 a 21: lo que la base impide, los duplicados y la clasificación al subir).
+se agregan las que solo la base puede cuidar (secciones 19 a 21 y 23: lo que la base impide, los duplicados, y la clasificación y la extracción al subir).
 
     .venv/Scripts/python verificar_expedientes.py --sql
 """
@@ -834,9 +840,10 @@ try:
             "historialVersiones": [], "versionEnEdicion": None, "documentosEjemplo": [], "recortesPorDocumento": {},
         }
 
-        def tipo_x(bearer: str, tenant: str, nombre: str, estado: str = "activo", procesador: str = "", version: str = "", calibrado: str | None = None) -> str:
+        def tipo_x(bearer: str, tenant: str, nombre: str, estado: str = "activo", procesador: str = "", version: str = "", **mas) -> str:
+            """Un tipo documental SIN `calibradoEn`: desde el 2026-11-06 no existe el paso «Calibrar». `mas` agrega llaves a su caja (23f prueba las de antes)."""
             tid = "tipo-" + uuid.uuid4().hex
-            datos = {**VACIO_TIPO, "nombre": nombre, "estado": estado, "procesadorId": procesador, "procesadorVersion": version, "calibradoEn": calibrado}
+            datos = {**VACIO_TIPO, "nombre": nombre, "estado": estado, "procesadorId": procesador, "procesadorVersion": version, **mas}
             r_ = c.put(f"/tipos-documentales/{tid}", json={"tenant": tenant, "revision": 0, "datos": datos}, headers=cab(bearer))
             assert r_.status_code == 200, r_.text
             return tid
@@ -846,15 +853,14 @@ try:
             r_ = c.put(f"/tipos-documentales/{tid}", json={"tenant": tenant, "revision": t_["revision"], "datos": {**t_["datos"], "estado": estado}}, headers=cab(bearer))
             assert r_.status_code == 200, r_.text
 
-        CAL = "2026-11-05T12:00:00Z"
-        tx_cal = tipo_x(a_admin, org_a, "Cédula calibrada", procesador="proc-cal", version="7", calibrado=CAL)
-        tx_cal2 = tipo_x(a_admin, org_a, "Recibo calibrado", procesador="proc-recibo", version="3", calibrado=CAL)
-        tx_sinproc = tipo_x(a_admin, org_a, "Sin procesador", procesador="", calibrado=CAL)
-        tx_sincal = tipo_x(a_admin, org_a, "Sin calibrar", procesador="proc-sincal", version="2", calibrado=None)
-        tx_borrador = tipo_x(a_admin, org_a, "Todavía borrador", estado="borrador", procesador="proc-borrador", version="1", calibrado=CAL)
-        tx_archivado = tipo_x(a_admin, org_a, "Ya archivado", estado="archivado", procesador="proc-archivado", version="1", calibrado=CAL)
-        tx_vuela = tipo_x(a_admin, org_a, "Se archiva en el aire", procesador="proc-vuela", version="1", calibrado=CAL)
-        tx_cal_b = tipo_x(b_admin, org_b, "Cédula de Beta", procesador="proc-cal-beta", version="9", calibrado=CAL)
+        FECHA_VIEJA = "2026-11-05T12:00:00Z"  # un `calibradoEn` de cuando existía el paso «Calibrar»: ya no cuenta para nada, pero los tipos de antes lo traen
+        tx_ced = tipo_x(a_admin, org_a, "Cédula", procesador="proc-ced", version="7")
+        tx_recibo = tipo_x(a_admin, org_a, "Recibo", procesador="proc-recibo", version="3")
+        tx_sinproc = tipo_x(a_admin, org_a, "Sin procesador", procesador="")
+        tx_borrador = tipo_x(a_admin, org_a, "Todavía borrador", estado="borrador", procesador="proc-borrador", version="1")
+        tx_archivado = tipo_x(a_admin, org_a, "Ya archivado", estado="archivado", procesador="proc-archivado", version="1")
+        tx_vuela = tipo_x(a_admin, org_a, "Se archiva en el aire", procesador="proc-vuela", version="1")
+        tx_ced_b = tipo_x(b_admin, org_b, "Cédula de Beta", procesador="proc-ced-beta", version="9")
 
         CL = {"respuesta": None, "error": None, "antes_de_responder": None}
         EX = {"respuesta": None, "error": None, "demora": 0.0}
@@ -932,8 +938,8 @@ try:
             ex_exp_b = crear(b_admin, org_b, "Extracción al subir de Beta").json()["id"]
 
             # ---- (a) el caso feliz
-            titulo("23a · Tipo activo, con procesador y calibrado: se extrae, de verdad queda guardado y se llama a Document AI UNA vez")
-            reconoce_x(tx_cal, 92.5)
+            titulo("23a · Tipo activo y con procesador (nada más): se extrae, de verdad queda guardado y se llama a Document AI UNA vez")
+            reconoce_x(tx_ced, 92.5)
             extrae_ok()
             bytes_a = pdf(2301)
             antes_corridas = corridas_totales()
@@ -941,21 +947,21 @@ try:
             j = r.json() if r.status_code == 201 else {}
             doc_a = (j.get("documento") or {}).get("id", "")
             rev("201 y `extraccion.estado` es `extraido`, con el id de la corrida", r.status_code == 201 and j["extraccion"]["estado"] == "extraido" and str(j["extraccion"].get("extraccionId", "")).startswith("extraccion-") and sorted(j["extraccion"]) == ["estado", "extraccionId"], r.text[:300])
-            rev("la clasificación sigue diciendo lo suyo (clasificado, con el tipo y la confianza)", j["clasificacion"] == {"estado": "clasificado", "tipo": {"id": tx_cal, "nombre": "Cédula calibrada"}, "confianza": 92.5}, str(j.get("clasificacion")))
-            rev("Document AI de extracción se llamó UNA sola vez, con el procesador y la versión DEL TIPO, el mime y los bytes del archivo", LL_EX == [("proc-cal", bytes_a, "application/pdf", "7")], str([(x[0], len(x[1]), x[2], x[3]) for x in LL_EX]))
+            rev("la clasificación sigue diciendo lo suyo (clasificado, con el tipo y la confianza)", j["clasificacion"] == {"estado": "clasificado", "tipo": {"id": tx_ced, "nombre": "Cédula"}, "confianza": 92.5}, str(j.get("clasificacion")))
+            rev("Document AI de extracción se llamó UNA sola vez, con el procesador y la versión DEL TIPO, el mime y los bytes del archivo", LL_EX == [("proc-ced", bytes_a, "application/pdf", "7")], str([(x[0], len(x[1]), x[2], x[3]) for x in LL_EX]))
             rev("el clasificador se llamó una vez y solo con los bytes del archivo", LL_CL[-1:] == [len(bytes_a)])
             x = datos_x(a_admin, org_a, doc_a).json()
             rev("`GET …/documentos/{id}/datos` devuelve la corrida: la misma que dijo la subida, del tipo, con su procesador y versión, estado ok y una sola corrida",
-                x["extraccion"] is not None and x["extraccion"]["id"] == j["extraccion"]["extraccionId"] and x["extraccion"]["estado"] == "ok" and x["extraccion"]["tipoDocumental"]["id"] == tx_cal
-                and x["extraccion"]["procesador"] == {"id": "proc-cal", "version": "7"} and x["extraccion"]["totalCorridas"] == 1, str(x["extraccion"]))
+                x["extraccion"] is not None and x["extraccion"]["id"] == j["extraccion"]["extraccionId"] and x["extraccion"]["estado"] == "ok" and x["extraccion"]["tipoDocumental"]["id"] == tx_ced
+                and x["extraccion"]["procesador"] == {"id": "proc-ced", "version": "7"} and x["extraccion"]["totalCorridas"] == 1, str(x["extraccion"]))
             sello = hashlib.sha256(bytes_a).hexdigest()[:8]
             campos_a = {f_["ruta"]: f_ for f_ in x["campos"]}
-            rev("y sus datos: un renglón por campo con el valor y la confianza que dijo el extractor (de ESTE archivo)", sorted(campos_a) == ["folio", "nombre"] and campos_a["nombre"]["valor"] == f"Persona {sello}" and campos_a["nombre"]["confianza"] == 95.0 and campos_a["folio"]["valor"] == f"proc-cal-{sello}", str(campos_a))
+            rev("y sus datos: un renglón por campo con el valor y la confianza que dijo el extractor (de ESTE archivo)", sorted(campos_a) == ["folio", "nombre"] and campos_a["nombre"]["valor"] == f"Persona {sello}" and campos_a["nombre"]["confianza"] == 95.0 and campos_a["folio"]["valor"] == f"proc-ced-{sello}", str(campos_a))
             filas = corridas_de(doc_a)
             rev("en la base: UNA corrida `ok` con 2 `entityFacts`, del procesador y la versión del tipo, en la organización de quien subió",
-                len(filas) == 1 and filas[0][1] == "ok" and filas[0][2] == "proc-cal" and filas[0][3] == "7" and filas[0][4] == tx_cal and filas[0][5] == org_a and filas[0][7] == 2 and filas[0][0] == j["extraccion"]["extraccionId"], str(filas))
+                len(filas) == 1 and filas[0][1] == "ok" and filas[0][2] == "proc-ced" and filas[0][3] == "7" and filas[0][4] == tx_ced and filas[0][5] == org_a and filas[0][7] == 2 and filas[0][0] == j["extraccion"]["extraccionId"], str(filas))
             rev("y solo esa corrida se agregó (ninguna de más)", corridas_totales() == antes_corridas + 1)
-            rev("el documento dice que es de ese tipo y quedó en el expediente", (en_exp(a_admin, org_a, ex_exp, doc_a) or {}).get("tipoDocumental", {}).get("id") == tx_cal)
+            rev("el documento dice que es de ese tipo y quedó en el expediente", (en_exp(a_admin, org_a, ex_exp, doc_a) or {}).get("tipoDocumental", {}).get("id") == tx_ced)
             rev("lo ve la gente de la organización y la otra no (404)", datos_x(P["VIEWER"], org_a, doc_a).status_code == 200 and datos_x(b_admin, org_b, doc_a).status_code == 404)
 
             # ---- (b) no reconocido
@@ -967,7 +973,7 @@ try:
             rev("201 y `extraccion.estado` es `no_reconocido`, con el id de la corrida que quedó", r.status_code == 201 and j["extraccion"]["estado"] == "no_reconocido" and str(j["extraccion"].get("extraccionId", "")).startswith("extraccion-"), r.text[:300])
             filas = corridas_de(doc_b)
             rev("la corrida quedó con estado `no_reconocido`", len(filas) == 1 and filas[0][1] == "no_reconocido" and datos_x(a_admin, org_a, doc_b).json()["extraccion"]["estado"] == "no_reconocido", str(filas))
-            rev("el archivo sigue en el expediente y con su tipo", (en_exp(a_admin, org_a, ex_exp, doc_b) or {}).get("tipoDocumental", {}).get("id") == tx_cal)
+            rev("el archivo sigue en el expediente y con su tipo", (en_exp(a_admin, org_a, ex_exp, doc_b) or {}).get("tipoDocumental", {}).get("id") == tx_ced)
 
             # ---- (c) falla
             titulo("23c · La extracción LANZA: la subida sigue siendo 201 y la corrida fallida queda anotada")
@@ -978,10 +984,10 @@ try:
             rev("201 con `extraccion.estado == error` y sin `extraccionId`", r.status_code == 201 and j["extraccion"] == {"estado": "error"}, r.text[:300])
             rev("nada de la falla viaja al navegador", "secreto-interno" not in r.text and "Google" not in r.text)
             filas = corridas_de(doc_c)
-            rev("queda UNA corrida con estado `error`, su motivo, sin datos y del tipo y procesador correctos", len(filas) == 1 and filas[0][1] == "error" and "secreto-interno-123" in (filas[0][6] or "") and filas[0][7] == 0 and filas[0][2] == "proc-cal" and filas[0][4] == tx_cal, str(filas))
+            rev("queda UNA corrida con estado `error`, su motivo, sin datos y del tipo y procesador correctos", len(filas) == 1 and filas[0][1] == "error" and "secreto-interno-123" in (filas[0][6] or "") and filas[0][7] == 0 and filas[0][2] == "proc-ced" and filas[0][4] == tx_ced, str(filas))
             xc = datos_x(a_admin, org_a, doc_c).json()
             rev("`/datos` dice que la última corrida falló y no inventa campos", xc["extraccion"]["estado"] == "error" and xc["campos"] == [], str(xc["extraccion"]))
-            rev("el archivo está en el expediente, con su tipo", (en_exp(a_admin, org_a, ex_exp, doc_c) or {}).get("tipoDocumental", {}).get("id") == tx_cal)
+            rev("el archivo está en el expediente, con su tipo", (en_exp(a_admin, org_a, ex_exp, doc_c) or {}).get("tipoDocumental", {}).get("id") == tx_ced)
             n_antes = corridas_totales()
             servicio_datos.registrar_extraccion = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("la base no contesta"))
             try:
@@ -1006,30 +1012,55 @@ try:
             rev("201 con `extraccion.estado == no_extraido`", r.status_code == 201 and j["extraccion"] == {"estado": "no_extraido"}, r.text[:300])
             rev("no se quedó esperando: respondió bastante antes de que Document AI contestara (1 s)", dur < 0.9, f"{dur:.2f} s")
             time.sleep(1.2)
-            rev("pasada la demora tampoco aparece una corrida (la tarea se canceló) y el archivo sigue con su tipo", corridas_totales() == n_antes and corridas_de(j["documento"]["id"]) == [] and (en_exp(a_admin, org_a, ex_exp, j["documento"]["id"]) or {}).get("tipoDocumental", {}).get("id") == tx_cal)
+            rev("pasada la demora tampoco aparece una corrida (la tarea se canceló) y el archivo sigue con su tipo", corridas_totales() == n_antes and corridas_de(j["documento"]["id"]) == [] and (en_exp(a_admin, org_a, ex_exp, j["documento"]["id"]) or {}).get("tipoDocumental", {}).get("id") == tx_ced)
             rev("el tope de la extracción y el del clasificador son independientes: el del clasificador no se tocó", router_expedientes.ESPERA_CLASIFICAR_AL_SUBIR == orig_espera_cl)
 
             extrae_ok()  # (b) dejó a Document AI falseado diciendo «no reconocido»: de aquí en adelante, extrae bien
-            # ---- (e) (f) mal configurado
-            titulo("23e · Tipo activo SIN procesador y 23f · con procesador pero SIN calibrar: no se llama a Google")
+            # ---- (e) sin procesador
+            titulo("23e · Tipo activo SIN procesador (o con el procesador en blanco): `sin_procesador` y no se llama a Google")
             n_ex, n_corr = len(LL_EX), corridas_totales()
             reconoce_x(tx_sinproc)
             r = subir_a(a_admin, org_a, ex_exp, "sin-procesador.pdf", pdf(2306))
             rev("sin procesador: 201 y `sin_procesador` (la clasificación sí dijo el tipo)", r.status_code == 201 and r.json()["extraccion"] == {"estado": "sin_procesador"} and r.json()["clasificacion"]["estado"] == "clasificado", r.text[:300])
-            reconoce_x(tx_sincal)
-            r2 = subir_a(a_admin, org_a, ex_exp, "sin-calibrar.pdf", pdf(2307))
-            rev("sin calibrar: 201 y `sin_calibrar`", r2.status_code == 201 and r2.json()["extraccion"] == {"estado": "sin_calibrar"} and r2.json()["clasificacion"]["estado"] == "clasificado", r2.text[:300])
-            rev("a Document AI de extracción NO se le llamó ni una vez, y no quedó ninguna corrida", len(LL_EX) == n_ex and corridas_totales() == n_corr, f"{len(LL_EX) - n_ex} llamadas")
-            rev("los dos archivos siguen en el expediente con su tipo", all((en_exp(a_admin, org_a, ex_exp, x_.json()["documento"]["id"]) or {}).get("tipoDocumental") for x_ in (r, r2)))
-            rev("`/datos` de esos documentos: clasificación sí, extracción no", datos_x(a_admin, org_a, r.json()["documento"]["id"]).json()["extraccion"] is None and datos_x(a_admin, org_a, r.json()["documento"]["id"]).json()["clasificacion"]["tipoDocumental"]["id"] == tx_sinproc)
-            # un procesador con solo espacios cuenta como ausente; un calibradoEn vacío, como sin calibrar
-            tx_blanco = tipo_x(a_admin, org_a, "Procesador en blanco", procesador="   ", calibrado=CAL)
-            tx_cal_vacio = tipo_x(a_admin, org_a, "Calibrado vacío", procesador="proc-vacio", version="1", calibrado="")
+            # un procesador con solo espacios cuenta como ausente
+            tx_blanco = tipo_x(a_admin, org_a, "Procesador en blanco", procesador="   ")
             reconoce_x(tx_blanco)
             r3 = subir_a(a_admin, org_a, ex_exp, "blanco.pdf", pdf(2308))
-            reconoce_x(tx_cal_vacio)
-            r4 = subir_a(a_admin, org_a, ex_exp, "cal-vacio.pdf", pdf(2309))
-            rev("un procesador en blanco es `sin_procesador` y un `calibradoEn` vacío es `sin_calibrar` (tampoco se llama a Google)", r3.json()["extraccion"]["estado"] == "sin_procesador" and r4.json()["extraccion"]["estado"] == "sin_calibrar" and len(LL_EX) == n_ex, f"{r3.text[:150]} {r4.text[:150]}")
+            rev("un procesador en blanco (solo espacios) también es `sin_procesador`", r3.status_code == 201 and r3.json()["extraccion"] == {"estado": "sin_procesador"} and r3.json()["clasificacion"]["estado"] == "clasificado", r3.text[:300])
+            rev("a Document AI de extracción NO se le llamó ni una vez, y no quedó ninguna corrida", len(LL_EX) == n_ex and corridas_totales() == n_corr, f"{len(LL_EX) - n_ex} llamadas")
+            rev("los dos archivos siguen en el expediente con su tipo", all((en_exp(a_admin, org_a, ex_exp, x_.json()["documento"]["id"]) or {}).get("tipoDocumental") for x_ in (r, r3)))
+            rev("`/datos` de esos documentos: clasificación sí, extracción no", datos_x(a_admin, org_a, r.json()["documento"]["id"]).json()["extraccion"] is None and datos_x(a_admin, org_a, r.json()["documento"]["id"]).json()["clasificacion"]["tipoDocumental"]["id"] == tx_sinproc)
+
+            # ---- (f) sin el paso «Calibrar»
+            titulo("23f · SIN el paso «Calibrar» (2026-11-06): un tipo activo con procesador extrae aunque no tenga `calibradoEn` (sin la llave, nulo o vacío), y uno de antes que sí lo trae, también")
+            variantes_f = (
+                ("sin la llave `calibradoEn`", {}),
+                ("con `calibradoEn` nulo", {"calibradoEn": None}),
+                ("con `calibradoEn` vacío", {"calibradoEn": ""}),
+                ("con `calibradoEn` de cuando existía el paso (una fecha)", {"calibradoEn": FECHA_VIEJA}),
+            )
+            respuestas_f = []
+            for n_f, (que_f, mas_f) in enumerate(variantes_f):
+                proc_f, version_f = f"proc-f{n_f}", str(10 + n_f)
+                tid_f = tipo_x(a_admin, org_a, f"Tipo de la prueba 23f nº {n_f}", procesador=proc_f, version=version_f, **mas_f)
+                guardado_f = next(t_["datos"] for t_ in c.get("/tipos-documentales/", params={"tenant": org_a}, headers=cab(a_admin)).json()["tipos"] if t_["id"] == tid_f)
+                rev(f"{que_f}: el tipo quedó guardado como se mandó (activo, con su procesador y su `calibradoEn` tal cual, o sin la llave)",
+                    guardado_f["estado"] == "activo" and guardado_f["procesadorId"] == proc_f and ("calibradoEn" in guardado_f) == ("calibradoEn" in mas_f) and guardado_f.get("calibradoEn") == mas_f.get("calibradoEn"), str(guardado_f))
+                reconoce_x(tid_f)
+                bytes_f = pdf(2370 + n_f)
+                n_ex, n_corr = len(LL_EX), corridas_totales()
+                r_f = subir_a(a_admin, org_a, ex_exp, f"marca-{n_f}.pdf", bytes_f)
+                respuestas_f.append(r_f)
+                j_f = r_f.json() if r_f.status_code == 201 else {}
+                doc_f = (j_f.get("documento") or {}).get("id", "")
+                ex_f = j_f.get("extraccion") or {}
+                rev(f"{que_f}: 201 y `extraccion.estado` es `extraido`, con el id de la corrida", r_f.status_code == 201 and ex_f.get("estado") == "extraido" and str(ex_f.get("extraccionId", "")).startswith("extraccion-"), r_f.text[:300])
+                rev(f"{que_f}: Document AI se llamó UNA sola vez, con el procesador y la versión DEL TIPO, el mime y los bytes del archivo", LL_EX[n_ex:] == [(proc_f, bytes_f, "application/pdf", version_f)], str([(x_[0], len(x_[1]), x_[2], x_[3]) for x_ in LL_EX[n_ex:]]))
+                filas = corridas_de(doc_f)
+                rev(f"{que_f}: queda UNA corrida `ok` del tipo y su procesador, con sus 2 `entityFacts`, y solo esa se agregó", len(filas) == 1 and filas[0][1] == "ok" and filas[0][2] == proc_f and filas[0][3] == version_f and filas[0][4] == tid_f and filas[0][7] == 2 and corridas_totales() == n_corr + 1, str(filas))
+                dx_f = datos_x(a_admin, org_a, doc_f).json() if doc_f else {}
+                rev(f"{que_f}: `/datos` trae los campos de ESE archivo", (dx_f.get("extraccion") or {}).get("estado") == "ok" and {f_["ruta"]: f_["valor"] for f_ in dx_f.get("campos", [])}.get("nombre") == f"Persona {hashlib.sha256(bytes_f).hexdigest()[:8]}", str(dx_f.get("extraccion")))
+            rev("las cuatro respuestas llegaron y ninguna dice `sin_calibrar`: ese estado ya no existe", len(respuestas_f) == 4 and all("sin_calibrar" not in x_.text for x_ in respuestas_f))
 
             # ---- (g) sin tipo
             titulo("23g · Si no hay tipo (`sin_tipo`, `sin_clasificador`, `no_clasificado`, sin base): `extraccion.estado == sin_tipo` y NO se llama a Google")
@@ -1040,7 +1071,7 @@ try:
             rb = subir_a(a_admin, org_a, ex_exp, "sin-clasificador.pdf", pdf(2311))
             CL.update(error=RuntimeError("Document AI no contesta"))
             rc = subir_a(a_admin, org_a, ex_exp, "clasificador-falla.pdf", pdf(2312))
-            reconoce_x(tx_cal)
+            reconoce_x(tx_ced)
             guardada = router_expedientes.SQLSERVER_HOST
             try:
                 router_expedientes.SQLSERVER_HOST = ""
@@ -1052,7 +1083,7 @@ try:
                 estados == [(201, "sin_tipo", {"estado": "sin_tipo"}), (201, "sin_clasificador", {"estado": "sin_tipo"}), (201, "no_clasificado", {"estado": "sin_tipo"}), (201, "no_clasificado", {"estado": "sin_tipo"})], str(estados))
             rev("a Document AI de extracción no se le llamó y no quedó ninguna corrida", len(LL_EX) == n_ex and corridas_totales() == n_corr)
             router_expedientes.ESPERA_CLASIFICAR_AL_SUBIR = 0.05
-            CL.update(error=None, respuesta={"categoria": normalizar_nombre(tx_cal), "confianza": 99})
+            CL.update(error=None, respuesta={"categoria": normalizar_nombre(tx_ced), "confianza": 99})
             orig_cl_x = servicio_ia.clasificar_documento
 
             async def clasificador_lento(contenido, mime_type, tenant):
@@ -1066,7 +1097,7 @@ try:
                 servicio_ia.clasificar_documento = orig_cl_x
                 router_expedientes.ESPERA_CLASIFICAR_AL_SUBIR = orig_espera_cl
             rev("si el clasificador tarda más que su tope: `no_clasificado` y `sin_tipo`, y tampoco se extrae", re_.status_code == 201 and re_.json()["clasificacion"]["estado"] == "no_clasificado" and re_.json()["extraccion"] == {"estado": "sin_tipo"} and len(LL_EX) == n_ex)
-            reconoce_x(tx_cal_b)  # el tipo de OTRA organización: para Alfa no existe
+            reconoce_x(tx_ced_b)  # el tipo de OTRA organización: para Alfa no existe
             rf = subir_a(a_admin, org_a, ex_exp, "tipo-ajeno.pdf", pdf(2315))
             rev("un clasificador que dice el tipo de OTRA organización no extrae (Alfa no tiene ese tipo): `sin_tipo` y no se llama a Google", rf.status_code == 201 and rf.json()["clasificacion"]["estado"] == "sin_tipo" and rf.json()["extraccion"] == {"estado": "sin_tipo"} and len(LL_EX) == n_ex, rf.text[:300])
 
@@ -1093,14 +1124,14 @@ try:
 
             # ---- (i) el tenant
             titulo("23i · La extracción se guarda en la organización de quien sube, nunca en otra")
-            reconoce_x(tx_cal_b)
+            reconoce_x(tx_ced_b)
             bytes_b = pdf(2320)
             rb_ = subir_a(b_admin, org_b, ex_exp_b, "cedula-beta.pdf", bytes_b)
             jb = rb_.json() if rb_.status_code == 201 else {}
             doc_bb = (jb.get("documento") or {}).get("id", "")
-            rev("Beta sube un archivo de SU tipo: `extraido`, y Document AI se llamó con el procesador y la versión de SU tipo", rb_.status_code == 201 and jb["extraccion"]["estado"] == "extraido" and LL_EX[-1] == ("proc-cal-beta", bytes_b, "application/pdf", "9"), rb_.text[:300])
+            rev("Beta sube un archivo de SU tipo: `extraido`, y Document AI se llamó con el procesador y la versión de SU tipo", rb_.status_code == 201 and jb["extraccion"]["estado"] == "extraido" and LL_EX[-1] == ("proc-ced-beta", bytes_b, "application/pdf", "9"), rb_.text[:300])
             filas = corridas_de(doc_bb)
-            rev("la corrida quedó en la base de Beta (tenant Beta, su tipo, su procesador)", len(filas) == 1 and filas[0][5] == org_b and filas[0][4] == tx_cal_b and filas[0][2] == "proc-cal-beta" and filas[0][7] == 2, str(filas))
+            rev("la corrida quedó en la base de Beta (tenant Beta, su tipo, su procesador)", len(filas) == 1 and filas[0][5] == org_b and filas[0][4] == tx_ced_b and filas[0][2] == "proc-ced-beta" and filas[0][7] == 2, str(filas))
             rev("Beta lee sus datos y Alfa NO los ve (404, ni con su tenant ni poniendo el de Beta: 403)", datos_x(b_admin, org_b, doc_bb).json()["extraccion"]["estado"] == "ok" and datos_x(a_admin, org_a, doc_bb).status_code == 404 and datos_x(a_admin, org_b, doc_bb).status_code == 403)
             rev("ninguna corrida de Alfa mencionó a Beta ni al revés", all(f_[5] == org_a for d_ in ids_docs(a_admin, org_a) for f_ in corridas_de(d_)) and all(f_[5] == org_b for d_ in ids_docs(b_admin, org_b) for f_ in corridas_de(d_)))
             n_ex, n_corr = len(LL_EX), corridas_totales()
@@ -1113,14 +1144,14 @@ try:
             extrae_ok()
             seguidos = []
             n_corr = corridas_totales()
-            for n_, (tid_, proc_) in enumerate(((tx_cal, "proc-cal"), (tx_cal2, "proc-recibo"), (tx_cal, "proc-cal"), (tx_sincal, None))):
+            for n_, (tid_, proc_) in enumerate(((tx_ced, "proc-ced"), (tx_recibo, "proc-recibo"), (tx_ced, "proc-ced"), (tx_sinproc, None))):
                 reconoce_x(tid_)
                 bts = pdf(2330 + n_)
                 rr = subir_a(a_admin, org_a, ex_exp, f"seguido-{n_}.pdf", bts)
                 seguidos.append((rr, proc_, bts))
             ids_s = [x_[0].json()["documento"]["id"] for x_ in seguidos]
-            rev("los cuatro: 201, y los tres con tipo calibrado `extraido`, el cuarto `sin_calibrar`", [x_[0].status_code for x_ in seguidos] == [201] * 4 and [x_[0].json()["extraccion"]["estado"] for x_ in seguidos] == ["extraido", "extraido", "extraido", "sin_calibrar"], str([x_[0].text[:100] for x_ in seguidos]))
-            rev("cada uno tiene UNA corrida, distinta de las demás, con SU procesador", all(len(corridas_de(i_)) == 1 for i_ in ids_s[:3]) and corridas_de(ids_s[3]) == [] and len({corridas_de(i_)[0][0] for i_ in ids_s[:3]}) == 3 and [corridas_de(i_)[0][2] for i_ in ids_s[:3]] == ["proc-cal", "proc-recibo", "proc-cal"], str([corridas_de(i_) for i_ in ids_s]))
+            rev("los cuatro: 201, y los tres con tipo que tiene procesador `extraido`, el cuarto (tipo sin procesador) `sin_procesador`", [x_[0].status_code for x_ in seguidos] == [201] * 4 and [x_[0].json()["extraccion"]["estado"] for x_ in seguidos] == ["extraido", "extraido", "extraido", "sin_procesador"], str([x_[0].text[:100] for x_ in seguidos]))
+            rev("cada uno tiene UNA corrida, distinta de las demás, con SU procesador", all(len(corridas_de(i_)) == 1 for i_ in ids_s[:3]) and corridas_de(ids_s[3]) == [] and len({corridas_de(i_)[0][0] for i_ in ids_s[:3]}) == 3 and [corridas_de(i_)[0][2] for i_ in ids_s[:3]] == ["proc-ced", "proc-recibo", "proc-ced"], str([corridas_de(i_) for i_ in ids_s]))
             ok_datos = True
             for rr, proc_, bts in seguidos[:3]:
                 cs = {f_["ruta"]: f_["valor"] for f_ in datos_x(a_admin, org_a, rr.json()["documento"]["id"]).json()["campos"]}
@@ -1128,7 +1159,7 @@ try:
             rev("y los datos de cada documento son los de SU archivo (nada se cruza entre ellos)", ok_datos)
             rev("solo se agregaron tres corridas", corridas_totales() == n_corr + 3)
             # a la vez
-            reconoce_x(tx_cal)
+            reconoce_x(tx_ced)
             n_corr = corridas_totales()
             n_ex = len(LL_EX)
             with ThreadPoolExecutor(max_workers=4) as pool:
@@ -1141,7 +1172,7 @@ try:
 
             # ---- (k) registrar falla
             titulo("23k · No se pudo GUARDAR la corrida (o leer el tipo): `no_extraido`, y el archivo sigue subido y con su tipo")
-            reconoce_x(tx_cal, 90)
+            reconoce_x(tx_ced, 90)
             extrae_ok()
             n_corr = corridas_totales()
             servicio_datos.registrar_extraccion = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("la base no contesta"))
@@ -1151,7 +1182,7 @@ try:
                 servicio_datos.registrar_extraccion = orig_registrar
             jk = rk.json() if rk.status_code == 201 else {}
             rev("`registrar_extraccion` lanza: 201 y `no_extraido` (sin `extraccionId`)", rk.status_code == 201 and jk["extraccion"] == {"estado": "no_extraido"} and "la base" not in rk.text, rk.text[:300])
-            rev("el archivo sigue en el expediente, con su tipo y su clasificación, y no quedó ninguna corrida", jk["documento"]["id"] in ids_docs_de(a_admin, org_a, ex_exp) and jk["clasificacion"]["estado"] == "clasificado" and (en_exp(a_admin, org_a, ex_exp, jk["documento"]["id"]) or {}).get("tipoDocumental", {}).get("id") == tx_cal and corridas_totales() == n_corr)
+            rev("el archivo sigue en el expediente, con su tipo y su clasificación, y no quedó ninguna corrida", jk["documento"]["id"] in ids_docs_de(a_admin, org_a, ex_exp) and jk["clasificacion"]["estado"] == "clasificado" and (en_exp(a_admin, org_a, ex_exp, jk["documento"]["id"]) or {}).get("tipoDocumental", {}).get("id") == tx_ced and corridas_totales() == n_corr)
             router_expedientes.tipos_documentales.obtener = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no se pudo leer el tipo"))
             try:
                 n_ex = len(LL_EX)
