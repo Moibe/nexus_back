@@ -8,14 +8,6 @@ Lo que se prueba:
 
 - un documento NACE al entrar por la bandeja, queda en el «void» (sin ningún expediente), conserva lo que se sabe de cómo llegó, sobrevive a
   que su entrada se retire de la bandeja, y subir dos veces el mismo archivo da dos documentos;
-- un TIPO de expediente («expediente médico», «de un choque») se crea con nombre único por organización (sin distinguir mayúsculas ni espacios) y
-  CON SU ESQUEMA (al menos un tipo documental: sin ninguno, repetidos, inexistentes o de otra organización se rechaza y no crea nada);
-  lo crean quienes administran y lo leen todos; todo expediente nace de un tipo de su organización, es su instancia, y se filtra y cuenta por tipo;
-- el ESQUEMA de un tipo (los tipos documentales que lo describen) se reemplaza completo, en orden, sin repetidos y solo con tipos documentales de
-  la misma organización, y nunca se deja vacío; DESCRIBE Y NO RESTRINGE: los expedientes de un tipo con esquema siguen recibiendo cualquier documento;
-- EDITAR un tipo ya creado (`PATCH`): el nombre, el esquema o los dos en una llamada, con lo que cambió de verdad en la respuesta y en el rastro; si algo
-  se rechaza (nombre repetido, esquema vacío o con un tipo documental que no existe) no cambia NI LA MITAD; un tipo anterior a la regla (sin esquema)
-  se puede renombrar sin ponerle uno; ocho ediciones simultáneas no mezclan esquemas;
 - un expediente se crea con un nombre limpio (y dos pueden llamarse igual); los nombres que no sirven se rechazan;
 - un documento puede estar en VARIOS expedientes a la vez; meterlo dos veces no repite nada; sacarlo de su último expediente lo devuelve
   al void sin borrarlo; el orden es el de entrada;
@@ -25,11 +17,17 @@ Lo que se prueba:
 - SUBIR un archivo directo a un expediente (`POST /expedientes/{id}/documentos`, 2026-10-30): nace como carga manual y entra al expediente en una
   sola llamada; solo lo hace quien organiza y todo se rechaza ANTES de guardar (formato, vacío, expediente ajeno o inexistente, tope): nunca deja un
   documento suelto; desde el 2026-11-02 también intenta clasificarlo (aquí, sin clasificador, la respuesta dice que no se clasificó);
-- el tope de documentos por expediente, un corte a media escritura y dos peticiones simultáneas.
+- el tope de documentos por expediente, un corte a media escritura y dos peticiones simultáneas;
+- (Moibe, 2026-11-05) el expediente ya NO sabe de tipos de expediente ni de expedientes virtuales (se quitaron: sus rutas dan 404, su detalle no trae
+  `expedientesVirtuales`) y calcula sus DUPLICADOS al leer: `duplicado` en cada documento y `duplicados` en el expediente entero (con `--sql`, que es donde
+  un documento tiene tipo);
+- (con `--sql`, Document AI falseado) subir un archivo a un expediente lo CLASIFICA y guarda lo que dijo el clasificador, sin meterlo a ningún lado:
+  `clasificado`, `sin_tipo`, `sin_clasificador` y `no_clasificado` (falla, lento, sin base), lo rechazado no gasta, y `/ia/clasificar` con `documento` guarda la
+  misma clasificación.
 
-Con `--sql` corre LO MISMO contra SQL Server (migración `0003`, en un contenedor desechable: ver `pruebas_sql.py`), que es donde viven estas
-tres entidades en dev, staging y producción desde el 2026-10-29. Las comprobaciones que leen el JSONL a mano se saltan ahí (no hay archivo) y
-se agregan las que solo la base puede cuidar (sección 19).
+Con `--sql` corre LO MISMO contra SQL Server (migración `0003`, en un contenedor desechable: ver `pruebas_sql.py`), que es donde viven los documentos y
+los expedientes en dev, staging y producción desde el 2026-10-29. Las comprobaciones que leen el JSONL a mano se saltan ahí (no hay archivo) y
+se agregan las que solo la base puede cuidar (secciones 19 a 21: lo que la base impide, los duplicados y la clasificación al subir).
 
     .venv/Scripts/python verificar_expedientes.py --sql
 """
@@ -62,7 +60,7 @@ os.environ.setdefault("SQLSERVER_HOST", "")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app import app  # noqa: E402
-from servicios import auth, bandeja, documentos, expedientes, llaves_cliente, registro, roles, tipos_expediente, usuarios  # noqa: E402
+from servicios import auth, bandeja, documentos, expedientes, llaves_cliente, roles, usuarios  # noqa: E402
 
 fallos = 0
 PDF = b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n"
@@ -113,67 +111,21 @@ def subir(bearer: str, tenant: str, nombre: str, contenido: bytes):
     return c.post("/bandeja/", files={"archivo": (nombre, contenido, "application/pdf")}, data={"tenant": tenant}, headers=cab(bearer))
 
 
-#: Un tipo de expediente (virtual) de cada organización (se llena en el montaje).
-TIPOS: dict[str, str] = {}
-
-
 #: Un grupo de cada organización (con `--sql`; se llena en el montaje): desde la migración 0010 un expediente nuevo nace en un grupo.
 GRUPOS: dict[str, str] = {}
 
 
 def crear(bearer: str, tenant: str, nombre):
-    """Crea un expediente. Desde el 2026-10-29 no lleva tipo (lo llevan sus expedientes virtuales); con `--sql`, desde el 2026-11-03, lleva grupo."""
+    """Crea un expediente. Desde el 2026-10-29 no lleva tipo; con `--sql`, desde el 2026-11-03, lleva grupo."""
     return c.post("/expedientes/", json={"tenant": tenant, "nombre": nombre, **({"grupoId": GRUPOS[tenant]} if SQL else {})}, headers=cab(bearer))
 
 
-def virtual(bearer: str, tenant: str, exp: str, tipo: str, nombre: str = "Virtual", documentos: list[str] | None = None):
-    """Crea un expediente virtual de `tipo` dentro de `exp` (solo con `--sql`: los virtuales solo viven en la base)."""
-    return c.post(f"/expedientes/{exp}/virtuales", json={"tenant": tenant, "tipoId": tipo, "nombre": nombre, "documentos": documentos or []}, headers=cab(bearer))
-
-
-#: Tipos documentales de cada organización (se llenan en el montaje): todo tipo de expediente se crea con al menos uno.
-TIPOS_DOC: dict[str, list[str]] = {}
-POR_OMISION = object()
-
-
-def crear_tipo(bearer: str, tenant: str, nombre, tipos_doc=POR_OMISION):
-    """Crea un tipo de expediente. Sin `tipos_doc`, con el primer tipo documental de esa organización; con `None`, sin mandar el campo."""
-    lista = [TIPOS_DOC[tenant][0]] if tipos_doc is POR_OMISION else tipos_doc
-    cuerpo = {"tenant": tenant, "nombre": nombre, **({"tiposDocumentales": lista} if lista is not None else {})}
-    return c.post("/tipos-expediente/", json=cuerpo, headers=cab(bearer))
-
-
-def listar_tipos(bearer: str, tenant: str):
-    return c.get("/tipos-expediente/", params={"tenant": tenant}, headers=cab(bearer))
-
-
-def ver_tipo(bearer: str, tenant: str, tipo: str):
-    return c.get(f"/tipos-expediente/{tipo}", params={"tenant": tenant}, headers=cab(bearer))
-
-
 def crear_tipo_documental(bearer: str, tenant: str, nombre: str) -> str:
-    """Un tipo documental en la biblioteca de esa organización (para armar el esquema de un tipo de expediente)."""
+    """Un tipo documental en la biblioteca de esa organización."""
     tid = "tipo-" + uuid.uuid4().hex
     r = c.put(f"/tipos-documentales/{tid}", json={"tenant": tenant, "revision": 0, "datos": {"nombre": nombre, "descripcion": "", "estado": "activo", "procesadorId": ""}}, headers=cab(bearer))
     assert r.status_code == 200, r.text
     return tid
-
-
-def esquema(bearer: str, tenant: str, tipo: str, lista):
-    return c.put(f"/tipos-expediente/{tipo}/esquema", json={"tenant": tenant, "tiposDocumentales": lista}, headers=cab(bearer))
-
-
-def renombrar_tipo(bearer: str, tenant: str, tipo: str, nombre):
-    return c.patch(f"/tipos-expediente/{tipo}", json={"tenant": tenant, "nombre": nombre}, headers=cab(bearer))
-
-
-def editar_tipo(bearer: str, tenant: str, tipo: str, **campos):
-    """PATCH de un tipo con el cuerpo que se diga: `nombre`, `tiposDocumentales` o los dos."""
-    return c.patch(f"/tipos-expediente/{tipo}", json={"tenant": tenant, **campos}, headers=cab(bearer))
-
-
-def borrar_tipo(bearer: str, tenant: str, tipo: str):
-    return c.delete(f"/tipos-expediente/{tipo}", params={"tenant": tenant}, headers=cab(bearer))
 
 
 def listar(bearer: str, tenant: str):
@@ -235,88 +187,6 @@ try:
         assert r.status_code == 201, r.text
         P[rol] = con_primer_acceso(correo, r.json()["contrasenaTemporal"], "Cielo-Abierto-Verde-52!")
     rev("hay dos organizaciones y una persona por cada uno de los 6 roles", org_a != org_b and all(P.values()) and len(P) == 6)
-    td_base_a = crear_tipo_documental(a_admin, org_a, "Documento base")
-    td_extra_a = crear_tipo_documental(a_admin, org_a, "Documento extra")
-    td_tercero_a = crear_tipo_documental(a_admin, org_a, "Documento tercero")
-    td_base_b = crear_tipo_documental(b_admin, org_b, "Documento base de Beta")
-    TIPOS_DOC.update({org_a: [td_base_a, td_extra_a, td_tercero_a], org_b: [td_base_b]})
-
-    titulo("0b · Tipos de expediente: la clase de la que salen los expedientes, cada uno con su esquema")
-    r = crear_tipo(a_admin, org_a, "  Expediente   médico ")
-    rev("crear un tipo: 201", r.status_code == 201, r.text[:200])
-    t = r.json()
-    rev("el nombre sale limpio y lo demás lo pone el servidor", t["nombre"] == "Expediente médico" and t["id"].startswith("tipo-expediente-") and len(t["id"]) == 16 + 32 and t["creadoPor"] == guid_rita and t["creadoEn"] and t["totalExpedientesVirtuales"] == 0, str(t))
-    rev("nace con el esquema que se le dio, con el id y el nombre de cada tipo documental", t["tiposDocumentales"] == [{"id": td_base_a, "nombre": "Documento base"}], str(t))
-    tipo_a = t["id"]
-    nombres_td = {td_base_a: "Documento base", td_extra_a: "Documento extra", td_tercero_a: "Documento tercero"}
-    lista_choque = sorted([td_extra_a, td_base_a], reverse=True)  # un orden que NO es el alfabético de los ids: si se ordenara al guardar, se notaría
-    r = crear_tipo(a_admin, org_a, "Expediente de un choque", lista_choque)
-    rev("un tipo puede llevar VARIOS tipos documentales, y se conserva el orden en que se dieron", r.status_code == 201 and [x["id"] for x in r.json()["tiposDocumentales"]] == lista_choque, r.text[:200])
-    tipo_a2 = r.json()["id"]
-    rev("al verlo y al listarlo trae ese mismo esquema, con los nombres", [(x["id"], x["nombre"]) for x in ver_tipo(a_admin, org_a, tipo_a2).json()["tiposDocumentales"]] == [(i, nombres_td[i]) for i in lista_choque] and next(x for x in listar_tipos(a_admin, org_a).json()["tipos"] if x["id"] == tipo_a2)["tiposDocumentales"] == r.json()["tiposDocumentales"])
-    r = crear_tipo(b_admin, org_b, "Expediente médico")
-    rev("el MISMO nombre en OTRA organización sí se puede (el nombre es único por organización)", r.status_code == 201, r.text[:200])
-    tipo_b = r.json()["id"]
-    TIPOS.update({org_a: tipo_a, org_b: tipo_b})
-    for repetido in ("Expediente médico", "expediente MÉDICO", "  Expediente    médico  "):
-        r = crear_tipo(a_admin, org_a, repetido)
-        rev(f"repetir «{repetido.strip()}» (sin distinguir mayúsculas ni espacios): 409 ya_existe", r.status_code == 409 and r.json()["detail"]["codigo"] == "ya_existe", r.text[:150])
-    nombres = [x["nombre"] for x in listar_tipos(a_admin, org_a).json()["tipos"]]
-    rev("los repetidos no crearon nada, y la lista va en el orden de creación", nombres == ["Expediente médico", "Expediente de un choque"], str(nombres))
-    for malo, que in (("", "vacío"), ("   ", "solo espacios"), ("x" * 201, "de 201 caracteres"), ("a\u0000b", "con un carácter de control")):
-        r = crear_tipo(a_admin, org_a, malo)
-        rev(f"un nombre {que} se rechaza (400)", r.status_code == 400, f"{r.status_code} {r.text[:100]}")
-    rev("un nombre que ni es texto se rechaza", crear_tipo(a_admin, org_a, 123).status_code in (400, 422))
-    rev("uno de exactamente 200 caracteres sí cabe", crear_tipo(a_admin, org_a, "x" * 200).status_code == 201)
-    rev("lo rechazado no creó nada: solo los tres", len(listar_tipos(a_admin, org_a).json()["tipos"]) == 3)
-    rev("el Supervisor (que administra) también crea un tipo", crear_tipo(P["SUPERVISOR"], org_a, "Creado por el supervisor").status_code == 201)
-    for rol in ["ANALISTA", "OPERADOR"] + SOLO_LEEN:
-        r = crear_tipo(P[rol], org_a, f"De {rol}")
-        rev(f"{rol}: crear un tipo da 403 sin_permiso", r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_permiso", r.text[:150])
-        leen = [listar_tipos(P[rol], org_a).status_code, ver_tipo(P[rol], org_a, tipo_a).status_code]
-        rev(f"{rol}: pero lee los tipos (lista y ver uno)", leen == [200, 200], str(leen))
-    rev("lo denegado no creó nada: cuatro en total", len(listar_tipos(a_admin, org_a).json()["tipos"]) == 4)
-    puestos = [x for x in auditoria("CASE_TYPE_CREATED") if x.get("tipoId") == tipo_a]
-    rev("`CASE_TYPE_CREATED` dice quién, dónde y cuál", len(puestos) == 1 and puestos[0].get("usuarioGuid") == guid_rita and puestos[0].get("tenant") == org_a and puestos[0].get("nombre") == "Expediente médico", str(puestos))
-    rev("y no se anotó nada por los rechazados", len(auditoria("CASE_TYPE_CREATED")) == 5)
-
-    titulo("0c · El esquema se pide al crear: sin él, o con uno que no sirve, no se crea nada")
-    n_tipos = len(listar_tipos(a_admin, org_a).json()["tipos"])
-    n_creados = len(auditoria("CASE_TYPE_CREATED"))
-    r = crear_tipo(a_admin, org_a, "Sin esquema", None)
-    rev("sin el campo `tiposDocumentales`: 422", r.status_code == 422, f"{r.status_code} {r.text[:120]}")
-    r = crear_tipo(a_admin, org_a, "Con esquema vacío", [])
-    rev("con una lista VACÍA: 400 que pide al menos un tipo documental", r.status_code == 400 and "al menos un tipo documental" in r.text, f"{r.status_code} {r.text[:150]}")
-    rev("con algo que no es una lista: 422", crear_tipo(a_admin, org_a, "Esquema de texto", "uno").status_code == 422)
-    rev("con una lista de cosas que no son texto: 422", crear_tipo(a_admin, org_a, "Esquema de números", [1, 2]).status_code == 422)
-    r = crear_tipo(a_admin, org_a, "Con repetidos", [td_base_a, td_base_a])
-    rev("con un tipo documental repetido: 400", r.status_code == 400 and "repetido" in r.text, f"{r.status_code} {r.text[:150]}")
-    sin_existir = crear_tipo(a_admin, org_a, "Con uno inexistente", ["tipo-" + "0" * 32])
-    rev("con un tipo documental que no existe: 400", sin_existir.status_code == 400 and "no existe" in sin_existir.text, f"{sin_existir.status_code} {sin_existir.text[:150]}")
-    ajeno = crear_tipo(a_admin, org_a, "Con uno ajeno", [td_base_b])
-    rev("con uno de OTRA organización: 400, y se contesta igual que uno que no existe (no dice de quién es)", ajeno.status_code == 400 and ajeno.json() == sin_existir.json(), f"{ajeno.text[:120]} | {sin_existir.text[:120]}")
-    rev("con uno bueno y uno malo: 400, y no se crea con el bueno", crear_tipo(a_admin, org_a, "Mitad y mitad", [td_base_a, "tipo-" + "0" * 32]).status_code == 400)
-    rev("con un nombre que no sirve, aunque el esquema sea bueno: 400", crear_tipo(a_admin, org_a, "   ", [td_base_a]).status_code == 400)
-    r = crear_tipo(a_admin, org_a, "Expediente médico", [td_extra_a])
-    rev("con un nombre repetido, aunque el esquema sea bueno: 409 ya_existe", r.status_code == 409 and r.json()["detail"]["codigo"] == "ya_existe", r.text[:150])
-    tope_esq = tipos_expediente.MAX_ESQUEMA
-    try:
-        tipos_expediente.MAX_ESQUEMA = 2
-        r = crear_tipo(a_admin, org_a, "Con demasiados", [td_base_a, td_extra_a, td_tercero_a])
-        rev("con más tipos documentales que el tope: 400 que dice cuál es", r.status_code == 400 and "hasta 2" in r.text, f"{r.status_code} {r.text[:150]}")
-    finally:
-        tipos_expediente.MAX_ESQUEMA = tope_esq
-    rev("nada de lo rechazado creó un tipo ni dejó rastro de creación", len(listar_tipos(a_admin, org_a).json()["tipos"]) == n_tipos and len(auditoria("CASE_TYPE_CREATED")) == n_creados)
-    creado_choque = [x for x in auditoria("CASE_TYPE_CREATED") if x.get("tipoId") == tipo_a2]
-    rev("`CASE_TYPE_CREATED` lleva el esquema con el que nació, en su orden", len(creado_choque) == 1 and creado_choque[0].get("tiposDocumentales") == lista_choque, str(creado_choque))
-    rev("y el esquema inicial NO deja además un `CASE_TYPE_SCHEMA_CHANGED`: es parte de la creación", auditoria("CASE_TYPE_SCHEMA_CHANGED") == [])
-    if not SQL:  # en SQL no hay tipos «de antes de la regla»: la tabla nació vacía
-        registro.agregar("tipos-expediente-verificacion-legado.jsonl", {"op": "crear", "id": "tipo-expediente-" + "a" * 32, "tenant": "verificacion-legado", "nombre": "Anterior a la regla", "por": "x", "en": "2026-10-24T00:00:00Z"})
-        try:
-            leidos = [t["tiposDocumentales"] for t in tipos_expediente.listar("verificacion-legado")]
-        except Exception as exc:  # noqa: BLE001 — lo que se prueba es justo que NO truene
-            leidos = f"truena: {exc!r}"
-        rev("un tipo creado ANTES de esta regla (su evento no trae esquema) se lee sin esquema y sin romper nada", leidos == [[]], str(leidos))
 
     titulo("1 · Un documento NACE al entrar, y nace en el void")
     r1 = subir(a_admin, org_a, "acta.pdf", pdf(1))
@@ -363,7 +233,7 @@ try:
     rev("crear: 201", r.status_code == 201, r.text[:200])
     e1 = r.json()
     rev("el nombre sale limpio (espacios de más fuera) y lo demás lo pone el servidor", e1["nombre"] == "Solicitud de crédito" and e1["id"].startswith("expediente-") and len(e1["id"]) == 11 + 32 and e1["creadoPor"] == guid_rita and e1["creadoEn"] and e1["totalDocumentos"] == 0, str(e1))
-    rev("el expediente NO trae tipo: es solo un receptáculo (los tipos son de sus expedientes virtuales)", "tipo" not in e1, str(e1))
+    rev("el expediente NO trae tipo: es solo un receptáculo", "tipo" not in e1, str(e1))
     if SQL:
         rev("con base nace EN un grupo y lo trae (migración 0010; lo demás de los grupos lo prueba verificar_grupos.py)", e1["grupo"]["id"] == GRUPOS[org_a] and e1["grupo"]["nombre"] == "General", str(e1))
     else:
@@ -383,7 +253,7 @@ try:
         rev(f"un nombre {que} se rechaza (400)", r.status_code == 400, f"{r.status_code} {r.text[:100]}")
     rev("un nombre que ni es texto se rechaza", crear(a_admin, org_a, 123).status_code in (400, 422))
     rev("ningún expediente de la lista trae tipo", all("tipo" not in e for e in lista), str(lista[:1]))
-    r = c.post("/expedientes/", json={"tenant": org_a, "nombre": "Con un tipo de los de antes", "tipoId": tipo_a, **({"grupoId": GRUPOS[org_a]} if SQL else {})}, headers=cab(a_admin))
+    r = c.post("/expedientes/", json={"tenant": org_a, "nombre": "Con un tipo de los de antes", "tipoId": "tipo-expediente-" + "a" * 32, **({"grupoId": GRUPOS[org_a]} if SQL else {})}, headers=cab(a_admin))
     rev("un cliente viejo que todavía manda `tipoId` no rompe nada: el expediente se crea, sin tipo", r.status_code == 201 and "tipo" not in r.json(), r.text[:150])
     rev("uno de exactamente 200 caracteres sí cabe", crear(a_admin, org_a, "x" * 200).status_code == 201)
     rev("lo rechazado no creó nada (los tres de antes, el del cliente viejo y el de 200)", len(listar(a_admin, org_a).json()["expedientes"]) == 5)
@@ -539,137 +409,41 @@ try:
         rev("cada expediente y cada pertenencia, también, y de solo agregar", {e["op"] for e in eventos_exp} == {"crear", "agregar", "quitar"} and all(e["tenant"] == org_a for e in eventos_exp))
         rev("el registro de una organización no lleva nada de otra", not (RAIZ / ".registro" / f"documentos-{org_b}.jsonl").exists() and all(b_exp not in json.dumps(e) for e in eventos_exp))
 
-    titulo("13 · Tipos de expediente virtual: el conteo y el aislamiento (las instancias, en verificar_expedientes_virtuales.py)")
-    rev("pedir el listado con `?tipo=` ya no filtra: el expediente no tiene tipo", [e["id"] for e in c.get("/expedientes/", params={"tenant": org_a, "tipo": tipo_a}, headers=cab(a_admin)).json()["expedientes"]] == [e["id"] for e in listar(a_admin, org_a).json()["expedientes"]])
-    tipos = {x["id"]: x for x in listar_tipos(a_admin, org_a).json()["tipos"]}
-    rev("la lista de tipos cuenta sus expedientes VIRTUALES (aquí, ninguno todavía)", all(v["totalExpedientesVirtuales"] == 0 for v in tipos.values()) and all("totalExpedientes" not in v for v in tipos.values()), str(list(tipos.values())[:1]))
+    titulo("13 · El expediente ya no sabe de tipos ni de virtuales (Moibe, 2026-11-05) y las rutas que quitamos dan 404")
+    rev("pedir el listado con `?tipo=` no filtra: el expediente no tiene tipo", [e["id"] for e in c.get("/expedientes/", params={"tenant": org_a, "tipo": "tipo-expediente-" + "a" * 32}, headers=cab(a_admin)).json()["expedientes"]] == [e["id"] for e in listar(a_admin, org_a).json()["expedientes"]])
+    detalle_e1 = ver(a_admin, org_a, e1).json()
+    rev("el detalle trae `duplicados` y NO trae `expedientesVirtuales` ni la marca vieja `duplicadoEn`", detalle_e1["duplicados"] == [] and "expedientesVirtuales" not in detalle_e1 and "duplicadoEn" not in json.dumps(detalle_e1), str(sorted(detalle_e1)))
+    rev("cada documento trae `tipoDocumental` y `duplicado: false` (aquí ninguno está clasificado, así que ninguno es duplicado de nada)", bool(detalle_e1["documentos"]) and all(d["duplicado"] is False and d["tipoDocumental"] is None for d in detalle_e1["documentos"]), str(detalle_e1["documentos"][:1]))
+    rev("lo que devuelve meter un documento es `{agregado, expediente}`: ya sin `expedientesVirtuales`", sorted(meter(a_admin, org_a, e1, d1).json()) == ["agregado", "expediente"] and "expedientesVirtuales" not in meter(a_admin, org_a, e1, d1).json()["expediente"])
     creado_e1 = [x for x in auditoria("CASE_CREATED") if x.get("expedienteId") == e1]
     rev("`CASE_CREATED` ya no anota tipo", len(creado_e1) == 1 and "tipoId" not in creado_e1[0], str(creado_e1))
+    inexistente_v = "expediente-virtual-" + "0" * 32
+    inexistente_t = "tipo-expediente-" + "0" * 32
+    quitadas = {
+        "GET /tipos-expediente/": c.get("/tipos-expediente/", params={"tenant": org_a}, headers=cab(a_admin)),
+        "POST /tipos-expediente/": c.post("/tipos-expediente/", json={"tenant": org_a, "nombre": "X", "tiposDocumentales": []}, headers=cab(a_admin)),
+        "GET /tipos-expediente/{id}": c.get(f"/tipos-expediente/{inexistente_t}", params={"tenant": org_a}, headers=cab(a_admin)),
+        "PATCH /tipos-expediente/{id}": c.patch(f"/tipos-expediente/{inexistente_t}", json={"tenant": org_a, "nombre": "X"}, headers=cab(a_admin)),
+        "PUT /tipos-expediente/{id}/esquema": c.put(f"/tipos-expediente/{inexistente_t}/esquema", json={"tenant": org_a, "tiposDocumentales": []}, headers=cab(a_admin)),
+        "DELETE /tipos-expediente/{id}": c.delete(f"/tipos-expediente/{inexistente_t}", params={"tenant": org_a}, headers=cab(a_admin)),
+        "GET /tipos-expediente/{id}/virtuales": c.get(f"/tipos-expediente/{inexistente_t}/virtuales", params={"tenant": org_a}, headers=cab(a_admin)),
+        "POST /expedientes/{id}/virtuales": c.post(f"/expedientes/{e1}/virtuales", json={"tenant": org_a, "tipoId": inexistente_t, "nombre": "X", "documentos": []}, headers=cab(a_admin)),
+        "GET /expedientes/{id}/virtuales/{vid}": c.get(f"/expedientes/{e1}/virtuales/{inexistente_v}", params={"tenant": org_a}, headers=cab(a_admin)),
+        "PUT /expedientes/{id}/virtuales/{vid}/documentos/{doc}": c.put(f"/expedientes/{e1}/virtuales/{inexistente_v}/documentos/{d1}", params={"tenant": org_a}, headers=cab(a_admin)),
+        "DELETE /expedientes/{id}/virtuales/{vid}/documentos/{doc}": c.delete(f"/expedientes/{e1}/virtuales/{inexistente_v}/documentos/{d1}", params={"tenant": org_a}, headers=cab(a_admin)),
+        "DELETE /expedientes/{id}/virtuales/{vid}": c.delete(f"/expedientes/{e1}/virtuales/{inexistente_v}", params={"tenant": org_a}, headers=cab(a_admin)),
+    }
+    rev("las rutas de los tipos de expediente y de los expedientes virtuales ya no existen: las doce dan 404", all(r_.status_code == 404 for r_ in quitadas.values()), str({k_: v_.status_code for k_, v_ in quitadas.items() if v_.status_code != 404}))
+    rev("y el servicio no tiene de dónde sacarlas", all(not hasattr(expedientes, n_) for n_ in ("expedientes_virtuales", "tipos_expediente")) and not any(m_ in sys.modules for m_ in ("servicios.tipos_expediente", "servicios.expedientes_virtuales", "routers.tipos_expediente")))
 
-    r = listar_tipos(b_admin, org_a)
-    rev("pedir los tipos de OTRA organización: 403 sin_acceso, sin filtrar nada", r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_acceso" and "choque" not in r.text and tipo_a not in r.text, r.text[:200])
-    ajeno = ver_tipo(b_admin, org_b, tipo_a)
-    rev("ver un tipo AJENO por su id: 404, igual que uno que no existe", ajeno.status_code == 404 and ajeno.json() == ver_tipo(b_admin, org_b, "tipo-expediente-" + "0" * 32).json(), ajeno.text[:150])
-    rev("ver un tipo de la primera poniendo SU tenant: 403", ver_tipo(b_admin, org_a, tipo_a).status_code == 403)
-    rev("crear un tipo poniendo el tenant de OTRA: 403", crear_tipo(b_admin, org_a, "Colado").status_code == 403)
-    tipos_b = listar_tipos(b_admin, org_b).json()["tipos"]
-    rev("la otra organización sigue teniendo solo lo suyo", [(x["id"], x["nombre"]) for x in tipos_b] == [(tipo_b, "Expediente médico")], str(tipos_b))
-    rev("y la primera no ganó ninguno", len(listar_tipos(a_admin, org_a).json()["tipos"]) == 4)
-    intentos_tipos = [i for i in auditoria("CROSS_TENANT_ACCESS") if i.get("recurso") == "tipo de expediente"]
-    rev("los intentos con el tenant ajeno quedan en la bitácora", len(intentos_tipos) >= 3, str(intentos_tipos[-1:]))
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        codigos = list(pool.map(lambda _: crear_tipo(a_admin, org_a, "Carrera de nombres").status_code, range(8)))
-    rev("ocho peticiones a la vez para crear el MISMO tipo: solo una lo crea (el nombre es único)", codigos.count(201) == 1 and codigos.count(409) == 7, str(codigos))
-
-    if not SQL:
-        eventos_tipos = [json.loads(x) for x in (RAIZ / ".registro" / f"tipos-expediente-{org_a}.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
-        rev("cada tipo guardado tiene exactamente los campos de la entidad (con su esquema), en UN solo evento `crear`", eventos_tipos and all(set(e) == {"op", "id", "tenant", "nombre", "tiposDocumentales", "por", "en"} and e["op"] == "crear" and e["tenant"] == org_a and e["tiposDocumentales"] for e in eventos_tipos), str(eventos_tipos[:1]))
-        crear_exp = [e for e in (json.loads(x) for x in ruta.read_text(encoding="utf-8").splitlines() if x.strip().endswith("}")) if e["op"] == "crear"]
-        rev("y cada expediente guardado ya NO lleva tipo", crear_exp and all(set(e) == {"op", "id", "tenant", "nombre", "por", "en"} for e in crear_exp), str(crear_exp[:1]))
-        tipos_de_b = (RAIZ / ".registro" / f"tipos-expediente-{org_b}.jsonl").read_text(encoding="utf-8")
-        rev("el registro de tipos de una organización no lleva nada de otra", tipo_a not in tipos_de_b and tipo_b in tipos_de_b and tipo_b not in "".join(json.dumps(e) for e in eventos_tipos))
-    rev("`tipos_expediente` guarda por organización: el de B no existe en A", tipos_expediente.obtener(org_a, tipo_b) is None and tipos_expediente.obtener(org_b, tipo_a) is None)
-
-    titulo("14 · El esquema de un tipo de expediente: describe, no restringe")
-    td_ine = crear_tipo_documental(a_admin, org_a, "INE")
-    td_acta = crear_tipo_documental(a_admin, org_a, "Acta constitutiva")
-    td_rec = crear_tipo_documental(a_admin, org_a, "Receta")
-    td_b = crear_tipo_documental(b_admin, org_b, "Tipo de Beta")
-    esperados: list[tuple[list, list]] = []  # los cambios REALES de tipo_a: (antes, despues)
-
-    def definir(bearer: str, lista: list[str]):
-        """Define el esquema de `tipo_a` y anota (antes, después) si de verdad cambió."""
-        previo = [x["id"] for x in ver_tipo(a_admin, org_a, tipo_a).json()["tiposDocumentales"]]
-        r = esquema(bearer, org_a, tipo_a, lista)
-        if r.status_code == 200 and r.json()["cambiado"]:
-            esperados.append((previo, list(lista)))
-        return r
-
-    ver_a = lambda: [(x["id"], x["nombre"]) for x in ver_tipo(a_admin, org_a, tipo_a).json()["tiposDocumentales"]]  # noqa: E731
-    rev("un tipo de expediente nace con el esquema con el que se creó: ninguno quedó sin esquema", ver_a() == [(td_base_a, "Documento base")] and all(t["tiposDocumentales"] for t in listar_tipos(a_admin, org_a).json()["tipos"]))
-    r = definir(a_admin, [td_ine, td_acta])
-    rev("definir el esquema: 200 y `cambiado: true`", r.status_code == 200 and r.json()["cambiado"] is True, r.text[:200])
-    rev("el tipo trae su esquema con el id y el nombre de cada tipo documental, en ese orden", r.json()["tipo"]["tiposDocumentales"] == [{"id": td_ine, "nombre": "INE"}, {"id": td_acta, "nombre": "Acta constitutiva"}], str(r.json()))
-    en_lista = next(t for t in listar_tipos(a_admin, org_a).json()["tipos"] if t["id"] == tipo_a)
-    rev("y lo mismo al verlo y al listar", ver_a() == [(td_ine, "INE"), (td_acta, "Acta constitutiva")] and [x["id"] for x in en_lista["tiposDocumentales"]] == [td_ine, td_acta], str(en_lista))
-    r = definir(a_admin, [td_ine, td_acta])
-    rev("definir el MISMO esquema: 200 y `cambiado: false`", r.status_code == 200 and r.json()["cambiado"] is False, r.text[:150])
-    r = definir(a_admin, [td_acta, td_ine])
-    rev("cambiar solo el ORDEN cuenta como cambio y se conserva", r.json()["cambiado"] is True and [i for i, _ in ver_a()] == [td_acta, td_ine], r.text[:200])
-    definir(a_admin, [td_acta, td_ine, td_rec])
-    rev("agregar uno más: quedan tres, en el orden dado", [i for i, _ in ver_a()] == [td_acta, td_ine, td_rec])
-    definir(a_admin, [td_ine])
-    rev("quitar: queda solo el que se dejó", ver_a() == [(td_ine, "INE")])
-
-    estado_antes = ver_tipo(a_admin, org_a, tipo_a).json()
-    sin_existir = esquema(a_admin, org_a, tipo_a, ["tipo-" + "0" * 32])
-    for lista, que in (([td_ine, td_ine], "con un tipo documental repetido"), (["tipo-" + "0" * 32], "con un tipo documental que no existe"), ([td_b], "con un tipo documental de OTRA organización")):
-        r = esquema(a_admin, org_a, tipo_a, lista)
-        rev(f"un esquema {que}: 400", r.status_code == 400, f"{r.status_code} {r.text[:120]}")
-    ajeno = esquema(a_admin, org_a, tipo_a, [td_b])
-    rev("uno de OTRA organización se contesta igual que uno que no existe", ajeno.status_code == 400 and ajeno.json() == sin_existir.json(), f"{ajeno.text} | {sin_existir.text}")
-    vacio = esquema(a_admin, org_a, tipo_a, [])
-    rev("un esquema VACÍO también: 400 que pide al menos un tipo documental (como al crear), y el anterior se queda", vacio.status_code == 400 and "al menos un tipo documental" in vacio.text and ver_tipo(a_admin, org_a, tipo_a).json() == estado_antes, f"{vacio.status_code} {vacio.text[:150]}")
-    rev("un esquema que no es una lista: 422", c.put(f"/tipos-expediente/{tipo_a}/esquema", json={"tenant": org_a, "tiposDocumentales": "uno"}, headers=cab(a_admin)).status_code == 422)
-    rev("sin `tiposDocumentales`: 422", c.put(f"/tipos-expediente/{tipo_a}/esquema", json={"tenant": org_a}, headers=cab(a_admin)).status_code == 422)
-    rev("lo rechazado no cambió nada", ver_tipo(a_admin, org_a, tipo_a).json() == estado_antes)
-    tope_esquema = tipos_expediente.MAX_ESQUEMA
-    try:
-        tipos_expediente.MAX_ESQUEMA = 2
-        r = esquema(a_admin, org_a, tipo_a, [td_ine, td_acta, td_rec])
-        rev("pasado el tope de tipos documentales (con tipos reales): 400 que dice cuál es", r.status_code == 400 and "hasta 2" in r.text, r.text[:150])
-        r = definir(a_admin, [td_ine, td_acta])
-        rev("justo en el tope sí cabe", r.status_code == 200 and r.json()["cambiado"] is True, r.text[:150])
-    finally:
-        tipos_expediente.MAX_ESQUEMA = tope_esquema
-    definir(a_admin, [td_ine])
-    inexistente = esquema(a_admin, org_a, "tipo-expediente-" + "0" * 32, [td_ine])
-    rev("definir el esquema de un tipo que no existe: 404", inexistente.status_code == 404 and "tipo de expediente" in inexistente.text, inexistente.text[:150])
-    rev("y de uno que ni tiene forma de id: 404", esquema(a_admin, org_a, "xyz", [td_ine]).status_code == 404)
-    r = esquema(a_admin, org_a, tipo_b, [td_ine])
-    rev("el tipo de OTRA organización: 404, igual que uno que no existe", r.status_code == 404 and r.json() == inexistente.json(), r.text[:150])
-
-    for rol in ["ANALISTA", "OPERADOR"] + SOLO_LEEN:
-        r = esquema(P[rol], org_a, tipo_a, [td_rec])
-        rev(f"{rol}: definir el esquema da 403 sin_permiso", r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_permiso", r.text[:150])
-        rev(f"{rol}: pero ve el esquema", [x["id"] for x in ver_tipo(P[rol], org_a, tipo_a).json()["tiposDocumentales"]] == [td_ine])
-    rev("lo denegado no cambió el esquema", ver_a() == [(td_ine, "INE")])
-    r = definir(P["SUPERVISOR"], [td_ine, td_rec])
-    rev("el Supervisor (que administra) sí lo define", r.status_code == 200 and r.json()["cambiado"] is True and [i for i, _ in ver_a()] == [td_ine, td_rec], r.text[:150])
-
-    rev("la otra organización no puede definir el de la primera poniendo SU tenant: 403", esquema(b_admin, org_a, tipo_a, [td_b]).status_code == 403)
-    r = esquema(b_admin, org_b, tipo_a, [td_b])
-    rev("ni con el suyo y el id ajeno: 404, igual que uno que no existe", r.status_code == 404 and r.json() == esquema(b_admin, org_b, "tipo-expediente-" + "0" * 32, [td_b]).json(), r.text[:150])
-    rev("pero sí define el suyo, con SU tipo documental", esquema(b_admin, org_b, tipo_b, [td_b]).status_code == 200 and [x["nombre"] for x in ver_tipo(b_admin, org_b, tipo_b).json()["tiposDocumentales"]] == ["Tipo de Beta"])
-    rev("y el esquema de la primera sigue como estaba", [i for i, _ in ver_a()] == [td_ine, td_rec])
-
+    titulo("14 · A un expediente le entra cualquier documento, y quitar un tipo documental de la biblioteca no lo toca")
     docs_de_e1 = ids_docs_de(a_admin, org_a, e1)
     suelto = subir(a_admin, org_a, "foto-suelta.pdf", pdf(77)).json()["documentoId"]
     r = meter(a_admin, org_a, e1, suelto)
     rev("a un expediente le entra cualquier documento (no tiene tipo ni esquema que lo restrinja)", r.status_code == 200 and r.json()["agregado"] is True and suelto in ids_docs_de(a_admin, org_a, e1), r.text[:200])
-    definir(a_admin, [td_acta])
-    rev("cambiarle el esquema a un tipo NO toca los documentos de ningún expediente", ver_a() == [(td_acta, "Acta constitutiva")] and ids_docs_de(a_admin, org_a, e1) == docs_de_e1 + [suelto])
-    definir(a_admin, [td_ine, td_rec])
-
+    td_rec = crear_tipo_documental(a_admin, org_a, "Receta")
     r = c.delete(f"/tipos-documentales/{td_rec}", params={"tenant": org_a}, headers=cab(a_admin))
-    rev("borrar de la biblioteca un tipo documental que está en un esquema: 200", r.status_code == 200, r.text[:150])
-    if SQL:
-        # La llave foránea es real: borrar el tipo documental lo quita del esquema, sin dejar un id sin nombre.
-        rev("en SQL se va del esquema con él (llave foránea con ON DELETE CASCADE): no queda un id sin nombre", ver_a() == [(td_ine, "INE")], str(ver_a()))
-    else:
-        rev("queda en el esquema como un id SIN nombre, a la vista", ver_a() == [(td_ine, "INE"), (td_rec, None)], str(ver_a()))
-    definir(a_admin, [td_ine])
-    rev("y se puede quitar del esquema", ver_a() == [(td_ine, "INE")])
-
-    cambios = [x for x in auditoria("CASE_TYPE_SCHEMA_CHANGED") if x.get("tipoId") == tipo_a]
-    rev("`CASE_TYPE_SCHEMA_CHANGED` dice quién, dónde y cuál tipo", cambios and cambios[0].get("usuarioGuid") == guid_rita and cambios[0].get("tenant") == org_a and cambios[0].get("nombre") == "Expediente médico", str(cambios[:1]))
-    rev("lleva el esquema ANTES y DESPUÉS, uno por cada cambio real (ni por repetidos ni por rechazados)", [(x.get("antes"), x.get("despues")) for x in cambios] == esperados, f"{[(x.get('antes'), x.get('despues')) for x in cambios]} != {esperados}")
-    if not SQL:
-        eventos_tipos = [json.loads(x) for x in (RAIZ / ".registro" / f"tipos-expediente-{org_a}.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
-        de_esquema = [e for e in eventos_tipos if e["op"] == "esquema"]
-        rev("cada cambio de esquema guardado tiene exactamente sus campos", bool(de_esquema) and all(set(e) == {"op", "id", "tenant", "tiposDocumentales", "por", "en"} and e["tenant"] == org_a for e in de_esquema), str(de_esquema[:1]))
-        rev("y se guarda un evento por cada cambio real, ni uno más", len(de_esquema) == len(esperados), f"{len(de_esquema)} eventos, {len(esperados)} cambios")
+    rev("borrar de la biblioteca un tipo documental: 200, y ni el expediente ni sus documentos se enteran", r.status_code == 200 and ids_docs_de(a_admin, org_a, e1) == docs_de_e1 + [suelto], r.text[:150])
 
     titulo("15 · Cuánto pesa un expediente: la suma de sus documentos, calculada al consultar")
 
@@ -710,286 +484,6 @@ try:
     if not SQL:
         eventos_exp = [json.loads(x) for x in ruta.read_text(encoding="utf-8").splitlines() if x.strip().endswith("}")]
         rev("el peso no se guarda: ningún evento del registro lo lleva", all("tamanoBytes" not in e and "totalDocumentos" not in e for e in eventos_exp))
-
-    titulo("16 · Renombrar y borrar un tipo de expediente")
-    try:
-        tipos_expediente.MAX_ESQUEMA = 2
-        r = crear_tipo(a_admin, org_a, "En el tope del esquema", [td_base_a, td_extra_a])
-        rev("justo con el tope de tipos documentales, un tipo sí se crea", r.status_code == 201 and len(r.json()["tiposDocumentales"]) == 2, f"{r.status_code} {r.text[:150]}")
-    finally:
-        tipos_expediente.MAX_ESQUEMA = tope_esq
-    t1 = crear_tipo(a_admin, org_a, "Tipo de prueba").json()["id"]
-    t2 = crear_tipo(a_admin, org_a, "Otro tipo de prueba").json()["id"]
-    orden_antes = [t["id"] for t in listar_tipos(a_admin, org_a).json()["tipos"]]
-    creado_en_t1 = ver_tipo(a_admin, org_a, t1).json()["creadoEn"]
-    inexistente_t = "tipo-expediente-" + "0" * 32
-
-    def nombre_de(tipo: str, bearer: str = a_admin, tenant: str = org_a):
-        r = ver_tipo(bearer, tenant, tipo)
-        return r.json()["nombre"] if r.status_code == 200 else None
-
-    def eventos_de_tipos(op: str) -> list[dict]:
-        """Los eventos del JSONL. En SQL no hay: las comprobaciones que los leen se saltan."""
-        if SQL:
-            return []
-        ruta_t = RAIZ / ".registro" / f"tipos-expediente-{org_a}.jsonl"
-        return [e for e in (json.loads(x) for x in ruta_t.read_text(encoding="utf-8").splitlines() if x.strip()) if e["op"] == op]
-
-    # ---------------------------------------------------------------- renombrar
-    esperados_t1: list[tuple[str, str]] = []  # (antes, despues) de los cambios REALES del nombre de t1
-    r = renombrar_tipo(a_admin, org_a, t1, "  Tipo   renombrado ")
-    j = r.json()
-    rev("renombrar: 200, `cambiado: true` y el nombre sale limpio", r.status_code == 200 and j["cambiado"] is True and j["tipo"]["nombre"] == "Tipo renombrado", r.text[:200])
-    esperados_t1.append(("Tipo de prueba", "Tipo renombrado"))
-    rev("el tipo conserva su id, su fecha de creación y su conteo", j["tipo"]["id"] == t1 and j["tipo"]["creadoEn"] == creado_en_t1 and j["tipo"]["totalExpedientesVirtuales"] == 0 and "tiposDocumentales" in j["tipo"], str(j))
-    rev("al pedirlo ya tiene el nombre nuevo, y la lista sigue en el orden de creación", nombre_de(t1) == "Tipo renombrado" and [t["id"] for t in listar_tipos(a_admin, org_a).json()["tipos"]] == orden_antes)
-    n_renombres = len(auditoria("CASE_TYPE_RENAMED"))
-    for mismo in ("Tipo renombrado", "  Tipo     renombrado  "):
-        r = renombrar_tipo(a_admin, org_a, t1, mismo)
-        rev(f"ponerle el mismo nombre («{mismo.strip()}», con otros espacios): 200 `cambiado: false`", r.status_code == 200 and r.json()["cambiado"] is False, r.text[:150])
-    rev("y no escribe nada ni repite el rastro", len(auditoria("CASE_TYPE_RENAMED")) == n_renombres and (SQL or len([e for e in eventos_de_tipos("renombrar") if e["id"] == t1]) == 1))
-    r = renombrar_tipo(a_admin, org_a, t1, "TIPO RENOMBRADO")
-    rev("cambiarle solo las mayúsculas a su PROPIO nombre sí se puede (no se repite consigo mismo)", r.status_code == 200 and r.json()["cambiado"] is True and r.json()["tipo"]["nombre"] == "TIPO RENOMBRADO", r.text[:150])
-    esperados_t1.append(("Tipo renombrado", "TIPO RENOMBRADO"))
-    for repetido in ("tipo   renombrado", "Tipo RENOMBRADO", "TIPO RENOMBRADO"):
-        r = renombrar_tipo(a_admin, org_a, t2, repetido)
-        rev(f"ponerle a OTRO tipo «{repetido}» (sin distinguir mayúsculas ni espacios): 409 ya_existe", r.status_code == 409 and r.json()["detail"]["codigo"] == "ya_existe", r.text[:150])
-    rev("el rechazado no cambió su nombre", nombre_de(t2) == "Otro tipo de prueba")
-    for malo, que in (("", "vacío"), ("   ", "solo espacios"), ("x" * 201, "de 201 caracteres"), ("a\u0000b", "con un carácter de control")):
-        r = renombrar_tipo(a_admin, org_a, t1, malo)
-        rev(f"un nombre {que} se rechaza (400)", r.status_code == 400, f"{r.status_code} {r.text[:100]}")
-    rev("un nombre que ni es texto se rechaza", renombrar_tipo(a_admin, org_a, t1, 123).status_code in (400, 422))
-    rev("lo rechazado no cambió nada", nombre_de(t1) == "TIPO RENOMBRADO")
-    r = renombrar_tipo(a_admin, org_a, t1, "y" * 200)
-    rev("uno de exactamente 200 caracteres sí cabe", r.status_code == 200 and len(r.json()["tipo"]["nombre"]) == 200)
-    esperados_t1.append(("TIPO RENOMBRADO", "y" * 200))
-    renombrar_tipo(a_admin, org_a, t1, "Tipo renombrado")
-    esperados_t1.append(("y" * 200, "Tipo renombrado"))
-
-    r_no = renombrar_tipo(a_admin, org_a, inexistente_t, "Algo")
-    rev("renombrar uno que no existe: 404", r_no.status_code == 404 and "tipo de expediente" in r_no.text, r_no.text[:150])
-    rev("uno con un id que ni tiene forma de id: 404", renombrar_tipo(a_admin, org_a, "cualquier-cosa", "Algo").status_code == 404)
-    r = renombrar_tipo(a_admin, org_a, tipo_b, "Colado")
-    rev("renombrar un tipo de OTRA organización con SU tenant: 404, igual que uno que no existe", r.status_code == 404 and r.json() == r_no.json(), r.text[:150])
-    r = renombrar_tipo(b_admin, org_a, t1, "Colado")
-    rev("poniendo el tenant de la ajena: 403 sin_acceso", r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_acceso", r.text[:150])
-    r = renombrar_tipo(b_admin, org_b, t1, "Colado")
-    rev("la otra organización con el id de la primera: 404, y ningún nombre cambió", r.status_code == 404 and nombre_de(t1) == "Tipo renombrado" and nombre_de(tipo_b, b_admin, org_b) == "Expediente médico", r.text[:150])
-
-    r = renombrar_tipo(P["SUPERVISOR"], org_a, t2, "Renombrado por el supervisor")
-    rev("el Supervisor (que administra) también renombra", r.status_code == 200 and nombre_de(t2) == "Renombrado por el supervisor", r.text[:150])
-    denegados_antes = len(auditoria("ROLE_DENIED"))
-    for rol in ["ANALISTA", "OPERADOR"] + SOLO_LEEN:
-        r = renombrar_tipo(P[rol], org_a, t1, f"Por {rol}")
-        rev(f"{rol}: renombrar un tipo da 403 sin_permiso", r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_permiso", r.text[:150])
-    nuevos_denegados = [x for x in auditoria("ROLE_DENIED")[denegados_antes:] if x.get("recurso") == "tipo de expediente"]
-    rev("lo denegado no cambió nada, y cada rechazo dejó `ROLE_DENIED`", nombre_de(t1) == "Tipo renombrado" and len(nuevos_denegados) == 5, str(len(nuevos_denegados)))
-    rev("mientras un tipo se llama así, no se puede crear otro con ese nombre", crear_tipo(a_admin, org_a, "Renombrado por el supervisor").status_code == 409)
-    renombrar_tipo(a_admin, org_a, t2, "Otro nombre del segundo")
-    rev("al renombrarlo, su nombre anterior queda libre: se puede crear otro con él", crear_tipo(a_admin, org_a, "Renombrado por el supervisor").status_code == 201)
-
-    # Que los expedientes VIRTUALES de un tipo vean su nombre nuevo, y que un tipo con virtuales no se borre, se prueba en
-    # verificar_expedientes_virtuales.py (solo con base).
-    r = renombrar_tipo(a_admin, org_a, t1, "Tipo renombrado dos")
-    esperados_t1.append(("Tipo renombrado", "Tipo renombrado dos"))
-    cambios_t1 = [(x.get("antes"), x.get("despues")) for x in auditoria("CASE_TYPE_RENAMED") if x.get("tipoId") == t1]
-    rev("`CASE_TYPE_RENAMED` lleva el nombre ANTES y DESPUÉS, uno por cada cambio real (ni por repetidos ni por rechazados)", cambios_t1 == esperados_t1, f"{cambios_t1} != {esperados_t1}")
-    primero = next(x for x in auditoria("CASE_TYPE_RENAMED") if x.get("tipoId") == t1)
-    rev("y quién lo hizo y en qué organización", primero.get("usuarioGuid") == guid_rita and primero.get("tenant") == org_a, str(primero))
-    renombres_t1 = [e for e in eventos_de_tipos("renombrar") if e["id"] == t1]
-    if not SQL:
-        rev("cada renombre guardado tiene exactamente sus campos, y hay uno por cada cambio real", renombres_t1 and all(set(e) == {"op", "id", "tenant", "nombre", "por", "en"} and e["tenant"] == org_a for e in renombres_t1) and [e["nombre"] for e in renombres_t1] == [d for _, d in esperados_t1], str(renombres_t1[:1]))
-
-    # ---------------------------------------------------------------- borrar
-    n_borrados = len(auditoria("CASE_TYPE_DELETED"))
-    nombre_t2 = nombre_de(t2)
-    r = borrar_tipo(a_admin, org_a, t2)
-    rev("borrar un tipo SIN expedientes: 200 `borrado: true`", r.status_code == 200 and r.json() == {"borrado": True}, r.text[:150])
-    rev("ya no existe: ni al pedirlo (404) ni en la lista", ver_tipo(a_admin, org_a, t2).status_code == 404 and t2 not in [t["id"] for t in listar_tipos(a_admin, org_a).json()["tipos"]])
-    rev("su nombre queda libre: se puede crear otro con él", crear_tipo(a_admin, org_a, nombre_t2).status_code == 201)
-    rev("borrarlo otra vez: 404, y no repite el rastro", borrar_tipo(a_admin, org_a, t2).status_code == 404 and len(auditoria("CASE_TYPE_DELETED")) == n_borrados + 1)
-    borrados = [x for x in auditoria("CASE_TYPE_DELETED") if x.get("tipoId") == t2]
-    rev("`CASE_TYPE_DELETED` dice quién, dónde y cuál (con su nombre)", len(borrados) == 1 and borrados[0].get("usuarioGuid") == guid_rita and borrados[0].get("tenant") == org_a and borrados[0].get("nombre") == nombre_t2, str(borrados))
-    eventos_borrar = [e for e in eventos_de_tipos("borrar") if e["id"] == t2]
-    if not SQL:
-        rev("el borrado guardado tiene exactamente sus campos", len(eventos_borrar) == 1 and set(eventos_borrar[0]) == {"op", "id", "tenant", "por", "en"} and eventos_borrar[0]["tenant"] == org_a, str(eventos_borrar))
-    rev("con un tipo borrado, definirle esquema, renombrarlo o editarlo dan 404", esquema(a_admin, org_a, t2, [td_ine]).status_code == 404 and renombrar_tipo(a_admin, org_a, t2, "Revivir").status_code == 404 and editar_tipo(a_admin, org_a, t2, nombre="Revivir", tiposDocumentales=[td_ine]).status_code == 404)
-
-    r_no = borrar_tipo(a_admin, org_a, inexistente_t)
-    rev("borrar uno que no existe: 404", r_no.status_code == 404 and "tipo de expediente" in r_no.text, r_no.text[:150])
-    rev("uno con un id que ni tiene forma de id: 404", borrar_tipo(a_admin, org_a, "cualquier-cosa").status_code == 404)
-    r = borrar_tipo(a_admin, org_a, tipo_b)
-    rev("borrar un tipo de OTRA organización con SU tenant: 404, igual que uno que no existe, y no se borra", r.status_code == 404 and r.json() == r_no.json() and nombre_de(tipo_b, b_admin, org_b) == "Expediente médico", r.text[:150])
-    rev("poniendo el tenant de la ajena: 403 sin_acceso", borrar_tipo(b_admin, org_a, t1).status_code == 403)
-    rev("la otra organización con el id de la primera: 404, y el tipo sigue ahí", borrar_tipo(b_admin, org_b, t1).status_code == 404 and nombre_de(t1) is not None)
-
-    t3 = crear_tipo(a_admin, org_a, "Para borrar por rol").json()["id"]
-    denegados_antes = len(auditoria("ROLE_DENIED"))
-    for rol in ["ANALISTA", "OPERADOR"] + SOLO_LEEN:
-        r = borrar_tipo(P[rol], org_a, t3)
-        rev(f"{rol}: borrar un tipo da 403 sin_permiso", r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_permiso", r.text[:150])
-    nuevos_denegados = [x for x in auditoria("ROLE_DENIED")[denegados_antes:] if x.get("recurso") == "tipo de expediente"]
-    rev("lo denegado no borró nada, y cada rechazo dejó `ROLE_DENIED`", nombre_de(t3) == "Para borrar por rol" and len(nuevos_denegados) == 5, str(len(nuevos_denegados)))
-    rev("el Supervisor (que administra) sí borra, y queda su `CASE_TYPE_DELETED`", borrar_tipo(P["SUPERVISOR"], org_a, t3).status_code == 200 and nombre_de(t3) is None and len([x for x in auditoria("CASE_TYPE_DELETED") if x.get("tipoId") == t3]) == 1)
-
-    # ---------------------------------------------------------------- carreras
-    ids_carrera = [crear_tipo(a_admin, org_a, f"Carrera de renombres {i}").json()["id"] for i in range(8)]
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        codigos = list(pool.map(lambda t: renombrar_tipo(a_admin, org_a, t, "Nombre disputado").status_code, ids_carrera))
-    rev("ocho renombres a la vez al MISMO nombre: solo uno lo logra (el nombre es único)", codigos.count(200) == 1 and codigos.count(409) == 7, str(codigos))
-    rev("y queda exactamente un tipo con ese nombre", [t["nombre"] for t in listar_tipos(a_admin, org_a).json()["tipos"]].count("Nombre disputado") == 1)
-
-    # La carrera «borrar un tipo mientras se crean instancias de él» ahora es con expedientes virtuales: verificar_expedientes_virtuales.py.
-
-    titulo("17 · Editar un tipo ya creado: el nombre y el esquema, juntos o por separado")
-    td_domicilio = crear_tipo_documental(a_admin, org_a, "Comprobante de domicilio")
-    ed = crear_tipo(a_admin, org_a, "Para editar", [td_ine]).json()["id"]
-    ed_otro = crear_tipo(a_admin, org_a, "Otro para editar", [td_base_a]).json()["id"]
-    creado_en_ed = ver_tipo(a_admin, org_a, ed).json()["creadoEn"]
-
-    def forma(tipo: str, bearer: str = a_admin, tenant: str = org_a):
-        """`(nombre, ids de su esquema)` del tipo, como lo ve quien lo pide."""
-        j = ver_tipo(bearer, tenant, tipo).json()
-        return j["nombre"], [x["id"] for x in j["tiposDocumentales"]]
-
-    def eventos_de(tipo: str) -> list[dict]:
-        """Los eventos del JSONL. En SQL no hay: las comprobaciones que los leen se saltan (`SQL or …`)."""
-        if SQL:
-            return []
-        ruta_t = RAIZ / ".registro" / f"tipos-expediente-{org_a}.jsonl"
-        return [e for e in (json.loads(x) for x in ruta_t.read_text(encoding="utf-8").splitlines() if x.strip()) if e["id"] == tipo]
-
-    def ops_de(tipo: str) -> list[str]:
-        return [e["op"] for e in eventos_de(tipo)]
-
-    def rastro(accion: str, tipo: str) -> list[tuple]:
-        return [(x.get("antes"), x.get("despues")) for x in auditoria(accion) if x.get("tipoId") == tipo]
-
-    def banderas(r) -> tuple:
-        j = r.json()
-        return j["cambiado"], j["nombreCambiado"], j["esquemaCambiado"]
-
-    # ---------------------------------------------------------------- lo que sí cambia
-    r = editar_tipo(a_admin, org_a, ed, nombre="  Editado   completo ", tiposDocumentales=[td_acta, td_domicilio])
-    j = r.json()
-    rev("editar el nombre Y el esquema en una llamada: 200 y cada bandera dice lo que cambió", r.status_code == 200 and banderas(r) == (True, True, True), r.text[:250])
-    rev("el tipo vuelve con el nombre limpio y el esquema nuevo, con el nombre de cada tipo documental y en el orden dado", j["tipo"]["nombre"] == "Editado completo" and [(x["id"], x["nombre"]) for x in j["tipo"]["tiposDocumentales"]] == [(td_acta, "Acta constitutiva"), (td_domicilio, "Comprobante de domicilio")], str(j))
-    rev("conserva su id, su fecha de creación y su conteo", j["tipo"]["id"] == ed and j["tipo"]["creadoEn"] == creado_en_ed and j["tipo"]["totalExpedientesVirtuales"] == 0, str(j))
-    rev("al pedirlo y al listarlo ya es así", forma(ed) == ("Editado completo", [td_acta, td_domicilio]) and next(t for t in listar_tipos(a_admin, org_a).json()["tipos"] if t["id"] == ed)["nombre"] == "Editado completo")
-    rev("se guardan DOS eventos seguidos: el nombre y luego el esquema", SQL or ops_de(ed) == ["crear", "renombrar", "esquema"], str(ops_de(ed)))
-    rev("y el rastro anota cada cosa, una vez, con su antes y su después", rastro("CASE_TYPE_RENAMED", ed) == [("Para editar", "Editado completo")] and rastro("CASE_TYPE_SCHEMA_CHANGED", ed) == [([td_ine], [td_acta, td_domicilio])], f"{rastro('CASE_TYPE_RENAMED', ed)} {rastro('CASE_TYPE_SCHEMA_CHANGED', ed)}")
-    anotados = [x for accion in ("CASE_TYPE_RENAMED", "CASE_TYPE_SCHEMA_CHANGED") for x in auditoria(accion) if x.get("tipoId") == ed]
-    rev("las dos anotaciones dicen quién y en qué organización", len(anotados) == 2 and all(x.get("usuarioGuid") == guid_rita and x.get("tenant") == org_a for x in anotados), str(anotados))
-
-    r = editar_tipo(a_admin, org_a, ed, tiposDocumentales=[td_domicilio, td_acta])
-    rev("editar SOLO el esquema (aquí, el orden): el nombre no se toca y las banderas lo dicen", r.status_code == 200 and banderas(r) == (True, False, True) and forma(ed) == ("Editado completo", [td_domicilio, td_acta]), r.text[:250])
-    rev("deja un evento `esquema` y una anotación de esquema, y ninguna de nombre", (SQL or ops_de(ed) == ["crear", "renombrar", "esquema", "esquema"]) and len(rastro("CASE_TYPE_SCHEMA_CHANGED", ed)) == 2 and len(rastro("CASE_TYPE_RENAMED", ed)) == 1)
-
-    r = editar_tipo(a_admin, org_a, ed, nombre="Editado solo el nombre")
-    rev("editar SOLO el nombre: el esquema no se toca y las banderas lo dicen", r.status_code == 200 and banderas(r) == (True, True, False) and forma(ed) == ("Editado solo el nombre", [td_domicilio, td_acta]), r.text[:250])
-    rev("deja un evento `renombrar` y una anotación de nombre, y ninguna de esquema", (SQL or ops_de(ed) == ["crear", "renombrar", "esquema", "esquema", "renombrar"]) and len(rastro("CASE_TYPE_RENAMED", ed)) == 2 and len(rastro("CASE_TYPE_SCHEMA_CHANGED", ed)) == 2)
-
-    ops_antes = list(ops_de(ed))
-    r = editar_tipo(a_admin, org_a, ed, nombre="  Editado   solo el nombre ", tiposDocumentales=[td_domicilio, td_acta])
-    rev("mandar lo mismo que ya tiene (con otros espacios en el nombre): 200 y ninguna bandera", r.status_code == 200 and banderas(r) == (False, False, False), r.text[:250])
-    rev("y no escribe nada ni repite el rastro", ops_de(ed) == ops_antes and len(rastro("CASE_TYPE_RENAMED", ed)) == 2 and len(rastro("CASE_TYPE_SCHEMA_CHANGED", ed)) == 2)
-
-    # ---------------------------------------------------------------- lo que no se acepta: nada cambia, ni la mitad
-    r_nada = c.patch(f"/tipos-expediente/{ed}", json={"tenant": org_a}, headers=cab(a_admin))
-    r_nulos = editar_tipo(a_admin, org_a, ed, nombre=None, tiposDocumentales=None)
-    rev("sin decir qué cambiar (ni nombre ni esquema, o los dos en null): 400 que lo explica", r_nada.status_code == 400 and r_nulos.status_code == 400 and "qué cambiar" in r_nada.text, f"{r_nada.text[:120]} | {r_nulos.text[:120]}")
-
-    forma_antes, rastro_antes = forma(ed), (rastro("CASE_TYPE_RENAMED", ed), rastro("CASE_TYPE_SCHEMA_CHANGED", ed))
-    sin_existir_ed = editar_tipo(a_admin, org_a, ed, nombre="Nunca", tiposDocumentales=["tipo-" + "0" * 32])
-    rev("un nombre nuevo con un tipo documental que no existe en el esquema: 400", sin_existir_ed.status_code == 400 and "no existe" in sin_existir_ed.text, f"{sin_existir_ed.status_code} {sin_existir_ed.text[:120]}")
-    ajeno_ed = editar_tipo(a_admin, org_a, ed, nombre="Nunca", tiposDocumentales=[td_b])
-    rev("…o con uno de OTRA organización: 400, y se contesta igual que uno que no existe", ajeno_ed.status_code == 400 and ajeno_ed.json() == sin_existir_ed.json(), f"{ajeno_ed.text[:120]} | {sin_existir_ed.text[:120]}")
-    for cuerpo, que, codigos in (
-        ({"nombre": "Nunca", "tiposDocumentales": []}, "un nombre nuevo con el esquema VACÍO", (400,)),
-        ({"nombre": "Nunca", "tiposDocumentales": [td_ine, td_ine]}, "un nombre nuevo con un tipo documental repetido en el esquema", (400,)),
-        ({"nombre": "Otro para editar", "tiposDocumentales": [td_ine]}, "un esquema nuevo con el nombre que ya tiene OTRO tipo", (409,)),
-        ({"nombre": "   ", "tiposDocumentales": [td_ine]}, "un esquema nuevo con un nombre que no sirve", (400,)),
-        ({"nombre": "Nunca", "tiposDocumentales": "uno"}, "un esquema que no es una lista", (422,)),
-        ({"nombre": "Nunca", "tiposDocumentales": [1, 2]}, "un esquema de cosas que no son texto", (422,)),
-        ({"nombre": 123, "tiposDocumentales": [td_ine]}, "un nombre que ni es texto", (400, 422)),
-    ):
-        r = editar_tipo(a_admin, org_a, ed, **cuerpo)
-        rev(f"{que}: {' o '.join(map(str, codigos))}", r.status_code in codigos, f"{r.status_code} {r.text[:120]}")
-    vacio_ed = editar_tipo(a_admin, org_a, ed, tiposDocumentales=[])
-    rev("el esquema vacío SOLO (sin nombre) también: 400 que pide al menos un tipo documental", vacio_ed.status_code == 400 and "al menos un tipo documental" in vacio_ed.text, vacio_ed.text[:150])
-    tope_ed = tipos_expediente.MAX_ESQUEMA
-    try:
-        tipos_expediente.MAX_ESQUEMA = 2
-        r = editar_tipo(a_admin, org_a, ed, nombre="Nunca", tiposDocumentales=[td_ine, td_acta, td_domicilio])
-        rev("un esquema por encima del tope (con tipos reales): 400 que dice cuál es", r.status_code == 400 and "hasta 2" in r.text, f"{r.status_code} {r.text[:120]}")
-    finally:
-        tipos_expediente.MAX_ESQUEMA = tope_ed
-    rev("NADA de lo rechazado cambió nada, ni la mitad: ni el nombre ni el esquema (todo se comprueba antes de escribir), ni dejó eventos ni rastro", forma(ed) == forma_antes and ops_de(ed) == ops_antes and (rastro("CASE_TYPE_RENAMED", ed), rastro("CASE_TYPE_SCHEMA_CHANGED", ed)) == rastro_antes and nombre_de(ed_otro) == "Otro para editar", f"{forma(ed)} {forma_antes}")
-
-    # ---------------------------------------------------------------- 404 y aislamiento
-    inexistente_ed = editar_tipo(a_admin, org_a, "tipo-expediente-" + "0" * 32, nombre="Algo", tiposDocumentales=[td_ine])
-    rev("editar uno que no existe: 404", inexistente_ed.status_code == 404 and "tipo de expediente" in inexistente_ed.text, inexistente_ed.text[:150])
-    rev("uno con un id que ni tiene forma de id: 404", editar_tipo(a_admin, org_a, "cualquier-cosa", nombre="Algo", tiposDocumentales=[td_ine]).status_code == 404)
-    r = editar_tipo(a_admin, org_a, tipo_b, nombre="Colado", tiposDocumentales=[td_ine])
-    rev("el tipo de OTRA organización con SU tenant: 404, igual que uno que no existe", r.status_code == 404 and r.json() == inexistente_ed.json(), r.text[:150])
-    r = editar_tipo(b_admin, org_a, ed, nombre="Colado", tiposDocumentales=[td_b])
-    rev("poniendo el tenant de la ajena: 403 sin_acceso", r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_acceso", r.text[:150])
-    r = editar_tipo(b_admin, org_b, ed, nombre="Colado", tiposDocumentales=[td_b])
-    rev("la otra organización con el id de la primera: 404, y nada cambió ni allá ni acá", r.status_code == 404 and forma(ed) == forma_antes and forma(tipo_b, b_admin, org_b)[0] == "Expediente médico", r.text[:150])
-
-    # ---------------------------------------------------------------- quién edita
-    denegados_antes = len(auditoria("ROLE_DENIED"))
-    for rol in ["ANALISTA", "OPERADOR"] + SOLO_LEEN:
-        r = editar_tipo(P[rol], org_a, ed, nombre=f"Por {rol}", tiposDocumentales=[td_ine])
-        rev(f"{rol}: editar un tipo da 403 sin_permiso", r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_permiso", r.text[:150])
-    nuevos_denegados = [x for x in auditoria("ROLE_DENIED")[denegados_antes:] if x.get("recurso") == "tipo de expediente"]
-    rev("lo denegado no cambió nada, y cada rechazo dejó `ROLE_DENIED`", forma(ed) == forma_antes and len(nuevos_denegados) == 5, str(len(nuevos_denegados)))
-    r = editar_tipo(P["SUPERVISOR"], org_a, ed, nombre="Editado por el supervisor", tiposDocumentales=[td_acta])
-    rev("el Supervisor (que administra) también edita, las dos cosas a la vez", r.status_code == 200 and banderas(r) == (True, True, True) and forma(ed) == ("Editado por el supervisor", [td_acta]), r.text[:200])
-
-    # ---------------------------------------------------------------- con expedientes virtuales (solo con base: solo viven en SQL)
-    if SQL:
-        exp_ed = crear(a_admin, org_a, "Con tipo editable").json()["id"]
-        doc_ed = subir(a_admin, org_a, "editable.pdf", pdf(171)).json()["documentoId"]
-        meter(a_admin, org_a, exp_ed, doc_ed)
-        v_ed = virtual(a_admin, org_a, exp_ed, ed, "Del tipo editable", [doc_ed]).json()["id"]
-        r = editar_tipo(a_admin, org_a, ed, nombre="Editado con expediente", tiposDocumentales=[td_ine, td_domicilio, td_acta])
-        rev("editar un tipo que YA tiene expedientes virtuales se puede, y conserva su conteo", r.status_code == 200 and banderas(r) == (True, True, True) and r.json()["tipo"]["totalExpedientesVirtuales"] == 1, r.text[:200])
-        visto = c.get(f"/expedientes/{exp_ed}/virtuales/{v_ed}", params={"tenant": org_a}, headers=cab(a_admin)).json()
-        rev("su expediente virtual ve el nombre nuevo, sigue siendo de ese tipo y conserva sus documentos (el esquema describe, no restringe)", visto["tipo"]["id"] == ed and visto["tipo"]["nombre"] == "Editado con expediente" and [d["id"] for d in visto["documentos"]] == [doc_ed], str(visto)[:300])
-
-    # ---------------------------------------------------------------- un tipo de ANTES de la regla (sin esquema)
-    if not SQL:  # en SQL no hay tipos de antes de la regla: la tabla nació vacía
-        legado = "tipo-expediente-" + "b" * 32
-        registro.agregar(f"tipos-expediente-{org_a}.jsonl", {"op": "crear", "id": legado, "tenant": org_a, "nombre": "Anterior a la regla", "por": "x", "en": "2026-10-24T00:00:00Z"})
-        rev("un tipo de ANTES de la regla (su evento no trae esquema) se lee sin esquema", forma(legado) == ("Anterior a la regla", []))
-        r = renombrar_tipo(a_admin, org_a, legado, "Anterior renombrado")
-        rev("renombrarlo, sin tocar el esquema, se puede: no le exige uno", r.status_code == 200 and banderas(r) == (True, True, False) and forma(legado) == ("Anterior renombrado", []), r.text[:200])
-        r = editar_tipo(a_admin, org_a, legado, nombre="Anterior con esquema", tiposDocumentales=[td_ine])
-        rev("y ponerle esquema por primera vez, junto con el nombre, también", r.status_code == 200 and banderas(r) == (True, True, True) and forma(legado) == ("Anterior con esquema", [td_ine]), r.text[:200])
-        rev("pero ya con esquema, no se le puede dejar vacío", editar_tipo(a_admin, org_a, legado, tiposDocumentales=[]).status_code == 400 and forma(legado)[1] == [td_ine])
-        borrar_tipo(a_admin, org_a, legado)
-
-    # ---------------------------------------------------------------- carrera
-    esquemas_carrera = [[td_ine], [td_acta], [td_domicilio], [td_ine, td_acta], [td_acta, td_ine], [td_domicilio, td_ine], [td_ine, td_domicilio], [td_acta, td_domicilio]]
-    previos = len([e for e in eventos_de(ed) if e["op"] == "esquema"])
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        respuestas = list(pool.map(lambda lista: editar_tipo(a_admin, org_a, ed, tiposDocumentales=lista), esquemas_carrera))
-    rev("ocho ediciones del esquema a la vez: todas responden 200", all(r.status_code == 200 for r in respuestas), str([r.status_code for r in respuestas]))
-    escritos = [e["tiposDocumentales"] for e in eventos_de(ed) if e["op"] == "esquema"][previos:]
-    rev("queda UNO de los esquemas pedidos, entero (nunca una mezcla), y es el último que se escribió", forma(ed)[1] in esquemas_carrera and (SQL or (bool(escritos) and escritos[-1] == forma(ed)[1])), f"{forma(ed)[1]} {escritos}")
-    rev("y cada cambio que dijo ser real dejó exactamente un evento, ni uno más", SQL or sum(1 for r in respuestas if r.json()["esquemaCambiado"]) == len(escritos), f"{[r.json()['esquemaCambiado'] for r in respuestas]} {len(escritos)}")
-    if SQL:
-        # Sin eventos que contar, la mezcla se ve en la base: un esquema con posiciones repetidas o salteadas sería una mezcla de dos.
-        con = BASE_SQL["conectar"]("sa", BASE_SQL["sa"], BASE_SQL["base"])
-        filas_ed = con.cursor().execute(
-            "SELECT s.position FROM nexus.virtualCaseTypeDocumentTypes s JOIN nexus.virtualCaseTypes t ON t.virtualCaseTypeId = s.virtualCaseTypeId WHERE t.publicId = ? ORDER BY s.position", ed
-        ).fetchall()
-        con.close()
-        rev("en la base, el esquema que quedó tiene sus posiciones 0, 1, 2… sin huecos ni repetidas (no es una mezcla de dos)", [f[0] for f in filas_ed] == list(range(len(forma(ed)[1]))), str(filas_ed))
-
-    de_ed = eventos_de(ed)
-    rev("cada evento que dejó la edición tiene exactamente sus campos", all(set(e) == {"op", "id", "tenant", "nombre", "por", "en"} for e in de_ed if e["op"] == "renombrar") and all(set(e) == {"op", "id", "tenant", "tiposDocumentales", "por", "en"} for e in de_ed if e["op"] == "esquema") and all(e["tenant"] == org_a for e in de_ed), str(de_ed[-2:]))
 
     # ---------------------------------------------------------------- 18
     titulo("18 · Lo que se carga a mano también es un documento (POST /expedientes/documentos): es lo que llena «Archivos procesados»")
@@ -1049,11 +543,11 @@ try:
         r.status_code == 201 and r.json()["agregado"] is True and nuevo["canal"] == "MANUAL" and nuevo["nombreOriginal"] == "directo-uno.pdf"
         and nuevo["tamanoBytes"] == len(pdf(950)) and nuevo["mime"] == "application/pdf" and nuevo["tenant"] == org_a and nuevo["id"].startswith("documento-"), r.text[:240])
     # Subir también CLASIFICA (2026-11-02): aquí ninguna organización tiene clasificador (y sin base ni se pregunta), así que el archivo se sube igual
-    # y la respuesta lo dice. El clasificador de verdad (con tipo, confianza y virtuales) se prueba en `verificar_expedientes_virtuales.py` §11b.
+    # y la respuesta lo dice. El clasificador de verdad (con tipo y confianza, Document AI falseado) se prueba más abajo, en la sección 21 (solo con `--sql`).
     clasificacion = r.json().get("clasificacion") if r.status_code == 201 else None
     esperado = {"estado": "sin_clasificador" if SQL else "no_clasificado", "tipo": None, "confianza": None}
-    rev(f"la respuesta dice que no se clasificó (`{esperado['estado']}`) y sin virtuales",
-        clasificacion == esperado and r.json()["expedientesVirtuales"] == [], str(clasificacion))
+    rev(f"la respuesta dice que no se clasificó (`{esperado['estado']}`) y trae solo lo del contrato: `{{agregado, documento, clasificacion}}`, sin virtuales",
+        clasificacion == esperado and sorted(r.json()) == ["agregado", "clasificacion", "documento"], str(sorted(r.json())))
     rev("queda EN ese expediente y en ningún otro, en la misma llamada", ids_docs_de(a_admin, org_a, destino) == [nuevo.get("id")] and ids_docs_de(a_admin, org_a, vecino) == [])
     en_lista = [d for d in docs(a_admin, org_a).json()["documentos"] if d["id"] == nuevo.get("id")]
     rev("y es un documento de la organización como cualquier otro: sale en la lista de «Archivos procesados», con su expediente",
@@ -1117,22 +611,11 @@ try:
             except pyodbc.Error:
                 return True
 
-        rev("usrNexus (el usuario de la API) lee las siete tablas", all(
-            k.execute(f"SELECT count(*) FROM nexus.{t}").fetchone()[0] >= 0
-            for t in ("virtualCaseTypes", "virtualCaseTypeDocumentTypes", "documents", "cases", "caseDocuments", "virtualCases", "virtualCaseDocuments")))
-        id_tipo_a = k.execute("SELECT virtualCaseTypeId FROM nexus.virtualCaseTypes WHERE publicId = ?", tipo_a).fetchone()[0]
-        id_ed = k.execute("SELECT virtualCaseTypeId FROM nexus.virtualCaseTypes WHERE publicId = ?", ed).fetchone()[0]
-        rev("borrar un tipo CON expedientes virtuales lo impide la llave foránea", rechaza("DELETE FROM nexus.virtualCaseTypes WHERE virtualCaseTypeId = ?", id_ed))
-        rev("un nombre de tipo repetido en la misma organización, aunque cambien las mayúsculas, lo impide la base", rechaza(
-            "INSERT INTO nexus.virtualCaseTypes (publicId, tenant, name, createdBy) VALUES (?, ?, ?, 'x')", "tipo-expediente-" + "c" * 32, org_a, "EXPEDIENTE MÉDICO"))
-        rev("…pero en OTRA organización sí cabe", not rechaza(
-            "INSERT INTO nexus.virtualCaseTypes (publicId, tenant, name, createdBy) VALUES (?, ?, ?, 'x')", "tipo-expediente-" + "c" * 32, "otra-org-de-prueba", "Expediente médico"))
-        k.execute("DELETE FROM nexus.virtualCaseTypes WHERE publicId = ?", "tipo-expediente-" + "c" * 32)
+        rev("usrNexus (el usuario de la API) lee las tablas de documentos y expedientes", all(
+            k.execute(f"SELECT count(*) FROM nexus.{t}").fetchone()[0] >= 0 for t in ("documents", "cases", "caseDocuments")))
         id_e1 = k.execute("SELECT caseId FROM nexus.cases WHERE publicId = ?", e1).fetchone()[0]
         id_d1 = k.execute("SELECT documentId FROM nexus.documents WHERE publicId = ?", d1).fetchone()[0]
         rev("meter dos veces el mismo documento al mismo expediente lo impide la base", rechaza("INSERT INTO nexus.caseDocuments (caseId, documentId, addedBy) VALUES (?, ?, 'x')", id_e1, id_d1))
-        rev("un esquema que apunta a un tipo documental que no existe lo impide la llave foránea", rechaza(
-            "INSERT INTO nexus.virtualCaseTypeDocumentTypes (virtualCaseTypeId, documentTypePublicId, position) VALUES (?, ?, 9)", id_tipo_a, "tipo-" + "0" * 32))
         rev("un canal que no es API ni MANUAL, o un sha256 que no es hexadecimal, no entran", rechaza(
             "INSERT INTO nexus.documents (publicId, tenant, sha256, relativePath, sizeBytes, mime, originalName, channel) VALUES (?, ?, ?, 'x', 1, 'x', 'x', 'CORREO')", "documento-" + "e" * 32, org_a, "a" * 64)
             and rechaza("INSERT INTO nexus.documents (publicId, tenant, sha256, relativePath, sizeBytes, mime, originalName, channel) VALUES (?, ?, ?, 'x', 1, 'x', 'x', 'API')", "documento-" + "e" * 32, org_a, "Z" * 64))
@@ -1143,6 +626,167 @@ try:
             "INSERT INTO nexus.cases (publicId, tenant, name, createdBy) VALUES (?, ?, 'x', 'x')", "expediente-" + "f" * 32, org_a))
         k.execute("DELETE FROM nexus.cases WHERE publicId = ?", "expediente-" + "f" * 32)
         con.close()
+    if SQL:
+        titulo("20 · Duplicados: dos documentos del mismo tipo en UN expediente se marcan al leer (Moibe, 2026-11-05: sobre el expediente entero)")
+        from servicios import datos_extraidos
+        from servicios.esquema import normalizar_nombre
+
+        def tipar(doc: str, tipo: str, confianza: float = 90) -> None:
+            """Anota una clasificación como la anota `/ia/clasificar`: la categoría es el id normalizado del tipo documental."""
+            datos_extraidos.registrar_clasificacion(org_a, doc, {"categoria": normalizar_nombre(tipo), "confianza": confianza}, "clasificador-de-prueba", "usuario-de-prueba")
+
+        def marcas(exp: str) -> dict[str, bool]:
+            return {d["id"]: d["duplicado"] for d in ver(a_admin, org_a, exp).json()["documentos"]}
+
+        td_ine = crear_tipo_documental(a_admin, org_a, "INE")
+        td_acta = crear_tipo_documental(a_admin, org_a, "Acta constitutiva")
+        dup = crear(a_admin, org_a, "Con duplicados").json()["id"]
+        aparte = crear(a_admin, org_a, "Con uno solo").json()["id"]
+        x1, x2, x3, x4, x5, x6 = (subir(a_admin, org_a, f"dup-{n}.pdf", pdf(300 + n)).json()["documentoId"] for n in range(1, 7))
+        for d_ in (x1, x2, x3, x4):
+            meter(a_admin, org_a, dup, d_)
+        tipar(x1, td_ine)
+        tipar(x2, td_ine)
+        tipar(x3, td_acta)  # x4 se queda sin clasificar
+        det = ver(a_admin, org_a, dup).json()
+        rev("el detalle trae el tipo de cada documento (INE, INE, acta y uno sin tipo)", [(d["id"], (d["tipoDocumental"] or {}).get("id")) for d in det["documentos"]] == [(x1, td_ine), (x2, td_ine), (x3, td_acta), (x4, None)], str(det["documentos"])[:300])
+        rev("`duplicados` lista el tipo repetido con sus dos documentos, en el orden en que están, y nada más", det["duplicados"] == [{"tipoId": td_ine, "tipoNombre": "INE", "documentos": [{"id": x1, "nombre": "dup-1.pdf"}, {"id": x2, "nombre": "dup-2.pdf"}]}], str(det["duplicados"]))
+        rev("cada documento dice si es de los repetidos: los dos INE, sí; el acta y el que no tiene tipo, no", marcas(dup) == {x1: True, x2: True, x3: False, x4: False}, str(marcas(dup)))
+        rev("y no queda rastro de la marca de antes (`duplicadoEn`) ni de los virtuales", "expedientesVirtuales" not in det and all("duplicadoEn" not in d for d in det["documentos"]))
+        meter(a_admin, org_a, dup, x5)
+        rev("dos documentos SIN tipo no son duplicados de nada: un documento sin tipo no cuenta", marcas(dup)[x4] is False and marcas(dup)[x5] is False and [g["tipoId"] for g in ver(a_admin, org_a, dup).json()["duplicados"]] == [td_ine])
+        meter(a_admin, org_a, aparte, x1)
+        rev("el INE que está solo en OTRO expediente no se marca: un duplicado es de UN expediente", ver(a_admin, org_a, aparte).json()["duplicados"] == [] and marcas(aparte) == {x1: False} and marcas(dup)[x1] is True)
+        tipar(x6, td_acta)
+        meter(a_admin, org_a, dup, x6)
+        grupos_ = ver(a_admin, org_a, dup).json()["duplicados"]
+        rev("con otro tipo repetido (dos actas) salen dos grupos, en el orden en que aparece el primer documento de cada tipo", [g["tipoId"] for g in grupos_] == [td_ine, td_acta] and grupos_[1]["documentos"] == [{"id": x3, "nombre": "dup-3.pdf"}, {"id": x6, "nombre": "dup-6.pdf"}], str(grupos_))
+        sacar(a_admin, org_a, dup, x2)
+        rev("sacar uno de los INE quita su marca solo (se calcula al leer, no se guarda): ya no hay grupo de INE y el otro INE deja de estar marcado", [g["tipoId"] for g in ver(a_admin, org_a, dup).json()["duplicados"]] == [td_acta] and marcas(dup)[x1] is False)
+        meter(a_admin, org_a, dup, x2)
+        rev("y volver a meterlo la vuelve a poner", [g["tipoId"] for g in ver(a_admin, org_a, dup).json()["duplicados"]] == [td_ine, td_acta] and marcas(dup)[x1] is True and marcas(dup)[x2] is True)
+        tipar(x2, td_acta)
+        grupos_ = ver(a_admin, org_a, dup).json()["duplicados"]
+        rev("la marca sigue al tipo VIGENTE: reclasificar uno de los INE como acta saca al INE de los duplicados y deja tres actas en su grupo",
+            [g["tipoId"] for g in grupos_] == [td_acta] and sorted(d["id"] for d in grupos_[0]["documentos"]) == sorted([x2, x3, x6]) and marcas(dup)[x1] is False, str(grupos_))
+        rev("lo de otra organización no se mezcla: la otra organización no ve estos expedientes (404) ni sus marcas", ver(b_admin, org_b, dup).status_code == 404)
+
+    if SQL:
+        titulo("21 · Subir un archivo a un expediente lo CLASIFICA y guarda lo que dijo, sin meterlo a ningún lado (Document AI se falsea: no se gasta en pruebas)")
+        import asyncio
+
+        import routers.expedientes as router_expedientes
+        from errores import SinClasificador
+        from servicios import ia as servicio_ia
+
+        CONDUCTA: dict = {"respuesta": None, "error": None, "demora": 0.0}
+        LLAMADAS: list[int] = []
+
+        async def clasificador_falso(contenido, mime_type, tenant):
+            LLAMADAS.append(len(contenido))
+            if CONDUCTA["demora"]:
+                await asyncio.sleep(CONDUCTA["demora"])
+            if CONDUCTA["error"] is not None:
+                raise CONDUCTA["error"]
+            return CONDUCTA["respuesta"]
+
+        def reconoce(tipo_doc: str | None, confianza: float | None) -> None:
+            CONDUCTA.update(respuesta={"categoria": normalizar_nombre(tipo_doc) if tipo_doc else "otro", "confianza": confianza}, error=None, demora=0.0)
+
+        def tipo_de(exp: str, doc: str) -> dict | None:
+            return next(d for d in ver(a_admin, org_a, exp).json()["documentos"] if d["id"] == doc)["tipoDocumental"]
+
+        original, espera = servicio_ia.clasificar_documento, router_expedientes.ESPERA_CLASIFICAR_AL_SUBIR
+        servicio_ia.clasificar_documento = clasificador_falso
+        try:
+            pia = crear(a_admin, org_a, "Pía Salas").json()["id"]
+            reconoce(td_ine, 92.5)
+            r = subir_a(a_admin, org_a, pia, "pia-ine.pdf", pdf(170))
+            j = r.json() if r.status_code == 201 else {}
+            rev("un archivo que el clasificador reconoce como INE con 92.5 %: 201 y `clasificacion` dice el estado, el tipo y la confianza",
+                r.status_code == 201 and j["clasificacion"] == {"estado": "clasificado", "tipo": {"id": td_ine, "nombre": "INE"}, "confianza": 92.5}, r.text[:300])
+            rev("la respuesta es solo `{agregado, documento, clasificacion}`: ya no trae `expedientesVirtuales`", sorted(j) == ["agregado", "clasificacion", "documento"], str(sorted(j)))
+            tipo_pia = tipo_de(pia, j["documento"]["id"])
+            rev("el expediente ya enseña el documento CON su tipo documental (el que dijo el clasificador) y la confianza", tipo_pia is not None and tipo_pia["id"] == td_ine and tipo_pia["confianza"] == 92.5, str(tipo_pia))
+            rev("al clasificador solo se le mandaron los bytes del archivo, una vez", LLAMADAS == [len(pdf(170))], str(LLAMADAS))
+            rev("clasificar no mete el documento a ningún otro lado: está en ese expediente y en ningún otro", [d["expedientes"] for d in docs(a_admin, org_a).json()["documentos"] if d["id"] == j["documento"]["id"]] == [[{"id": pia, "nombre": "Pía Salas"}]])
+            rev("y no deja más rastro que el de siempre (`CASE_DOCUMENT_ADDED` de la subida)", [x for x in auditoria("CASE_DOCUMENT_ADDED") if x.get("documentoId") == j["documento"]["id"]] != [] and not auditoria("VIRTUAL_CASE_DOCUMENT_ADDED"))
+
+            reconoce(td_acta, 68)
+            r = subir_a(a_admin, org_a, pia, "pia-acta.pdf", pdf(171))
+            rev("con 68 % de confianza también queda tipado (no hay confianza mínima)", r.status_code == 201 and r.json()["clasificacion"] == {"estado": "clasificado", "tipo": {"id": td_acta, "nombre": "Acta constitutiva"}, "confianza": 68.0}
+                and (tipo_de(pia, r.json()["documento"]["id"]) or {}).get("id") == td_acta, r.text[:300])
+
+            reconoce(None, 88)
+            r = subir_a(a_admin, org_a, pia, "pia-rara.pdf", pdf(172))
+            rev("«otro» (no es ninguno de los tipos): estado `sin_tipo`, con su confianza y sin tipo", r.status_code == 201 and r.json()["clasificacion"] == {"estado": "sin_tipo", "tipo": None, "confianza": 88.0}
+                and tipo_de(pia, r.json()["documento"]["id"]) is None, r.text[:300])
+
+            CONDUCTA.update(error=SinClasificador("sin clasificador"))
+            r = subir_a(a_admin, org_a, pia, "pia-sin-clasificador.pdf", pdf(173))
+            rev("una organización sin clasificador todavía: el archivo se SUBE igual y la respuesta dice `sin_clasificador`",
+                r.status_code == 201 and r.json()["clasificacion"]["estado"] == "sin_clasificador" and r.json()["clasificacion"]["tipo"] is None and r.json()["documento"]["id"] in ids_docs_de(a_admin, org_a, pia), r.text[:300])
+
+            CONDUCTA.update(error=RuntimeError("Document AI no contesta"))
+            r = subir_a(a_admin, org_a, pia, "pia-falla.pdf", pdf(174))
+            rev("si Document AI falla: 201, el archivo está en el expediente sin tipo, y se dice `no_clasificado` (nada de la falla viaja al navegador)",
+                r.status_code == 201 and r.json()["clasificacion"]["estado"] == "no_clasificado" and "Document AI" not in r.text and r.json()["documento"]["id"] in ids_docs_de(a_admin, org_a, pia), r.text[:300])
+
+            router_expedientes.ESPERA_CLASIFICAR_AL_SUBIR = 0.05
+            CONDUCTA.update(error=None, demora=1.0, respuesta={"categoria": normalizar_nombre(td_ine), "confianza": 99})
+            r = subir_a(a_admin, org_a, pia, "pia-lenta.pdf", pdf(175))
+            rev("si el clasificador tarda más de la espera, no se cuelga: 201 y `no_clasificado`", r.status_code == 201 and r.json()["clasificacion"]["estado"] == "no_clasificado", r.text[:300])
+            router_expedientes.ESPERA_CLASIFICAR_AL_SUBIR = espera
+
+            reconoce(td_ine, 99)
+            gastadas = len(LLAMADAS)
+            rechazos = [
+                subir_a(P["VIEWER"], org_a, pia, "viewer.pdf", pdf(176)).status_code == 403,
+                subir_a(a_admin, org_a, pia, "gif.gif", b"GIF89a", "image/gif").status_code == 400,
+                subir_a(a_admin, org_a, "expediente-" + "0" * 32, "x.pdf", pdf(178)).status_code == 404,
+                subir_a(a_admin, org_b, pia, "x.pdf", pdf(179)).status_code == 403,
+            ]
+            rev("lo que se rechaza (rol que solo lee, formato, expediente inexistente, otra organización) NO le pregunta al clasificador: no se gasta", all(rechazos) and len(LLAMADAS) == gastadas, f"{rechazos} {len(LLAMADAS) - gastadas}")
+
+            guardada = router_expedientes.SQLSERVER_HOST
+            try:
+                router_expedientes.SQLSERVER_HOST = ""
+                r = subir_a(a_admin, org_a, pia, "pia-sin-base.pdf", pdf(180))
+                rev("sin base (no hay dónde anotar la clasificación): `no_clasificado` y tampoco se gasta", r.status_code == 201 and r.json()["clasificacion"]["estado"] == "no_clasificado" and len(LLAMADAS) == gastadas)
+            finally:
+                router_expedientes.SQLSERVER_HOST = guardada
+
+            titulo("21b · Clasificar un documento que YA está en un expediente (POST /ia/clasificar con `documento`) guarda la clasificación y no mueve nada")
+            marta = crear(a_admin, org_a, "Marta Gil").json()["id"]
+            marta_ine, marta_void = (subir(a_admin, org_a, f"marta-{n}.pdf", pdf(190 + i)).json()["documentoId"] for i, n in enumerate(("ine", "void")))
+            meter(a_admin, org_a, marta, marta_ine)
+
+            def clasificar_por_api(doc: str | None, n: int, bearer: str = a_admin):
+                return c.post("/ia/clasificar", params={"tenant": org_a, **({"documento": doc} if doc else {})}, files={"archivo": (f"m{n}.pdf", pdf(n), "application/pdf")}, headers=cab(bearer))
+
+            reconoce(td_ine, 91)
+            r = clasificar_por_api(marta_ine, 190)
+            tipo_marta = tipo_de(marta, marta_ine)
+            rev("la respuesta de `/ia/clasificar` es la misma de siempre y la clasificación queda guardada: el expediente enseña el documento con su tipo y su confianza",
+                r.status_code == 200 and r.json() == {"categoria": normalizar_nombre(td_ine), "confianza": 91} and tipo_marta is not None and tipo_marta["id"] == td_ine and tipo_marta["confianza"] == 91.0, r.text[:200])
+            reconoce(td_acta, 77)
+            r = clasificar_por_api(marta_void, 192)
+            rev("un documento que no está en ningún expediente se clasifica sin error, y su tipo queda guardado", r.status_code == 200
+                and next(d for d in docs(a_admin, org_a).json()["documentos"] if d["id"] == marta_void)["tipoDocumental"]["id"] == td_acta)
+            reconoce(td_acta, 60)
+            r = clasificar_por_api(None, 193)
+            rev("sin `documento` no guarda nada: responde lo de siempre y el documento de antes queda como estaba", r.status_code == 200 and tipo_de(marta, marta_ine)["id"] == td_ine)
+            reconoce(td_acta, 93)
+            clasificar_por_api(marta_ine, 190)
+            rev("volver a clasificar un documento es un hecho nuevo: manda la última opinión (ahora acta)", tipo_de(marta, marta_ine)["id"] == td_acta and tipo_de(marta, marta_ine)["confianza"] == 93.0)
+        finally:
+            servicio_ia.clasificar_documento = original
+            router_expedientes.ESPERA_CLASIFICAR_AL_SUBIR = espera
+except Exception:  # noqa: BLE001 — una excepción que no es una aserción (p. ej. un resultado sin la forma que se esperaba) se anota como falla, y la prueba llega a su resumen
+    import traceback
+
+    traceback.print_exc()
+    rev("la prueba se cayó por una EXCEPCIÓN antes de terminar (no por una aserción): " + traceback.format_exc().strip().splitlines()[-1][:200], False)
 finally:
     shutil.rmtree(RAIZ, ignore_errors=True)
 

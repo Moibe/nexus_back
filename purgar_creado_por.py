@@ -18,7 +18,7 @@ La bitácora guarda en cada `USER_CREATED` quién dio de alta a quién (`actor`)
 
   - Organizaciones: aquellas cuyo administrador dio de alta uno de los retirados (o con `--tenant`).
   - Personas: las que ellos dieron de alta, TODAS las que tengan membresía en esas organizaciones, y los propios retirados.
-  - De cada organización: tipos documentales, tipos de expediente, expedientes, documentos y su bandeja, procesos, API Keys,
+  - De cada organización: tipos documentales, expedientes, documentos y su bandeja, procesos, API Keys,
     webhooks (y sus entregas), el uso de las llaves, los enlaces de un solo uso de esas personas, la carpeta de archivos
     `{almacén}/{organización}/` y sus renglones de la bitácora de auditoría.
 
@@ -53,7 +53,9 @@ from servicios import almacen, registro  # noqa: E402
 from servicios.almacen import ErrorAlmacen  # noqa: E402
 
 # Los registros por organización: `{prefijo}-{tenant}.jsonl`. Se borran enteros.
-PREFIJOS_POR_ORGANIZACION = ("bandeja", "documentos", "expedientes", "tipos-expediente")
+# Moibe, 2026-11-05: se quitaron los tipos de expediente (virtual) y con ellos su registro `tipos-expediente-{tenant}.jsonl`, que ya nadie lee: este script
+# dejó de borrarlo. Si queda uno en el almacén es un archivo muerto y se puede borrar a mano.
+PREFIJOS_POR_ORGANIZACION = ("bandeja", "documentos", "expedientes")
 CLAVES_DE_ORGANIZACION = ("tenant", "tenantGuid", "tenantPedido")
 
 

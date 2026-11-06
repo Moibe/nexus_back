@@ -3,10 +3,14 @@
 ## Qué es un expediente
 
 Desde el 2026-10-29 (decisión de producto de Moibe) un expediente es solo un RECEPTÁCULO de documentos: la carpeta de un cliente o de un caso,
-donde cae todo lo suyo. NO tiene tipo (antes era instancia de un tipo de expediente). Lo que tiene esquema son sus EXPEDIENTES VIRTUALES
-(`servicios/expedientes_virtuales.py`): subconjuntos de sus documentos, cada uno instancia de un tipo de expediente virtual
-(`servicios/tipos_expediente.py`), que son los grupitos que usará el motor de reglas. Un expediente solo tiene un `nombre`; estado, folio o
+donde cae todo lo suyo. NO tiene tipo (antes era instancia de un tipo de expediente). Un expediente solo tiene un `nombre`; estado, folio o
 una referencia del cliente se agregan cuando haya una necesidad real, no antes.
+
+**Sin expedientes virtuales (Moibe, 2026-11-05: «voy a quitar los expedientes virtuales, ahora podremos meter el expediente completo a la ejecución
+de un proceso»).** Entre el 2026-10-29 y ese día un expediente podía tener EXPEDIENTES VIRTUALES (subconjuntos de sus documentos, instancias de un tipo de
+expediente virtual) para elegir cuáles documentos alimentaban a un proceso. Se quitaron: un proceso corre sobre el expediente COMPLETO
+(`servicios/ejecuciones.py`) y los tipos documentales que dibuja en su lienzo son la declaración de qué documentos necesita. Lo único que sobrevive
+de aquello es la marca de duplicados (ver abajo), ahora calculada sobre el expediente entero.
 
 ## Grupos (desde el 2026-11-03)
 
@@ -19,8 +23,7 @@ con `grupo: null`.
 
 Un documento puede estar en ningún expediente, en uno o en varios (`servicios/documentos.py`; el documento no sabe de ellos). El «void» NO
 es un lugar ni una entidad: es un documento sin ninguna pertenencia, y `listar_documentos(sin_expediente=True)` lo encuentra. Sacar un
-documento de su último expediente lo devuelve solo al void; nunca se borra un documento por salir de un expediente. Sacarlo de un expediente
-lo saca también de los expedientes virtuales de ese expediente (lo hace la base).
+documento de su último expediente lo devuelve solo al void; nunca se borra un documento por salir de un expediente.
 
 La pertenencia es una entidad propia —en el modelo de tablas, `expediente_documento`— y vive en este mismo registro como dos eventos,
 `agregar` y `quitar`, para que meter un documento sea UNA sola escritura. Nada de esto toca al documento.
@@ -35,6 +38,13 @@ caracteres. Dos expedientes pueden llamarse igual: un mismo cliente puede tener 
 `totalDocumentos` (cuántos tiene) y `tamanoBytes` (cuánto pesan, la suma de sus documentos) no se guardan: salen de doblar el registro y
 de leer los documentos cada vez. Un documento que viaja de un expediente a otro, o sale, no obliga a reescribir nada.
 
+## Duplicados (Moibe, 2026-11-03; sobre el expediente entero desde el 2026-11-05)
+
+Si un expediente trae DOS O MÁS documentos del mismo tipo documental, no se sabe cuál es «el INE»: un proceso que usa ese tipo NO corre sobre él
+(`servicios/ejecuciones.py`) y los documentos quedan marcados. Moibe, 2026-11-05: se MANTIENE, ahora sobre todo el expediente. La marca es solo
+informativa y se calcula al leer, nunca se guarda (sacar uno de los dos la quita sola); `duplicados` es la función pura que la calcula y
+`routers/expedientes.py` la usa para que el detalle traiga `duplicado` en cada documento y `duplicados` en el expediente.
+
 ## Cómo se guarda
 
 Desde el 2026-10-29, donde hay base, en `nexus.cases` y la pertenencia en `nexus.caseDocuments` (migraciones `0003` y `0004`, ver
@@ -44,7 +54,7 @@ Desde el 2026-10-29, donde hay base, en `nexus.cases` y la pertenencia en `nexus
 Un archivo de solo agregar por organización, `expedientes-{tenant}.jsonl` (ver `servicios/registro.py`), con tres eventos: `crear`,
 `agregar` y `quitar`. El estado vigente se arma doblando el archivo de principio a fin. Los ids son de esa organización: uno ajeno no
 existe en su archivo y se contesta como un id que no existe, sin nombrar de quién es. Los `crear` de antes del 2026-10-29 traen un `tipo`
-que ya no se lee. En el almacén no hay expedientes virtuales (solo viven en SQL): el detalle trae su lista vacía.
+que ya no se lee.
 """
 
 import re
@@ -149,7 +159,25 @@ def _resumen(e: dict, por_id: dict[str, dict]) -> dict:
 
 
 def _detalle(e: dict, por_id: dict[str, dict]) -> dict:
-    return {**_resumen(e, por_id), "documentos": [por_id[i] for i in e["documentos"] if i in por_id], "expedientesVirtuales": []}
+    return {**_resumen(e, por_id), "documentos": [por_id[i] for i in e["documentos"] if i in por_id]}
+
+
+def duplicados(documentos: list[dict]) -> list[dict]:
+    """Los tipos documentales que tienen DOS O MÁS documentos entre `documentos` (cada uno con su `id`, su `nombreOriginal` y su `tipoDocumental`,
+    el de su última extracción o, si no se ha extraído, el de su última clasificación; uno sin tipo no cuenta). Moibe, 2026-11-03: con dos INE no se
+    sabe cuál es «el INE», así que un proceso que lo usa NO corre sobre el expediente y los documentos quedan marcados; el 2026-11-05 se mantuvo, ahora
+    sobre el expediente entero (ya no hay virtuales que lo acoten).
+
+    Devuelve `[{"tipoId", "tipoNombre", "documentos": [{"id", "nombre"}]}]` en el orden en que aparece el primer documento de cada tipo, con los
+    documentos en el orden en que vienen. Es una función pura: no guarda nada, se calcula al leer, así que sacar uno de los dos quita la marca sola."""
+    por_tipo: dict[str, dict] = {}
+    for d in documentos:
+        tipo = d.get("tipoDocumental") or {}
+        if not tipo.get("id"):
+            continue
+        grupo = por_tipo.setdefault(tipo["id"], {"tipoId": tipo["id"], "tipoNombre": tipo.get("nombre"), "documentos": []})
+        grupo["documentos"].append({"id": d["id"], "nombre": d.get("nombreOriginal")})
+    return [g for g in por_tipo.values() if len(g["documentos"]) >= 2]
 
 
 def crear(tenant: str, nombre: object, por: str, grupo_id: object = None) -> dict:
@@ -201,8 +229,7 @@ def listar(tenant: str) -> list[dict]:
 
 
 def obtener(tenant: str, expediente_id: str) -> dict | None:
-    """El expediente con sus documentos completos (en el orden en que se agregaron) y sus expedientes virtuales, o `None` si no es de esa
-    organización."""
+    """El expediente con sus documentos completos (en el orden en que se agregaron), o `None` si no es de esa organización."""
     if not isinstance(expediente_id, str) or not _RE_ID.match(expediente_id):
         return None
     if sql := _sql():
@@ -238,8 +265,7 @@ def agregar_documento(tenant: str, expediente_id: str, documento_id: str, por: s
 
 
 def quitar_documento(tenant: str, expediente_id: str, documento_id: str, por: str) -> None:
-    """Saca un documento de un expediente (el documento no se borra: si era su único expediente, vuelve al void). En SQL lo saca también de
-    los expedientes virtuales de ese expediente.
+    """Saca un documento de un expediente (el documento no se borra: si era su único expediente, vuelve al void).
 
     `NoEncontrado` si el expediente no es de esa organización; `DocumentoNoEncontrado` si el documento no estaba en él."""
     if sql := _sql():

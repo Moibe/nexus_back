@@ -179,7 +179,7 @@ def registrar_clasificacion(tenant: str, documento_id: object, respuesta: dict[s
     armó el clasificador (`esquema.normalizar_nombre` del id); `otro`, o una categoría que ya no corresponde a ningún tipo, quedan sin tipo.
 
     Devuelve lo que quedó anotado: `{"tipoId", "tipoNombre", "confianza"}` (el tipo es `None` si no se reconoció ninguno). Con eso quien
-    clasifica sabe si hay algo que hacer con el documento (meterlo a los expedientes virtuales que lo esperan) sin volver a leer la base."""
+    clasifica sabe qué tipo le quedó al documento (y se lo puede decir a quien subió el archivo) sin volver a leer la base."""
     from servicios.esquema import normalizar_nombre
 
     tablas = _tablas()

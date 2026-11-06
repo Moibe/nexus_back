@@ -5,12 +5,12 @@ genérico es «Grupo». Es UN SOLO nivel: un grupo tiene expedientes y nada más
 expediente (`POST /expedientes`) se elige a cuál pertenece; los expedientes anteriores a los grupos se asignan después con `PUT /expedientes/{id}/grupo`.
 
 Todas las rutas van detrás de la llave de servicio y exigen TAMBIÉN el JWT de la persona (HU11): el tenant lo manda la petición y se comprueba contra
-el registro, igual que en tipos de expediente, procesos y expedientes. Solo viven en SQL: sin base, las rutas responden 503.
+el registro, igual que en procesos y expedientes. Solo viven en SQL: sin base, las rutas responden 503.
 
 ## Quién puede qué
 
 - **Leer** (listar, ver un grupo): cualquiera que opere en la organización, porque quien organiza expedientes necesita elegir el grupo.
-- **Crear**, **renombrar** y **borrar**: `roles.PUEDEN_ADMINISTRAR` (Administrador y Supervisor), igual que los tipos de expediente virtual: el grupo define cómo
+- **Crear**, **renombrar** y **borrar**: `roles.PUEDEN_ADMINISTRAR` (Administrador y Supervisor), igual que la biblioteca de tipos documentales y los procesos: el grupo define cómo
   se ordenan los expedientes de toda la organización. Propuesta de producto, pendiente de confirmar con César; los demás roles reciben 403 `sin_permiso`.
 
 ## Nombre, renombrar y borrar

@@ -104,9 +104,10 @@ DOCUMENT_TYPE_CALIBRATED = "DOCUMENT_TYPE_CALIBRATED"
 # Llevan quién (`usuarioGuid`, `sesionGuid`), de qué organización (`tenant`) y qué proceso (`procesoId`, `nombre`).
 PROCESS_CREATED = "PROCESS_CREATED"
 PROCESS_DELETED = "PROCESS_DELETED"
-# Se ejecutó un proceso sobre un expediente virtual (`servicios/ejecuciones.py`, historial de «Ejecuciones»). Lleva quién, de qué organización, qué
-# ejecución (`ejecucionId`), qué proceso (`procesoId`, `nombre`), sobre qué expediente virtual (`expedienteVirtualId`, `expedienteId`) y cómo
-# terminó (`caso`: `si`, `no` o `sin`, y la palabra `resultado`). Solo se anota cuando la ejecución quedó guardada en el historial.
+# Se ejecutó un proceso sobre un expediente (`servicios/ejecuciones.py`, historial de «Ejecuciones»). Lleva quién, de qué organización, qué
+# ejecución (`ejecucionId`), qué proceso (`procesoId`, `nombre`), sobre qué expediente (`expedienteId`) y cómo terminó (`caso`: `si`, `no` o `sin`,
+# y la palabra `resultado`). Solo se anota cuando la ejecución quedó guardada en el historial. Hasta el 2026-11-05 llevaba además el expediente virtual
+# (`expedienteVirtualId`); ya no hay expedientes virtuales y el campo no se escribe (los renglones viejos de la bitácora lo conservan).
 PROCESS_RUN_RECORDED = "PROCESS_RUN_RECORDED"
 
 # Expedientes de una organización (`servicios/expedientes.py`: un conjunto de documentos). Crear uno, meterle un documento y sacárselo
@@ -115,25 +116,31 @@ PROCESS_RUN_RECORDED = "PROCESS_RUN_RECORDED"
 CASE_CREATED = "CASE_CREATED"
 CASE_DOCUMENT_ADDED = "CASE_DOCUMENT_ADDED"
 CASE_DOCUMENT_REMOVED = "CASE_DOCUMENT_REMOVED"
-# Un tipo de expediente VIRTUAL (`servicios/tipos_expediente.py`; hasta el 2026-10-29 era «tipo de expediente» y el nombre de las acciones
-# se conservó): la clase de la que salen los expedientes virtuales. Lleva quién (`usuarioGuid`, `sesionGuid`), de qué organización (`tenant`)
+# ── HISTÓRICAS: ya NO SE ESCRIBEN (Moibe, 2026-11-05: se quitaron los expedientes virtuales y sus tipos) ──────────────────────────────────────
+# Las constantes de los tipos de expediente (`CASE_TYPE_*`) y de los expedientes virtuales (`VIRTUAL_CASE_*`) se conservan, y siguen en `ACCIONES`,
+# porque la bitácora es de solo agregar: los renglones que ya están ahí se siguen leyendo y filtrando con estos nombres. Nada del código los emite.
+#
+# Un tipo de expediente VIRTUAL (antes `servicios/tipos_expediente.py`; hasta el 2026-10-29 era «tipo de expediente» y el nombre de las acciones
+# se conservó): la clase de la que salían los expedientes virtuales. Llevaba quién (`usuarioGuid`, `sesionGuid`), de qué organización (`tenant`)
 # y qué tipo (`tipoId`, `nombre`). Los `CASE_CREATED` anteriores a ese día llevan además `tipoId` y `tipoNombre`; los de después, no.
 CASE_TYPE_CREATED = "CASE_TYPE_CREATED"
-# Se cambió el esquema de un tipo de expediente (los tipos documentales que lo describen). Lleva quién, de qué organización, qué tipo
+# Se cambió el esquema de un tipo de expediente (los tipos documentales que lo describen). Llevaba quién, de qué organización, qué tipo
 # (`tipoId`, `nombre`) y el esquema `antes` y `despues` (listas de ids de tipos documentales). No se anota si la lista no cambió.
 CASE_TYPE_SCHEMA_CHANGED = "CASE_TYPE_SCHEMA_CHANGED"
-# Se le cambió el nombre a un tipo de expediente. Lleva quién, de qué organización, qué tipo (`tipoId`) y el nombre `antes` y `despues`. No se
-# anota si el nombre, ya limpio, era el mismo.
+# Se le cambió el nombre a un tipo de expediente. Llevaba quién, de qué organización, qué tipo (`tipoId`) y el nombre `antes` y `despues`. No se
+# anotaba si el nombre, ya limpio, era el mismo.
 CASE_TYPE_RENAMED = "CASE_TYPE_RENAMED"
-# Se borró un tipo de expediente (solo se puede si no tenía expedientes). Lleva quién, de qué organización y qué tipo (`tipoId`, `nombre`).
+# Se borró un tipo de expediente (solo se podía si no tenía expedientes virtuales). Llevaba quién, de qué organización y qué tipo (`tipoId`, `nombre`).
 CASE_TYPE_DELETED = "CASE_TYPE_DELETED"
-# Expedientes virtuales (`servicios/expedientes_virtuales.py`): un grupito de documentos de un expediente. Llevan quién, de qué organización,
-# qué virtual (`expedienteVirtualId`, `nombre`) y de qué expediente (`expedienteId`). Crear lleva además su tipo (`tipoId`, `tipoNombre`) y los
-# ids de los documentos con que nació (`documentos`); meter y sacar, qué documento (`documentoId`, `nombreOriginal`).
+# Expedientes virtuales (antes `servicios/expedientes_virtuales.py`): un grupito de documentos de un expediente. Llevaban quién, de qué organización,
+# qué virtual (`expedienteVirtualId`, `nombre`) y de qué expediente (`expedienteId`). Crear llevaba además su tipo (`tipoId`, `tipoNombre`) y los
+# ids de los documentos con que nació (`documentos`); meter y sacar, qué documento (`documentoId`, `nombreOriginal`). Meter a mano o por el
+# clasificador (`origen: "clasificador"`) dejaba el mismo `VIRTUAL_CASE_DOCUMENT_ADDED`.
 VIRTUAL_CASE_CREATED = "VIRTUAL_CASE_CREATED"
 VIRTUAL_CASE_DOCUMENT_ADDED = "VIRTUAL_CASE_DOCUMENT_ADDED"
 VIRTUAL_CASE_DOCUMENT_REMOVED = "VIRTUAL_CASE_DOCUMENT_REMOVED"
 VIRTUAL_CASE_DELETED = "VIRTUAL_CASE_DELETED"
+# ── fin de las históricas ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 # Una persona corrigió a mano un dato extraído (`servicios/datos_extraidos.py`): qué documento (`documentoId`) y qué campo (`ruta`).
 FIELD_CORRECTED = "FIELD_CORRECTED"
 # Grupos (`servicios/grupos.py`): el nivel de arriba de los expedientes. Llevan quién, de qué organización y qué grupo (`grupoId`, `nombre`).

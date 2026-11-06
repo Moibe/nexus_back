@@ -17,7 +17,7 @@ Lo que se prueba (Moibe, 2026-10-29: «una cosa es el file y otra los datos que 
   organización (403); y en esos casos Google no se llama;
 - sin `documento`, `/ia/extraer` sigue funcionando como antes y no guarda nada;
 - corregir un dato: el vigente cambia, el extraído no; queda el rastro; los roles que solo leen no corrigen; un campo que no existe: 404;
-- los listados y el expediente virtual enseñan el tipo documental de cada documento, y el virtual dice qué tipo de su esquema cubre cada uno;
+- los listados y el expediente enseñan el tipo documental de cada documento (y el expediente dice, sin duplicados, `duplicado: false` y `duplicados: []`);
 - las reglas de la base: valor o motivo (nunca los dos, nunca ninguno), y borrar el documento se lleva todo lo suyo.
 """
 
@@ -249,19 +249,19 @@ try:
     fila = k.fetchone()
     rev("confianza original y método guardados", abs(fila[0] - 0.97) < 1e-9 and fila[1] == "extractor_confidence", fila)
 
-    titulo("4 · El tipo documental se ve en los listados y en el expediente virtual")
+    titulo("4 · El tipo documental se ve en los listados y en el expediente")
     r = c.get("/expedientes/documentos", params={"tenant": org}, headers=cab(adm))
     tipos = {d["id"]: d["tipoDocumental"] for d in r.json()["documentos"]}
     rev("extraído: el tipo de su extracción", tipos[d1] and tipos[d1]["id"] == acta and tipos[d1]["origen"] == "extraccion", tipos[d1])
     rev("clasificado `otro` y sin extraer: sin tipo", tipos[d2] is None and tipos[d3] is None, (tipos[d2], tipos[d3]))
-    t = c.post("/tipos-expediente/", json={"tenant": org, "nombre": "Alta de empresa", "tiposDocumentales": [acta, ine]}, headers=cab(adm)).json()["id"]
     exp = c.post("/expedientes/", json={"tenant": org, "nombre": "ACME", "grupoId": grupo_de(adm, org)}, headers=cab(adm)).json()["id"]
     for d in (d1, d2):
         c.put(f"/expedientes/{exp}/documentos/{d}", params={"tenant": org}, headers=cab(adm))
-    rev("el expediente enseña el tipo", next(d for d in c.get(f"/expedientes/{exp}", params={"tenant": org}, headers=cab(adm)).json()["documentos"] if d["id"] == d1)["tipoDocumental"]["id"] == acta)
-    v = c.post(f"/expedientes/{exp}/virtuales", json={"tenant": org, "tipoId": t, "nombre": "Alta", "documentos": [d1, d2]}, headers=cab(adm)).json()["id"]
-    esquema = {x_["id"]: x_["documentos"] for x_ in c.get(f"/expedientes/{exp}/virtuales/{v}", params={"tenant": org}, headers=cab(adm)).json()["tipo"]["tiposDocumentales"]}
-    rev("el virtual dice qué cubre cada tipo del esquema (y que falta la INE)", esquema == {acta: [d1], ine: []}, esquema)
+    detalle = c.get(f"/expedientes/{exp}", params={"tenant": org}, headers=cab(adm)).json()
+    rev("el expediente enseña el tipo", next(d for d in detalle["documentos"] if d["id"] == d1)["tipoDocumental"]["id"] == acta)
+    rev("y el que se clasificó como `otro` sin extraer, sin tipo", next(d for d in detalle["documentos"] if d["id"] == d2)["tipoDocumental"] is None)
+    rev("con un documento de cada tipo no hay duplicados: `duplicados` vacío y cada documento con `duplicado: false`", detalle["duplicados"] == [] and [d["duplicado"] for d in detalle["documentos"]] == [False, False], str(detalle["duplicados"]))
+    rev("el detalle ya no trae expedientes virtuales ni la marca de antes (`duplicadoEn`)", "expedientesVirtuales" not in detalle and all("duplicadoEn" not in d for d in detalle["documentos"]), str(sorted(detalle)))
 
     titulo("5 · Reprocesar crea otra corrida; la vigente es la nueva")
     respuestas["proc-acta"] = {"document": {"text": "", "pages": [{}], "entities": [entidad("denominacion", "ACME SAPI", 0.99), entidad("capital", "1000", 0.9)]}}

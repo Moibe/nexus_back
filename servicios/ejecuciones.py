@@ -1,4 +1,12 @@
-"""Ejecuciones: correr un proceso del motor de reglas sobre un expediente virtual, y su historial (migración `0009`).
+"""Ejecuciones: correr un proceso del motor de reglas sobre un EXPEDIENTE, y su historial (migración `0009`; la `0011` quitó el expediente virtual).
+
+## Sobre qué se corre (Moibe, 2026-11-05)
+
+Una ejecución junta UN expediente con UN proceso. Hasta el 2026-11-05 se corría sobre un EXPEDIENTE VIRTUAL (un subconjunto de los documentos de un
+expediente, instancia de un tipo al que el proceso estaba ligado). Moibe quitó los expedientes virtuales («ahora podremos meter el expediente completo a
+la ejecución de un proceso»): el proceso corre sobre cualquier expediente de su organización (ni el grupo del expediente lo limita) y toma del expediente
+COMPLETO los documentos de los tipos documentales que dibuja en su lienzo; esos nodos son la declaración de las entradas del proceso. Ya no hay «este
+proceso no corre aquí»: el motivo de rechazo `no_corre_aqui` desapareció.
 
 ## Quién hace qué (2026-11-03)
 
@@ -6,31 +14,38 @@ El back NO interpreta las reglas, y esto no lo cambia. Qué significa «igual» 
 tres maneras…), cómo se combinan las reglas y qué palabra sale del Resultado vive en UN solo lugar, `reglas.ts` del front, que es lo que el lienzo
 ya usa para probar con valores de ejemplo. Una ejecución corre ESA misma lógica en el servidor del front (el BFF), con los datos reales; así no hay
 dos implementaciones que puedan discrepar. Si algún día se necesita correr procesos desde aquí (una API, algo automático), se porta con esa suite como
-oráculo. Este módulo hace las dos cosas que sí son del back:
+oráculo. Este módulo hace las tres cosas que sí son del back:
 
 1. `preparar`: arma, en UNA lectura, todo lo que una ejecución necesita: el proceso, los tipos documentales que usa y, por cada uno, el documento del
-   expediente virtual que lo cubre con sus valores VIGENTES (los de su última extracción, con las correcciones a mano), o la lista de duplicados.
-2. `registrar`, `listar`, `opciones_de_filtro` y `obtener`: el historial. Es una FOTO y es inmutable: no hay forma de editarlo ni de borrarlo.
+   expediente que lo cubre con sus valores VIGENTES (los de su última extracción, con las correcciones a mano), o la lista de duplicados.
+2. `procesos_ofrecidos`: los procesos que la pantalla de «Ejecuciones» ofrece para elegir (con cuáles se pueden ejecutar de verdad).
+3. `registrar`, `listar`, `opciones_de_filtro` y `obtener`: el historial. Es una FOTO y es inmutable: no hay forma de editarlo ni de borrarlo.
 
 ## Filtros del historial (Moibe, 2026-11-03: «agrega dichos filtros»)
 
-`listar` filtra por fecha, proceso, estado y persona (y, desde antes, por expediente y por expediente virtual). Los filtros se combinan con Y; dentro de uno
-de lista (proceso, persona, caso) basta con que la ejecución cumpla UNO. `desde` incluye el instante y `hasta` NO lo incluye: quien arma el rango (la
-pantalla) piensa en días de SU hora local, del inicio del primer día al inicio del día siguiente al último, y así no importa a cuántas horas de UTC esté.
-El «estado» es el caso con el que terminó (`si`, `no` o `sin`): las palabras del Resultado las escribe cada organización, el caso es lo que no cambia.
-Qué se puede elegir lo dice `opciones_de_filtro`, y sale de lo que ESTÁ en el historial y no del catálogo vivo: un proceso borrado, o alguien que ya no
-está, siguen en la foto y se pueden filtrar.
+`listar` filtra por fecha, proceso, estado y persona (y, desde antes, por expediente). Los filtros se combinan con Y; dentro de uno de lista (proceso,
+persona, caso) basta con que la ejecución cumpla UNO. `desde` incluye el instante y `hasta` NO lo incluye: quien arma el rango (la pantalla) piensa en
+días de SU hora local, del inicio del primer día al inicio del día siguiente al último, y así no importa a cuántas horas de UTC esté. El «estado» es el
+caso con el que terminó (`si`, `no` o `sin`): las palabras del Resultado las escribe cada organización, el caso es lo que no cambia. Qué se puede elegir
+lo dice `opciones_de_filtro`, y sale de lo que ESTÁ en el historial y no del catálogo vivo: un proceso borrado, o alguien que ya no está, siguen en la foto
+y se pueden filtrar. El filtro por expediente virtual se quitó con los virtuales (2026-11-05).
 
-## Duplicados (Moibe, 2026-11-03)
+## Las ejecuciones de antes del 2026-11-05
 
-Si el expediente virtual trae DOS O MÁS documentos de un tipo que el proceso usa, no se sabe cuál es «el INE»: la regla NO corre, se avisa que hay un
-duplicado y los documentos quedan marcados en el expediente (`expedientes_virtuales.duplicados`). `preparar` los entrega en `duplicados` y no
-da valores de ese tipo; quien ejecuta no debe seguir. Un tipo que el proceso NO usa puede estar duplicado sin que estorbe.
+Las que se corrieron sobre un expediente virtual CONSERVAN su virtual (la `0011` solo dejó nulas las columnas, no reescribió nada): se leen con
+`virtual: {id, nombre, tipoNombre}`. Las nuevas traen `virtual: null`. El historial es una foto, así que el virtual de una vieja se lee aunque ya no exista
+(sus tablas las borra la `0012`).
+
+## Duplicados (Moibe, 2026-11-03; se mantiene sobre el expediente entero, 2026-11-05)
+
+Si el expediente trae DOS O MÁS documentos de un tipo que el proceso usa, no se sabe cuál es «el INE»: la regla NO corre, se avisa que hay un
+duplicado y los documentos quedan marcados en el expediente (`expedientes.duplicados`). `preparar` los entrega en `duplicados` y no da valores de ese
+tipo; quien ejecuta no debe seguir. Un tipo que el proceso NO usa puede estar duplicado sin que estorbe.
 
 ## Qué se exige para ejecutar
 
-El proceso tiene que ser de la organización, estar activo, correr sobre el tipo del expediente virtual y traer su Resultado con una regla conectada
-(`procesos.resultado_conectado`). Cada falta se dice con su propio código (`NoSePuedeEjecutar.codigo`) para que la pantalla explique qué hacer.
+El proceso tiene que ser de la organización, estar activo y traer su Resultado con una regla conectada (`procesos.resultado_conectado`). Cada falta se
+dice con su propio código (`NoSePuedeEjecutar.codigo`: `proceso_inactivo`, `sin_resultado`, `resultado_sin_regla`) para que la pantalla explique qué hacer.
 
 ## Los nombres de los campos
 
@@ -48,7 +63,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from config import SQLSERVER_HOST
-from servicios import datos_extraidos, esquema, expedientes_virtuales, procesos, tipos_documentales
+from servicios import datos_extraidos, esquema, expedientes, procesos, tipos_documentales
 from servicios.tipos_documentales_comun import momento
 
 CASOS = ("si", "no", "sin")
@@ -76,7 +91,7 @@ class SinBase(RuntimeError):
 
 
 class NoEncontrado(LookupError):
-    """No hay tal expediente virtual, proceso o ejecución EN ESA organización. `que` dice cuál (`virtual`, `proceso`, `ejecucion`)."""
+    """No hay tal expediente, proceso o ejecución EN ESA organización. `que` dice cuál (`expediente`, `proceso`, `ejecucion`)."""
 
     def __init__(self, que: str):
         super().__init__(que)
@@ -84,7 +99,7 @@ class NoEncontrado(LookupError):
 
 
 class NoSePuedeEjecutar(ValueError):
-    """El proceso no se puede correr sobre ese expediente virtual. `codigo` dice por qué y el texto se le puede mostrar a la persona."""
+    """El proceso no se puede correr. `codigo` dice por qué y el texto se le puede mostrar a la persona."""
 
     def __init__(self, codigo: str, mensaje: str):
         super().__init__(mensaje)
@@ -170,32 +185,30 @@ def _valores_de(campos: list[dict], hechos: list[dict]) -> dict[str, dict]:
     return salida
 
 
-def preparar(tenant: str, expediente_id: object, virtual_id: object, proceso_id: object) -> dict:
-    """Todo lo que una ejecución necesita (ver el docstring del módulo): `expediente`, `virtual`, `proceso` (con su dibujo completo y su revisión), `tipos`
-    (los tipos documentales que usa, con sus campos), `documentos` (por cada tipo: los documentos que lo cubren y, si es uno solo, sus valores) y
-    `duplicados` (los tipos que usa el proceso y que el expediente virtual trae repetidos).
+def preparar(tenant: str, expediente_id: object, proceso_id: object) -> dict:
+    """Todo lo que una ejecución necesita (ver el docstring del módulo): `expediente`, `proceso` (con su dibujo completo y su revisión), `tipos` (los tipos
+    documentales que usa, con sus campos), `documentos` (por cada tipo: los documentos del EXPEDIENTE que lo cubren y, si es uno solo, sus valores) y
+    `duplicados` (los tipos que usa el proceso y que el expediente trae repetidos).
 
-    Levanta `NoEncontrado` (el virtual o el proceso no son de la organización) o `NoSePuedeEjecutar` (inactivo, no corre sobre ese tipo, sin Resultado o
-    con el Resultado sin regla). Con duplicados NO levanta nada: los entrega, y quien ejecuta decide no seguir (la pantalla los enseña)."""
+    Levanta `NoEncontrado` (el expediente o el proceso no son de la organización) o `NoSePuedeEjecutar` (inactivo, sin Resultado o con el Resultado sin
+    regla). Con duplicados NO levanta nada: los entrega, y quien ejecuta decide no seguir (la pantalla los enseña)."""
     _tablas()
-    virtual = expedientes_virtuales.obtener(tenant, expediente_id, virtual_id)
-    if virtual is None:
-        raise NoEncontrado("virtual")
+    expediente = expedientes.obtener(tenant, expediente_id)
+    if expediente is None:
+        raise NoEncontrado("expediente")
     proceso = procesos.obtener(tenant, proceso_id) if isinstance(proceso_id, str) else None
     if proceso is None:
         raise NoEncontrado("proceso")
     datos = proceso["datos"]
     if datos.get("activo") is False:
         raise NoSePuedeEjecutar("proceso_inactivo", "Ese proceso está desactivado: actívalo desde la lista de procesos para ejecutarlo.")
-    if datos.get("tipoExpedienteVirtualId") != virtual["tipo"]["id"]:
-        raise NoSePuedeEjecutar("no_corre_aqui", f"Ese proceso no corre sobre los expedientes virtuales de tipo «{virtual['tipo']['nombre']}».")
     if not _nodos(datos, "resultado-final"):
         raise NoSePuedeEjecutar("sin_resultado", "Ese proceso no tiene su nodo de Resultado: ábrelo en el motor de reglas y agrégalo para poder ejecutarlo.")
     if not procesos.resultado_conectado(datos):
         raise NoSePuedeEjecutar("resultado_sin_regla", "El Resultado de ese proceso no tiene ninguna regla conectada: ábrelo en el motor de reglas y conéctalo.")
 
-    # Los documentos del virtual con su tipo documental vigente (el de su última extracción o, si no, el de su última clasificación).
-    documentos = virtual["documentos"]
+    # Los documentos de TODO el expediente con su tipo documental vigente (el de su última extracción o, si no, el de su última clasificación).
+    documentos = expediente["documentos"]
     tipos_de_doc = datos_extraidos.tipos_de(tenant, [d["id"] for d in documentos])
     con_tipo = [{**d, "tipoDocumental": tipos_de_doc.get(d["id"])} for d in documentos]
 
@@ -228,13 +241,30 @@ def preparar(tenant: str, expediente_id: object, virtual_id: object, proceso_id:
         por_tipo.append({"tipoId": tipo_id, "tipoNombre": nombre, "encontrados": encontrados, "valores": valores})
 
     return {
-        "expediente": virtual["expediente"],
-        "virtual": {"id": virtual["id"], "nombre": virtual["nombre"], "tipo": {"id": virtual["tipo"]["id"], "nombre": virtual["tipo"]["nombre"]}},
+        "expediente": {"id": expediente["id"], "nombre": expediente["nombre"]},
         "proceso": {"id": proceso["id"], "revision": proceso["revision"], "nombre": datos["nombre"], "datos": datos},
         "tipos": tipos,
         "documentos": por_tipo,
         "duplicados": duplicados,
     }
+
+
+def procesos_ofrecidos(tenant: str) -> list[dict]:
+    """Los procesos de la organización que la pantalla de «Ejecuciones» ofrece para elegir: `{id, nombre, activo, ejecutable}`, TODOS (activos e inactivos: la
+    pantalla filtra `activo`), en el orden de su creación. `ejecutable` dice si el proceso se puede correr (tiene su Resultado con una regla conectada,
+    `procesos.resultado_conectado`); uno que no lo es se ofrece igual y la pantalla explica por qué no se ejecuta. Antes eran «los procesos que le aplican»
+    a un expediente virtual (2026-11-03); ahora un proceso corre sobre cualquier expediente (Moibe, 2026-11-05). Sin base: vacío."""
+    if not SQLSERVER_HOST:
+        return []
+    return [
+        {
+            "id": p["id"],
+            "nombre": p["datos"]["nombre"],
+            "activo": p["datos"].get("activo") is not False,
+            "ejecutable": procesos.resultado_conectado(p["datos"]),
+        }
+        for p in procesos.listar(tenant)
+    ]
 
 
 # ── Registrar ────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -287,9 +317,10 @@ def _final(f: Any, posicion: int, ids_validos: set[str], vistos: set[str]) -> di
 def registrar(tenant: str, por: str, entrada: Any) -> dict:
     """Guarda UNA ejecución en el historial, todo o nada, y la devuelve como se ve al abrirla.
 
-    `entrada`: `{expedienteId, virtualId, procesoId, procesoRevision, resultado: {caso, texto}, valoresFinales: [...], detalle: {...}}`, lo que sacó la
-    lógica del lienzo corrida con datos reales. Los NOMBRES (del expediente, el virtual, su tipo y el proceso) y el dibujo del proceso los toma el
-    servidor de la base, no de la petición: lo que se guarda es lo que había, no lo que alguien dice que había.
+    `entrada`: `{expedienteId, procesoId, procesoRevision, resultado: {caso, texto}, valoresFinales: [...], detalle: {...}}`, lo que sacó la lógica del
+    lienzo corrida con datos reales. Los NOMBRES (del expediente y del proceso) y el dibujo del proceso los toma el servidor de la base, no de la
+    petición: lo que se guarda es lo que había, no lo que alguien dice que había. Una ejecución nueva NO guarda virtual: las tres columnas de virtual
+    (`processRuns.virtualCase*`) quedan nulas, y una petición que todavía mande `virtualId` no lo usa.
 
     Se niega (400) lo que no cuadra con el proceso: una palabra del Resultado que no es la que el proceso tiene para ese caso, o un valor final que no
     es de él. Y si el proceso cambió desde que se preparó la ejecución (`procesoRevision` ya no es la vigente), `Conflicto`: lo que se corrió ya no es
@@ -297,9 +328,9 @@ def registrar(tenant: str, por: str, entrada: Any) -> dict:
     if not isinstance(entrada, dict):
         raise EjecucionInvalida("La ejecución no es válida.")
     tablas = _tablas()
-    virtual = expedientes_virtuales.obtener(tenant, entrada.get("expedienteId"), entrada.get("virtualId"))
-    if virtual is None:
-        raise NoEncontrado("virtual")
+    expediente = expedientes.obtener(tenant, entrada.get("expedienteId"))
+    if expediente is None:
+        raise NoEncontrado("expediente")
     proceso_id = entrada.get("procesoId")
     proceso = procesos.obtener(tenant, proceso_id) if isinstance(proceso_id, str) else None
     if proceso is None:
@@ -310,8 +341,6 @@ def registrar(tenant: str, por: str, entrada: Any) -> dict:
     if revision != proceso["revision"]:
         raise Conflicto(proceso["revision"])
     datos = proceso["datos"]
-    if datos.get("tipoExpedienteVirtualId") != virtual["tipo"]["id"]:
-        raise EjecucionInvalida("Ese proceso no corre sobre ese expediente virtual.")
 
     resultado = entrada.get("resultado")
     if not isinstance(resultado, dict) or resultado.get("caso") not in CASOS:
@@ -339,11 +368,13 @@ def registrar(tenant: str, por: str, entrada: Any) -> dict:
 
     publico = f"ejecucion-{uuid.uuid4().hex}"
     with tablas.transaccion() as cur:
+        # Las columnas de virtual (`virtualCaseId`, `virtualCaseName`, `virtualCaseTypeName`) NO se nombran: quedan en NULL, que es lo que la `0011` permite
+        # y lo que exige `CK_processRuns_virtual` para una corrida sin virtual.
         cur.execute(
-            "INSERT INTO nexus.processRuns (publicId, tenant, caseId, caseName, virtualCaseId, virtualCaseName, virtualCaseTypeName, processId, processName, "
+            "INSERT INTO nexus.processRuns (publicId, tenant, caseId, caseName, processId, processName, "
             "processRevision, outcomeCase, outcomeText, status, detailJson, definitionJson, executedBy) OUTPUT INSERTED.processRunId "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            publico, tenant, virtual["expediente"]["id"], virtual["expediente"]["nombre"], virtual["id"], virtual["nombre"], virtual["tipo"]["nombre"],
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            publico, tenant, expediente["id"], expediente["nombre"],
             proceso["id"], datos["nombre"], proceso["revision"], caso, texto, "incompleta" if caso == "sin" else "completa", detalle_json, definicion_json, por,
         )
         corrida = cur.fetchone()[0]
@@ -386,7 +417,8 @@ def _resumen(f: dict, cache: dict[str, dict]) -> dict:
         "ejecutadaEn": momento(f["executedAt"]),
         "ejecutadaPor": _quien(f["executedBy"], cache),
         "expediente": {"id": f["caseId"], "nombre": f["caseName"]},
-        "virtual": {"id": f["virtualCaseId"], "nombre": f["virtualCaseName"], "tipoNombre": f["virtualCaseTypeName"]},
+        # Solo las de antes del 2026-11-05 traen virtual (la foto de aquel momento); las nuevas, `null`.
+        "virtual": {"id": f["virtualCaseId"], "nombre": f["virtualCaseName"], "tipoNombre": f["virtualCaseTypeName"]} if f["virtualCaseId"] is not None else None,
         "proceso": {"id": f["processId"], "nombre": f["processName"], "revision": int(f["processRevision"])},
         "resultado": {"caso": f["outcomeCase"], "texto": f["outcomeText"]},
         "estado": f["status"],
@@ -414,7 +446,6 @@ def _instante(valor: datetime | None) -> datetime | None:
 def listar(
     tenant: str,
     expediente: str | None = None,
-    virtual: str | None = None,
     proceso: str | list[str] | None = None,
     limite: int = LIMITE_POR_OMISION,
     antes: str | None = None,
@@ -424,7 +455,7 @@ def listar(
     desde: datetime | None = None,
     hasta: datetime | None = None,
 ) -> dict:
-    """El historial de la organización, de la más reciente a la más antigua. Filtros opcionales, que se combinan con Y: `expediente` y `virtual` (un id),
+    """El historial de la organización, de la más reciente a la más antigua. Filtros opcionales, que se combinan con Y: `expediente` (un id),
     `proceso` y `persona` (uno o varios ids: basta con que sea de UNO), `caso` (`si`, `no` o `sin`, uno o varios: cómo terminó) y el rango de fechas, `desde`
     (incluido) y `hasta` (NO incluido; sin zona se toma por UTC). `limite` (1 a 200) es cuántas entrega; `antes` es el id de la última que ya se vio, para
     pedir las siguientes. Devuelve `{ejecuciones, total, hayMas}`: `total` cuenta todas las que cumplen los filtros. Sin base: vacío. Un filtro que no
@@ -440,10 +471,9 @@ def listar(
     tablas = _tablas()
     limite = max(1, min(int(limite), LIMITE_MAXIMO))
     condiciones, parametros = ["r.tenant = ?"], [tenant]
-    for columna, valor in (("r.caseId", expediente), ("r.virtualCaseId", virtual)):
-        if valor:
-            condiciones.append(f"{columna} = ?")
-            parametros.append(valor[:63])
+    if expediente:
+        condiciones.append("r.caseId = ?")
+        parametros.append(expediente[:63])
     for columna, valores in (("r.processId", procesos), ("r.executedBy", personas), ("r.outcomeCase", casos)):
         if valores:
             condiciones.append(f"{columna} IN ({', '.join('?' * len(valores))})")

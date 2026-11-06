@@ -17,7 +17,6 @@ from starlette.concurrency import run_in_threadpool
 
 from config import MAX_SUBIDA_BYTES, MAX_SUBIDA_MB
 from errores import ErrorDocumentAI, SinClasificador
-from routers.expedientes import anotar_colocados, colocar_clasificados
 from servicios import aislamiento, clasificadores, datos_extraidos, ia
 from servicios.tipos_documentales import procesadores_con_dueno
 from servicios.subidas import MIME_SOPORTADOS, SubidaInvalida, revisar_tamano, revisar_tipo
@@ -292,9 +291,9 @@ async def _guardar_extraccion(tenant, documento, tipo, procesador, version, inic
         "configurado — en ese caso NO debe llamarse ningún extractor, el "
         "documento debe quedar marcado para revisión manual. `confianza` "
         "(0-100) es la de la categoría ganadora. Con `documento`, la clasificación "
-        "se guarda y, si ese documento ya está en algún expediente y se reconoce "
-        "como de un tipo, entra solo a los expedientes virtuales "
-        "de ese expediente que esperan su tipo documental."
+        "se guarda: es lo que dice de qué tipo es ese documento (el expediente lo "
+        "muestra en `tipoDocumental`). Ya no mete el documento a ningún lado: "
+        "desde el 2026-11-05 no hay expedientes virtuales."
     ),
 )
 async def clasificar(
@@ -337,16 +336,9 @@ async def clasificar(
     if documento.strip():
         # Guardarla nunca cambia la respuesta: la clasificación ya se pagó y el Pipeline la necesita para seguir.
         try:
-            anotado = await run_in_threadpool(
+            await run_in_threadpool(
                 datos_extraidos.registrar_clasificacion, tenant, documento.strip(), respuesta, clasificadores.id_de(tenant) or "", actor.guid
             )
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo guardar la clasificación del documento %s", documento)
-        else:
-            # Si el documento ya está en algún expediente, lo recién reconocido lo mete a los expedientes virtuales que esperan ese tipo
-            # (de cualquier confianza). Tampoco cambia la respuesta, y nunca levanta (`colocar_clasificados`).
-            if anotado["tipoId"]:
-                colocados = await run_in_threadpool(colocar_clasificados, tenant, documento_id=documento.strip())
-                if colocados:
-                    await run_in_threadpool(anotar_colocados, actor, tenant, colocados)
     return respuesta

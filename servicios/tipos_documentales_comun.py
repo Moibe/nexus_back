@@ -52,7 +52,7 @@ class NombreRepetido(Exception):
 def clave_de_nombre(nombre: object) -> str:
     """Con qué se compara un nombre para saber si choca con otro: sin espacios de más y sin distinguir mayúsculas.
 
-    Es la misma regla que ya usan procesos, grupos y tipos de expediente. «Cédula  profesional » y «CÉDULA PROFESIONAL» chocan;
+    Es la misma regla que ya usan procesos y grupos. «Cédula  profesional » y «CÉDULA PROFESIONAL» chocan;
     «Cedula profesional» (sin acento) no: es otra palabra.
     """
     return " ".join(str(nombre).split()).casefold()
@@ -63,8 +63,8 @@ def exigir_nombre_libre(nuevo: dict, actual: dict | None, otros: list[dict]) -> 
 
     La regla (Moibe, 2026-11-04): el nombre de un tipo documental es único en su organización. Dos tipos con el mismo nombre son dos
     categorías iguales para el clasificador (el nombre es su `displayName`, y la descripción suele ser parecida) y no se distinguen
-    en ningún lado donde se listan por nombre: la Biblioteca, el esquema de un tipo de expediente virtual, los menús del motor de
-    reglas o la columna «Tipo documental» de un expediente.
+    en ningún lado donde se listan por nombre: la Biblioteca, los menús del motor de reglas o la columna «Tipo documental» de un
+    expediente.
 
     - Un tipo ARCHIVADO no ocupa nombre: no se lista ni entra al clasificador, así que su nombre se puede volver a usar. Guardar uno
       archivado nunca choca, y los archivados de `otros` no cuentan.
