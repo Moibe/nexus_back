@@ -11,6 +11,10 @@ con su esquema, un expediente de ese tipo con dos documentos), aplica la 0004 co
   del virtual; borrar el virtual se lleva sus renglones; un tipo con virtuales no se puede borrar;
 - `usrNexus`, el usuario de la API, lee y escribe las tablas renombradas y las nuevas.
 
+Valida la 0004 EN SÍ, así que se detiene a propósito en ella (`hasta=3` y luego `aplicar(4)`): los expedientes virtuales se quitaron de la aplicación el 2026-11-05
+y la migración `0012` borra las tablas que esta prueba comprueba, así que no puede correr con las migraciones que siguen. No importa ningún módulo de la aplicación
+(todo es SQL directo), por eso sigue valiendo aunque el código de los virtuales ya no exista.
+
 Sin Docker, se salta y lo dice: no cuenta como pasada.
 """
 

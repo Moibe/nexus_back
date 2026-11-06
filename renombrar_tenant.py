@@ -10,8 +10,8 @@ almacén) y luego:
   - reescribe, en los registros que guardan el tenant, los renglones de ESE tenant (`tenant`, `tenantGuid`, `tenantPedido`) y las rutas
     de archivo que llevan su nombre delante (`demo/ab/cd/<sha256>` → `plataforma/ab/cd/<sha256>`: las de la bandeja, los documentos y los
     ejemplos de cada tipo documental);
-  - renombra sus archivos de registro propios (`bandeja-demo.jsonl`, `documentos-demo.jsonl`, `expedientes-demo.jsonl`,
-    `tipos-expediente-demo.jsonl`) y la carpeta de documentos `{almacén}/demo/`;
+  - renombra sus archivos de registro propios (`bandeja-demo.jsonl`, `documentos-demo.jsonl`, `expedientes-demo.jsonl`) y la carpeta de
+    documentos `{almacén}/demo/`;
   - deja un evento `PLATFORM_TENANT_RENAMED` en la bitácora de auditoría. La bitácora NO se reescribe: es evidencia de solo agregar, y
     lo que pasó en el tenant antes del cambio sigue diciendo `demo`.
 
@@ -53,7 +53,9 @@ REGISTROS_COMPARTIDOS = (
     "entregas-webhooks.jsonl",
     "clasificadores.jsonl",
 )
-PREFIJOS_POR_TENANT = ("bandeja", "documentos", "expedientes", "tipos-expediente")
+# Moibe, 2026-11-05: se quitaron los tipos de expediente (virtual) y con ellos su registro `tipos-expediente-{tenant}.jsonl`, que ya nadie lee: este script
+# dejó de renombrarlo. Si queda uno en el almacén es un archivo muerto y se puede borrar a mano.
+PREFIJOS_POR_TENANT = ("bandeja", "documentos", "expedientes")
 CLAVES_DE_TENANT = ("tenant", "tenantGuid", "tenantPedido")
 
 

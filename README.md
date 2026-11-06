@@ -1724,8 +1724,8 @@ versiones, ejemplos recortados) vivía en el `localStorage` de **cada navegador*
 Piden la llave de servicio **y** el JWT de la persona (HU11): leer los de otra organización es 403 `sin_acceso` y un id ajeno
 responde 404 igual que uno que no existe.
 
-**El nombre es único en la organización (2026-11-04).** Sin distinguir mayúsculas ni espacios de más (la misma regla que procesos, grupos y
-tipos de expediente virtual): crear, renombrar o desarchivar un tipo con el nombre de otro es 409 `ya_existe`. Los **archivados no ocupan
+**El nombre es único en la organización (2026-11-04).** Sin distinguir mayúsculas ni espacios de más (la misma regla que procesos y
+grupos): crear, renombrar o desarchivar un tipo con el nombre de otro es 409 `ya_existe`. Los **archivados no ocupan
 nombre**. Solo se revisa cuando el tipo ENTRA a un nombre: los duplicados que ya existían se siguen guardando mientras no se toque su
 nombre (activarlos, calibrarlos, editar la descripción), y se resuelven renombrando, archivando o borrando uno. Lo cuida el servicio
 (`exigir_nombre_libre` en `tipos_documentales_comun.py`, igual en el JSONL y en SQL, con candado dentro de la transacción), no un índice
@@ -1961,7 +1961,7 @@ nombre viejo. `renombrar_tenant.py` lo pasa CONSERVÁNDOLO:
 
 Respalda `.registro/`, cambia el tenant de los renglones de ese espacio en los registros compartidos (tipos documentales, procesos, llaves,
 webhooks, entregas), reescribe las rutas de archivo que llevan su nombre (`demo/ab/cd/<sha256>` → `plataforma/…`: bandeja, documentos y los
-ejemplos de cada tipo documental), renombra sus registros propios (`bandeja-`, `documentos-`, `expedientes-`, `tipos-expediente-`) y su carpeta
+ejemplos de cada tipo documental), renombra sus registros propios (`bandeja-`, `documentos-`, `expedientes-`) y su carpeta
 del almacén, y deja `PLATFORM_TENANT_RENAMED` en la bitácora. La bitácora NO se reescribe (es evidencia de solo agregar). Se niega si el origen o el
 destino es el guid de una organización o si el destino ya tiene datos. Los procesadores de Google no dependen del nombre del tenant, así que siguen
 siendo los mismos. Orden al desplegar: primero el front con el default nuevo, después correr el script; entre una cosa y otra el administrador de
@@ -2004,38 +2004,54 @@ contraseñas. Se probó rompiendo 15 reglas a propósito: las 15 se detectan.
 
 ## Expedientes y documentos: el documento nace al entrar, el expediente los reúne (2026-10-24)
 
-Un **documento** nace cuando entra al sistema (hoy, por `POST /bandeja/`) y existe por sí mismo. Un **tipo de expediente** («expediente médico»,
-«expediente de un choque») es la clase; un **expediente** es una instancia de un tipo —la carpeta de UN paciente, de UN choque— y reúne los
-documentos de ese caso. Un documento puede estar en **ningún** expediente (el «void»), en **uno** o en **varios**. El modelo completo, sus
-decisiones y lo que falta están en [`docs/modelo-entidades.md`](docs/modelo-entidades.md).
+Un **documento** nace cuando entra al sistema (hoy, por `POST /bandeja/`) y existe por sí mismo. Un **expediente** es un receptáculo —la carpeta de UN
+paciente, de UN choque, de UN cliente— y reúne los documentos de ese caso; desde el 2026-10-29 **no tiene tipo**. Un documento puede estar en **ningún**
+expediente (el «void»), en **uno** o en **varios**. El modelo completo, sus decisiones y lo que falta están en [`docs/modelo-entidades.md`](docs/modelo-entidades.md).
+
+> **Se quitaron los expedientes virtuales y los tipos de expediente (Moibe, 2026-11-05).** Moibe: «voy a quitar los expedientes virtuales, ahora podremos meter el
+> expediente completo a la ejecución de un proceso». Entre el 2026-10-29 y ese día, dentro de un expediente vivían **expedientes virtuales** (grupitos de sus
+> documentos, instancias de un **tipo de expediente virtual** con su esquema de tipos documentales) que elegían qué documentos alimentaban a un proceso. Ya no:
+> un proceso corre sobre el expediente **completo** y sobre cualquiera de la organización (ver [Ejecuciones](#ejecuciones-correr-un-proceso-sobre-un-expediente-y-su-historial-2026-11-03)),
+> y los tipos documentales que dibuja en su lienzo declaran qué documentos necesita. **Las rutas que desaparecen (12, todas responden 404 ahora):**
+> `GET /tipos-expediente/`, `POST /tipos-expediente/`, `GET /tipos-expediente/{id}`, `PATCH /tipos-expediente/{id}`, `PUT /tipos-expediente/{id}/esquema`,
+> `DELETE /tipos-expediente/{id}`, `GET /tipos-expediente/{id}/virtuales`, `POST /expedientes/{id}/virtuales`, `GET /expedientes/{id}/virtuales/{virtual_id}`,
+> `PUT /expedientes/{id}/virtuales/{virtual_id}/documentos/{documento_id}`, `DELETE /expedientes/{id}/virtuales/{virtual_id}/documentos/{documento_id}` y
+> `DELETE /expedientes/{id}/virtuales/{virtual_id}`. Y cambia lo que devuelven: `GET /expedientes/{id}`, `PUT /expedientes/{id}/documentos/{documento_id}` y
+> `POST /expedientes/{id}/documentos` ya no traen `expedientesVirtuales`; el clasificador (al subir un archivo y en `POST /ia/clasificar` con `documento`) **sigue
+> guardando la clasificación**, que es lo que dice de qué tipo es cada documento, pero ya no mete el documento a ningún lado.
+> **Base:** la migración `0011` deja nulas las columnas de virtual de `nexus.processRuns` (las ejecuciones de antes conservan su virtual, como foto) y quita
+> `IX_processRuns_virtualCase`; la `0012` borra las cuatro tablas de los virtuales (`virtualCases`, `virtualCaseDocuments`, `virtualCaseTypes`,
+> `virtualCaseTypeDocumentTypes`) y la columna `processes.virtualCaseTypePublicId`, **sin vuelta atrás**. En la bitácora, las acciones `CASE_TYPE_*` y
+> `VIRTUAL_CASE_*` dejan de escribirse (las constantes y lo ya anotado se conservan).
+
+**Duplicados** (Moibe, 2026-11-03; se mantienen sobre el expediente entero desde el 2026-11-05). Si un expediente trae DOS O MÁS documentos del mismo tipo
+documental, no se sabe cuál es «el INE»: un proceso que usa ese tipo no corre sobre él y los documentos quedan marcados. `GET /expedientes/{id}` trae `duplicado`
+en cada documento (hay otro del mismo tipo en ESTE expediente) y `duplicados` en el expediente (`[{tipoId, tipoNombre, documentos: [{id, nombre}]}]`, los tipos con
+dos o más). El tipo de un documento es el de su última extracción o, si no se ha extraído, el de su última clasificación; uno sin tipo no cuenta. **No se guarda
+nada**: se calcula al leer, así que sacar uno de los dos quita la marca sola.
 
 | Ruta | Qué hace | Quién |
 |---|---|---|
-| `GET /tipos-expediente/?tenant=` | los tipos de la organización, cada uno con su esquema (`tiposDocumentales`, con id y nombre) y su `totalExpedientes` | cualquiera que opere en ella |
-| `GET /tipos-expediente/{id}?tenant=` | un tipo, su esquema y cuántos expedientes tiene | ídem |
-| `PUT /tipos-expediente/{id}/esquema` `{tenant, tiposDocumentales}` | reemplaza el esquema por esa lista ordenada de tipos documentales de la misma organización (sin repetidos, hasta 50); como al crear, **pide al menos uno**: `[]` da 400 y el esquema anterior se queda; idempotente (`cambiado: false` si es la misma). **Describe, no restringe:** los expedientes de ese tipo siguen recibiendo cualquier documento (es lo mismo que `PATCH` con solo el esquema) | `roles.PUEDEN_ADMINISTRAR` |
-| `POST /tipos-expediente/` `{tenant, nombre, tiposDocumentales}` | crea un tipo (201) **con su esquema**: `tiposDocumentales` es obligatorio y lleva al menos un tipo documental de la misma organización (sin repetidos, hasta 50; lista vacía, repetidos o uno que no existe o es de otra organización dan 400; sin el campo, 422); el tipo y su esquema se guardan en un solo evento. El nombre es único por organización, sin distinguir mayúsculas ni espacios de más: uno repetido da 409 `ya_existe` | `roles.PUEDEN_ADMINISTRAR` |
-| `PATCH /tipos-expediente/{id}` `{tenant, nombre?, tiposDocumentales?}` | **edita un tipo ya creado**: cambia el nombre, el esquema o los dos en una llamada (lo que no viene no se toca; si no viene ninguno, 400). El `id` no cambia y sus expedientes ven el nombre nuevo; el nombre sigue siendo único (otro tipo con ese nombre: 409 `ya_existe`; las mayúsculas del propio nombre sí se pueden cambiar); el esquema reemplaza al anterior y pide lo mismo que al crear (al menos un tipo documental de la organización, sin repetidos, hasta 50; `[]` da 400). **Todo se comprueba antes de escribir:** si el nombre se repite o un tipo documental no existe, no cambia ni lo uno ni lo otro. Idempotente: responde `{cambiado, nombreCambiado, esquemaCambiado, tipo}` y lo que ya estaba igual no se escribe | `roles.PUEDEN_ADMINISTRAR` |
-| `DELETE /tipos-expediente/{id}?tenant=` | lo borra y libera su nombre; **solo si no tiene expedientes**: con expedientes, 409 `con_expedientes` (con `total`), porque todo expediente es instancia de un tipo; la cuenta y el borrado son atómicos frente a crear expedientes | `roles.PUEDEN_ADMINISTRAR` |
-| `GET /expedientes/?tenant=&tipo=` | los expedientes de la organización, cada uno con su `tipo`, su `totalDocumentos` y su `tamanoBytes` (lo que pesan sus documentos juntos; se calcula al consultar); con `tipo`, solo los de ese tipo | cualquiera que opere en ella |
-| `GET /expedientes/{id}?tenant=` | el expediente (con los mismos totales) y sus documentos completos, en el orden en que se agregaron | ídem |
+| `GET /expedientes/?tenant=` | los expedientes de la organización, cada uno con su `grupo`, su `totalDocumentos` y su `tamanoBytes` (lo que pesan sus documentos juntos; se calcula al consultar) | cualquiera que opere en ella |
+| `GET /expedientes/{id}?tenant=` | el expediente (con los mismos totales) y sus documentos completos, en el orden en que se agregaron; cada documento con su `tipoDocumental` y `duplicado`, y el expediente con sus `duplicados` (ver arriba) | ídem |
 | `POST /expedientes/documentos` (formulario: `archivo`, `tenant`, `sha256?`) | **registra el documento de una carga manual** (la del Pipeline del front): guarda los bytes y lo anota con `canal: MANUAL`; mismo formato que la bandeja (PDF, JPEG, PNG, TIFF) y mismos límites; cualquier persona de la organización (la sesión manda, como en `/archivos`); dos cargas del mismo archivo son dos documentos con los mismos bytes. Es lo que llena «Archivos procesados» con lo que no llegó por la API (desde el 2026-10-29; antes solo nacían los de la API) |
 | `GET /expedientes/documentos?tenant=&sin_expediente=` | los documentos y los expedientes en que está cada uno; `true` = solo el void, `false` = solo los organizados | ídem |
 | `POST /expedientes/` `{tenant, nombre, grupoId}` | crea un expediente vacío (201) DENTRO de un grupo (desde el 2026-11-03, ver «Grupos» abajo): `grupoId` es obligatorio donde hay base (400 sin él; 404 si el grupo no es de la organización). El expediente ya no tiene tipo (desde el 2026-10-29) | `roles.PUEDEN_ORGANIZAR` |
 | `PUT /expedientes/{id}/grupo` `{tenant, grupoId}` | asigna el expediente a un grupo o lo pasa a otro (nunca queda sin grupo); idempotente (`cambiado: false` si ya estaba) | ídem |
 | `PUT /expedientes/{id}/documentos/{documento_id}?tenant=` | mete un documento; idempotente (`agregado: false` si ya estaba) | ídem |
 | `DELETE /expedientes/{id}/documentos/{documento_id}?tenant=` | lo saca; el documento NO se borra y, si era su último expediente, vuelve al void | ídem |
+| `POST /expedientes/{id}/documentos` (formulario: `archivo`, `tenant`, `sha256?`) | sube un archivo DIRECTO al expediente: nace como carga manual y entra al expediente en una llamada, y además lo **clasifica** (`clasificacion: {estado, tipo, confianza}`, con `estado` `clasificado`, `sin_tipo`, `sin_clasificador` o `no_clasificado`; clasificar nunca tumba la subida). Responde `{agregado, documento, clasificacion}` | ídem |
 
 Todas piden la llave de servicio **y** el JWT de la persona (HU11); un id de otra organización responde 404 como si no existiera. Crear, meter y
-sacar dejan `CASE_CREATED` (con el tipo), `CASE_DOCUMENT_ADDED` y `CASE_DOCUMENT_REMOVED` en la bitácora, crear un tipo deja `CASE_TYPE_CREATED` (con su esquema en `tiposDocumentales`; el esquema inicial no deja además un `CASE_TYPE_SCHEMA_CHANGED`), cambiar su esquema después `CASE_TYPE_SCHEMA_CHANGED` (con el esquema antes y después), renombrarlo `CASE_TYPE_RENAMED` (con el nombre antes y después) y borrarlo `CASE_TYPE_DELETED`; una edición que cambia las dos cosas deja las dos anotaciones, y el esquema y el nombre no repiten rastro si no cambiaron.
-Los roles de solo consulta (Compliance, Auditor y Viewer) reciben 403 `sin_permiso` al intentar organizar; Analista y Operador organizan pero no
-crean tipos (propuesta de producto, pendiente de confirmar con César).
+sacar dejan `CASE_CREATED` (con su grupo), `CASE_DOCUMENT_ADDED` y `CASE_DOCUMENT_REMOVED` en la bitácora.
+Los roles de solo consulta (Compliance, Auditor y Viewer) reciben 403 `sin_permiso` al intentar organizar (propuesta de producto, pendiente de confirmar con César).
 
 `POST /bandeja/` no cambia para quien sube, salvo que la entrada trae además su `documentoId`. Los documentos viven en
-`.registro/documentos-{tenant}.jsonl`, los expedientes en `.registro/expedientes-{tenant}.jsonl` y los tipos en `.registro/tipos-expediente-{tenant}.jsonl`. La ruta de documentos cuelga de
+`.registro/documentos-{tenant}.jsonl` y los expedientes en `.registro/expedientes-{tenant}.jsonl`. La ruta de documentos cuelga de
 `/expedientes` y no de `/documentos` porque ese prefijo ya es del grupo que habla con SQL Server.
 
-Verificarlo, offline: `venv/bin/python verificar_expedientes.py`.
+Verificarlo, offline: `venv/bin/python verificar_expedientes.py`; con `--sql` (Docker) corre lo mismo contra SQL Server y suma lo que solo la base puede probar: los
+duplicados (un documento solo tiene tipo donde hay base) y la clasificación al subir, con Document AI falseado.
 
 ## Grupos: el nivel de arriba de los expedientes (2026-11-03)
 
@@ -2079,8 +2095,10 @@ entero (el punto `@documento` de un tipo, solo para `existe`), un valor fijo o e
 más y que entra, con su nombre, a la lista de valores finales de la corrida, y el **resultado** es la palabra con la que termina el proceso
 («Aprobado», «Certificado»…, la que la organización escriba) según la regla que se le conecte pase, no pase o no se pueda saber por falta de datos.
 Aquí solo se **guarda ese dibujo**: `servicios/procesos.py` y `routers/procesos.py`. El back **no interpreta las reglas**, solo comprueba que el
-dibujo esté entero; correrlas sobre un expediente virtual con datos reales y guardar lo que salió es de [Ejecuciones](#ejecuciones-correr-un-proceso-sobre-un-expediente-virtual-y-su-historial-2026-11-03),
-más abajo.
+dibujo esté entero; correrlas sobre un expediente con datos reales y guardar lo que salió es de [Ejecuciones](#ejecuciones-correr-un-proceso-sobre-un-expediente-y-su-historial-2026-11-03),
+más abajo. Desde el 2026-11-05 un proceso **ya no se liga a ningún tipo** (se quitaron los expedientes virtuales): corre sobre cualquier expediente de la organización y los
+tipos documentales que dibuja son la declaración de sus entradas. Si un cliente viejo todavía manda `datos.tipoExpedienteVirtualId`, el servidor lo **ignora** (se guarda el
+proceso, no el campo, y no falla) y nunca lo devuelve.
 
 | Ruta | Qué hace |
 |---|---|
@@ -2124,12 +2142,17 @@ Offline: crear, ver desde otra persona, 409 por revisión, aislamiento entre org
 salga limpio, listas de ejemplo largas y valores fijos, auditoría y corte a media escritura. Se probó rompiendo 22 reglas del
 servicio y del router a propósito: las 22 se detectan.
 
-## Ejecuciones: correr un proceso sobre un expediente virtual, y su historial (2026-11-03)
+## Ejecuciones: correr un proceso sobre un expediente, y su historial (2026-11-03)
 
-Una **ejecución** junta UN expediente virtual con UN proceso del motor de reglas, lo corre con los datos que dijeron sus documentos y deja en el
+Una **ejecución** junta UN expediente con UN proceso del motor de reglas, lo corre con los datos que dijeron sus documentos y deja en el
 historial cómo terminó: la palabra del **Resultado**, la lista de **valores finales** y el detalle de cómo salió cada regla y de qué documento y campo
 se tomó cada dato. Lo hace `servicios/ejecuciones.py` (con `routers/ejecuciones.py`) sobre la migración `0009` (`nexus.processRuns` y
 `nexus.processRunFinalValues`); **solo SQL**: sin base, escribir levanta 503 y el historial sale vacío.
+
+**Sobre el expediente completo (Moibe, 2026-11-05).** Hasta ese día se corría sobre un *expediente virtual* (un subconjunto de los documentos de un expediente). Se
+quitaron los virtuales: el proceso corre sobre **cualquier expediente de su organización** (el grupo del expediente tampoco lo limita) y toma del expediente completo los
+documentos de los tipos documentales que dibuja en su lienzo. Se fue con ellos el motivo de rechazo `no_corre_aqui`. Las **ejecuciones de antes** conservan su virtual (la
+migración `0011` solo dejó nulas las columnas de virtual, no reescribió nada): se leen con `virtual: {id, nombre, tipoNombre}`; las nuevas, con `virtual: null`.
 
 **El back NO interpreta las reglas.** Qué significa «igual» (texto sin mayúsculas, números con símbolo de moneda, fechas escritas de tres maneras…),
 cómo se combinan las reglas y qué palabra sale del Resultado vive en UN solo lugar, `reglas.ts` del front, que el lienzo ya usa para probar con valores
@@ -2140,13 +2163,14 @@ automático) se porta esa lógica con la suite del front como oráculo.
 
 | Ruta | Qué hace |
 |---|---|
-| `GET /ejecuciones/preparar?tenant=&expediente=&virtual=&proceso=` | El proceso con su dibujo y su `revision`, los tipos documentales que usa con sus campos, y por cada uno el documento del expediente virtual que lo cubre con sus **valores vigentes** (los de su última extracción, con las correcciones a mano), o los `duplicados`. |
-| `POST /ejecuciones/` | Guarda UNA ejecución, todo o nada: `{tenant, expedienteId, virtualId, procesoId, procesoRevision, resultado: {caso, texto}, valoresFinales, detalle}`. 201 con la ejecución completa. |
-| `GET /ejecuciones/?tenant=` | El historial de la organización, de la más reciente a la más antigua. Filtros opcionales (ver «Filtros del historial»): `expediente`, `virtual`, `proceso`, `persona`, `caso`, `desde` y `hasta`; `limite` (1 a 200, por omisión 50) y `antes` (el id de la última que ya se vio) para pedir las siguientes. Devuelve `{ejecuciones, total, hayMas}`. |
+| `GET /ejecuciones/procesos?tenant=` | Los procesos que se ofrecen para ejecutar: `{procesos: [{id, nombre, activo, ejecutable}]}`, TODOS (activos e inactivos: la pantalla filtra `activo`) y en el orden en que se crearon. `ejecutable` = tiene su Resultado con una regla conectada. Lo leen todos los roles (solo nombre y banderas; el dibujo es de `/procesos`, que solo leen Administrador y Supervisor). Sin base, `procesos: []`. |
+| `GET /ejecuciones/preparar?tenant=&expediente=&proceso=` | El expediente, el proceso con su dibujo y su `revision`, los tipos documentales que usa con sus campos, y por cada uno el documento del **expediente completo** que lo cubre con sus **valores vigentes** (los de su última extracción, con las correcciones a mano), o los `duplicados`. |
+| `POST /ejecuciones/` | Guarda UNA ejecución, todo o nada: `{tenant, expedienteId, procesoId, procesoRevision, resultado: {caso, texto}, valoresFinales, detalle}`. 201 con la ejecución completa. Una petición que todavía mande `virtualId` no falla: se ignora. |
+| `GET /ejecuciones/?tenant=` | El historial de la organización, de la más reciente a la más antigua. Filtros opcionales (ver «Filtros del historial»): `expediente`, `proceso`, `persona`, `caso`, `desde` y `hasta`; `limite` (1 a 200, por omisión 50) y `antes` (el id de la última que ya se vio) para pedir las siguientes. Devuelve `{ejecuciones, total, hayMas}`; cada ejecución trae `virtual` (`null` si es nueva). |
 | `GET /ejecuciones/filtros?tenant=` | Lo que se puede elegir para filtrar el historial: `{procesos: [{id, nombre}], personas: [{id, nombre}]}`. |
 | `GET /ejecuciones/{id}?tenant=` | Una ejecución completa: su resumen, `valoresFinales`, `detalle` (reglas, evidencia, condición, faltantes) y `definicion` (el proceso tal como estaba). |
 
-**Quién puede qué.** Ver el historial (listar, filtrar y abrir) es de cualquiera que opere en la organización; **ejecutar** (preparar y guardar) es de quien
+**Quién puede qué.** Ver el historial (listar, filtrar y abrir) y los procesos que se ofrecen es de cualquiera que opere en la organización; **ejecutar** (preparar y guardar) es de quien
 organiza (`roles.PUEDEN_ORGANIZAR`: Administrador, Supervisor, Analista y Operador, como subir archivos a un expediente); los demás roles reciben 403
 `sin_permiso`. Moibe lo confirmó el 2026-11-03 («no hace falta confirmarlo con César, así está ok»). Piden la llave de servicio **y** el JWT de la persona
 (HU11): una ejecución de otra organización, o que no existe, es 404 sin distinguir.
@@ -2159,7 +2183,8 @@ organiza (`roles.PUEDEN_ORGANIZAR`: Administrador, Supervisor, Analista y Operad
 | `proceso` | Uno o varios ids de proceso (el parámetro se repite: `proceso=a&proceso=b`); basta con ser de UNO. Es la «regla» de las HU. |
 | `persona` | Uno o varios ids de quien ejecutó (se repite igual). |
 | `caso` | Cómo terminó: `si` (se cumplió), `no` (no se cumplió) o `sin` (faltaron datos: las incompletas); se repite. Las **palabras** del Resultado las escribe cada organización, así que el caso es lo que no cambia. 400 si no es uno de los tres. |
-| `expediente`, `virtual` | Un id; los de siempre. |
+| `expediente` | Un id. Trae las ejecuciones de ese expediente, también las de antes del 2026-11-05 (que además traen su virtual). |
+| ~~`virtual`~~ | **Ya no existe** (2026-11-05): pedirlo no filtra nada, se ignora. |
 
 Los filtros se combinan con **Y**; dentro de uno de lista basta con cumplir **uno**. Cada filtro de lista admite hasta 50 valores distintos (400 si pasa);
 un valor vacío se ignora. `total` es el de lo que cumple los filtros (no el de todo el historial) y `antes` sigue funcionando con ellos puestos.
@@ -2167,17 +2192,18 @@ un valor vacío se ignora. `total` es el de lo que cumple los filtros (no el de 
 está, siguen ahí (cada proceso con el nombre de su ejecución más reciente; cada persona con su nombre si todavía se puede leer, `null` si no), por orden de
 nombre sin importar mayúsculas ni acentos.
 
-**Qué se exige para ejecutar** (`preparar`, 409 con su `codigo` para que la pantalla explique qué hacer): `proceso_inactivo` (está apagado), `no_corre_aqui`
-(corre sobre otro tipo de expediente virtual), `sin_resultado` (no trae su nodo de Resultado) y `resultado_sin_regla` (su Resultado no tiene ninguna
-regla conectada). Un virtual o un proceso que no son de la organización son 404 (`virtual_no_existe`, `proceso_no_existe`).
+**Qué se exige para ejecutar** (`preparar`, 409 con su `codigo` para que la pantalla explique qué hacer): `proceso_inactivo` (está apagado),
+`sin_resultado` (no trae su nodo de Resultado) y `resultado_sin_regla` (su Resultado no tiene ninguna regla conectada). Un expediente o un proceso que no son
+de la organización son 404 (`expediente_no_existe`, `proceso_no_existe`; si faltan los dos, se dice primero el del expediente) y una ejecución que no existe,
+`ejecucion_no_existe`. Ya no hay `no_corre_aqui`: un proceso corre sobre cualquier expediente.
 
-**Duplicados** (Moibe, 2026-11-03: «no corre la regla y se avisa que tiene un duplicado, y quedan marcados en el expediente»). Si el expediente virtual trae
-DOS O MÁS documentos de un tipo documental que el proceso usa, no se sabe cuál es «el INE»: `preparar` los entrega en `duplicados` (y no da valores de
-ese tipo), quien ejecuta no debe seguir, y los documentos quedan marcados: el detalle del virtual trae `duplicado` en cada documento y `duplicados` (los
-tipos repetidos y sus archivos), y el detalle del expediente trae `duplicadoEn` por documento y `duplicados` por virtual. El tipo de un documento es el de su
-última extracción o, si no se ha extraído, el de su última clasificación; uno sin tipo no cuenta. **No se guarda nada**: se calcula al leer, así que sacar
-uno de los dos quita la marca sola. Un tipo que el proceso NO usa puede estar duplicado sin que estorbe (`preparar` solo mira los que el proceso usa).
-Una ejecución que no se corrió por duplicados no es una ejecución: no se guarda ni deja rastro.
+**Duplicados** (Moibe, 2026-11-03: «no corre la regla y se avisa que tiene un duplicado, y quedan marcados en el expediente»; se mantienen sobre el expediente
+entero, 2026-11-05). Si el expediente trae DOS O MÁS documentos de un tipo documental que el proceso usa, no se sabe cuál es «el INE»: `preparar` los entrega en
+`duplicados` (y no da valores de ese tipo), quien ejecuta no debe seguir, y los documentos quedan marcados: el detalle del expediente trae `duplicado` en cada
+documento y `duplicados` (los tipos repetidos y sus archivos; ver «Expedientes y documentos»). El tipo de un documento es el de su última extracción o, si no se
+ha extraído, el de su última clasificación; uno sin tipo no cuenta. **No se guarda nada**: se calcula al leer, así que sacar uno de los dos quita la marca sola.
+Un tipo que el proceso NO usa puede estar duplicado sin que estorbe (`preparar` solo mira los que el proceso usa). Una ejecución que no se corrió por duplicados no
+es una ejecución: no se guarda ni deja rastro.
 
 **Los nombres de los campos.** Lo extraído se guarda con los nombres de Google (`ano_de_registro`, `socios[2].nombre`) y el lienzo conoce los de la
 biblioteca («Año de registro», `socios.nombre`). `esquema.nombres_en_google` los une con la MISMA regla con que se armó el esquema que se le mandó a
@@ -2185,16 +2211,17 @@ Google (`esquema_desde_campos`, con sus sufijos para nombres que colapsan al mis
 que es el que usa el motor: `{forma: valor|lista|filas, valores, confianza, pagina}` por campo (la confianza es la más baja y la página la de la primera;
 las filas de un grupo que se repite solo importa cuántas son). Un campo que el documento no trae queda con `valores` vacío: la regla dirá «sin valores».
 
-**El historial es una foto inmutable.** No hay ruta que lo edite o lo borre, y la base no tiene llaves foráneas al expediente, al virtual ni al proceso:
-si después se renombra o se borra cualquiera de ellos, la ejecución sigue diciendo lo que decía (guarda sus nombres, la revisión del proceso y el dibujo
+**El historial es una foto inmutable.** No hay ruta que lo edite o lo borre, y la base no tiene llaves foráneas al expediente ni al proceso (ni al virtual, en las
+de antes): si después se renombra o se borra cualquiera de ellos, la ejecución sigue diciendo lo que decía (guarda sus nombres, la revisión del proceso y el dibujo
 completo tal como estaba). Los **nombres y el dibujo los toma el servidor de su base, no de la petición**: lo que se guarda es lo que había, no lo que
 alguien dice que había. Se rechaza con 400 lo que no cuadra con el proceso (una palabra del Resultado que no es la que el proceso tiene para ese caso, un
 valor final que no es de él o viene repetido, una lista sin sus elementos, un valor final «listo» sin valor), y con 409 `proceso_cambio` (con
 `revisionActual`) si el proceso se guardó otra vez desde que se preparó: lo que se corrió ya no es lo que hay, y hay que volver a ejecutar. El estado de la
-ejecución sale del caso: **`incompleta`** si faltaron datos (caso `sin`) y **`completa`** si no; la base lo amarra con un `CHECK`.
+ejecución sale del caso: **`incompleta`** si faltaron datos (caso `sin`) y **`completa`** si no; la base lo amarra con un `CHECK`. Otro `CHECK` (`CK_processRuns_virtual`,
+migración `0011`) amarra el virtual de las de antes: `virtualCaseId` y `virtualCaseName` van los dos o ninguno, y el nombre del tipo del virtual solo existe con virtual.
 
-**Auditoría.** `PROCESS_RUN_RECORDED` cuando una ejecución queda en el historial (quién, qué proceso, sobre qué expediente virtual y cómo terminó, con la palabra).
-Preparar no deja rastro.
+**Auditoría.** `PROCESS_RUN_RECORDED` cuando una ejecución queda en el historial (quién, qué proceso, sobre qué expediente y cómo terminó, con la palabra; sin
+`expedienteVirtualId`, que ya no se escribe). Preparar no deja rastro.
 
 **Límites conocidos:** una corrida bloqueada (duplicados, regla incompleta) no se guarda (Moibe, 2026-11-03: «está ok que no se guarde una corrida filtrada
 por ahora»); un proceso guardado antes de que el Resultado fuera obligatorio no se puede ejecutar hasta que se le agregue.
@@ -2205,11 +2232,12 @@ por ahora»); un proceso guardado antes de que el Resultado fuera obligatorio no
 .venv/Scripts/python verificar_ejecuciones.py
 ```
 
-Levanta un SQL Server real en Docker (el puerto 14341), le aplica TODAS las migraciones con el corredor de verdad y prueba: preparar (cada código de «no se
-puede ejecutar», los valores vigentes con correcciones, grupos y listas, los duplicados con y sin proceso que los use), guardar y leer lo guardado, cada
-validación, el conflicto de revisión, que el historial sobreviva a borrar su expediente y su proceso, los filtros del historial (fecha con y sin zona,
-proceso, persona y estado, combinados y paginados, y las opciones que se ofrecen), el aislamiento entre organizaciones, los roles y la auditoría. La lógica
-pura que corre el front se prueba aparte, en el front (`verificar-ejecutar.mjs`).
+Levanta un SQL Server real en Docker (el puerto 14341), le aplica TODAS las migraciones con el corredor de verdad y prueba: preparar sobre el expediente completo (cada
+código de «no se puede ejecutar», los valores vigentes con correcciones, grupos y listas, los duplicados con y sin proceso que los use), los procesos que se ofrecen y su
+`ejecutable`, guardar sin virtual y leer lo guardado, cada validación, el conflicto de revisión, que el historial sobreviva a borrar su proceso, las ejecuciones de
+antes con su virtual junto a las nuevas, los filtros del historial (fecha con y sin zona, proceso, persona y estado, combinados y paginados, y las opciones que se
+ofrecen), el aislamiento entre organizaciones, los roles y la auditoría. La lógica pura que corre el front se prueba aparte, en el front (`verificar-ejecutar.mjs`).
+La migración `0011` sobre una base con ejecuciones de antes la prueba `verificar_migracion_0011.py` (y la `0012`, `verificar_migracion_0012.py`).
 
 ## Grupos de campos y forma del resultado de la extracción (2026-10-16)
 

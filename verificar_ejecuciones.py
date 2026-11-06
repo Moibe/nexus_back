@@ -1,4 +1,4 @@
-"""¿Las EJECUCIONES funcionan de punta a punta? (migración `0009`, `servicios/ejecuciones.py`, `routers/ejecuciones.py`)
+"""¿Las EJECUCIONES funcionan de punta a punta? (migraciones `0009` y `0011`, `servicios/ejecuciones.py`, `routers/ejecuciones.py`)
 
     .venv/Scripts/python verificar_ejecuciones.py
     .venv/Scripts/python verificar_ejecuciones.py --dejar     (deja vivo el contenedor para investigar)
@@ -6,24 +6,31 @@
 Las ejecuciones SOLO viven en SQL (decisión del 2026-10-28: «todo lo nuevo directo a SQL»), así que esta prueba corre siempre contra el SQL Server
 desechable de `pruebas_sql.py`; sin Docker se salta y lo dice. El almacén (bandeja, usuarios, auditoría) es una carpeta temporal.
 
-Lo que se prueba (Moibe, 2026-11-03: se ejecuta un proceso sobre un expediente virtual con los datos REALES de sus documentos; con duplicados no se
-corre, se avisa y los documentos quedan marcados; el historial es inmutable):
+Lo que se prueba (Moibe, 2026-11-03: se ejecuta un proceso con los datos REALES de los documentos; con duplicados no se corre, se avisa y los documentos
+quedan marcados; el historial es inmutable. Moibe, 2026-11-05: se quitaron los expedientes virtuales, así que un proceso se ejecuta sobre el EXPEDIENTE
+completo y sobre cualquiera de la organización):
 
-- `preparar`: el proceso con su dibujo y su revisión, los tipos documentales que usa y, por cada uno, el documento del virtual que lo cubre con sus
+- `preparar`: el proceso con su dibujo y su revisión, los tipos documentales que usa y, por cada uno, el documento del EXPEDIENTE que lo cubre con sus
   valores VIGENTES por el nombre del campo en la BIBLIOTECA («Año de registro», `socios.nombre`) aunque Document AI los guarde como `ano_de_registro`
   y `socios[2].nombre`; listas, filas de un grupo, campos ausentes, la confianza más baja y la página; una corrección a mano manda sobre lo extraído;
-  un documento solo clasificado (sin extraer) cubre su tipo pero no trae valores; un tipo sin documento queda sin ellos;
-- DUPLICADOS: dos documentos del mismo tipo en el virtual se entregan en `duplicados` y no dan valores; el virtual y el expediente los marcan
-  (`duplicado`, `duplicadoEn`) y sacar uno quita la marca; un tipo que el proceso no usa puede estar duplicado sin estorbar;
-- lo que impide ejecutar, cada cosa con su código (409): proceso inactivo, que corre sobre otro tipo, sin Resultado, con el Resultado sin regla;
-- `registrar`: guarda la corrida con los nombres y el dibujo que toma de la base (no de la petición), la lista de valores finales como renglones, y se
-  niega a lo que no cuadra (una palabra que no es la del proceso, un valor final ajeno, una revisión vieja, formas imposibles);
-- el historial: de la más reciente a la más antigua, filtros, paginación, abrir una; sigue igual si el proceso se renombra, se edita o el virtual se
-  borra; es inmutable (ninguna ruta lo edita ni lo borra) y la base misma rechaza una fila incoherente;
+  un documento solo clasificado (sin extraer) cubre su tipo pero no trae valores; un tipo sin documento queda sin ellos; el alcance es el expediente
+  completo (un documento de otro expediente no cuenta) y no hay expediente virtual en la respuesta;
+- DUPLICADOS: dos documentos del mismo tipo en el expediente se entregan en `duplicados` y no dan valores; el expediente los marca (`duplicado`,
+  `duplicados`) y sacar uno quita la marca; un tipo que el proceso no usa puede estar duplicado sin estorbar, también cuando es lo único duplicado;
+- lo que impide ejecutar, cada cosa con su código: 404 `expediente_no_existe` y `proceso_no_existe`; 409 proceso inactivo, sin Resultado y con el
+  Resultado sin regla. Ya no hay «este proceso no corre aquí» (`no_corre_aqui`): corre sobre cualquier expediente, y un proceso que un cliente viejo
+  guardó con `tipoExpedienteVirtualId` no estorba;
+- `registrar`: guarda la corrida con los nombres y el dibujo que toma de la base (no de la petición), SIN virtual (las columnas de virtual quedan nulas),
+  la lista de valores finales como renglones, y se niega a lo que no cuadra (una palabra que no es la del proceso, un valor final ajeno, una revisión
+  vieja, formas imposibles); un cliente viejo que todavía manda `virtualId` no lo estorba ni lo guarda;
+- los procesos que se ofrecen (`GET /ejecuciones/procesos`): todos, activos o no, en orden de creación, con `ejecutable`; los ven todos los roles;
+- el historial: de la más reciente a la más antigua, filtros, paginación, abrir una; las nuevas traen `virtual: null` y las de antes del 2026-11-05
+  conservan su virtual; el filtro por virtual ya no existe; sigue igual si el proceso se renombra o se borra; es inmutable (ninguna ruta lo edita ni lo
+  borra) y la base misma rechaza una fila incoherente, también un virtual a medias (`CK_processRuns_virtual`, migración `0011`);
 - los FILTROS del historial (Moibe, 2026-11-03: «agrega dichos filtros»): fecha (`desde` incluido, `hasta` no, con zona o sin ella), proceso, persona y
   estado (varios valores por filtro, basta con uno; entre filtros, Y), junto con la paginación; y `/ejecuciones/filtros`, que dice qué se puede elegir
   (lo que está EN el historial, por orden de nombre sin acentos);
-- roles (ver todos; ejecutar solo quien organiza), aislamiento entre organizaciones y rastro.
+- roles (ver todos; ejecutar solo quien organiza), aislamiento entre organizaciones y rastro (sin `expedienteVirtualId`).
 """
 
 import json
@@ -51,7 +58,7 @@ os.environ["AUTH_JWT_SECRET"] = "secreto-de-prueba-de-al-menos-32-caracteres-xx"
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app import app  # noqa: E402
-from servicios import auth, datos_extraidos, esquema, expedientes_virtuales, usuarios  # noqa: E402
+from servicios import auth, datos_extraidos, esquema, usuarios  # noqa: E402
 
 fallos = 0
 PDF = b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n"
@@ -122,12 +129,6 @@ def tipo_documental(bearer: str, tenant: str, nombre: str, campos: list[dict]) -
     return tid
 
 
-def tipo_virtual(bearer: str, tenant: str, nombre: str, esquema_ids: list[str]) -> str:
-    r = c.post("/tipos-expediente/", json={"tenant": tenant, "nombre": nombre, "tiposDocumentales": esquema_ids}, headers=cab(bearer))
-    assert r.status_code == 201, r.text
-    return r.json()["id"]
-
-
 #: Un grupo «General» por organización, creado la primera vez que se necesita: desde la migración 0010 un expediente nuevo nace en un grupo.
 _GRUPOS: dict[str, str] = {}
 
@@ -150,22 +151,8 @@ def meter(bearer: str, tenant: str, exp: str, doc: str):
     return c.put(f"/expedientes/{exp}/documentos/{doc}", params={"tenant": tenant}, headers=cab(bearer))
 
 
-def crear_v(bearer: str, tenant: str, exp: str, t: str, nombre: str, documentos=None):
-    r = c.post(f"/expedientes/{exp}/virtuales", json={"tenant": tenant, "tipoId": t, "nombre": nombre, "documentos": documentos or []}, headers=cab(bearer))
-    assert r.status_code == 201, r.text
-    return r.json()["id"]
-
-
-def meter_v(bearer: str, tenant: str, exp: str, v: str, doc: str):
-    return c.put(f"/expedientes/{exp}/virtuales/{v}/documentos/{doc}", params={"tenant": tenant}, headers=cab(bearer))
-
-
-def sacar_v(bearer: str, tenant: str, exp: str, v: str, doc: str):
-    return c.delete(f"/expedientes/{exp}/virtuales/{v}/documentos/{doc}", params={"tenant": tenant}, headers=cab(bearer))
-
-
-def ver_v(bearer: str, tenant: str, exp: str, v: str) -> dict:
-    return c.get(f"/expedientes/{exp}/virtuales/{v}", params={"tenant": tenant}, headers=cab(bearer)).json()
+def sacar(bearer: str, tenant: str, exp: str, doc: str):
+    return c.delete(f"/expedientes/{exp}/documentos/{doc}", params={"tenant": tenant}, headers=cab(bearer))
 
 
 def ver_exp(bearer: str, tenant: str, exp: str) -> dict:
@@ -201,8 +188,8 @@ def guardar_proceso(bearer: str, tenant: str, pid: str, datos: dict, revision: i
     return c.put(f"/procesos/{pid}", json={"tenant": tenant, "revision": revision, "datos": datos}, headers=cab(bearer))
 
 
-def preparar(bearer: str, tenant: str, exp: str, v: str, p: str):
-    return c.get("/ejecuciones/preparar", params={"tenant": tenant, "expediente": exp, "virtual": v, "proceso": p}, headers=cab(bearer))
+def preparar(bearer: str, tenant: str, exp: str, p: str):
+    return c.get("/ejecuciones/preparar", params={"tenant": tenant, "expediente": exp, "proceso": p}, headers=cab(bearer))
 
 
 def registrar(bearer: str, cuerpo: dict):
@@ -215,6 +202,10 @@ def historial(bearer: str, tenant: str, **filtros):
 
 def abrir(bearer: str, tenant: str, eid: str):
     return c.get(f"/ejecuciones/{eid}", params={"tenant": tenant}, headers=cab(bearer))
+
+
+def ofrecidos(bearer: str | None, tenant: str):
+    return c.get("/ejecuciones/procesos", params={"tenant": tenant}, headers=cab(bearer))
 
 
 # ── lo extraído ──
@@ -238,7 +229,7 @@ def auditoria(accion: str) -> list[dict]:
 
 
 try:
-    titulo("0 · Montaje: dos organizaciones, personas de varios roles, tipos documentales con campos, un tipo de expediente virtual, un expediente y su virtual")
+    titulo("0 · Montaje: dos organizaciones, personas de varios roles, tipos documentales con campos y expedientes con sus documentos")
     temporal = auth.contrasena_temporal()
     usuarios.bootstrap_admin("super@ejemplo.com", "Ada", "Lovelace", auth.hash_de(temporal))
     bearer_super = con_primer_acceso("super@ejemplo.com", temporal, "Cobre-Lento-Azul-47!")
@@ -265,24 +256,22 @@ try:
     td_comp = tipo_documental(adm, org, "Comprobante de domicilio", [campo_def("Titular"), campo_def("Monto", "moneda")])
     td_otro = tipo_documental(adm, org, "Estado de cuenta", [campo_def("Saldo", "moneda")])
     td_b = tipo_documental(adm_b, otra, "INE de Beta", [campo_def("Nombre")])
-    credito = tipo_virtual(adm, org, "Solicitud de crédito", [td_ine, td_comp, td_otro])
-    seguro = tipo_virtual(adm, org, "Póliza de seguro", [td_ine])
-    tipo_b = tipo_virtual(adm_b, otra, "Solicitud de Beta", [td_b])
 
+    # El expediente principal: INE, comprobante de domicilio y un estado de cuenta (el proceso de la prueba usa los dos primeros). Un documento puede estar en
+    # varios expedientes a la vez: `ana` trae el mismo INE y un comprobante que solo se clasificó; `vacio`, el INE y nada más (le falta el comprobante).
     juan = expediente(adm, org, "Juan Pérez")
     ine1, ine2, comp, cuenta1, cuenta2, suelto = (subir(adm, org, f"{n}.pdf", i) for i, n in enumerate(("ine", "ine-2", "domicilio", "cuenta", "cuenta-2", "suelto")))
-    for d in (ine1, ine2, comp, cuenta1, cuenta2):
+    for d in (ine1, comp, cuenta1):
         meter(adm, org, juan, d)
-    v1 = crear_v(adm, org, juan, credito, "Crédito automotriz", [ine1, comp, cuenta1])
-    # Se crean ANTES de clasificar nada: un virtual nuevo se llena con lo que su expediente ya tiene clasificado, y estos tienen que quedar como se arman.
     sin_extraer = subir(adm, org, "sin-extraer.pdf", 200)
-    meter(adm, org, juan, sin_extraer)
-    v_solo = crear_v(adm, org, juan, credito, "Con un comprobante solo clasificado", [ine1, sin_extraer])
-    v_vacio = crear_v(adm, org, juan, credito, "Sin comprobante", [ine1])
+    ana = expediente(adm, org, "Ana Torres")
+    for d in (ine1, sin_extraer):
+        meter(adm, org, ana, d)
+    vacio = expediente(adm, org, "Sin comprobante")
+    meter(adm, org, vacio, ine1)
     exp_b = expediente(adm_b, otra, "De Beta")
     d_b = subir(adm_b, otra, "beta.pdf", 90)
     meter(adm_b, otra, exp_b, d_b)
-    v_b = crear_v(adm_b, otra, exp_b, tipo_b, "Virtual de Beta", [d_b])
 
     # Lo que Document AI dejó de cada documento.
     for d, td in ((ine1, td_ine), (ine2, td_ine), (comp, td_comp), (cuenta1, td_otro), (cuenta2, td_otro)):
@@ -301,7 +290,7 @@ try:
     # El proceso de la prueba: «el CURP del INE es el que escribió quien capturó»; entrega dos valores finales y termina en una palabra.
     def proceso_base(**extra) -> dict:
         return {
-            "nombre": "Validar identidad", "descripcion": "", "tipoExpedienteVirtualId": credito,
+            "nombre": "Validar identidad", "descripcion": "",
             "nodos": [n_tipo(td_ine), n_tipo(td_comp), n_op(1, "igual"), n_fijo(1, "texto", "PEPJ800101HDFRRN09"), n_vf(1, "CURP"), n_vf(2, "Teléfonos"), n_res()],
             "aristas": [
                 cable(f"tipo-{td_ine}", "CURP", "operador-1", "a"), cable("constante-1", "valor", "operador-1", "b"),
@@ -315,19 +304,21 @@ try:
     r = guardar_proceso(adm, org, pid, proceso_base(), 0)
     assert r.status_code == 200, r.text
     rev_p = r.json()["revision"]
-    rev("hay un expediente con su virtual (3 documentos), un proceso guardado y los documentos con su tipo y sus datos", ver_v(adm, org, juan, v1)["totalDocumentos"] == 3 and rev_p == 1)
+    rev("hay un expediente con 3 documentos, un proceso guardado y los documentos con su tipo y sus datos", ver_exp(adm, org, juan)["totalDocumentos"] == 3 and rev_p == 1)
 
     titulo("1 · Preparar: el proceso, sus tipos y los valores REALES por el nombre de la biblioteca")
-    r = preparar(adm, org, juan, v1, pid)
+    r = preparar(adm, org, juan, pid)
     rev("preparar: 200", r.status_code == 200, r.text[:300])
     prep = r.json()
-    rev("trae el expediente, el virtual con su tipo y el proceso con su revisión y su dibujo entero",
-        prep["expediente"] == {"id": juan, "nombre": "Juan Pérez"} and prep["virtual"]["id"] == v1 and prep["virtual"]["tipo"] == {"id": credito, "nombre": "Solicitud de crédito"}
+    rev("trae el expediente y el proceso con su revisión y su dibujo entero, y ya NO trae expediente virtual",
+        prep["expediente"] == {"id": juan, "nombre": "Juan Pérez"} and "virtual" not in prep
         and prep["proceso"]["id"] == pid and prep["proceso"]["revision"] == 1 and prep["proceso"]["nombre"] == "Validar identidad"
         and {n["id"] for n in prep["proceso"]["datos"]["nodos"]} >= {"operador-1", "resultado-final", "valor-final-1", "valor-final-2"}, str(prep)[:300])
+    rev("lo que trae es exactamente lo del contrato: expediente, proceso, tipos, documentos y duplicados", set(prep) == {"expediente", "proceso", "tipos", "documentos", "duplicados"}, str(sorted(prep)))
     rev("trae los tipos documentales que el proceso usa, con sus campos tal como están en la biblioteca", {t["id"] for t in prep["tipos"]} == {td_ine, td_comp} and next(t for t in prep["tipos"] if t["id"] == td_ine)["campos"][2]["nombre"] == "Año de registro")
     docs = {d["tipoId"]: d for d in prep["documentos"]}
-    rev("por cada tipo, los documentos del virtual que lo cubren (uno) y de qué se supo su tipo", docs[td_ine]["encontrados"] == [{"id": ine1, "nombre": "ine.pdf", "origenTipo": "extraccion"}] and docs[td_comp]["encontrados"][0]["id"] == comp)
+    rev("por cada tipo, los documentos del EXPEDIENTE que lo cubren (uno) y de qué se supo su tipo", docs[td_ine]["encontrados"] == [{"id": ine1, "nombre": "ine.pdf", "origenTipo": "extraccion"}] and [e["id"] for e in docs[td_comp]["encontrados"]] == [comp], str(docs))
+    rev("un documento de un tipo que el proceso NO usa (el estado de cuenta del expediente) no aparece entre lo que se entrega", td_otro not in docs and cuenta1 not in json.dumps(prep["documentos"]))
     rev("sin duplicados", prep["duplicados"] == [])
     v = docs[td_ine]["valores"]
     rev("un campo suelto: su valor, su confianza y su página", v["Nombre"] == {"forma": "valor", "valores": ["Juan Pérez"], "confianza": 95.0, "pagina": 1}, str(v.get("Nombre")))
@@ -337,14 +328,15 @@ try:
     rev("un grupo que se repite entrega sus FILAS (cuántas son)", v["Socios"]["forma"] == "filas" and v["Socios"]["valores"] == ["1", "2"], str(v.get("Socios")))
     rev("y cada columna del grupo, como lista: «Socios.Nombre» y «Socios.Acciones»", v["Socios.Nombre"]["valores"] == ["Ana", "Luis"] and v["Socios.Acciones"]["valores"] == ["50", "50"] and v["Socios.Nombre"]["confianza"] == 85.0, str(v.get("Socios.Nombre")))
     rev("una columna de un grupo que NO se repite es un valor: «Domicilio.Calle»; y ese grupo no entrega nada por sí mismo", v["Domicilio.Calle"] == {"forma": "valor", "valores": ["Reforma 1"], "confianza": 88.0, "pagina": 1} and "Domicilio" not in v)
-    rev("el otro tipo trae sus valores (el monto como lo escribió el documento)", docs[td_comp]["valores"]["Monto"]["valores"] == ["$1,250.50"] and docs[td_comp]["valores"]["Titular"]["valores"] == ["Juan Pérez"])
+    vc = docs[td_comp]["valores"] or {}
+    rev("el otro tipo trae sus valores (el monto como lo escribió el documento)", vc.get("Monto", {}).get("valores") == ["$1,250.50"] and vc.get("Titular", {}).get("valores") == ["Juan Pérez"], str(docs[td_comp]))
 
     # Un tipo documental que ya no está en la biblioteca, o puesto dos veces en el dibujo, no estorba: se prepara con los que sí hay, cada uno UNA vez.
     pid_raro = "proceso-" + uuid.uuid4().hex
     raro = proceso_base(nombre="Validar identidad (con tipos raros)")  # el nombre de un proceso es único en la organización (NEX-529)
     raro["nodos"] = raro["nodos"] + [n_tipo("tipo-" + uuid.uuid4().hex), {**n_tipo(td_ine), "id": "tipo-repetido"}]
     assert guardar_proceso(adm, org, pid_raro, raro, 0).status_code == 200
-    r = preparar(adm, org, juan, v1, pid_raro)
+    r = preparar(adm, org, juan, pid_raro)
     rev("un tipo documental que ya no existe en la biblioteca no estorba: se prepara con los que sí hay", r.status_code == 200 and {t["id"] for t in r.json()["tipos"]} == {td_ine, td_comp} and {d["tipoId"] for d in r.json()["documentos"]} == {td_ine, td_comp}, r.text[:300])
     rev("y un tipo puesto dos veces en el dibujo sale UNA sola vez, en `tipos` y en `documentos`", len(r.json()["tipos"]) == 2 and len(r.json()["documentos"]) == 2, r.text[:300])
     assert c.delete(f"/procesos/{pid_raro}", params={"tenant": org}, headers=cab(adm)).status_code in (200, 204)
@@ -376,10 +368,10 @@ try:
 
     titulo("3 · Lo que falta o cambia: ausentes, correcciones, solo clasificado, sin documento")
     extraer(org, ine1, td_ine, {"nombre": hecho("Juan Pérez", 95, 1), "curp": hecho("PEPJ800101HDFRRN09", 80, 1), "_metadata": {"campos_ausentes": ["ano_de_registro"]}})
-    v = {d["tipoId"]: d for d in preparar(adm, org, juan, v1, pid).json()["documentos"]}[td_ine]["valores"]
+    v = {d["tipoId"]: d for d in preparar(adm, org, juan, pid).json()["documentos"]}[td_ine]["valores"]
     rev("una reextracción manda (la última corrida): lo que ya no trae queda sin valores y las listas, vacías", v["Año de registro"]["valores"] == [] and v["Teléfonos"]["valores"] == [] and v["Socios"]["valores"] == [] and v["Nombre"]["valores"] == ["Juan Pérez"], str(v))
     datos_extraidos.corregir(org, ine1, "curp", "CORREGIDO", "lo escribió mal", "prueba")
-    v = {d["tipoId"]: d for d in preparar(adm, org, juan, v1, pid).json()["documentos"]}[td_ine]["valores"]
+    v = {d["tipoId"]: d for d in preparar(adm, org, juan, pid).json()["documentos"]}[td_ine]["valores"]
     rev("una corrección a mano es el valor vigente", v["CURP"]["valores"] == ["CORREGIDO"], str(v.get("CURP")))
     # Se devuelve la extracción completa para el resto de la prueba.
     extraer(org, ine1, td_ine, {
@@ -387,88 +379,100 @@ try:
         "telefonos": [hecho("5511", 90, 1), hecho("5522", 60, 2)], "socios": [{"nombre": hecho("Ana", 90, 3)}], "domicilio": {"calle": hecho("Reforma 1", 88, 1)},
     })
     clasificar(org, sin_extraer, td_comp)
-    prep_solo = preparar(adm, org, juan, v_solo, pid).json()
+    prep_solo = preparar(adm, org, ana, pid).json()
     d_comp = {d["tipoId"]: d for d in prep_solo["documentos"]}[td_comp]
     rev("un documento solo CLASIFICADO cubre su tipo pero no trae valores (y dice que su tipo salió de la clasificación)", d_comp["encontrados"] == [{"id": sin_extraer, "nombre": "sin-extraer.pdf", "origenTipo": "clasificacion"}] and d_comp["valores"]["Monto"]["valores"] == [] and d_comp["valores"]["Titular"]["valores"] == [], str(d_comp))
-    d_comp = {d["tipoId"]: d for d in preparar(adm, org, juan, v_vacio, pid).json()["documentos"]}[td_comp]
-    rev("un tipo que el virtual no cubre queda sin documentos y sin valores", d_comp["encontrados"] == [] and d_comp["valores"] is None)
+    prep_vacio = preparar(adm, org, vacio, pid).json()
+    d_comp = {d["tipoId"]: d for d in prep_vacio["documentos"]}[td_comp]
+    rev("un tipo que el expediente no cubre queda sin documentos y sin valores (el alcance es el expediente: el comprobante de OTRO expediente no cuenta)", d_comp["encontrados"] == [] and d_comp["valores"] is None, str(d_comp))
+    rev("y lo que sí tiene (el INE) se encuentra igual", {d["tipoId"]: d for d in prep_vacio["documentos"]}[td_ine]["encontrados"][0]["id"] == ine1 and prep_vacio["expediente"] == {"id": vacio, "nombre": "Sin comprobante"})
 
-    titulo("4 · DUPLICADOS: dos documentos del mismo tipo")
-    rev("antes de duplicar, ni el virtual ni el expediente marcan nada", ver_v(adm, org, juan, v1)["duplicados"] == [] and all(not d["duplicado"] for d in ver_v(adm, org, juan, v1)["documentos"])
-        and all(d["duplicadoEn"] == [] for d in ver_exp(adm, org, juan)["documentos"]))
-    rev("meter el segundo INE al virtual", meter_v(adm, org, juan, v1, ine2).status_code == 200)
-    prep = preparar(adm, org, juan, v1, pid).json()
+    titulo("4 · DUPLICADOS: dos documentos del mismo tipo, en el expediente entero")
+    ee = ver_exp(adm, org, juan)
+    rev("antes de duplicar, el expediente no marca nada: `duplicados` vacío y ningún documento `duplicado` (ni la marca vieja `duplicadoEn`)",
+        ee["duplicados"] == [] and all(d["duplicado"] is False and "duplicadoEn" not in d for d in ee["documentos"]) and "expedientesVirtuales" not in ee, str(ee["duplicados"]))
+    rev("meter el segundo INE al expediente", meter(adm, org, juan, ine2).status_code == 200)
+    prep = preparar(adm, org, juan, pid).json()
     rev("preparar los entrega en `duplicados`, con los dos documentos, y NO da valores de ese tipo", prep["duplicados"] == [{"tipoId": td_ine, "tipoNombre": "INE", "documentos": [{"id": ine1, "nombre": "ine.pdf"}, {"id": ine2, "nombre": "ine-2.pdf"}]}]
         and {d["tipoId"]: d for d in prep["documentos"]}[td_ine]["valores"] is None and len({d["tipoId"]: d for d in prep["documentos"]}[td_ine]["encontrados"]) == 2, str(prep["duplicados"]))
     rev("el otro tipo sigue dando sus valores", {d["tipoId"]: d for d in prep["documentos"]}[td_comp]["valores"]["Titular"]["valores"] == ["Juan Pérez"])
-    vv = ver_v(adm, org, juan, v1)
-    rev("el expediente virtual marca los dos documentos (`duplicado`) y lista el duplicado por tipo", {d["id"]: d["duplicado"] for d in vv["documentos"]} == {ine1: True, comp: False, cuenta1: False, ine2: True}
-        and vv["duplicados"] == [{"tipoId": td_ine, "tipoNombre": "INE", "documentos": [{"id": ine1, "nombre": "ine.pdf"}, {"id": ine2, "nombre": "ine-2.pdf"}]}], str(vv["duplicados"]))
     ee = ver_exp(adm, org, juan)
-    marcas = {d["id"]: d["duplicadoEn"] for d in ee["documentos"]}
-    rev("el expediente marca los documentos con el virtual en el que están duplicados (`duplicadoEn`)", marcas[ine1] == [{"id": v1, "nombre": "Crédito automotriz", "tipoNombre": "INE"}] and marcas[ine2] == marcas[ine1] and marcas[comp] == [], str(marcas))
-    rev("y cada virtual del expediente dice sus duplicados", {x["id"]: x["duplicados"] for x in ee["expedientesVirtuales"]}[v1][0]["tipoId"] == td_ine and {x["id"]: x["duplicados"] for x in ee["expedientesVirtuales"]}[v_vacio] == [])
-    rev("el INE en OTRO virtual donde está solo no se marca (un duplicado es de un virtual)", ver_v(adm, org, juan, v_vacio)["duplicados"] == [] and not any(d["duplicado"] for d in ver_v(adm, org, juan, v_vacio)["documentos"]))
+    rev("el expediente marca los dos documentos (`duplicado`) y lista el duplicado por tipo", {d["id"]: d["duplicado"] for d in ee["documentos"]} == {ine1: True, comp: False, cuenta1: False, ine2: True}
+        and ee["duplicados"] == [{"tipoId": td_ine, "tipoNombre": "INE", "documentos": [{"id": ine1, "nombre": "ine.pdf"}, {"id": ine2, "nombre": "ine-2.pdf"}]}], str(ee["duplicados"]))
+    rev("el INE en OTRO expediente donde está solo no se marca (un duplicado es de un expediente)", ver_exp(adm, org, vacio)["duplicados"] == [] and not any(d["duplicado"] for d in ver_exp(adm, org, vacio)["documentos"]))
     # un tipo que el proceso NO usa, duplicado: no estorba
-    meter_v(adm, org, juan, v1, cuenta2)
-    prep = preparar(adm, org, juan, v1, pid).json()
-    rev("dos estados de cuenta (un tipo que el proceso NO usa) también se marcan en el virtual, pero no estorban a `preparar`: solo se entregan los duplicados de los tipos que el proceso usa",
-        [g["tipoId"] for g in prep["duplicados"]] == [td_ine] and any(g["tipoId"] == td_otro for g in ver_v(adm, org, juan, v1)["duplicados"]))
-    rev("sacar uno de los INE quita la marca (se calcula al leer, no se guarda)", sacar_v(adm, org, juan, v1, ine2).status_code == 200 and [g["tipoId"] for g in preparar(adm, org, juan, v1, pid).json()["duplicados"]] == []
-        and not ver_v(adm, org, juan, v1)["documentos"][0]["duplicado"])
-    sacar_v(adm, org, juan, v1, cuenta2)
+    meter(adm, org, juan, cuenta2)
+    prep = preparar(adm, org, juan, pid).json()
+    rev("dos estados de cuenta (un tipo que el proceso NO usa) también se marcan en el expediente, pero no estorban a `preparar`: solo se entregan los duplicados de los tipos que el proceso usa",
+        [g["tipoId"] for g in prep["duplicados"]] == [td_ine] and any(g["tipoId"] == td_otro for g in ver_exp(adm, org, juan)["duplicados"]))
+    rev("sacar uno de los INE quita la marca (se calcula al leer, no se guarda)", sacar(adm, org, juan, ine2).status_code == 200 and [g["tipoId"] for g in preparar(adm, org, juan, pid).json()["duplicados"]] == []
+        and not ver_exp(adm, org, juan)["documentos"][0]["duplicado"])
+    # lo ÚNICO duplicado es un tipo que el proceso no usa: preparar no se entera
+    r = preparar(adm, org, juan, pid)
+    rev("con SOLO el estado de cuenta duplicado, el proceso se prepara sin estorbo: 200, sin duplicados y con los valores del INE",
+        r.status_code == 200 and r.json()["duplicados"] == [] and {d["tipoId"]: d for d in r.json()["documentos"]}[td_ine]["valores"]["Nombre"]["valores"] == ["Juan Pérez"]
+        and [g["tipoId"] for g in ver_exp(adm, org, juan)["duplicados"]] == [td_otro], r.text[:200])
+    rev("y el expediente sí los marca, con los dos estados de cuenta",
+        ver_exp(adm, org, juan)["duplicados"] == [{"tipoId": td_otro, "tipoNombre": "Estado de cuenta", "documentos": [{"id": cuenta1, "nombre": "cuenta.pdf"}, {"id": cuenta2, "nombre": "cuenta-2.pdf"}]}])
+    sacar(adm, org, juan, cuenta2)
+    rev("sacar el otro estado de cuenta deja el expediente como estaba: sin marcas", ver_exp(adm, org, juan)["duplicados"] == [] and not any(d["duplicado"] for d in ver_exp(adm, org, juan)["documentos"]))
 
     titulo("5 · Lo que impide ejecutar, cada cosa con su código")
+
     def codigo(respuesta) -> str | None:
         return (respuesta.json().get("detail") or {}).get("codigo") if respuesta.status_code in (404, 409) else None
 
     p_inactivo = "proceso-" + uuid.uuid4().hex
     guardar_proceso(adm, org, p_inactivo, proceso_base(activo=False, nombre="Apagado"), 0)
-    r = preparar(adm, org, juan, v1, p_inactivo)
+    r = preparar(adm, org, juan, p_inactivo)
     rev("un proceso desactivado: 409 `proceso_inactivo`", r.status_code == 409 and codigo(r) == "proceso_inactivo" and "desactivado" in r.json()["detail"]["mensaje"], r.text[:200])
-    p_otro_tipo = "proceso-" + uuid.uuid4().hex
-    guardar_proceso(adm, org, p_otro_tipo, proceso_base(tipoExpedienteVirtualId=seguro, nombre="De seguros"), 0)
-    r = preparar(adm, org, juan, v1, p_otro_tipo)
-    rev("un proceso que corre sobre OTRO tipo de expediente virtual: 409 `no_corre_aqui`, y dice cuál es el tipo", r.status_code == 409 and codigo(r) == "no_corre_aqui" and "Solicitud de crédito" in r.json()["detail"]["mensaje"], r.text[:200])
+    # Moibe, 2026-11-05: un proceso ya no se liga a un tipo de expediente virtual, así que ya no hay «no corre aquí» (`no_corre_aqui`).
+    p_viejo = "proceso-" + uuid.uuid4().hex
+    guardar_proceso(adm, org, p_viejo, proceso_base(tipoExpedienteVirtualId="tipo-expediente-" + "9" * 32, nombre="Con liga vieja"), 0)
+    r = preparar(adm, org, juan, p_viejo)
+    rev("un proceso que un cliente viejo guardó con `tipoExpedienteVirtualId` se prepara igual: la liga se ignora y no estorba", r.status_code == 200 and "tipoExpedienteVirtualId" not in r.json()["proceso"]["datos"], r.text[:200])
+    rev("el mismo proceso se puede preparar sobre CUALQUIER expediente de la organización (ya no se limita a nada)", all(preparar(adm, org, e_, pid).status_code == 200 for e_ in (juan, ana, vacio)))
     sin_res = proceso_base(nombre="Sin resultado")
     sin_res["nodos"] = [n for n in sin_res["nodos"] if n["type"] != "resultado-final"]
     sin_res["aristas"] = [a for a in sin_res["aristas"] if a["target"] != "resultado-final"]
     p_sin = "proceso-" + uuid.uuid4().hex
     guardar_proceso(adm, org, p_sin, sin_res, 0)
-    r = preparar(adm, org, juan, v1, p_sin)
+    r = preparar(adm, org, juan, p_sin)
     rev("un proceso sin Resultado (los de antes de que fuera obligatorio): 409 `sin_resultado`", r.status_code == 409 and codigo(r) == "sin_resultado", r.text[:200])
     res_suelto = proceso_base(nombre="Resultado suelto")
     res_suelto["aristas"] = [a for a in res_suelto["aristas"] if a["target"] != "resultado-final"]
     p_suelto = "proceso-" + uuid.uuid4().hex
     guardar_proceso(adm, org, p_suelto, res_suelto, 0)
-    r = preparar(adm, org, juan, v1, p_suelto)
+    r = preparar(adm, org, juan, p_suelto)
     rev("un Resultado sin ninguna regla conectada: 409 `resultado_sin_regla`", r.status_code == 409 and codigo(r) == "resultado_sin_regla", r.text[:200])
     res_campo = proceso_base(nombre="Resultado de un campo")
     res_campo["aristas"] = [a for a in res_campo["aristas"] if a["target"] != "resultado-final"] + [cable(f"tipo-{td_ine}", "CURP", "resultado-final", "a")]
     p_campo = "proceso-" + uuid.uuid4().hex
     guardar_proceso(adm, org, p_campo, res_campo, 0)
-    rev("un Resultado cableado a algo que no es una regla (un campo, a mano) tampoco cuenta como conectado", codigo(preparar(adm, org, juan, v1, p_campo)) == "resultado_sin_regla")
-    rev("un proceso que no existe: 404 `proceso_no_existe`", codigo(preparar(adm, org, juan, v1, "proceso-" + uuid.uuid4().hex)) == "proceso_no_existe")
-    rev("un expediente virtual que no existe: 404 `virtual_no_existe`", codigo(preparar(adm, org, juan, "expediente-virtual-" + uuid.uuid4().hex, pid)) == "virtual_no_existe")
-    rev("un virtual que no es de ese expediente: 404", codigo(preparar(adm, org, exp_b, v1, pid)) == "virtual_no_existe")
-    rev("ids que ni parecen ids: 404, no un error del servidor", codigo(preparar(adm, org, juan, "x", pid)) == "virtual_no_existe" and codigo(preparar(adm, org, juan, v1, "x")) == "proceso_no_existe")
+    rev("un Resultado cableado a algo que no es una regla (un campo, a mano) tampoco cuenta como conectado", codigo(preparar(adm, org, juan, p_campo)) == "resultado_sin_regla")
+    rev("un proceso que no existe: 404 `proceso_no_existe`", codigo(preparar(adm, org, juan, "proceso-" + uuid.uuid4().hex)) == "proceso_no_existe")
+    r = preparar(adm, org, "expediente-" + uuid.uuid4().hex, pid)
+    rev("un expediente que no existe: 404 `expediente_no_existe`, con su mensaje", r.status_code == 404 and codigo(r) == "expediente_no_existe" and r.json()["detail"]["mensaje"] == "Ese expediente no existe.", r.text[:200])
+    rev("un expediente de OTRA organización (con el tenant de ésta): 404, igual que si no existiera", codigo(preparar(adm, org, exp_b, pid)) == "expediente_no_existe")
+    rev("ids que ni parecen ids: 404, no un error del servidor", codigo(preparar(adm, org, "x", pid)) == "expediente_no_existe" and codigo(preparar(adm, org, juan, "x")) == "proceso_no_existe")
+    rev("si fallan los dos, se dice primero que el expediente no existe", codigo(preparar(adm, org, "x", "x")) == "expediente_no_existe")
 
     titulo("6 · Roles y organizaciones")
-    rev("quien organiza (Analista) prepara", preparar(P["ANALISTA"], org, juan, v1, pid).status_code == 200)
-    r = preparar(P["VIEWER"], org, juan, v1, pid)
+    rev("quien organiza (Analista) prepara", preparar(P["ANALISTA"], org, juan, pid).status_code == 200)
+    r = preparar(P["VIEWER"], org, juan, pid)
     rev("un rol que solo lee no ejecuta: 403 `sin_permiso`", r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_permiso", r.text[:200])
-    rev("el Auditor tampoco", preparar(P["AUDITOR"], org, juan, v1, pid).status_code == 403)
-    rev("sin sesión: 401", c.get("/ejecuciones/preparar", params={"tenant": org, "expediente": juan, "virtual": v1, "proceso": pid}, headers=cab()).status_code == 401)
-    r = preparar(adm_b, org, juan, v1, pid)
+    rev("el Auditor tampoco", preparar(P["AUDITOR"], org, juan, pid).status_code == 403)
+    rev("sin sesión: 401", c.get("/ejecuciones/preparar", params={"tenant": org, "expediente": juan, "proceso": pid}, headers=cab()).status_code == 401)
+    r = preparar(adm_b, org, juan, pid)
     rev("quien es de OTRA organización, con el tenant ajeno: 403 `sin_acceso`", r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_acceso", r.text[:200])
-    rev("con SU tenant pero ids ajenos: 404, igual que si no existieran", codigo(preparar(adm_b, otra, juan, v1, pid)) == "virtual_no_existe" and codigo(preparar(adm_b, otra, exp_b, v_b, pid)) == "proceso_no_existe")
+    rev("con SU tenant pero ids ajenos: 404, igual que si no existieran", codigo(preparar(adm_b, otra, juan, pid)) == "expediente_no_existe" and codigo(preparar(adm_b, otra, exp_b, pid)) == "proceso_no_existe")
 
     titulo("7 · Registrar una ejecución")
-    prep = preparar(adm, org, juan, v1, pid).json()
+    prep = preparar(adm, org, juan, pid).json()
 
     def cuerpo(**cambios) -> dict:
         base = {
-            "tenant": org, "expedienteId": juan, "virtualId": v1, "procesoId": pid, "procesoRevision": prep["proceso"]["revision"],
+            "tenant": org, "expedienteId": juan, "procesoId": pid, "procesoRevision": prep["proceso"]["revision"],
             "resultado": {"caso": "si", "texto": "Certificado"},
             "valoresFinales": [
                 {"nodoId": "valor-final-1", "nombre": "CURP", "forma": "valor", "familia": "texto", "estado": "listo", "valor": "PEPJ800101HDFRRN09", "lista": None, "origen": "CURP · INE"},
@@ -484,13 +488,16 @@ try:
     rev("guardar: 201", r.status_code == 201, r.text[:300])
     e1 = r.json()
     rev("su id lo pone el servidor (`ejecucion-` + 32 hexadecimales)", e1["id"].startswith("ejecucion-") and len(e1["id"]) == 42, e1["id"])
-    rev("trae quién (con su id), cuándo, sobre qué y con qué proceso, con los NOMBRES que la base tiene",
-        e1["ejecutadaPor"]["id"] == guid_rita and e1["ejecutadaEn"] and e1["expediente"] == {"id": juan, "nombre": "Juan Pérez"} and e1["virtual"] == {"id": v1, "nombre": "Crédito automotriz", "tipoNombre": "Solicitud de crédito"}
+    rev("trae quién (con su id), cuándo, sobre qué y con qué proceso, con los NOMBRES que la base tiene, y SIN virtual (`virtual: null`)",
+        e1["ejecutadaPor"]["id"] == guid_rita and e1["ejecutadaEn"] and e1["expediente"] == {"id": juan, "nombre": "Juan Pérez"} and e1["virtual"] is None
         and e1["proceso"] == {"id": pid, "nombre": "Validar identidad", "revision": 1}, str(e1)[:300])
     rev("el resultado es la palabra y su caso; con el caso `si` queda `completa`", e1["resultado"] == {"caso": "si", "texto": "Certificado"} and e1["estado"] == "completa")
     rev("la lista de valores finales vuelve en el orden del proceso, completa", [(f["nodoId"], f["nombre"], f["forma"], f["valor"], f["lista"]) for f in e1["valoresFinales"]] == [("valor-final-1", "CURP", "valor", "PEPJ800101HDFRRN09", None), ("valor-final-2", "Teléfonos", "lista", "5511, 5522", ["5511", "5522"])])
     rev("trae la foto de cómo salió cada regla y el proceso tal como estaba", e1["detalle"]["reglas"][0]["estado"] == "pasa" and e1["definicion"]["nombre"] == "Validar identidad" and len(e1["definicion"]["nodos"]) == len(prep["proceso"]["datos"]["nodos"]))
-    rev("deja rastro `PROCESS_RUN_RECORDED` con el proceso, el virtual y cómo terminó", len(auditoria("PROCESS_RUN_RECORDED")) == len(antes) + 1 and auditoria("PROCESS_RUN_RECORDED")[-1].get("ejecucionId") == e1["id"] and auditoria("PROCESS_RUN_RECORDED")[-1].get("caso") == "si" and auditoria("PROCESS_RUN_RECORDED")[-1].get("resultado") == "Certificado")
+    nuevo_rastro = auditoria("PROCESS_RUN_RECORDED")[-1]
+    rev("deja rastro `PROCESS_RUN_RECORDED` con el proceso, el expediente y cómo terminó", len(auditoria("PROCESS_RUN_RECORDED")) == len(antes) + 1 and nuevo_rastro.get("ejecucionId") == e1["id"] and nuevo_rastro.get("caso") == "si" and nuevo_rastro.get("resultado") == "Certificado"
+        and nuevo_rastro.get("expedienteId") == juan and nuevo_rastro.get("procesoId") == pid, str(nuevo_rastro))
+    rev("…y el rastro ya no lleva `expedienteVirtualId`", "expedienteVirtualId" not in nuevo_rastro, str(nuevo_rastro))
     # Las otras dos palabras
     e_no = registrar(adm, cuerpo(resultado={"caso": "no", "texto": "Rechazado"})).json()
     e_sin = registrar(adm, cuerpo(resultado={"caso": "sin", "texto": "Pendiente"})).json()
@@ -541,12 +548,12 @@ try:
     rechazada("un detalle de medio megabyte", {"detalle": {"x": "y" * 500_000}}, "demasiado grande")
     rechazada("una revisión que no es número", {"procesoRevision": "uno"}, codigo_http=422)
     rechazada("una revisión de cero", {"procesoRevision": 0}, codigo_http=422)
-    r = registrar(adm, cuerpo(virtualId="expediente-virtual-" + uuid.uuid4().hex))
-    rev("un virtual que no existe: 404", r.status_code == 404 and r.json()["detail"]["codigo"] == "virtual_no_existe")
+    r = registrar(adm, cuerpo(expedienteId="expediente-" + uuid.uuid4().hex))
+    rev("un expediente que no existe: 404 `expediente_no_existe`", r.status_code == 404 and r.json()["detail"]["codigo"] == "expediente_no_existe")
+    r = registrar(adm, cuerpo(expedienteId=exp_b))
+    rev("el expediente de OTRA organización (con el tenant de ésta): 404, igual que si no existiera", r.status_code == 404 and r.json()["detail"]["codigo"] == "expediente_no_existe")
     r = registrar(adm, cuerpo(procesoId="proceso-" + uuid.uuid4().hex))
-    rev("un proceso que no existe: 404", r.status_code == 404 and r.json()["detail"]["codigo"] == "proceso_no_existe")
-    r = registrar(adm, cuerpo(procesoId=p_otro_tipo, procesoRevision=1))
-    rev("un proceso que corre sobre OTRO tipo de virtual: 400", r.status_code == 400 and "no corre sobre" in r.text, r.text[:200])
+    rev("un proceso que no existe: 404 `proceso_no_existe`", r.status_code == 404 and r.json()["detail"]["codigo"] == "proceso_no_existe")
     rev("nada de lo rechazado quedó en el historial", historial(adm, org).json()["total"] == n_antes)
     r = registrar(P["VIEWER"], cuerpo())
     rev("un rol que solo lee no guarda: 403 `sin_permiso`", r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_permiso")
@@ -561,7 +568,7 @@ try:
     assert r.status_code == 200, r.text
     r = registrar(adm, cuerpo())
     rev("la revisión que se preparó ya no es la vigente: 409 `proceso_cambio`, con la revisión actual", r.status_code == 409 and r.json()["detail"]["codigo"] == "proceso_cambio" and r.json()["detail"]["revisionActual"] == 2, r.text[:200])
-    prep = preparar(adm, org, juan, v1, pid).json()
+    prep = preparar(adm, org, juan, pid).json()
     rev("preparar de nuevo trae la revisión 2", prep["proceso"]["revision"] == 2)
     e2 = registrar(adm, cuerpo(procesoRevision=2))
     rev("con la revisión vigente se guarda, y la ejecución dice que corrió la 2", e2.status_code == 201 and e2.json()["proceso"]["revision"] == 2 and e2.json()["definicion"]["descripcion"] == "otra versión", e2.text[:200])
@@ -571,9 +578,11 @@ try:
     lista = historial(adm, org).json()
     ids_h = [e["id"] for e in lista["ejecuciones"]]
     rev("de la más reciente a la más antigua, con su total", ids_h[0] == e2["id"] and ids_h[-1] == e1["id"] and lista["total"] == len(ids_h) == 6 and lista["hayMas"] is False, str(ids_h))
-    rev("cada renglón trae lo de la tabla: cuándo, expediente, virtual, proceso, resultado y estado, y quién (con su nombre)", (lista["ejecuciones"][0]["ejecutadaPor"]["nombre"] or "").startswith("Admin") and lista["ejecuciones"][0]["resultado"]["texto"] == "Certificado" and lista["ejecuciones"][0]["estado"] == "completa", str(lista["ejecuciones"][0]))
+    rev("cada renglón trae lo de la tabla: cuándo, expediente, proceso, resultado y estado, y quién (con su nombre)", (lista["ejecuciones"][0]["ejecutadaPor"]["nombre"] or "").startswith("Admin") and lista["ejecuciones"][0]["resultado"]["texto"] == "Certificado" and lista["ejecuciones"][0]["estado"] == "completa", str(lista["ejecuciones"][0]))
+    rev("las ejecuciones nuevas traen `virtual: null` (en la lista y al abrirlas)", all(e["virtual"] is None for e in lista["ejecuciones"]) and abrir(adm, org, e2["id"]).json()["virtual"] is None)
     rev("un renglón del historial NO trae la foto pesada (ni el dibujo ni el detalle)", "definicion" not in lista["ejecuciones"][0] and "detalle" not in lista["ejecuciones"][0] and "valoresFinales" not in lista["ejecuciones"][0])
-    rev("filtra por expediente, por virtual y por proceso", historial(adm, org, expediente=juan).json()["total"] == 6 and historial(adm, org, virtual=v1).json()["total"] == 6 and historial(adm, org, proceso=pid).json()["total"] == 6 and historial(adm, org, virtual="expediente-virtual-" + uuid.uuid4().hex).json()["total"] == 0 and historial(adm, org, proceso=p_inactivo).json()["total"] == 0)
+    rev("filtra por expediente y por proceso", historial(adm, org, expediente=juan).json()["total"] == 6 and historial(adm, org, proceso=pid).json()["total"] == 6 and historial(adm, org, expediente="expediente-" + uuid.uuid4().hex).json()["total"] == 0 and historial(adm, org, proceso=p_inactivo).json()["total"] == 0)
+    rev("el filtro por virtual YA NO EXISTE: pedirlo no filtra nada (se ignora)", historial(adm, org, virtual="expediente-virtual-" + uuid.uuid4().hex).json()["total"] == 6 and historial(adm, org, virtual="cualquier-cosa").status_code == 200)
     pagina1 = historial(adm, org, limite=2).json()
     rev("pagina: `limite` y `hayMas`, con el total de todas", len(pagina1["ejecuciones"]) == 2 and pagina1["hayMas"] is True and pagina1["total"] == 6)
     pagina2 = historial(adm, org, limite=2, antes=pagina1["ejecuciones"][-1]["id"]).json()
@@ -589,25 +598,24 @@ try:
 
     titulo("11 · Es una FOTO: no cambia aunque cambie todo lo demás")
     guardar_proceso(adm, org, pid, proceso_base(nombre="Validar identidad (renombrado)"), 2)
-    r = c.delete(f"/expedientes/{juan}/virtuales/{v_vacio}", params={"tenant": org}, headers=cab(adm))
-    r2 = c.delete(f"/expedientes/{juan}/virtuales/{v1}", params={"tenant": org}, headers=cab(adm))
-    rev("se borra el virtual sobre el que se corrió (no estorban las ejecuciones: no hay llaves foráneas a propósito)", r.status_code == 200 and r2.status_code == 200, f"{r.text[:100]} {r2.text[:100]}")
     despues = abrir(adm, org, e1["id"]).json()
-    rev("la ejecución sigue diciendo los nombres de entonces: el proceso sin renombrar y el virtual aunque ya no exista", despues == e1 and despues["proceso"]["nombre"] == "Validar identidad" and despues["virtual"]["nombre"] == "Crédito automotriz")
-    rev("y el historial sigue completo", historial(adm, org).json()["total"] == 6 and historial(adm, org, virtual=v1).json()["total"] == 6)
+    rev("la ejecución sigue diciendo los nombres de entonces: el proceso sin renombrar", despues == e1 and despues["proceso"]["nombre"] == "Validar identidad" and despues["expediente"]["nombre"] == "Juan Pérez")
+    rev("y el historial sigue completo", historial(adm, org).json()["total"] == 6 and historial(adm, org, expediente=juan).json()["total"] == 6)
     r = c.delete(f"/procesos/{pid}", params={"tenant": org}, headers=cab(adm))
     rev("se borra el proceso: la ejecución se queda con su nombre y su dibujo", r.status_code == 200 and abrir(adm, org, e1["id"]).json()["definicion"]["nombre"] == "Validar identidad")
 
     titulo("12 · Inmutable: ninguna ruta la edita o la borra, y la base rechaza lo incoherente")
     rev("no hay PUT, PATCH ni DELETE sobre una ejecución (405)", all(m(f"/ejecuciones/{e1['id']}", params={"tenant": org}, headers=cab(adm)).status_code == 405 for m in (c.put, c.patch, c.delete)))
     rev("ni sobre la lista (405)", c.delete("/ejecuciones/", params={"tenant": org}, headers=cab(adm)).status_code == 405 and c.put("/ejecuciones/", params={"tenant": org}, headers=cab(adm)).status_code == 405)
+    rev("ni sobre los procesos que se ofrecen (405)", all(m("/ejecuciones/procesos", params={"tenant": org}, headers=cab(adm)).status_code == 405 for m in (c.put, c.patch, c.delete, c.post)))
     rev("el servicio no ofrece cómo editar ni borrar", not any(hasattr(__import__("servicios.ejecuciones", fromlist=["x"]), n) for n in ("editar", "actualizar", "borrar", "eliminar", "modificar")))
 
     con = BASE["conectar"]("usrNexus", BASE["app"], BASE["base"])
     cur = con.cursor()
 
     def insertar_corrida(**cambios) -> str | None:
-        valores = {"publicId": "ejecucion-" + uuid.uuid4().hex, "tenant": org, "caseId": "expediente-x", "caseName": "X", "virtualCaseId": "expediente-virtual-x", "virtualCaseName": "V",
+        # La fila mínima es la de una ejecución NUEVA: sin virtual (sus tres columnas quedan nulas).
+        valores = {"publicId": "ejecucion-" + uuid.uuid4().hex, "tenant": org, "caseId": "expediente-x", "caseName": "X",
                    "processId": "proceso-x", "processName": "P", "processRevision": 1, "outcomeCase": "si", "outcomeText": "Aprobado", "status": "completa",
                    "detailJson": "{}", "definitionJson": "{}", "executedBy": "prueba"}
         valores.update(cambios)
@@ -617,7 +625,9 @@ try:
         except Exception as exc:  # noqa: BLE001
             return str(exc)
 
-    rev("la fila mínima válida entra (control de la prueba)", insertar_corrida() is None)
+    rev("la fila mínima válida entra (control de la prueba), y es una ejecución sin virtual", insertar_corrida() is None)
+    cur.execute("SELECT virtualCaseId, virtualCaseName, virtualCaseTypeName FROM nexus.processRuns WHERE publicId = ?", e1["id"])
+    rev("la ejecución que se guardó por el servicio dejó nulas las tres columnas de virtual", tuple(cur.fetchone()) == (None, None, None))
     rev("la base rechaza «completa» con el caso `sin` (faltaron datos no es una corrida completa)", "CK_processRuns_statusOutcome" in (insertar_corrida(outcomeCase="sin", status="completa") or ""))
     rev("y «incompleta» con un caso que sí decidió", "CK_processRuns_statusOutcome" in (insertar_corrida(outcomeCase="no", status="incompleta") or ""))
     rev("un caso que no es si / no / sin", "CK_processRuns_outcomeCase" in (insertar_corrida(outcomeCase="xx") or ""))
@@ -628,6 +638,12 @@ try:
     rev("una revisión de cero", "CK_processRuns_processRevision" in (insertar_corrida(processRevision=0) or ""))
     rev("un tenant con mayúsculas o espacios", "CK_processRuns_tenant" in (insertar_corrida(tenant="Con Espacio") or ""))
     rev("el mismo id público dos veces", "UQ_processRuns_publicId" in (insertar_corrida(publicId=e1["id"]) or ""))
+    # Migración 0011: el virtual de una corrida está completo (como las de antes del 2026-11-05) o no está.
+    rev("un virtual COMPLETO (id y nombre, con o sin el nombre de su tipo: así son las ejecuciones de antes) entra",
+        insertar_corrida(virtualCaseId="expediente-virtual-x", virtualCaseName="V") is None and insertar_corrida(virtualCaseId="expediente-virtual-x", virtualCaseName="V", virtualCaseTypeName="T") is None)
+    rev("el id del virtual sin su nombre: la base lo rechaza (`CK_processRuns_virtual`)", "CK_processRuns_virtual" in (insertar_corrida(virtualCaseId="expediente-virtual-x") or ""))
+    rev("el nombre del virtual sin su id, también", "CK_processRuns_virtual" in (insertar_corrida(virtualCaseName="V") or ""))
+    rev("el nombre del TIPO del virtual sin virtual, también", "CK_processRuns_virtual" in (insertar_corrida(virtualCaseTypeName="T") or ""))
     cur.execute("SELECT processRunId FROM nexus.processRuns WHERE publicId = ?", e1["id"])
     corrida_id = cur.fetchone()[0]
 
@@ -650,20 +666,49 @@ try:
     rev("un valor final de una corrida que no existe", "FK_processRunFinalValues_run" in (insertar_valor(processRunId=999999, position=1) or ""))
     con.close()
 
-    titulo("13 · Los procesos que se ofrecen: `ejecutable` en el expediente virtual")
+    titulo("13 · Los procesos que se ofrecen (`GET /ejecuciones/procesos`): todos, con `ejecutable`")
     pid2 = "proceso-" + uuid.uuid4().hex
     guardar_proceso(adm, org, pid2, proceso_base(nombre="Ejecutable"), 0)
     p_sin2 = "proceso-" + uuid.uuid4().hex
     guardar_proceso(adm, org, p_sin2, {**sin_res, "nombre": "Sin Resultado conectado"}, 0)
-    v_n = crear_v(adm, org, juan, credito, "Nuevo", [ine1])
-    ofrecidos = {p["nombre"]: p for p in ver_v(adm, org, juan, v_n)["procesos"]}
-    rev("el expediente virtual dice cuáles de sus procesos se pueden ejecutar", ofrecidos["Ejecutable"]["ejecutable"] is True and ofrecidos["Sin Resultado conectado"]["ejecutable"] is False and ofrecidos["Apagado"]["activo"] is False and ofrecidos["Resultado suelto"]["ejecutable"] is False and ofrecidos["Resultado de un campo"]["ejecutable"] is False, str(ofrecidos)[:300])
+    r = ofrecidos(adm, org)
+    rev("200 con `procesos`", r.status_code == 200 and set(r.json()) == {"procesos"} and isinstance(r.json()["procesos"], list), r.text[:200])
+    lista_p = r.json()["procesos"]
+    rev("cada uno trae id, nombre, si está activo y si es ejecutable (nada más: ni el dibujo)", all(set(p) == {"id", "nombre", "activo", "ejecutable"} for p in lista_p), str(lista_p[:1]))
+    por_nombre = {p["nombre"]: p for p in lista_p}
+    rev("TODOS, también los inactivos, y en el orden en que se crearon", [p["nombre"] for p in lista_p] == ["Apagado", "Con liga vieja", "Sin resultado", "Resultado suelto", "Resultado de un campo", "Ejecutable", "Sin Resultado conectado"], str([p["nombre"] for p in lista_p]))
+    rev("los que ya se borraron no se ofrecen", "Validar identidad" not in por_nombre and pid not in {p["id"] for p in lista_p})
+    rev("`ejecutable` es tener el Resultado con una regla conectada: el que la tiene sí; sin Resultado, con el Resultado suelto o cableado a un campo, no",
+        por_nombre["Ejecutable"]["ejecutable"] is True and por_nombre["Con liga vieja"]["ejecutable"] is True and por_nombre["Sin Resultado conectado"]["ejecutable"] is False and por_nombre["Sin resultado"]["ejecutable"] is False
+        and por_nombre["Resultado suelto"]["ejecutable"] is False and por_nombre["Resultado de un campo"]["ejecutable"] is False, str(lista_p)[:400])
+    rev("`activo`: un proceso desactivado se ofrece igual (la pantalla filtra), con `activo: false`; los demás, `true`",
+        por_nombre["Apagado"]["activo"] is False and por_nombre["Apagado"]["ejecutable"] is True and all(p["activo"] is True for n, p in por_nombre.items() if n != "Apagado"), str(lista_p)[:400])
+    rev("lo que se ofrece trae los ids reales de cada proceso", por_nombre["Ejecutable"]["id"] == pid2 and por_nombre["Apagado"]["id"] == p_inactivo and por_nombre["Sin Resultado conectado"]["id"] == p_sin2)
+    rev("lo ven todos los roles: Analista, Viewer y Auditor leen lo mismo", all(ofrecidos(P[rol_], org).json() == r.json() for rol_ in ("ANALISTA", "VIEWER", "AUDITOR")))
+    rev("la ruta no se confunde con el id de una ejecución (`/{ejecucion_id}`): abrir una ejecución que no existe sigue dando 404", abrir(adm, org, "ejecucion-" + uuid.uuid4().hex).status_code == 404 and abrir(adm, org, "procesos").status_code == 200)
+    # Otra organización: lo suyo, sin mezclar
+    p_beta = "proceso-" + uuid.uuid4().hex
+    assert guardar_proceso(adm_b, otra, p_beta, {"nombre": "De Beta", "descripcion": "", "nodos": [n_tipo(td_b)], "aristas": []}, 0).status_code == 200
+    r_b = ofrecidos(adm_b, otra)
+    rev("otra organización ve SOLO los suyos, y aquí no se cuela ninguno de ella", [p["nombre"] for p in r_b.json()["procesos"]] == ["De Beta"] and r_b.json()["procesos"][0]["ejecutable"] is False and p_beta not in {p["id"] for p in ofrecidos(adm, org).json()["procesos"]}, r_b.text[:200])
+    r = ofrecidos(adm_b, org)
+    rev("con el tenant de otra organización: 403 `sin_acceso`", r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_acceso", r.text[:200])
+    rev("sin sesión: 401", ofrecidos(None, org).status_code == 401)
+    gamma, adm_g = organizacion(bearer_super, "Gamma", "gina@ejemplo.com")
+    rev("una organización sin procesos: lista vacía, no un error", ofrecidos(adm_g, gamma).json() == {"procesos": []})
     rev("`resultado_conectado` es solo mirar el dibujo", __import__("servicios.procesos", fromlist=["x"]).resultado_conectado({"nodos": [], "aristas": []}) is False)
+    guardada_host = ejecuciones_servicio.SQLSERVER_HOST
+    try:
+        ejecuciones_servicio.SQLSERVER_HOST = ""
+        rev("sin base, los procesos que se ofrecen salen vacíos (igual que el historial y sus filtros) y no se asoma a los procesos de otro almacén", ejecuciones_servicio.procesos_ofrecidos(org) == [])
+    finally:
+        ejecuciones_servicio.SQLSERVER_HOST = guardada_host
+    rev("…y con base vuelven a salir", len(ejecuciones_servicio.procesos_ofrecidos(org)) == 7)
 
     titulo("14 · Detalles del servicio")
-    prep14 = preparar(adm, org, juan, v_n, pid2).json()
+    prep14 = preparar(adm, org, juan, pid2).json()
     r = registrar(adm, {
-        "tenant": org, "expedienteId": juan, "virtualId": v_n, "procesoId": pid2, "procesoRevision": prep14["proceso"]["revision"],
+        "tenant": org, "expedienteId": juan, "procesoId": pid2, "procesoRevision": prep14["proceso"]["revision"],
         "resultado": {"caso": "si", "texto": "  Certificado "},
         "valoresFinales": [{"nodoId": "valor-final-1", "nombre": "  CURP ", "forma": "valor", "familia": "texto", "estado": "listo", "valor": "X", "lista": None, "origen": None}],
         "detalle": {},
@@ -671,13 +716,15 @@ try:
     rev("una palabra con espacios de más se reconoce, y se guarda sin ellos", r.status_code == 201 and r.json()["resultado"]["texto"] == "Certificado", r.text[:200])
     rev("y el nombre de un valor final también se guarda sin los espacios de los extremos", r.json()["valoresFinales"][0]["nombre"] == "CURP", r.text[:200])
     rev("el rastro de auditoría de esa ejecución lleva la palabra con la que terminó", auditoria("PROCESS_RUN_RECORDED")[-1].get("resultado") == "Certificado")
+    # Un cliente viejo que todavía manda `virtualId` (y hasta uno que no existe): se ignora, la ejecución se guarda sin virtual.
+    r = registrar(adm, cuerpo(procesoId=pid2, procesoRevision=prep14["proceso"]["revision"], virtualId="expediente-virtual-" + uuid.uuid4().hex))
+    rev("un cliente viejo que todavía manda `virtualId` (aunque no exista): 201, se ignora y la ejecución queda sin virtual", r.status_code == 201 and r.json()["virtual"] is None and r.json()["expediente"]["id"] == juan, r.text[:200])
     rev("el historial acota el límite que se le pide: 0 se vuelve 1", len(ejecuciones_servicio.listar(org, limite=0)["ejecuciones"]) == 1)
     # Un documento sin tipo documental (nunca se clasificó) no es un duplicado de nada, ni se cae al calcular los duplicados.
     meter(adm, org, juan, suelto)
-    v_sin_tipo = crear_v(adm, org, juan, credito, "Con un documento sin tipo", [suelto])
-    vst = ver_v(adm, org, juan, v_sin_tipo)
-    marca_suelto = next(d for d in vst["documentos"] if d["id"] == suelto)
-    rev("un documento sin tipo documental no es un duplicado de nada (y calcular los duplicados no se cae)", marca_suelto["duplicado"] is False and all(suelto not in {d["id"] for d in g["documentos"]} for g in vst["duplicados"]), str(vst["duplicados"])[:200])
+    ee = ver_exp(adm, org, juan)
+    marca_suelto = next(d for d in ee["documentos"] if d["id"] == suelto)
+    rev("un documento sin tipo documental no es un duplicado de nada (y calcular los duplicados no se cae)", marca_suelto["duplicado"] is False and marca_suelto["tipoDocumental"] is None and all(suelto not in {d["id"] for d in g["documentos"]} for g in ee["duplicados"]), str(ee["duplicados"])[:200])
     from servicios import procesos as procesos_servicio
 
     rev("un cable a otro punto del Resultado no cuenta: su única entrada es «a»", procesos_servicio.resultado_conectado({
@@ -688,6 +735,7 @@ try:
     titulo("15 · Los filtros del historial: fecha, proceso, estado y persona, y qué opciones se ofrecen")
     # Las corridas se siembran directo en la tabla para fijar CUÁNDO, QUIÉN, CON QUÉ PROCESO y CÓMO terminaron (por el servicio, la fecha sería la de ahora).
     # Se meten en orden cronológico porque el historial va por el orden en que se guardaron. Organización Beta: hasta aquí su historial está vacío.
+    # Las de octubre (A, B y C) se siembran CON virtual, como las que se guardaron antes del 2026-11-05; las demás, sin él.
     for correo, nombre, apellido, rol in (("alvaro@ejemplo.com", "Álvaro", "Zúñiga", "OPERADOR"), ("zoe@ejemplo.com", "Zoé", "Prueba", "SUPERVISOR")):
         r = c.post("/usuarios/", json={"nombre": nombre, "apellidoPaterno": apellido, "email": correo, "rol": rol}, headers=cab(adm_b))
         assert r.status_code == 201, r.text
@@ -701,28 +749,30 @@ try:
     con = BASE["conectar"]("usrNexus", BASE["app"], BASE["base"])
     cur = con.cursor()
 
-    def sembrar(tenant: str, expediente_id: str, quien: str, proceso_id: str, nombre_proceso: str, caso: str, cuando: datetime) -> str:
+    def sembrar(tenant: str, expediente_id: str, quien: str, proceso_id: str, nombre_proceso: str, caso: str, cuando: datetime, con_virtual: bool = False) -> str:
         publico = "ejecucion-" + uuid.uuid4().hex
-        cur.execute(
-            "INSERT INTO nexus.processRuns (publicId, tenant, caseId, caseName, virtualCaseId, virtualCaseName, processId, processName, processRevision, outcomeCase, "
-            "outcomeText, status, detailJson, definitionJson, executedAt, executedBy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            publico, tenant, expediente_id, "Expediente " + expediente_id, "expediente-virtual-x", "Virtual", proceso_id, nombre_proceso, 1, caso, PALABRA[caso],
-            "incompleta" if caso == "sin" else "completa", "{}", "{}", cuando, quien,
-        )
+        valores = {
+            "publicId": publico, "tenant": tenant, "caseId": expediente_id, "caseName": "Expediente " + expediente_id, "processId": proceso_id, "processName": nombre_proceso,
+            "processRevision": 1, "outcomeCase": caso, "outcomeText": PALABRA[caso], "status": "incompleta" if caso == "sin" else "completa", "detailJson": "{}", "definitionJson": "{}",
+            "executedAt": cuando, "executedBy": quien,
+        }
+        if con_virtual:
+            valores.update(virtualCaseId="expediente-virtual-" + expediente_id[-6:], virtualCaseName="Virtual de " + expediente_id, virtualCaseTypeName="Solicitud de crédito")
+        cur.execute(f"INSERT INTO nexus.processRuns ({', '.join(valores)}) VALUES ({', '.join('?' * len(valores))})", *valores.values())
         return publico
 
     L: dict[str, str] = {}  # id público → la letra con que la prueba la nombra
-    for letra, pr, nombre_pr, exp_, quien, caso, cuando in (
-        ("A", P1, "Nombre viejo", X1, U1, "si", datetime(2026, 10, 1, 5, 0, 0)),
-        ("B", P1, "Validar identidad", X1, U1, "no", datetime(2026, 10, 15, 12, 0, 0)),
-        ("C", P1, "Validar identidad", X1, U2, "sin", datetime(2026, 10, 31, 23, 30, 0)),
-        ("D", P2, "revisar domicilio", X1, U2, "si", datetime(2026, 11, 1, 1, 0, 0)),
-        ("E", P2, "revisar domicilio", X1, U1, "no", datetime(2026, 11, 2, 3, 30, 0)),
-        ("F", P2, "revisar domicilio", X2, U3, "sin", datetime(2026, 11, 2, 12, 0, 0)),
-        ("G", P3, "Árbol de decisión", X2, U4, "si", datetime(2026, 11, 2, 13, 0, 0)),
-        ("H", P4, "Asignar gestor", X2, U4, "no", datetime(2026, 11, 2, 14, 0, 0)),
+    for letra, pr, nombre_pr, exp_, quien, caso, cuando, viejo in (
+        ("A", P1, "Nombre viejo", X1, U1, "si", datetime(2026, 10, 1, 5, 0, 0), True),
+        ("B", P1, "Validar identidad", X1, U1, "no", datetime(2026, 10, 15, 12, 0, 0), True),
+        ("C", P1, "Validar identidad", X1, U2, "sin", datetime(2026, 10, 31, 23, 30, 0), True),
+        ("D", P2, "revisar domicilio", X1, U2, "si", datetime(2026, 11, 1, 1, 0, 0), False),
+        ("E", P2, "revisar domicilio", X1, U1, "no", datetime(2026, 11, 2, 3, 30, 0), False),
+        ("F", P2, "revisar domicilio", X2, U3, "sin", datetime(2026, 11, 2, 12, 0, 0), False),
+        ("G", P3, "Árbol de decisión", X2, U4, "si", datetime(2026, 11, 2, 13, 0, 0), False),
+        ("H", P4, "Asignar gestor", X2, U4, "no", datetime(2026, 11, 2, 14, 0, 0), False),
     ):
-        L[sembrar(otra, exp_, quien, pr, nombre_pr, caso, cuando)] = letra
+        L[sembrar(otra, exp_, quien, pr, nombre_pr, caso, cuando, viejo)] = letra
 
     def F(bearer: str = adm_b, tenant: str = otra, **filtros) -> dict:
         r = historial(bearer, tenant, **filtros)
@@ -808,8 +858,27 @@ try:
     rev("lo ven todos los roles", all(c.get("/ejecuciones/filtros", params={"tenant": org}, headers=cab(P[rol_])).status_code == 200 for rol_ in ("VIEWER", "AUDITOR", "ANALISTA")))
     r = c.get("/ejecuciones/filtros", params={"tenant": org}, headers=cab(adm_b))
     rev("con el tenant de otra organización: 403 `sin_acceso`; sin sesión: 401", r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_acceso" and c.get("/ejecuciones/filtros", params={"tenant": org}, headers=cab()).status_code == 401)
-    gamma, adm_g = organizacion(bearer_super, "Gamma", "gina@ejemplo.com")
     rev("una organización sin ejecuciones: listas vacías, no un error", c.get("/ejecuciones/filtros", params={"tenant": gamma}, headers=cab(adm_g)).json() == {"procesos": [], "personas": []})
+
+    titulo("16 · Las ejecuciones de antes del 2026-11-05 conservan su virtual, y las nuevas no lo traen")
+    por_letra = {L[e["id"]]: e for e in F()["ejecuciones"]}
+    viejas = {x: por_letra[x] for x in "ABC"}
+    nuevas = {x: por_letra[x] for x in "DEFGH"}
+    rev("las de antes salen con su virtual: id, nombre y el nombre de su tipo (`{id, nombre, tipoNombre}`)",
+        all(viejas[x]["virtual"] == {"id": "expediente-virtual-" + X1[-6:], "nombre": "Virtual de " + X1, "tipoNombre": "Solicitud de crédito"} for x in "ABC"), str(viejas["A"]["virtual"]))
+    rev("las de después, `virtual: null`", all(e["virtual"] is None for e in nuevas.values()) and len(nuevas) == 5)
+    rev("el expediente de una vieja es el expediente (no el virtual): sigue filtrando por él, viejas y nuevas juntas", letras(F(expediente=X1)) == "ABCDE" and viejas["A"]["expediente"] == {"id": X1, "nombre": "Expediente " + X1})
+    id_vieja = next(i for i, letra in L.items() if letra == "A")
+    id_nueva = next(i for i, letra in L.items() if letra == "D")
+    vista = abrir(adm_b, otra, id_vieja).json()
+    rev("al abrir una vieja, su ventana de detalle trae el virtual igual que en la lista", vista["virtual"] == viejas["A"]["virtual"] and vista["id"] == id_vieja, str(vista.get("virtual")))
+    rev("al abrir una nueva, `virtual` es null", abrir(adm_b, otra, id_nueva).json()["virtual"] is None)
+    rev("pedir el filtro por virtual (aunque sea el de una vieja) NO filtra: ya no existe", F(virtual=viejas["A"]["virtual"]["id"])["total"] == 8 and F(virtual="expediente-virtual-no-existe")["total"] == 8)
+except Exception:  # noqa: BLE001 — una excepción que no es una aserción (p. ej. un resultado sin la forma que se esperaba) se anota como falla, y la prueba llega a su resumen
+    import traceback
+
+    traceback.print_exc()
+    rev("la prueba se cayó por una EXCEPCIÓN antes de terminar (no por una aserción): " + traceback.format_exc().strip().splitlines()[-1][:200], False)
 finally:
     shutil.rmtree(RAIZ, ignore_errors=True)
 

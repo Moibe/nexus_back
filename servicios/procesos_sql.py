@@ -3,9 +3,9 @@
 Hace exactamente lo mismo que el JSONL de `servicios/procesos.py` —mismas firmas, mismos errores, misma forma de salida—, y es ese módulo
 el que elige (SQL si hay `SQLSERVER_HOST`) y el que valida lo que llega antes de llamar aquí.
 
-La liga con el tipo de expediente virtual (`datos.tipoExpedienteVirtualId`) NO se guarda dentro de `dataJson`: va en su columna, con una
-llave foránea real a `virtualCaseTypes`, y se vuelve a poner en `datos` al leer. Si el tipo se borra, la base deja la liga en NULL
-(ON DELETE SET NULL) y el proceso se lee sin tipo.
+Moibe, 2026-11-05: se quitaron los expedientes virtuales y un proceso ya no se liga a ningún tipo. Este módulo dejó de leer y de escribir la
+columna `virtualCaseTypePublicId` (la `0005` la creó; la borra la migración `0012`): el proceso es su `dataJson`, sin nada más que dependa de otra
+tabla, y `datos.tipoExpedienteVirtualId` no se guarda ni se devuelve.
 """
 
 import json
@@ -13,12 +13,11 @@ import json
 from db import tablas
 from servicios.tipos_documentales_comun import momento
 
-_COLUMNAS = "publicId, tenant, revision, dataJson, virtualCaseTypePublicId, createdAt, createdBy, updatedAt, updatedBy"
+_COLUMNAS = "publicId, tenant, revision, dataJson, createdAt, createdBy, updatedAt, updatedBy"
 
 
 def _a_proceso(f: dict) -> dict:
     datos = json.loads(f["dataJson"])
-    datos["tipoExpedienteVirtualId"] = f["virtualCaseTypePublicId"]
     return {
         "id": f["publicId"],
         "tenant": f["tenant"],
@@ -53,17 +52,10 @@ def _exigir_nombre_libre(cur, tenant: str, proceso_id: str, nombre: str, exigir)
 
 def guardar(tenant: str, proceso_id: str, limpio: dict, revision: int, por: str) -> tuple[dict, dict | None]:
     """`limpio` ya viene validado. En una transacción, con el renglón bloqueado: dos guardados a la vez no se pisan (409)."""
-    from servicios.procesos import Conflicto, NoEncontrado, ProcesoInvalido, clave_de_nombre, exigir_nombre_libre
+    from servicios.procesos import Conflicto, NoEncontrado, clave_de_nombre, exigir_nombre_libre
 
-    tipo = limpio.get("tipoExpedienteVirtualId")
-    caja = {k: v for k, v in limpio.items() if k != "tipoExpedienteVirtualId"}
-    serializado = json.dumps(caja, ensure_ascii=False)
+    serializado = json.dumps(limpio, ensure_ascii=False)
     with tablas.transaccion() as cur:
-        if tipo is not None:
-            # Con candado compartido hasta el final: el tipo no puede borrarse entre la comprobación y la escritura.
-            cur.execute("SELECT 1 AS hay FROM nexus.virtualCaseTypes WITH (HOLDLOCK) WHERE publicId = ? AND tenant = ?", tipo, tenant)
-            if tablas.una(cur) is None:
-                raise ProcesoInvalido("Ese tipo de expediente virtual no existe en esta organización.")
         cur.execute(f"SELECT {_COLUMNAS} FROM nexus.processes WITH (UPDLOCK, HOLDLOCK) WHERE publicId = ?", proceso_id)
         fila = tablas.una(cur)
         actual = _a_proceso(fila) if fila else None
@@ -72,8 +64,8 @@ def guardar(tenant: str, proceso_id: str, limpio: dict, revision: int, por: str)
                 raise Conflicto(actual["revision"] if actual["tenant"] == tenant else None)
             _exigir_nombre_libre(cur, tenant, proceso_id, limpio["nombre"], exigir_nombre_libre)
             cur.execute(
-                "INSERT INTO nexus.processes (publicId, tenant, revision, dataJson, virtualCaseTypePublicId, createdBy) VALUES (?, ?, 1, ?, ?, ?)",
-                proceso_id, tenant, serializado, tipo, por,
+                "INSERT INTO nexus.processes (publicId, tenant, revision, dataJson, createdBy) VALUES (?, ?, 1, ?, ?)",
+                proceso_id, tenant, serializado, por,
             )
         else:
             if actual is None or actual["tenant"] != tenant:
@@ -83,9 +75,8 @@ def guardar(tenant: str, proceso_id: str, limpio: dict, revision: int, por: str)
             if clave_de_nombre(actual["datos"]["nombre"]) != clave_de_nombre(limpio["nombre"]):
                 _exigir_nombre_libre(cur, tenant, proceso_id, limpio["nombre"], exigir_nombre_libre)
             cur.execute(
-                "UPDATE nexus.processes SET dataJson = ?, virtualCaseTypePublicId = ?, revision = ?, updatedAt = sysutcdatetime(), updatedBy = ? "
-                "WHERE publicId = ? AND revision = ?",
-                serializado, tipo, revision + 1, por, proceso_id, revision,
+                "UPDATE nexus.processes SET dataJson = ?, revision = ?, updatedAt = sysutcdatetime(), updatedBy = ? WHERE publicId = ? AND revision = ?",
+                serializado, revision + 1, por, proceso_id, revision,
             )
         cur.execute(f"SELECT {_COLUMNAS} FROM nexus.processes WHERE publicId = ?", proceso_id)
         nuevo = _a_proceso(tablas.una(cur))
@@ -102,21 +93,3 @@ def eliminar(tenant: str, proceso_id: str) -> dict:
             raise NoEncontrado(proceso_id)
         cur.execute("DELETE FROM nexus.processes WHERE publicId = ? AND tenant = ?", proceso_id, tenant)
     return _a_proceso(fila)
-
-
-def de_tipo(tenant: str, tipo_id: str) -> list[dict]:
-    """Los procesos ligados a un tipo de expediente virtual, en el orden de su creación: `{id, nombre, activo, ejecutable}`. `ejecutable` (2026-11-03)
-    sale del dibujo: tiene su Resultado con una regla conectada (`procesos.resultado_conectado`)."""
-    from servicios import procesos
-
-    with tablas.lectura() as cur:
-        cur.execute(
-            "SELECT publicId, name, dataJson FROM nexus.processes WHERE tenant = ? AND virtualCaseTypePublicId = ? ORDER BY processId",
-            tenant, tipo_id,
-        )
-        filas = tablas.filas(cur)
-    salida = []
-    for f in filas:
-        datos = json.loads(f["dataJson"])
-        salida.append({"id": f["publicId"], "nombre": f["name"], "activo": datos.get("activo") is not False, "ejecutable": procesos.resultado_conectado(datos)})
-    return salida
