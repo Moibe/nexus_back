@@ -40,6 +40,15 @@ detalle del expediente lo muestra en `tipoDocumental`). Desde el 2026-11-05 clas
 `/ia/clasificar` con `documento`. Nada de eso puede tumbar la subida: sin clasificador, si Document AI falla o tarda, el archivo se sube igual, sin tipo,
 y la respuesta dice qué pasó.
 
+## La extracción al subir (Moibe, 2026-11-06)
+
+Justo después de clasificar, si el clasificador reconoció un tipo, se EXTRAEN los datos del archivo (`extraccion` en la respuesta) con el procesador de ese
+tipo y se guardan igual que desde `/ia/extraer` (`datos_extraidos.registrar_extraccion`): es lo que leen los procesos, que antes no encontraban nada en
+los archivos subidos directo a un expediente (solo el pipeline de las bandejas extraía; Moibe: «cuando corremos los archivos en las bandejas sí se
+extraen los datos, pero en expedientes no»). Mismas condiciones que el pipeline: el tipo está activo, tiene procesador y ya está calibrado. Cuesta una
+llamada más a Document AI por archivo reconocido. Tampoco puede tumbar la subida: si no se puede, el archivo queda subido con su tipo y `extraccion.estado`
+dice por qué (`sin_procesador`, `sin_calibrar`, `error`, `no_extraido`…). Los archivos subidos ANTES de este cambio no se extraen solos.
+
 ## Duplicados (Moibe, 2026-11-03; sobre el expediente entero desde el 2026-11-05)
 
 Dos o más documentos del mismo tipo documental en un expediente son un DUPLICADO: no se sabe cuál es «el INE», así que un proceso que usa ese tipo no
@@ -53,6 +62,7 @@ No renombra ni borra expedientes, no tiene estado ni folio, y un documento no se
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
@@ -63,7 +73,7 @@ from errores import SinClasificador
 from routers.archivos import guardar_subida
 from routers.bandeja import MIME_BANDEJA
 from routers.errores import almacen_no_disponible
-from servicios import aislamiento, auditoria, clasificadores, datos_extraidos, documentos, expedientes, ia
+from servicios import aislamiento, auditoria, clasificadores, datos_extraidos, documentos, expedientes, ia, tipos_documentales
 from servicios.almacen import ErrorAlmacen
 from servicios.subidas import normalizar_tipo
 
@@ -74,6 +84,8 @@ router = APIRouter()
 #: Cuánto se espera al clasificador al subir un archivo (segundos). Pasado ese tiempo el archivo ya está subido y se queda sin clasificar: subir
 #: nunca se cuelga esperando a Google (el BFF espera 130 s y Document AI suele contestar en pocos segundos).
 ESPERA_CLASIFICAR_AL_SUBIR = 60
+# Y lo que se espera a que EXTRAIGA (2026-11-06). Clasificar + extraer tienen que caber en el tiempo de espera del puente del front (130 s).
+ESPERA_EXTRAER_AL_SUBIR = 60
 
 _NO_EXISTE = "Ese expediente no existe."
 _DOCUMENTO_NO_EXISTE = "Ese documento no existe."
@@ -416,6 +428,63 @@ async def _clasificar_al_subir(actor: aislamiento.Actor, tenant: str, documento:
     return resultado("clasificado", {"id": anotado["tipoId"], "nombre": anotado["tipoNombre"]}, anotado["confianza"])
 
 
+async def _extraer_al_subir(actor: aislamiento.Actor, tenant: str, documento: dict, archivo: UploadFile, clasificacion: dict) -> dict:
+    """Extrae los datos del archivo recién subido, DESPUÉS de clasificarlo (Moibe, 2026-11-06: «cuando corremos los archivos en las bandejas sí se
+    extraen los datos, pero en expedientes no»). Es la MISMA extracción del pipeline, con las mismas condiciones: el clasificador reconoció un tipo y ese
+    tipo está activo, tiene su procesador y ya pasó la calibración (mandar documentos de producción a un extractor sin verificar es justo lo que esa
+    regla evita). La corrida y sus datos se guardan igual que desde `/ia/extraer` (`registrar_extraccion`), y es lo que luego leen los procesos.
+    Devuelve `extraccion`; NUNCA levanta: el archivo ya está subido y esto es una consecuencia, así que cualquier falla solo deja el documento sin datos
+    y se dice en `estado`: `extraido`, `no_reconocido` (Document AI no reconoció los campos: la corrida se guarda con esa marca), `sin_tipo` (no se
+    clasificó, así que no hay con qué extraer), `sin_procesador` o `sin_calibrar` (el tipo está mal configurado: lo que falta es trabajo de
+    configuración, no reintentar), `error` (Document AI falló: la corrida fallida queda anotada) o `no_extraido` (tardó demasiado o no se pudo guardar)."""
+    def resultado(estado: str, **mas) -> dict:
+        return {"estado": estado, **mas}
+
+    if clasificacion.get("estado") != "clasificado" or not (clasificacion.get("tipo") or {}).get("id"):
+        return resultado("sin_tipo")
+    tipo_id = clasificacion["tipo"]["id"]
+    try:
+        tipo = await run_in_threadpool(tipos_documentales.obtener, tenant, tipo_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("No se pudo leer el tipo documental %s para extraer al subir", tipo_id)
+        return resultado("no_extraido")
+    datos = (tipo or {}).get("datos") or {}
+    if not tipo or datos.get("estado") != "activo":
+        return resultado("sin_tipo")
+    procesador = str(datos.get("procesadorId") or "").strip()
+    if not procesador:
+        return resultado("sin_procesador")
+    if not datos.get("calibradoEn"):
+        return resultado("sin_calibrar")
+    version = str(datos.get("procesadorVersion") or "").strip()
+
+    iniciada = datetime.now(timezone.utc).replace(tzinfo=None)
+    try:
+        contenido = await run_in_threadpool(_releer, archivo)
+        extraido = await asyncio.wait_for(ia.extraer_con_procesador(procesador, contenido, documento["mime"], version), timeout=ESPERA_EXTRAER_AL_SUBIR)
+    except asyncio.TimeoutError:
+        logger.warning("La extracción tardó más de %s s con el documento %s: queda subido y sin datos", ESPERA_EXTRAER_AL_SUBIR, documento["id"])
+        return resultado("no_extraido")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Falló la extracción al subir el documento %s", documento["id"])
+        try:
+            await run_in_threadpool(
+                datos_extraidos.registrar_extraccion, tenant, documento["id"], tipo_id, procesador, version, iniciada, actor.guid, None, str(exc)[:500] or "Falló la extracción."
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo anotar la extracción fallida del documento %s", documento["id"])
+        return resultado("error")
+    try:
+        corrida = await run_in_threadpool(
+            datos_extraidos.registrar_extraccion, tenant, documento["id"], tipo_id, procesador, version, iniciada, actor.guid, extraido, None
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("No se pudo guardar la extracción del documento %s", documento["id"])
+        return resultado("no_extraido")
+    reconocido = not ((extraido or {}).get("_metadata") or {}).get("quality_alert")
+    return resultado("extraido" if reconocido else "no_reconocido", extraccionId=corrida)
+
+
 @router.post(
     "/{expediente_id}/documentos",
     status_code=status.HTTP_201_CREATED,
@@ -431,7 +500,10 @@ async def _clasificar_al_subir(actor: aislamiento.Actor, tenant: str, documento:
         "Además lo CLASIFICA (lo que cuestan sus dos primeras páginas en Document AI): `clasificacion` dice el `estado` (`clasificado`, "
         "`sin_tipo`, `sin_clasificador` o `no_clasificado`), el `tipo` y la `confianza` (0-100) si lo reconoció: esa clasificación se guarda y es lo "
         "que dice de qué tipo es el documento. Clasificar nunca tumba la subida: si no se puede, el archivo queda subido y sin tipo documental. "
-        "Devuelve `{agregado, documento, clasificacion}`."
+        "Si el clasificador reconoció un tipo activo, con procesador y ya calibrado, EXTRAE sus datos con ese procesador, igual que el pipeline de las "
+        "bandejas (lo que luego leen los procesos): `extraccion.estado` es `extraido`, `no_reconocido`, `sin_tipo`, `sin_procesador`, `sin_calibrar`, "
+        "`error` o `no_extraido` (y `extraccionId` si se guardó la corrida). Tampoco tumba la subida. "
+        "Devuelve `{agregado, documento, clasificacion, extraccion}`."
     ),
 )
 async def subir_documento(
@@ -447,7 +519,8 @@ async def subir_documento(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato no admitido. Se aceptan PDF, JPEG, PNG y TIFF.")
     documento = await run_in_threadpool(_recibir_en_expediente, actor, tenant, expediente_id, archivo, sha256, mime)
     clasificacion = await _clasificar_al_subir(actor, tenant, documento, archivo)
-    return {"agregado": True, "documento": documento, "clasificacion": clasificacion}
+    extraccion = await _extraer_al_subir(actor, tenant, documento, archivo, clasificacion)
+    return {"agregado": True, "documento": documento, "clasificacion": clasificacion, "extraccion": extraccion}
 
 
 @router.delete(

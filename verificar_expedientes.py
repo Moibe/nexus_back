@@ -550,8 +550,9 @@ try:
     # y la respuesta lo dice. El clasificador de verdad (con tipo y confianza, Document AI falseado) se prueba más abajo, en la sección 21 (solo con `--sql`).
     clasificacion = r.json().get("clasificacion") if r.status_code == 201 else None
     esperado = {"estado": "sin_clasificador" if SQL else "no_clasificado", "tipo": None, "confianza": None}
-    rev(f"la respuesta dice que no se clasificó (`{esperado['estado']}`) y trae solo lo del contrato: `{{agregado, documento, clasificacion}}`, sin virtuales",
-        clasificacion == esperado and sorted(r.json()) == ["agregado", "clasificacion", "documento"], str(sorted(r.json())))
+    rev(f"la respuesta dice que no se clasificó (`{esperado['estado']}`) y trae solo lo del contrato: `{{agregado, documento, clasificacion, extraccion}}`, sin virtuales",
+        clasificacion == esperado and sorted(r.json()) == ["agregado", "clasificacion", "documento", "extraccion"], str(sorted(r.json())))
+    rev("sin tipo reconocido no hay con qué extraer: `extraccion.estado` es `sin_tipo`", r.json().get("extraccion") == {"estado": "sin_tipo"}, str(r.json().get("extraccion")))
     rev("queda EN ese expediente y en ningún otro, en la misma llamada", ids_docs_de(a_admin, org_a, destino) == [nuevo.get("id")] and ids_docs_de(a_admin, org_a, vecino) == [])
     en_lista = [d for d in docs(a_admin, org_a).json()["documentos"] if d["id"] == nuevo.get("id")]
     rev("y es un documento de la organización como cualquier otro: sale en la lista de «Archivos procesados», con su expediente",
@@ -713,7 +714,7 @@ try:
             j = r.json() if r.status_code == 201 else {}
             rev("un archivo que el clasificador reconoce como INE con 92.5 %: 201 y `clasificacion` dice el estado, el tipo y la confianza",
                 r.status_code == 201 and j["clasificacion"] == {"estado": "clasificado", "tipo": {"id": td_ine, "nombre": "INE"}, "confianza": 92.5}, r.text[:300])
-            rev("la respuesta es solo `{agregado, documento, clasificacion}`: ya no trae `expedientesVirtuales`", sorted(j) == ["agregado", "clasificacion", "documento"], str(sorted(j)))
+            rev("la respuesta es solo `{agregado, documento, clasificacion, extraccion}`: ya no trae `expedientesVirtuales`", sorted(j) == ["agregado", "clasificacion", "documento", "extraccion"], str(sorted(j)))
             tipo_pia = tipo_de(pia, j["documento"]["id"])
             rev("el expediente ya enseña el documento CON su tipo documental (el que dijo el clasificador) y la confianza", tipo_pia is not None and tipo_pia["id"] == td_ine and tipo_pia["confianza"] == 92.5, str(tipo_pia))
             rev("al clasificador solo se le mandaron los bytes del archivo, una vez", LLAMADAS == [len(pdf(170))], str(LLAMADAS))
