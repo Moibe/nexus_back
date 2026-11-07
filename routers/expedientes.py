@@ -73,6 +73,7 @@ from starlette.concurrency import run_in_threadpool
 from config import SQLSERVER_HOST
 from errores import SinClasificador
 from routers.archivos import guardar_subida
+from routers import ia as ia_router
 from routers.bandeja import MIME_BANDEJA
 from routers.errores import almacen_no_disponible
 from servicios import aislamiento, auditoria, clasificadores, datos_extraidos, documentos, expedientes, ia, tipos_documentales
@@ -471,7 +472,7 @@ async def _extraer_al_subir(actor: aislamiento.Actor, tenant: str, documento: di
         logger.exception("Falló la extracción al subir el documento %s", documento["id"])
         try:
             await run_in_threadpool(
-                datos_extraidos.registrar_extraccion, tenant, documento["id"], tipo_id, procesador, version, iniciada, actor.guid, None, str(exc)[:500] or "Falló la extracción."
+                datos_extraidos.registrar_extraccion, tenant, documento["id"], tipo_id, procesador, version, iniciada, actor.guid, None, ia_router.mensaje_de_fallo(exc, "Falló la extracción.")
             )
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo anotar la extracción fallida del documento %s", documento["id"])

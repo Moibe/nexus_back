@@ -268,7 +268,7 @@ try:
     falla_google["si"] = False
     x = datos(adm, org, d1).json()
     rev("la respuesta es el error de siempre (502)", r.status_code == 502, r.status_code)
-    rev("la última corrida dice error con su motivo", x["extraccion"]["estado"] == "error" and "Document AI" in (x["extraccion"]["error"] or ""), x["extraccion"])
+    rev("la última corrida dice error con su motivo", x["extraccion"]["estado"] == "error" and "no está disponible" in (x["extraccion"]["error"] or "") and "Document AI" not in (x["extraccion"]["error"] or ""), x["extraccion"])
     rev("los campos vigentes siguen siendo los de antes", {c_["ruta"]: c_["valor"] for c_ in x["campos"]}.get("denominacion") == "ACME SAPI")
 
     titulo("7 · quality_alert se guarda como no_reconocido")

@@ -171,7 +171,7 @@ try:
     rev("y el texto técnico (id de proyecto) NO llega al usuario", "62740263137" not in r.text and "PATCH" not in r.text)
     falla[0] = DocumentAIError("Document AI respondió 503", status_code=503)
     r = c.post("/procesadores/activar", json=cuerpo, headers=LLAVE)
-    rev("un 5xx de Google: 502 «no se pudo contactar»", r.status_code == 502 and "No se pudo contactar a Document AI" in r.json()["detail"], r.text[:200])
+    rev("un 5xx de Google: 502 «no se pudo contactar»", r.status_code == 502 and "El servicio de procesamiento no respondió" in r.json()["detail"] and "Document AI" not in r.json()["detail"], r.text[:200])
     falla[0] = RuntimeError("el polling se agotó a los 90 s")
     r = c.post("/procesadores/activar", json=cuerpo, headers=LLAVE)
     rev("un fallo que no es HTTP (polling agotado): 502 genérico", r.status_code == 502 and "No se pudo completar la activación" in r.json()["detail"] and "polling" not in r.text, r.text[:200])
@@ -199,7 +199,7 @@ try:
     r = c.get("/procesadores/proc-1", params=DEMO, headers=LLAVE)
     rev("consultar con un 5xx: 502, no 500", r.status_code == 502, r.text[:160])
     r = c.delete("/procesadores/proc-1", params=DEMO, headers=LLAVE)
-    rev("borrar con un 4xx: 502 con SU frase (no la de «revisa los campos»)", r.status_code == 502 and "no permitió borrar" in r.json()["detail"] and "campos" not in r.json()["detail"], r.text[:200])
+    rev("borrar con un 4xx: 502 con SU frase (no la de «revisa los campos»)", r.status_code == 502 and "No se pudo borrar este procesador" in r.json()["detail"] and "campos" not in r.json()["detail"] and "Document AI" not in r.json()["detail"], r.text[:200])
     # Desde el 2026-10-26 el clasificador es de cada organización: pide `tenant` y la sesión de quien administra (aquí, el administrador
     # de plataforma en su espacio, que es el que pone `verificacion_comun`). `verificar_tipos_documentales.py` prueba el aislamiento.
     r = c.get("/procesadores/clasificador", params={"tenant": "demo"}, headers=LLAVE)

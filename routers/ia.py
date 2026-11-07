@@ -50,11 +50,11 @@ _POR_MOTIVO: dict[str, tuple[int, str]] = {
     ),
     "cuota": (
         status.HTTP_503_SERVICE_UNAVAILABLE,
-        "Se alcanzó el límite de páginas por minuto de Document AI. Espera un momento y vuelve a intentar.",
+        "Se alcanzó el límite de páginas por minuto. Espera un momento y vuelve a intentar.",
     ),
     "servicio": (
         status.HTTP_502_BAD_GATEWAY,
-        "Document AI no está disponible en este momento. Intenta de nuevo en unos minutos.",
+        "El procesamiento de documentos no está disponible en este momento. Intenta de nuevo en unos minutos.",
     ),
 }
 
@@ -126,9 +126,15 @@ def _fallar(exc: Exception, generico: str) -> HTTPException:
         # bien. Se dice así en vez de "falló", que sería afirmar de más.
         return HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail="Document AI tardó demasiado en responder. El documento puede ser muy grande.",
+            detail="Biblioratum tardó demasiado en responder. El documento puede ser muy grande.",
         )
     return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=generico)
+
+
+def mensaje_de_fallo(exc: Exception, generico: str) -> str:
+    """El texto para la persona de lo que tronó (el de `_fallar`), para quien lo GUARDA en vez de lanzarlo: jamás el texto crudo de la excepción, que trae
+    el nombre del proveedor y lo que contestó."""
+    return str(_fallar(exc, generico).detail)
 
 # `MIME_SOPORTADOS` se importa de `servicios.subidas` (ver el import de arriba):
 # la misma lista la exige `/archivos/`, y tenerla en dos lados garantizaba que un
@@ -248,7 +254,7 @@ async def extraer_generico(
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Falló la extracción con el procesador %s", procesador)
-        error = _fallar(exc, "No se pudo procesar el documento con Document AI.")
+        error = _fallar(exc, "No se pudo procesar el documento.")
         if actor is not None:
             await _guardar_extraccion(tenant, guardar, tipoDocumental.strip(), procesador, version.strip(), iniciada, actor.guid, None, str(error.detail))
         raise error from exc
@@ -331,7 +337,7 @@ async def clasificar(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         logger.exception("Falló la clasificación del documento")
-        raise _fallar(exc, "No se pudo clasificar el documento con Document AI.") from exc
+        raise _fallar(exc, "No se pudo clasificar el documento.") from exc
 
     if documento.strip():
         # Guardarla nunca cambia la respuesta: la clasificación ya se pagó y el Pipeline la necesita para seguir.

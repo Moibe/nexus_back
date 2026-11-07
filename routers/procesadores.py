@@ -106,7 +106,7 @@ def _mensaje_para(exc: DocumentAIError, *, mensaje_4xx: str) -> str:
     """
     if 400 <= exc.status_code < 500:
         return mensaje_4xx
-    return "No se pudo contactar a Document AI en este momento. Intenta de nuevo en unos minutos."
+    return "El servicio de procesamiento no respondió en este momento. Intenta de nuevo en unos minutos."
 
 
 _NO_EXISTE_PROCESADOR = "Ese procesador no existe en tu organización."
@@ -194,7 +194,7 @@ async def activar(tipo: TipoDocumentalEntrada, authorization: str | None = Heade
         mensaje = _mensaje_para(
             exc,
             mensaje_4xx=(
-                "Document AI rechazó la configuración de este modelo. Revisa "
+                "Biblioratum no aceptó la configuración de este modelo. Revisa "
                 "los nombres y tipos de los campos, y vuelve a intentar la "
                 "activación."
             ),
@@ -248,7 +248,7 @@ async def generar_campos(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=(
-                    "Document AI no pudo leer este documento para proponer campos. Revisa que esté completo, que no tenga "
+                    "Biblioratum no pudo leer este documento para proponer campos. Revisa que esté completo, que no tenga "
                     "contraseña y que no sea demasiado largo, o prueba con otro ejemplo."
                 ),
             ) from exc
@@ -257,7 +257,7 @@ async def generar_campos(
         logger.exception("Document AI no respondió a tiempo al generar campos")
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail="Document AI tardó demasiado en proponer los campos. Intenta de nuevo o prueba con un documento más corto.",
+            detail="Biblioratum tardó demasiado en proponer los campos. Intenta de nuevo o prueba con un documento más corto.",
         ) from exc
     except RuntimeError as exc:
         logger.exception("Falló la generación de campos a partir de un documento")
@@ -297,7 +297,7 @@ async def _sincronizar(tipos: list[dict], tenant: str) -> dict:
         mensaje = _mensaje_para(
             exc,
             mensaje_4xx=(
-                "Document AI rechazó la configuración del clasificador. Revisa "
+                "Biblioratum no aceptó la configuración del clasificador. Revisa "
                 "los tipos documentales activos y vuelve a intentar."
             ),
         )
@@ -520,7 +520,7 @@ async def eliminar(
         mensaje = _mensaje_para(
             exc,
             mensaje_4xx=(
-                "Document AI no permitió borrar este procesador en este "
+                "No se pudo borrar este procesador en este "
                 "momento. Intenta de nuevo; si el problema persiste, avisa "
                 "al equipo técnico."
             ),
