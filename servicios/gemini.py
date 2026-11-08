@@ -30,6 +30,7 @@ de proyecto) va al log y nunca a la respuesta:
 - 502 si Google falla, tarda más de `GEMINI_TIMEOUT` o devuelve una respuesta vacía o bloqueada.
 """
 
+import base64
 import logging
 import re
 
@@ -48,6 +49,12 @@ MAX_NOMBRE = 80
 MAX_DESCRIPCION = 700
 #: Los tokens que se le dejan al modelo para razonar Y contestar. Ver «Lo que hay que respetar» arriba: con pocos, la respuesta sale cortada.
 MAX_TOKENS_SALIDA = 1500
+
+#: «Sugerir descripción» con DOCUMENTOS de ejemplo (2026-11-07, Moibe: «va»): cuántos como máximo, de qué formatos (los que Gemini lee: PDF, JPG y PNG; el TIFF que sí
+#: acepta Document AI, no) y cuánto pueden pesar en total (van EN la petición, en base64, y la petición a Gemini tiene tope).
+MAX_DOCUMENTOS_DE_EJEMPLO = 3
+MIME_PARA_GEMINI = ("application/pdf", "image/jpeg", "image/png")
+MAX_BYTES_DOCUMENTOS = 18 * 1024 * 1024
 
 MENSAJE_NO_DISPONIBLE = "La sugerencia con IA no está disponible en este servidor. Escribe la descripción a mano y avisa al equipo técnico."
 MENSAJE_FALLO = "No se pudo generar la sugerencia. Intenta de nuevo o escribe la descripción a mano."
@@ -68,8 +75,9 @@ def _limpio(texto: str, tope: int) -> str:
     return " ".join(str(texto).replace("«", " ").replace("»", " ").split())[:tope].strip()
 
 
-def armar_prompt(nombre: str, otros: list[str]) -> str:
-    """El texto que se le manda al modelo. `otros` son los nombres de los demás tipos de la organización (ya sin el propio ni los archivados)."""
+def armar_prompt(nombre: str, otros: list[str], documentos: int = 0) -> str:
+    """El texto que se le manda al modelo. `otros` son los nombres de los demás tipos de la organización (ya sin el propio ni los archivados).
+    `documentos` es cuántos documentos de ejemplo van adjuntos a la petición (0 = solo el nombre)."""
     propio = _limpio(nombre, 200)
     vistos: list[str] = []
     # Sin repetidos y sin distinguir mayúsculas (la misma regla de los nombres únicos), y sin el propio nombre: no es «otro» de sí mismo.
@@ -87,10 +95,19 @@ def armar_prompt(nombre: str, otros: list[str]) -> str:
     ]
     if vistos:
         partes.append(f"Otros tipos que ya existen en la organización: {', '.join(vistos)}.")
+    if documentos > 0:
+        # Con documentos a la vista el modelo puede describir lo que de verdad traen, pero la descripción se GUARDA y se le muestra a todo el equipo: no debe copiar
+        # los datos de las personas de los ejemplos (nombres, números, fechas, domicilios). Se lo pide, y la pantalla pide revisarla.
+        partes.append(
+            f"Se adjunta{'n' if documentos > 1 else ''} {documentos} documento{'s' if documentos > 1 else ''} de ejemplo de este tipo: "
+            "descríbelo a partir de lo que ves en " + ("ellos" if documentos > 1 else "él") + " (qué documento es, quién lo emite, qué secciones o clases de dato trae) "
+            "y de lo que tienen en común. NUNCA copies datos concretos de las personas de los ejemplos (nombres, números de documento, fechas, domicilios, "
+            "firmas): di qué clase de dato hay, no cuál es."
+        )
     partes.append(
         "Di qué documento es y cómo distinguirlo de los otros (qué trae impreso, quién lo emite). Si es de un país en particular, dilo. "
         "Máximo 3 frases, en español, sin viñetas, sin encabezados y sin comillas. "
-        "No inventes datos que no sepas con seguridad: si el nombre no te dice con claridad de qué documento se trata, "
+        "No inventes datos que no sepas con seguridad: si el nombre " + ("y los documentos no te dicen" if documentos > 0 else "no te dice") + " con claridad de qué documento se trata, "
         "descríbelo en términos generales y no supongas detalles."
     )
     return " ".join(partes)
@@ -141,8 +158,11 @@ def _texto_de(respuesta: object) -> tuple[str, str]:
     return texto, str(c.get("finishReason", ""))
 
 
-async def sugerir_descripcion(nombre: str, otros: list[str]) -> dict:
-    """Propone la descripción de un tipo documental. Devuelve `{descripcion, modelo}` o levanta `ErrorSugerencia`."""
+async def sugerir_descripcion(nombre: str, otros: list[str], documentos: list[tuple[bytes, str]] | None = None) -> dict:
+    """Propone la descripción de un tipo documental. Devuelve `{descripcion, modelo}` o levanta `ErrorSugerencia`.
+
+    `documentos` son documentos de ejemplo `(bytes, mime)` que viajan EN la petición como `inlineData` (a lo más `MAX_DOCUMENTOS_DE_EJEMPLO`, de los formatos de
+    `MIME_PARA_GEMINI`; lo valida la ruta). No se guardan: salen a Google con esta llamada y se descartan."""
     if not DOCAI_PROJECT_ID:
         logger.warning("Sugerir descripción: falta DOCAI_PROJECT_ID en el .env; no se llama a Gemini.")
         raise ErrorSugerencia(MENSAJE_NO_DISPONIBLE, 503)
@@ -152,8 +172,10 @@ async def sugerir_descripcion(nombre: str, otros: list[str]) -> dict:
         logger.warning("Sugerir descripción: no se pudo obtener la credencial de Google: %s", exc)
         raise ErrorSugerencia(MENSAJE_NO_DISPONIBLE, 503) from exc
 
+    adjuntos = [{"inlineData": {"mimeType": mime, "data": base64.b64encode(contenido).decode("ascii")}} for contenido, mime in (documentos or [])]
     cuerpo = {
-        "contents": [{"role": "user", "parts": [{"text": armar_prompt(nombre, otros)}]}],
+        # Los documentos van ANTES del texto: así lo recomienda Gemini para entradas multimodales.
+        "contents": [{"role": "user", "parts": [*adjuntos, {"text": armar_prompt(nombre, otros, len(adjuntos))}]}],
         "generationConfig": {"maxOutputTokens": MAX_TOKENS_SALIDA, "temperature": 0.3},
     }
     cabeceras = {"Authorization": f"Bearer {token}", "x-goog-user-project": DOCAI_PROJECT_ID}
