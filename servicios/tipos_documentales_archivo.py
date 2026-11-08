@@ -21,6 +21,7 @@ from servicios.tipos_documentales_comun import (
     activos,
     ahora,
     dueños_de_procesadores,
+    exigir_nombre_libre,
     publico,
     validar,
     validar_revision,
@@ -88,6 +89,13 @@ def guardar(tenant: str, tipo_id: str, datos: object, revision: int, por: str) -
             if actual["revision"] != revision:
                 raise Conflicto(actual["revision"])
             nueva = revision + 1
+        # El nombre es único en la organización (los archivados no cuentan); ver `exigir_nombre_libre`. Con el candado puesto: dos
+        # guardados a la vez con el mismo nombre no pasan los dos.
+        exigir_nombre_libre(
+            limpio,
+            actual["datos"] if actual else None,
+            [t["datos"] for i, t in tipos.items() if t["tenant"] == tenant and i != tipo_id],
+        )
         registro.agregar(
             ARCHIVO,
             {"op": "guardar", "id": tipo_id, "tenant": tenant, "revision": nueva, "datos": limpio, "por": por, "en": ahora()},

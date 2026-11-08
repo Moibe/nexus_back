@@ -1,11 +1,22 @@
-"""Registro de los EXPEDIENTES de cada organización — registro PROVISIONAL, en JSON y con forma de tabla.
+"""Registro de los EXPEDIENTES de cada organización.
 
 ## Qué es un expediente
 
-Un expediente es un conjunto de documentos (el motor de reglas corre un proceso sobre uno: `servicios/procesos.py`) y es una INSTANCIA de un
-tipo de expediente (`servicios/tipos_expediente.py`): el tipo «expediente médico» es la clase y el expediente de UN paciente es la carpeta
-con SUS documentos. Todo expediente nace de un tipo de su misma organización. Además del tipo solo tiene un `nombre`; estado, folio o una
-referencia del cliente se agregan cuando haya una necesidad real, no antes.
+Desde el 2026-10-29 (decisión de producto de Moibe) un expediente es solo un RECEPTÁCULO de documentos: la carpeta de un cliente o de un caso,
+donde cae todo lo suyo. NO tiene tipo (antes era instancia de un tipo de expediente). Un expediente solo tiene un `nombre`; estado, folio o
+una referencia del cliente se agregan cuando haya una necesidad real, no antes.
+
+**Sin expedientes virtuales (Moibe, 2026-11-05: «voy a quitar los expedientes virtuales, ahora podremos meter el expediente completo a la ejecución
+de un proceso»).** Entre el 2026-10-29 y ese día un expediente podía tener EXPEDIENTES VIRTUALES (subconjuntos de sus documentos, instancias de un tipo de
+expediente virtual) para elegir cuáles documentos alimentaban a un proceso. Se quitaron: un proceso corre sobre el expediente COMPLETO
+(`servicios/ejecuciones.py`) y los tipos documentales que dibuja en su lienzo son la declaración de qué documentos necesita. Lo único que sobrevive
+de aquello es la marca de duplicados (ver abajo), ahora calculada sobre el expediente entero.
+
+**Sin grupos (Moibe, 2026-11-06: «en aras de la simplicidad por el momento también quitaremos grupos, léase que los expedientes no se agruparán en
+Grupos y no se requiere el menú»).** Entre el 2026-11-03 y ese día un expediente vivía en un GRUPO (áreas, departamentos, trimestres… cada organización
+lo usaba como quería; migración `0010`, `servicios/grupos.py`). Se quitaron: el expediente ya no tiene `grupo` (ni en la lista, ni en el detalle, ni al
+crearlo), `grupoId` ya no se pide al crear (si un cliente viejo todavía lo manda, se IGNORA) y las rutas `/grupos` y `PUT /expedientes/{id}/grupo` no
+existen. La migración `0013` borra la tabla de grupos y la columna del expediente, sin vuelta atrás.
 
 ## Documentos y expedientes: muchos a muchos
 
@@ -26,18 +37,41 @@ caracteres. Dos expedientes pueden llamarse igual: un mismo cliente puede tener 
 `totalDocumentos` (cuántos tiene) y `tamanoBytes` (cuánto pesan, la suma de sus documentos) no se guardan: salen de doblar el registro y
 de leer los documentos cada vez. Un documento que viaja de un expediente a otro, o sale, no obliga a reescribir nada.
 
+## Duplicados (Moibe, 2026-11-03; sobre el expediente entero desde el 2026-11-05)
+
+Si un expediente trae DOS O MÁS documentos del mismo tipo documental, no se sabe cuál es «el INE»: un proceso que usa ese tipo NO corre sobre él
+(`servicios/ejecuciones.py`) y los documentos quedan marcados. Moibe, 2026-11-05: se MANTIENE, ahora sobre todo el expediente. La marca es solo
+informativa y se calcula al leer, nunca se guarda (sacar uno de los dos la quita sola); `duplicados` es la función pura que la calcula y
+`routers/expedientes.py` la usa para que el detalle traiga `duplicado` en cada documento y `duplicados` en el expediente.
+
 ## Cómo se guarda
+
+Desde el 2026-10-29, donde hay base, en `nexus.cases` y la pertenencia en `nexus.caseDocuments` (migraciones `0003` y `0004`, ver
+`servicios/expedientes_sql.py`). Este módulo valida igual en los dos casos y solo cambia dónde se escribe; se elige por
+`SQLSERVER_HOST` en cada llamada. Lo de abajo es el almacén, lo que corre donde no hay base (la laptop, las pruebas offline):
 
 Un archivo de solo agregar por organización, `expedientes-{tenant}.jsonl` (ver `servicios/registro.py`), con tres eventos: `crear`,
 `agregar` y `quitar`. El estado vigente se arma doblando el archivo de principio a fin. Los ids son de esa organización: uno ajeno no
-existe en su archivo y se contesta como un id que no existe, sin nombrar de quién es.
+existe en su archivo y se contesta como un id que no existe, sin nombrar de quién es. Los `crear` de antes del 2026-10-29 traen un `tipo`
+que ya no se lee.
 """
 
 import re
 import uuid
 from datetime import datetime, timezone
 
-from servicios import almacen, documentos, registro, tipos_expediente
+from config import SQLSERVER_HOST
+from servicios import almacen, documentos, registro
+
+
+def _sql():
+    """El módulo de SQL si el `.env` dice que hay base; `None` si no. Se importa tarde: sin base, `pyodbc` ni se carga."""
+    if not SQLSERVER_HOST:
+        return None
+    from servicios import expedientes_sql
+
+    return expedientes_sql
+
 
 MAX_NOMBRE = 200
 #: Tope de documentos por expediente: un expediente normal tiene unas decenas; esto es para que un cliente descontrolado no lo infle.
@@ -52,10 +86,6 @@ class ExpedienteInvalido(ValueError):
 
 class NoEncontrado(LookupError):
     """No hay tal expediente EN ESA organización (o no existe: no se distingue)."""
-
-
-class TipoNoEncontrado(LookupError):
-    """No hay tal tipo de expediente EN ESA organización (o no existe: no se distingue)."""
 
 
 class DocumentoNoEncontrado(LookupError):
@@ -87,7 +117,7 @@ def _doblar(tenant: str) -> dict[str, dict]:
     for e in registro.eventos(_nombre(tenant)):
         op = e.get("op")
         if op == "crear" and isinstance(e.get("id"), str) and isinstance(e.get("nombre"), str):
-            expedientes[e["id"]] = {"id": e["id"], "nombre": e["nombre"], "tipo": e.get("tipo"), "creadoPor": e.get("por"), "creadoEn": e.get("en"), "documentos": []}
+            expedientes[e["id"]] = {"id": e["id"], "nombre": e["nombre"], "creadoPor": e.get("por"), "creadoEn": e.get("en"), "documentos": []}
         elif op in ("agregar", "quitar"):
             exp, doc = expedientes.get(e.get("expediente")), e.get("documento")
             if exp is None or not isinstance(doc, str):
@@ -99,28 +129,14 @@ def _doblar(tenant: str) -> dict[str, dict]:
     return expedientes
 
 
-def _tipos(tenant: str) -> dict[str, dict]:
-    return {t["id"]: t for t in tipos_expediente.listar(tenant)}
-
-
-def _tipo_de(e: dict, tipos: dict[str, dict]) -> dict | None:
-    """El tipo del expediente como lo ve quien consulta: su `id` y su `nombre`. `None` si el expediente no lleva tipo."""
-    tipo_id = e.get("tipo")
-    if tipo_id is None:
-        return None
-    tipo = tipos.get(tipo_id)
-    return {"id": tipo_id, "nombre": tipo["nombre"] if tipo else None}
-
-
 def _documentos_por_id(tenant: str) -> dict[str, dict]:
     return {d["id"]: d for d in documentos.listar(tenant)}
 
 
-def _resumen(e: dict, tipos: dict[str, dict], por_id: dict[str, dict]) -> dict:
+def _resumen(e: dict, por_id: dict[str, dict]) -> dict:
     return {
         "id": e["id"],
         "nombre": e["nombre"],
-        "tipo": _tipo_de(e, tipos),
         "creadoPor": e["creadoPor"],
         "creadoEn": e["creadoEn"],
         "totalDocumentos": len(e["documentos"]),
@@ -129,52 +145,59 @@ def _resumen(e: dict, tipos: dict[str, dict], por_id: dict[str, dict]) -> dict:
     }
 
 
-def _detalle(e: dict, tipos: dict[str, dict], por_id: dict[str, dict]) -> dict:
-    return {**_resumen(e, tipos, por_id), "documentos": [por_id[i] for i in e["documentos"] if i in por_id]}
+def _detalle(e: dict, por_id: dict[str, dict]) -> dict:
+    return {**_resumen(e, por_id), "documentos": [por_id[i] for i in e["documentos"] if i in por_id]}
 
 
-def crear(tenant: str, nombre: object, por: str, tipo_id: object) -> dict:
-    """Crea un expediente vacío DE ESE TIPO y lo devuelve. `ExpedienteInvalido` si el nombre no sirve y `TipoNoEncontrado` si el tipo no es de
-    esa organización (o no existe)."""
+def duplicados(documentos: list[dict]) -> list[dict]:
+    """Los tipos documentales que tienen DOS O MÁS documentos entre `documentos` (cada uno con su `id`, su `nombreOriginal` y su `tipoDocumental`,
+    el de su última extracción o, si no se ha extraído, el de su última clasificación; uno sin tipo no cuenta). Moibe, 2026-11-03: con dos INE no se
+    sabe cuál es «el INE», así que un proceso que lo usa NO corre sobre el expediente y los documentos quedan marcados; el 2026-11-05 se mantuvo, ahora
+    sobre el expediente entero (ya no hay virtuales que lo acoten).
+
+    Devuelve `[{"tipoId", "tipoNombre", "documentos": [{"id", "nombre"}]}]` en el orden en que aparece el primer documento de cada tipo, con los
+    documentos en el orden en que vienen. Es una función pura: no guarda nada, se calcula al leer, así que sacar uno de los dos quita la marca sola."""
+    por_tipo: dict[str, dict] = {}
+    for d in documentos:
+        tipo = d.get("tipoDocumental") or {}
+        if not tipo.get("id"):
+            continue
+        grupo = por_tipo.setdefault(tipo["id"], {"tipoId": tipo["id"], "tipoNombre": tipo.get("nombre"), "documentos": []})
+        grupo["documentos"].append({"id": d["id"], "nombre": d.get("nombreOriginal")})
+    return [g for g in por_tipo.values() if len(g["documentos"]) >= 2]
+
+
+def crear(tenant: str, nombre: object, por: str) -> dict:
+    """Crea un expediente vacío y lo devuelve. `ExpedienteInvalido` si el nombre no sirve."""
     limpio = _limpiar_nombre(nombre)
+    if sql := _sql():
+        return sql.expedientes_crear(almacen._validar_tenant(tenant), limpio, por)
     expediente_id = f"expediente-{uuid.uuid4().hex}"
     en = _ahora()
     with registro.candado:
-        tipo = tipos_expediente.obtener(tenant, tipo_id)
-        if tipo is None:
-            raise TipoNoEncontrado(tipo_id)
-        registro.agregar(_nombre(tenant), {"op": "crear", "id": expediente_id, "tenant": tenant, "nombre": limpio, "tipo": tipo["id"], "por": por, "en": en})
-    return {"id": expediente_id, "nombre": limpio, "tipo": {"id": tipo["id"], "nombre": tipo["nombre"]}, "creadoPor": por, "creadoEn": en, "totalDocumentos": 0, "tamanoBytes": 0}
+        registro.agregar(_nombre(tenant), {"op": "crear", "id": expediente_id, "tenant": tenant, "nombre": limpio, "por": por, "en": en})
+    return {"id": expediente_id, "nombre": limpio, "creadoPor": por, "creadoEn": en, "totalDocumentos": 0, "tamanoBytes": 0}
 
 
-def listar(tenant: str, tipo_id: str | None = None) -> list[dict]:
-    """Los expedientes de UNA organización, en el orden de su creación, cada uno con su tipo, cuántos documentos tiene y cuánto pesan en
-    total. Con `tipo_id`, solo los de ese tipo (un tipo que no existe no tiene ninguno)."""
+def listar(tenant: str) -> list[dict]:
+    """Los expedientes de UNA organización, en el orden de su creación, cada uno con cuántos documentos tiene y cuánto pesan en total."""
+    if sql := _sql():
+        return sql.expedientes_listar(almacen._validar_tenant(tenant))
     with registro.candado:
         expedientes = _doblar(tenant)
-        tipos = _tipos(tenant)
         por_id = _documentos_por_id(tenant)
-    return [_resumen(e, tipos, por_id) for e in expedientes.values() if tipo_id is None or e["tipo"] == tipo_id]
-
-
-def contar_por_tipo(tenant: str) -> dict[str, int]:
-    """Cuántos expedientes tiene cada tipo de esa organización: `{tipo_id: n}` (los tipos sin expedientes no aparecen)."""
-    with registro.candado:
-        expedientes = _doblar(tenant)
-    cuenta: dict[str, int] = {}
-    for e in expedientes.values():
-        if e["tipo"]:
-            cuenta[e["tipo"]] = cuenta.get(e["tipo"], 0) + 1
-    return cuenta
+    return [_resumen(e, por_id) for e in expedientes.values()]
 
 
 def obtener(tenant: str, expediente_id: str) -> dict | None:
     """El expediente con sus documentos completos (en el orden en que se agregaron), o `None` si no es de esa organización."""
     if not isinstance(expediente_id, str) or not _RE_ID.match(expediente_id):
         return None
+    if sql := _sql():
+        return sql.expedientes_obtener(almacen._validar_tenant(tenant), expediente_id)
     with registro.candado:
         e = _doblar(tenant).get(expediente_id)
-        return _detalle(e, _tipos(tenant), _documentos_por_id(tenant)) if e else None
+        return _detalle(e, _documentos_por_id(tenant)) if e else None
 
 
 def agregar_documento(tenant: str, expediente_id: str, documento_id: str, por: str) -> bool:
@@ -182,6 +205,12 @@ def agregar_documento(tenant: str, expediente_id: str, documento_id: str, por: s
 
     `NoEncontrado` si el expediente no es de esa organización, `DocumentoNoEncontrado` si el documento no lo es, y
     `ExpedienteInvalido` si el expediente ya tiene el máximo."""
+    if sql := _sql():
+        if not isinstance(expediente_id, str) or not _RE_ID.match(expediente_id):
+            raise NoEncontrado(expediente_id)
+        if not isinstance(documento_id, str):
+            raise DocumentoNoEncontrado(documento_id)
+        return sql.expedientes_agregar_documento(almacen._validar_tenant(tenant), expediente_id, documento_id, por, MAX_DOCUMENTOS)
     with registro.candado:
         e = _doblar(tenant).get(expediente_id) if isinstance(expediente_id, str) and _RE_ID.match(expediente_id) else None
         if e is None:
@@ -200,6 +229,12 @@ def quitar_documento(tenant: str, expediente_id: str, documento_id: str, por: st
     """Saca un documento de un expediente (el documento no se borra: si era su único expediente, vuelve al void).
 
     `NoEncontrado` si el expediente no es de esa organización; `DocumentoNoEncontrado` si el documento no estaba en él."""
+    if sql := _sql():
+        if not isinstance(expediente_id, str) or not _RE_ID.match(expediente_id):
+            raise NoEncontrado(expediente_id)
+        if not isinstance(documento_id, str):
+            raise DocumentoNoEncontrado(documento_id)
+        return sql.expedientes_quitar_documento(almacen._validar_tenant(tenant), expediente_id, documento_id)
     with registro.candado:
         e = _doblar(tenant).get(expediente_id) if isinstance(expediente_id, str) and _RE_ID.match(expediente_id) else None
         if e is None:
@@ -213,6 +248,8 @@ def listar_documentos(tenant: str, sin_expediente: bool | None = None) -> list[d
     """Los documentos de UNA organización, del más viejo al más nuevo, cada uno con los expedientes en que está (`id` y `nombre`).
 
     `sin_expediente=True` deja solo el void (los que no están en ninguno); `False`, los que están en al menos uno; `None`, todos."""
+    if sql := _sql():
+        return sql.expedientes_listar_documentos(almacen._validar_tenant(tenant), sin_expediente)
     with registro.candado:
         expedientes = _doblar(tenant)
         todos = documentos.listar(tenant)

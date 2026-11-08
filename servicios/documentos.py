@@ -20,15 +20,28 @@ contenido, así que no se duplica disco.
 
 ## Cómo se guarda
 
-Un archivo de solo agregar por organización, `documentos-{tenant}.jsonl` (ver `servicios/registro.py`), con un solo tipo de evento,
-`nacer`. Un documento no se edita ni se borra todavía: cuando haga falta (estado, descarte) serán eventos nuevos.
+Desde el 2026-10-29, donde hay base (dev, staging, producción) en la tabla `nexus.documents` (migración `0003`, ver
+`servicios/expedientes_sql.py`). Donde no la hay (la laptop, las pruebas offline), en el almacén: un archivo de solo agregar por
+organización, `documentos-{tenant}.jsonl` (ver `servicios/registro.py`), con un solo tipo de evento, `nacer`. Se elige por
+`SQLSERVER_HOST` en cada llamada, como en `servicios/tipos_documentales.py`; los dos NO se sincronizan. Un documento no se edita ni
+se borra todavía: cuando haga falta (estado, descarte) serán columnas o eventos nuevos.
 """
 
 import re
 import uuid
 from datetime import datetime, timezone
 
+from config import SQLSERVER_HOST
 from servicios import almacen, registro
+
+
+def _sql():
+    """El módulo de SQL si el `.env` dice que hay base; `None` si no. Se importa tarde: sin base, `pyodbc` ni se carga."""
+    if not SQLSERVER_HOST:
+        return None
+    from servicios import expedientes_sql
+
+    return expedientes_sql
 
 #: Por dónde puede entrar un documento. Es el mismo conjunto que `bandeja.CANALES`.
 CANALES = frozenset({"API", "MANUAL"})
@@ -53,6 +66,9 @@ def nacer(tenant: str, guardado: dict, mime: str, nombre_original: str, canal: s
     documento apuntando a un archivo que no existe. Levanta `ErrorAlmacen` si no pudo escribirse."""
     if canal not in CANALES:
         raise ValueError(f"Canal de ingesta inválido: {canal!r}")
+    almacen._validar_tenant(tenant)
+    if sql := _sql():
+        return sql.documentos_nacer(tenant, guardado, mime, nombre_original, canal, llave_id)
     evento = {
         "op": "nacer",
         "id": f"documento-{uuid.uuid4().hex}",
@@ -72,6 +88,8 @@ def nacer(tenant: str, guardado: dict, mime: str, nombre_original: str, canal: s
 
 def listar(tenant: str) -> list[dict]:
     """Los documentos de UNA organización, del más viejo al más nuevo."""
+    if sql := _sql():
+        return sql.documentos_listar(almacen._validar_tenant(tenant))
     return [_publico(e) for e in registro.eventos(_nombre(tenant)) if e.get("op") == "nacer" and isinstance(e.get("id"), str)]
 
 
@@ -79,6 +97,8 @@ def obtener(tenant: str, documento_id: str) -> dict | None:
     """El documento de esa organización, o `None` si no existe (o es de otra: no se distingue)."""
     if not isinstance(documento_id, str) or not _RE_ID.match(documento_id):
         return None
+    if sql := _sql():
+        return sql.documentos_obtener(almacen._validar_tenant(tenant), documento_id)
     for d in listar(tenant):
         if d["id"] == documento_id:
             return d

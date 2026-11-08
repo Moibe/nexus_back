@@ -23,6 +23,7 @@ from config import (
     avisos_de_produccion,
 )
 from logging_config import configurar_logging
+from servicios import almacen as almacen_servicio
 
 # Antes de importar los routers, para que cualquier log que ocurra durante los
 # imports (por ejemplo el aviso de que falta el driver ODBC) ya salga con formato.
@@ -280,9 +281,19 @@ def health():
     # variable está mal puesta y eso no se publica en un puerto que alcanza
     # cualquiera en la red de CSI. Si no es 0, el detalle está en el log:
     #   pm2 logs nexus-back-api --lines 40
+    #
+    # `almacen_disponible` SÍ habla del NAS: si el centinela `.nexus-almacen` no está
+    # (montaje caído, ruta sin configurar), `status` deja de ser "ok". El 21-oct el
+    # NAS no montó tras un reinicio, el back dio 503 a todo y este endpoint seguía
+    # diciendo "ok". Es una comprobación barata (un `stat`), no escribe nada.
+    # El código HTTP se queda en 200 A PROPÓSITO: Nexus Monitor lee `environment` de
+    # aquí y descarta cualquier respuesta que no sea 2xx, así que un 503 lo dejaría
+    # sin poder decir de qué ambiente habla justo cuando más falta hace.
+    almacen = almacen_servicio.raiz_montada()
     return {
-        "status": "ok",
+        "status": "ok" if almacen else "almacen_no_disponible",
         "environment": ENVIRONMENT,
+        "almacen_disponible": almacen,
         "documentos_disponible": DOCUMENTOS_DISPONIBLE,
         "avisos_configuracion": len(AVISOS_CONFIGURACION),
     }
@@ -426,13 +437,15 @@ app.include_router(
     dependencies=[Depends(exigir_llave)],
 )
 
-# Los tipos de expediente de cada organización («expediente médico», «expediente de un choque»): la clase de la que salen los expedientes.
-from routers.tipos_expediente import router as tipos_expediente_router  # noqa: E402
+# Las ejecuciones: correr un proceso sobre un EXPEDIENTE completo y su historial inmutable (migración 0009; la 0011 quitó el virtual: Moibe,
+# 2026-11-05, «voy a quitar los expedientes virtuales»). El back prepara los datos reales y guarda lo que salió; las reglas las corre el servidor
+# del front con la misma lógica del lienzo. Llave de servicio Y JWT (HU11).
+from routers.ejecuciones import router as ejecuciones_router  # noqa: E402
 
 app.include_router(
-    tipos_expediente_router,
-    prefix="/tipos-expediente",
-    tags=["Tipos de expediente"],
+    ejecuciones_router,
+    prefix="/ejecuciones",
+    tags=["Ejecuciones"],
     dependencies=[Depends(exigir_llave)],
 )
 
@@ -456,6 +469,17 @@ app.include_router(
     admins_plataforma_router,
     prefix="/admins-plataforma",
     tags=["Administradores de plataforma"],
+    dependencies=[Depends(exigir_llave)],
+)
+
+# Qué procesadores de Document AI tienen dueño en este ambiente. Lo usa Nexus Monitor para limpiar huérfanos juntando lo de los
+# tres ambientes (el proyecto de Google es uno solo). Solo lectura y solo llave de servicio, como admins-plataforma.
+from routers.duenos_procesadores import router as duenos_procesadores_router  # noqa: E402
+
+app.include_router(
+    duenos_procesadores_router,
+    prefix="/duenos-procesadores",
+    tags=["Procesadores"],
     dependencies=[Depends(exigir_llave)],
 )
 
@@ -617,6 +641,22 @@ def calentar_uso_de_llaves() -> None:
         uso_llaves.calentar()
     except Exception:  # noqa: BLE001
         logger.warning("No se pudo cargar el índice de uso de llaves al arrancar; se intentará al usarse.")
+
+
+@app.on_event("startup")
+def importar_registros_json() -> None:
+    """Migraciones `0006` y `0008`: importa UNA vez a SQL lo que traían sus JSONL —las organizaciones, los clasificadores, la bandeja y la
+    auditoría; los enlaces de un solo uso, las llaves de cliente, su uso, los webhooks y sus entregas— (`servicios/importacion_json.py`). Se hace
+    al arrancar para que ninguna petición escriba en una tabla con llave foránea a organizaciones antes de que existan; si falla (la base o el NAS
+    no responden), no tumba la app: se reintenta al usar cada uno."""
+    if not SQLSERVER_HOST:
+        return
+    try:
+        from servicios import importacion_json
+
+        importacion_json.asegurar_todo()
+    except Exception:  # noqa: BLE001
+        logger.warning("No se pudieron importar los registros JSON al arrancar; se intentará al usarse.", exc_info=True)
 
 
 @app.on_event("startup")

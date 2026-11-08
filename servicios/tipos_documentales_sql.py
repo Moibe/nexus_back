@@ -28,6 +28,8 @@ from servicios.tipos_documentales_comun import (
     NoEncontrado,
     activos,
     dueños_de_procesadores,
+    entra_a_un_nombre,
+    exigir_nombre_libre,
     momento,
     publico,
     validar,
@@ -69,6 +71,20 @@ def obtener(tenant: str, tipo_id: str) -> dict | None:
         return publico(_a_tipo(f)) if f else None
 
 
+def _exigir_nombre_libre(cur, tenant: str, tipo_id: str, limpio: dict, actual: dict | None) -> None:
+    """El nombre es único en la organización (los archivados no cuentan; ver `exigir_nombre_libre`).
+
+    Solo lee los demás tipos cuando el guardado ENTRA a un nombre (crear, renombrar, desarchivar): la mayoría de los guardados no
+    tocan el nombre y así no leen ni bloquean nada más. Cuando sí, los lee con candado hasta el final de la transacción: dos
+    guardados a la vez con el mismo nombre no pasan los dos. Se compara en Python, con la misma regla que el JSONL.
+    """
+    if not entra_a_un_nombre(limpio, actual["datos"] if actual else None):
+        return
+    cur.execute("SELECT name, status FROM nexus.documentTypes WITH (UPDLOCK, HOLDLOCK) WHERE tenant = ? AND publicId <> ?", tenant, tipo_id)
+    otros = [{"nombre": f["name"], "estado": f["status"]} for f in tablas.filas(cur)]
+    exigir_nombre_libre(limpio, actual["datos"] if actual else None, otros)
+
+
 def guardar(tenant: str, tipo_id: str, datos: object, revision: int, por: str) -> tuple[dict, dict | None]:
     """Crea (`revision == 0`) o actualiza un tipo. Devuelve `(como quedó, el ANTERIOR o None)`.
 
@@ -87,6 +103,7 @@ def guardar(tenant: str, tipo_id: str, datos: object, revision: int, por: str) -
             if actual is not None:
                 # Repetido en esta organización: se dice cuál es la vigente. En OTRA: no se nombra de quién es.
                 raise Conflicto(actual["revision"] if actual["tenant"] == tenant else None)
+            _exigir_nombre_libre(cur, tenant, tipo_id, limpio, None)
             cur.execute(
                 "INSERT INTO nexus.documentTypes (publicId, tenant, revision, dataJson, createdBy) VALUES (?, ?, 1, ?, ?)",
                 tipo_id,
@@ -99,6 +116,7 @@ def guardar(tenant: str, tipo_id: str, datos: object, revision: int, por: str) -
                 raise NoEncontrado(tipo_id)
             if actual["revision"] != revision:
                 raise Conflicto(actual["revision"])
+            _exigir_nombre_libre(cur, tenant, tipo_id, limpio, actual)
             cur.execute(
                 "UPDATE nexus.documentTypes SET dataJson = ?, revision = ?, updatedAt = sysutcdatetime(), updatedBy = ? "
                 "WHERE publicId = ? AND revision = ?",

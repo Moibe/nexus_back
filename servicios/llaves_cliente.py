@@ -18,6 +18,13 @@ Un solo archivo para todos los tenants, y no uno por tenant como la bandeja: la
 verificación busca la llave por su identificador ANTES de saber de qué tenant
 es — el tenant sale justamente de la llave.
 
+## Desde el 2026-10-30: en SQL donde hay base
+
+Migración `0008`: donde hay base, las llaves viven en `nexus.apiKeys` (una fila por llave; revocarla es su columna `revokedAt`), importadas una
+vez desde `llaves.jsonl` (`servicios/importacion_json.py`). Este módulo elige por `SQLSERVER_HOST` en cada llamada; el JSONL es lo que corre
+donde no hay base. Cada ambiente tiene SUS llaves: una emitida en uno ya no vale en los otros. `documents.keyId` y `inboxEntries.keyId` ya
+son llaves foráneas a ellas.
+
 ## El estado no se guarda, se calcula
 
 "Expirada" sale de comparar `expiraEn` contra el reloj; lo único que se
@@ -27,9 +34,19 @@ registra es la revocación, que es un hecho. Misma regla que en el front.
 from datetime import datetime, timedelta, timezone
 
 import seguridad_llaves
+from config import SQLSERVER_HOST
 from servicios import almacen, registro
 
 ARCHIVO = "llaves.jsonl"
+
+
+def _sql():
+    """El módulo de SQL si el `.env` dice que hay base; `None` si no. Se importa tarde: sin base, `pyodbc` ni se carga."""
+    if not SQLSERVER_HOST:
+        return None
+    from servicios import integraciones_sql
+
+    return integraciones_sql
 
 # Las cuatro opciones del desplegable del front. No hay "sin expiración".
 DIAS_PERMITIDOS = {1, 7, 30, 90}
@@ -100,6 +117,20 @@ def emitir(tenant: str, nombre: str, descripcion: str, dias: int) -> tuple[str, 
     if dias not in DIAS_PERMITIDOS:
         raise ValueError("La expiración tiene que ser de 1, 7, 30 o 90 días.")
 
+    if sql := _sql():
+        creada = _ahora()
+        expira = creada + timedelta(days=dias)
+        identificador, secret = sql.llaves_emitir(tenant, nombre, descripcion, seguridad_llaves.hash_de, creada, expira, seguridad_llaves.generar)
+        evento = {
+            "id": identificador,
+            "tenant": tenant,
+            "nombre": nombre,
+            "descripcion": descripcion,
+            "creadaEn": creada.isoformat(timespec="seconds"),
+            "expiraEn": expira.isoformat(timespec="seconds"),
+        }
+        return secret, _publica(evento, None)
+
     # Sortear el id y escribir la llave bajo el MISMO candado: si no, dos
     # emisiones simultáneas podrían sacar el mismo identificador libre.
     with registro.candado:
@@ -123,6 +154,8 @@ def emitir(tenant: str, nombre: str, descripcion: str, dias: int) -> tuple[str, 
 def listar(tenant: str) -> list[dict]:
     """Las llaves del tenant, de la más nueva a la más vieja, sin hashes."""
     tenant = almacen._validar_tenant(tenant)
+    if sql := _sql():
+        return sql.llaves_listar(tenant)
     emitidas, revocadas = _indice()
     propias = [e for e in emitidas.values() if e.get("tenant") == tenant]
     propias.sort(key=lambda e: e.get("creadaEn") or "", reverse=True)
@@ -142,6 +175,8 @@ def revocar(tenant: str, identificador: str) -> str | None:
     "la llave sigue activa" de una llave que ya estaba muerta.
     """
     tenant = almacen._validar_tenant(tenant)
+    if sql := _sql():
+        return sql.llaves_revocar(tenant, identificador, _ahora())
     with registro.candado:
         emitidas, revocadas = _indice()
         llave = emitidas.get(identificador)
@@ -157,6 +192,8 @@ def revocar(tenant: str, identificador: str) -> str | None:
 def existe_en_otro_tenant(tenant: str, identificador: str) -> bool:
     """¿Esa llave existe y es de OTRO tenant? Solo para anotar un intento cruzado (HU11 CA-6): a quien pidió se le
     contesta igual que si no existiera."""
+    if sql := _sql():
+        return sql.llaves_existe_en_otro_tenant(tenant, identificador)
     emitidas, _ = _indice()
     llave = emitidas.get(identificador)
     return llave is not None and llave.get("tenant") != tenant
@@ -166,6 +203,8 @@ def buscar_por_id(identificador: str) -> dict | None:
     """La fila que necesita `seguridad_llaves.verificar`, o `None` si no existe:
     `secret_hash`, `revocada_en` y `expira_en` (como `datetime`), más `tenant`,
     que es lo que la petición hereda si la llave sirve."""
+    if sql := _sql():
+        return sql.llaves_buscar_por_id(identificador)
     emitidas, revocadas = _indice()
     llave = emitidas.get(identificador)
     if llave is None:

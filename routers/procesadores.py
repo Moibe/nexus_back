@@ -15,10 +15,12 @@ JWT de la persona (HU11), igual que tipos documentales, y solo tocan el de esa o
 
 import logging
 
-from fastapi import APIRouter, Header, HTTPException, Query, status
-from pydantic import BaseModel, Field
+import httpx
+from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile, status
+from pydantic import BaseModel, Field, model_validator
 
 from errores import SinClasificador
+from routers.ia import _leer_subida
 from servicios import aislamiento
 from servicios import tipos_documentales as registro_tipos
 from servicios.almacen import ErrorAlmacen
@@ -29,8 +31,10 @@ from servicios.procesadores import (
     consultar_esquema_clasificador,
     consultar_procesador,
     eliminar_procesador,
+    generar_campos as _generar_campos,
     sincronizar_clasificador as _sincronizar_clasificador,
 )
+from servicios.tipos_documentales_comun import MAX_INSTRUCCIONES
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +64,27 @@ class CampoEntrada(BaseModel):
     # Solo con `tipoDato == "grupo"` (2026-10-16): los campos de cada fila. Un grupo sin ninguno no se puede activar.
     subcampos: list[SubcampoEntrada] = []
 
+    @model_validator(mode="before")
+    @classmethod
+    def _subcampos_solo_en_grupos(cls, datos):
+        """Los subcampos solo existen en un `grupo`. El asistente CONSERVA los de un campo que dejó de ser grupo (para no perder
+        lo escrito si regresa), así que un campo de texto puede traer un residuo, incluso uno en blanco: el subcampo vacío que
+        nace al elegir «Grupo de campos». Validarlo daba un 422 de pydantic que la pantalla mostraba como «HTTP 422» (incidencia
+        de QA en staging, 2026-10-30). Fuera de un grupo se descartan antes de validar; el esquema tampoco los usaba."""
+        if isinstance(datos, dict) and datos.get("tipoDato") != TIPO_GRUPO:
+            return {**datos, "subcampos": []}
+        return datos
+
 
 class TipoDocumentalEntrada(BaseModel):
+    #: La organización que activa (NEX-550). La pone el BFF desde la sesión; el back comprueba con el JWT que quien pide pueda administrarla.
+    tenant: str = Field(min_length=1, max_length=64)
     id: str = Field(min_length=1, max_length=100)
     nombre: str = Field(min_length=1, max_length=200)
     descripcion: str = ""
+    # Opcional (2026-10-30): contexto para leer el documento, que viaja como el `documentPrompt` del extractor. Orienta qué se
+    # extrae; no sirve para reescribir valores. Ver `esquema_desde_campos`.
+    instrucciones: str = Field(default="", max_length=MAX_INSTRUCCIONES)
     campos: list[CampoEntrada]
     # La versión YA publicada (0 = nunca activado). "Activar" siempre manda 0;
     # "Crear nueva versión" manda la actual, para que el back publique la
@@ -86,7 +106,21 @@ def _mensaje_para(exc: DocumentAIError, *, mensaje_4xx: str) -> str:
     """
     if 400 <= exc.status_code < 500:
         return mensaje_4xx
-    return "No se pudo contactar a Document AI en este momento. Intenta de nuevo en unos minutos."
+    return "El servicio de procesamiento no respondió en este momento. Intenta de nuevo en unos minutos."
+
+
+_NO_EXISTE_PROCESADOR = "Ese procesador no existe en tu organización."
+
+
+def _exigir_dueno(actor: aislamiento.Actor, tenant: str, procesador_id: str) -> None:
+    """NEX-550: el procesador tiene que ser de un tipo documental DE ESA organización. Si es de otra, o de ninguna (uno que ningún tipo conoce, como
+    el heredado del `.env`), se responde lo mismo que si no existiera —sin decir de quién es— y, si era de otra, queda `CROSS_TENANT_ACCESS`."""
+    dueno = registro_tipos.procesadores_con_dueno().get(procesador_id)
+    if dueno is not None and dueno["tenant"] == tenant:
+        return
+    if dueno is not None:
+        aislamiento.intento_cruzado(actor, "procesador", procesador_id, tenant_pedido=tenant)
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE_PROCESADOR)
 
 
 @router.post(
@@ -96,7 +130,11 @@ def _mensaje_para(exc: DocumentAIError, *, mensaje_4xx: str) -> str:
     description=(
         "Crea (o adopta, si un intento anterior ya lo dejó a medias) el Custom "
         "Extractor de Document AI para la SIGUIENTE versión del tipo documental "
-        "(`version` + 1) y le sube el esquema armado desde sus campos. Una "
+        "(`version` + 1) y le sube el esquema armado desde sus campos. Las "
+        "`instrucciones` opcionales del tipo viajan como el `documentPrompt` "
+        "del esquema: contexto para leer el documento que orienta qué se "
+        "extrae (no reescribe valores: el campo cuyo valor ya no coincide con "
+        "lo impreso desaparece de la respuesta). Una "
         "versión nunca reutiliza el procesador de la anterior — esa se queda "
         "viva sin tocarse. El procesador nace en modalidad zero-shot: extrae "
         "leyendo solo el esquema, sin entrenamiento. Devuelve `procesadorId` y "
@@ -108,7 +146,14 @@ def _mensaje_para(exc: DocumentAIError, *, mensaje_4xx: str) -> str:
         "el procesador que ve en Document AI."
     ),
 )
-async def activar(tipo: TipoDocumentalEntrada):
+async def activar(tipo: TipoDocumentalEntrada, authorization: str | None = Header(default=None)):
+    # Quién pide y de qué organización (NEX-550): sin esto cualquiera con la llave de servicio creaba procesadores a nombre de otra organización.
+    actor = aislamiento.exigir_administrar(authorization, tipo.tenant, "procesador")
+    # Un tipo cuyo procesador ya es de OTRA organización no se activa desde esta.
+    for dueno in registro_tipos.procesadores_con_dueno().values():
+        if dueno["tipo"] == tipo.id and dueno["tenant"] != tipo.tenant:
+            aislamiento.intento_cruzado(actor, "procesador", tipo.id, tenant_pedido=tipo.tenant)
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE_PROCESADOR)
     # Sin campos no hay nada que extraer: un procesador con esquema vacío se
     # crearía bien y fallaría después, en la primera extracción, lejos de la
     # causa. Mejor el error aquí, donde todavía se llama por su nombre.
@@ -135,7 +180,7 @@ async def activar(tipo: TipoDocumentalEntrada):
             )
 
     esquema = esquema_desde_campos(
-        tipo.nombre, tipo.descripcion, [c.model_dump() for c in tipo.campos]
+        tipo.nombre, tipo.descripcion, [c.model_dump() for c in tipo.campos], tipo.instrucciones
     )
     try:
         resultado = await activar_tipo_documental(tipo.id, tipo.nombre, esquema, tipo.version)
@@ -149,7 +194,7 @@ async def activar(tipo: TipoDocumentalEntrada):
         mensaje = _mensaje_para(
             exc,
             mensaje_4xx=(
-                "Document AI rechazó la configuración de este modelo. Revisa "
+                "Biblioratum no aceptó la configuración de este modelo. Revisa "
                 "los nombres y tipos de los campos, y vuelve a intentar la "
                 "activación."
             ),
@@ -167,6 +212,60 @@ async def activar(tipo: TipoDocumentalEntrada):
         ) from exc
 
     return resultado
+
+
+@router.post(
+    "/generar-campos",
+    tags=["Procesadores"],
+    summary="Proponer campos a partir de un documento de ejemplo",
+    description=(
+        "«Generar a partir de un documento» del paso 2 del alta de un tipo documental: Document AI lee el documento y propone "
+        "los campos a extraer (nombre, tipo de dato, descripción, si se repite, y los campos de cada grupo). No guarda nada ni "
+        "crea procesadores: devuelve `campos` para que la persona los revise y agregue los que quiera. Tarda unos segundos. Lo "
+        "propuesto puede variar un poco de una vez a otra. Si se mandan `instrucciones` (las del tipo para la extracción), orientan la "
+        "propuesta: sirven, sobre todo, para dejar fuera campos que no interesan. Pide el rol que administra tipos documentales."
+    ),
+)
+async def generar_campos(
+    archivo: UploadFile = File(..., description="El documento de ejemplo (PDF o imagen)"),
+    tenant: str = Form(..., description="La organización"),
+    nombre: str = Form("", max_length=200, description="El nombre del tipo documental, si ya se capturó: viaja como contexto"),
+    descripcion: str = Form("", max_length=2000, description="Su descripción, si ya se capturó: viaja como contexto"),
+    instrucciones: str = Form(
+        "",
+        max_length=MAX_INSTRUCCIONES,
+        description="Sus instrucciones para la extracción, si ya se escribieron: también orientan la propuesta (p. ej. qué persona interesa o qué dato dejar fuera)",
+    ),
+    authorization: str | None = Header(default=None),
+):
+    aislamiento.exigir_administrar(authorization, tenant, "tipo_documental")
+    contenido = await _leer_subida(archivo)
+    try:
+        campos = await _generar_campos(contenido, archivo.content_type or "application/pdf", nombre, descripcion, instrucciones)
+    except DocumentAIError as exc:
+        logger.exception("Falló la generación de campos a partir de un documento")
+        if 400 <= exc.status_code < 500:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "Biblioratum no pudo leer este documento para proponer campos. Revisa que esté completo, que no tenga "
+                    "contraseña y que no sea demasiado largo, o prueba con otro ejemplo."
+                ),
+            ) from exc
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=_mensaje_para(exc, mensaje_4xx="")) from exc
+    except httpx.TimeoutException as exc:
+        logger.exception("Document AI no respondió a tiempo al generar campos")
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Biblioratum tardó demasiado en proponer los campos. Intenta de nuevo o prueba con un documento más corto.",
+        ) from exc
+    except RuntimeError as exc:
+        logger.exception("Falló la generación de campos a partir de un documento")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="No se pudieron proponer campos. Intenta de nuevo; si el problema persiste, avisa al equipo técnico.",
+        ) from exc
+    return {"campos": campos}
 
 
 def _tipos_activos(tenant: str) -> list[dict]:
@@ -198,7 +297,7 @@ async def _sincronizar(tipos: list[dict], tenant: str) -> dict:
         mensaje = _mensaje_para(
             exc,
             mensaje_4xx=(
-                "Document AI rechazó la configuración del clasificador. Revisa "
+                "Biblioratum no aceptó la configuración del clasificador. Revisa "
                 "los tipos documentales activos y vuelve a intentar."
             ),
         )
@@ -347,7 +446,13 @@ async def ver_clasificador(
         "página PROCESADA) y no modifica nada."
     ),
 )
-async def consultar(procesador_id: str):
+async def consultar(
+    procesador_id: str,
+    tenant: str = Query(..., description="La organización dueña del procesador"),
+    authorization: str | None = Header(default=None),
+):
+    actor = aislamiento.exigir_administrar(authorization, tenant, "procesador")
+    _exigir_dueno(actor, tenant, procesador_id)
     try:
         return await consultar_procesador(procesador_id)
     except DocumentAIError as exc:
@@ -392,7 +497,13 @@ async def consultar(procesador_id: str):
         "quede ahí, y si ya no está, el objetivo ya se cumplió."
     ),
 )
-async def eliminar(procesador_id: str):
+async def eliminar(
+    procesador_id: str,
+    tenant: str = Query(..., description="La organización dueña del procesador"),
+    authorization: str | None = Header(default=None),
+):
+    actor = aislamiento.exigir_administrar(authorization, tenant, "procesador")
+    _exigir_dueno(actor, tenant, procesador_id)
     try:
         await eliminar_procesador(procesador_id)
     except DocumentAIError as exc:
@@ -409,7 +520,7 @@ async def eliminar(procesador_id: str):
         mensaje = _mensaje_para(
             exc,
             mensaje_4xx=(
-                "Document AI no permitió borrar este procesador en este "
+                "No se pudo borrar este procesador en este "
                 "momento. Intenta de nuevo; si el problema persiste, avisa "
                 "al equipo técnico."
             ),

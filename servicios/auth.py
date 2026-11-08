@@ -95,14 +95,28 @@ def _secreto() -> str:
     return config.AUTH_JWT_SECRET
 
 
+def _nombre_de_organizacion(tenant_guid: str) -> str | None:
+    """El nombre con que se muestra la organización, o `None` si no se encuentra (entonces el token simplemente no lo trae:
+    la barra de arriba dice solo el rol). Nunca levanta: un fallo al leer el nombre no debe impedir iniciar sesión."""
+    from servicios import tenants_registro  # aquí dentro: este módulo se importa muy temprano
+
+    try:
+        return tenants_registro.por_guid(tenant_guid)["nombre"] or None
+    except Exception:  # noqa: BLE001 — organización inexistente, almacén caído…: da igual, es solo un rótulo
+        return None
+
+
 def emitir_acceso(usuario: dict, sesion_guid: str) -> tuple[str, datetime]:
     """El JWT de acceso y cuándo vence. Claims cortos: `sub` (guid), `sid`
     (sesión, para poder invalidar), `eml`, `nom`, `adm` (admin de plataforma),
     `dcc` (debe cambiar contraseña: con esto el front solo deja llegar a la
-    pantalla de cambio), y —si pertenece a una organización— `tnt` (su guid) y
-    `rol`, que es lo que decide qué puede hacer dentro de ella (HU07)."""
+    pantalla de cambio), y —si pertenece a una organización— `tnt` (su guid),
+    `rol`, que es lo que decide qué puede hacer dentro de ella (HU07), y `tnn`
+    (el NOMBRE de la organización, solo para mostrarlo junto al rol en la barra de arriba; nunca decide nada
+    y, como el token dura minutos, un renombre se nota al renovarse la sesión)."""
     ahora = datetime.now(timezone.utc)
     vence = ahora + timedelta(minutes=config.AUTH_ACCESO_MIN)
+    nombre_org = _nombre_de_organizacion(usuario["membresias"][0]["tenantGuid"]) if usuario.get("membresias") else None
     claims = {
         "sub": usuario["guid"],
         "sid": sesion_guid,
@@ -115,6 +129,7 @@ def emitir_acceso(usuario: dict, sesion_guid: str) -> tuple[str, datetime]:
             if usuario.get("membresias")
             else {}
         ),
+        **({"tnn": nombre_org} if nombre_org else {}),
         "iat": int(ahora.timestamp()),
         "exp": int(vence.timestamp()),
         "jti": str(uuid.uuid4()),

@@ -15,6 +15,13 @@ tendrá el renglón de la tabla:
 No sustituye al audit trail: es lo que hay para no dejar el criterio sin nada
 y para tener los datos listos el día que la tabla exista.
 
+**Ese día llegó el 2026-10-29 (migración `0006`):** donde hay base, los eventos
+van a `nexus.auditEvents`, UNA tabla general (no una por entidad), con el
+evento entero en `dataJson` tal como se escribía aquí, importada una vez desde
+`auditoria.jsonl` (`servicios/importacion_json.py`). Este módulo elige por
+`SQLSERVER_HOST` en cada llamada. Quien necesite LEER la bitácora usa
+`eventos()`, nunca el JSONL a mano: donde hay base, el archivo ya no crece.
+
 ## Dos usos
 
 1. **Rastro**: quién pidió qué y cuándo. Nunca se guarda un token en claro ni
@@ -28,7 +35,18 @@ y para tener los datos listos el día que la tabla exista.
 
 from datetime import datetime, timedelta, timezone
 
+from config import SQLSERVER_HOST
 from servicios import registro
+
+
+def _sql():
+    """El módulo de SQL si el `.env` dice que hay base; `None` si no. Se importa tarde: sin base, `pyodbc` ni se carga."""
+    if not SQLSERVER_HOST:
+        return None
+    from servicios import registros_sql
+
+    return registros_sql
+
 
 ARCHIVO = "auditoria.jsonl"
 
@@ -74,18 +92,28 @@ USER_DELETED = "USER_DELETED"
 # `canal`) y el motivo que escribió la persona (`detalle`, opcional).
 DOCUMENT_DISCARDED = "DOCUMENT_DISCARDED"
 
-# Tipos documentales de una organización (la biblioteca de Configuración). Crear, borrar, cambiar de estado y calibrar dejan
+# Tipos documentales de una organización (la biblioteca de Configuración). Crear, borrar y cambiar de estado dejan
 # rastro; guardar a secas no. Llevan quién (`usuarioGuid`, `sesionGuid`), de qué organización (`tenant`), qué tipo (`tipoId`,
-# `nombre`) y, según el caso, `estado` / `de` y `a` / `version`.
+# `nombre`) y, según el caso, `estado` / `de` y `a`.
 DOCUMENT_TYPE_CREATED = "DOCUMENT_TYPE_CREATED"
 DOCUMENT_TYPE_DELETED = "DOCUMENT_TYPE_DELETED"
 DOCUMENT_TYPE_STATE_CHANGED = "DOCUMENT_TYPE_STATE_CHANGED"
+# HISTÓRICA: ya NO SE ESCRIBE desde el 2026-11-06 (Moibe decidió quitar el paso «Calibrar» de los tipos documentales: un tipo activo con procesador extrae
+# en cuanto está activo, y ya nadie marca un tipo como calibrado). Hasta ese día se anotaba al cambiar el `calibradoEn` de un tipo, y llevaba quién
+# (`usuarioGuid`, `sesionGuid`), de qué organización (`tenant`), qué tipo (`tipoId`, `nombre`) y su `version`. Se conserva, y sigue en `ACCIONES`, porque la
+# bitácora es de solo agregar: los renglones que ya están ahí se siguen leyendo y filtrando con este nombre (mismo criterio que las históricas de
+# expedientes virtuales y grupos, más abajo). Nada del código la emite.
 DOCUMENT_TYPE_CALIBRATED = "DOCUMENT_TYPE_CALIBRATED"
 
 # Procesos de una organización (el motor de reglas, `servicios/procesos.py`). Crear y borrar dejan rastro; guardar a secas no.
 # Llevan quién (`usuarioGuid`, `sesionGuid`), de qué organización (`tenant`) y qué proceso (`procesoId`, `nombre`).
 PROCESS_CREATED = "PROCESS_CREATED"
 PROCESS_DELETED = "PROCESS_DELETED"
+# Se ejecutó un proceso sobre un expediente (`servicios/ejecuciones.py`, historial de «Ejecuciones»). Lleva quién, de qué organización, qué
+# ejecución (`ejecucionId`), qué proceso (`procesoId`, `nombre`), sobre qué expediente (`expedienteId`) y cómo terminó (`caso`: `si`, `no` o `sin`,
+# y la palabra `resultado`). Solo se anota cuando la ejecución quedó guardada en el historial. Hasta el 2026-11-05 llevaba además el expediente virtual
+# (`expedienteVirtualId`); ya no hay expedientes virtuales y el campo no se escribe (los renglones viejos de la bitácora lo conservan).
+PROCESS_RUN_RECORDED = "PROCESS_RUN_RECORDED"
 
 # Expedientes de una organización (`servicios/expedientes.py`: un conjunto de documentos). Crear uno, meterle un documento y sacárselo
 # dejan rastro. Llevan quién (`usuarioGuid`, `sesionGuid`), de qué organización (`tenant`) y qué expediente (`expedienteId`, `nombre`);
@@ -93,19 +121,44 @@ PROCESS_DELETED = "PROCESS_DELETED"
 CASE_CREATED = "CASE_CREATED"
 CASE_DOCUMENT_ADDED = "CASE_DOCUMENT_ADDED"
 CASE_DOCUMENT_REMOVED = "CASE_DOCUMENT_REMOVED"
-# Un tipo de expediente (`servicios/tipos_expediente.py`): la clase de la que salen los expedientes. Lleva quién (`usuarioGuid`,
-# `sesionGuid`), de qué organización (`tenant`) y qué tipo (`tipoId`, `nombre`). `CASE_CREATED` lleva además `tipoId` y `tipoNombre`.
+# ── HISTÓRICAS: ya NO SE ESCRIBEN (Moibe, 2026-11-05: se quitaron los expedientes virtuales y sus tipos; 2026-11-06: se quitaron los grupos) ───────
+# Las constantes de los tipos de expediente (`CASE_TYPE_*`), de los expedientes virtuales (`VIRTUAL_CASE_*`) y de los grupos (`CASE_GROUP_*`) se
+# conservan, y siguen en `ACCIONES`, porque la bitácora es de solo agregar: los renglones que ya están ahí se siguen leyendo y filtrando con estos
+# nombres. Nada del código los emite.
+#
+# Un tipo de expediente VIRTUAL (antes `servicios/tipos_expediente.py`; hasta el 2026-10-29 era «tipo de expediente» y el nombre de las acciones
+# se conservó): la clase de la que salían los expedientes virtuales. Llevaba quién (`usuarioGuid`, `sesionGuid`), de qué organización (`tenant`)
+# y qué tipo (`tipoId`, `nombre`). Los `CASE_CREATED` anteriores a ese día llevan además `tipoId` y `tipoNombre`; los de después, no.
 CASE_TYPE_CREATED = "CASE_TYPE_CREATED"
-# Se cambió el esquema de un tipo de expediente (los tipos documentales que lo describen). Lleva quién, de qué organización, qué tipo
+# Se cambió el esquema de un tipo de expediente (los tipos documentales que lo describen). Llevaba quién, de qué organización, qué tipo
 # (`tipoId`, `nombre`) y el esquema `antes` y `despues` (listas de ids de tipos documentales). No se anota si la lista no cambió.
 CASE_TYPE_SCHEMA_CHANGED = "CASE_TYPE_SCHEMA_CHANGED"
-# Se le cambió el nombre a un tipo de expediente. Lleva quién, de qué organización, qué tipo (`tipoId`) y el nombre `antes` y `despues`. No se
-# anota si el nombre, ya limpio, era el mismo.
+# Se le cambió el nombre a un tipo de expediente. Llevaba quién, de qué organización, qué tipo (`tipoId`) y el nombre `antes` y `despues`. No se
+# anotaba si el nombre, ya limpio, era el mismo.
 CASE_TYPE_RENAMED = "CASE_TYPE_RENAMED"
-# Se borró un tipo de expediente (solo se puede si no tenía expedientes). Lleva quién, de qué organización y qué tipo (`tipoId`, `nombre`).
+# Se borró un tipo de expediente (solo se podía si no tenía expedientes virtuales). Llevaba quién, de qué organización y qué tipo (`tipoId`, `nombre`).
 CASE_TYPE_DELETED = "CASE_TYPE_DELETED"
+# Expedientes virtuales (antes `servicios/expedientes_virtuales.py`): un grupito de documentos de un expediente. Llevaban quién, de qué organización,
+# qué virtual (`expedienteVirtualId`, `nombre`) y de qué expediente (`expedienteId`). Crear llevaba además su tipo (`tipoId`, `tipoNombre`) y los
+# ids de los documentos con que nació (`documentos`); meter y sacar, qué documento (`documentoId`, `nombreOriginal`). Meter a mano o por el
+# clasificador (`origen: "clasificador"`) dejaba el mismo `VIRTUAL_CASE_DOCUMENT_ADDED`.
+VIRTUAL_CASE_CREATED = "VIRTUAL_CASE_CREATED"
+VIRTUAL_CASE_DOCUMENT_ADDED = "VIRTUAL_CASE_DOCUMENT_ADDED"
+VIRTUAL_CASE_DOCUMENT_REMOVED = "VIRTUAL_CASE_DOCUMENT_REMOVED"
+VIRTUAL_CASE_DELETED = "VIRTUAL_CASE_DELETED"
+# Grupos de expedientes (antes `servicios/grupos.py`, migración `0010`, del 2026-11-03 al 2026-11-06): el nivel de arriba de los expedientes. Llevaban
+# quién, de qué organización y qué grupo (`grupoId`, `nombre`). Renombrar llevaba además el nombre `antes` y `despues`. Asignar un expediente a un grupo
+# (`CASE_GROUP_ASSIGNED`) llevaba el expediente (`expedienteId`, `nombre`) y el grupo en que estaba (`grupoAnteriorId`, `null` si no tenía). Los
+# `CASE_CREATED` de esos días llevan además `grupoId` y `grupoNombre`; los de después, no.
+CASE_GROUP_CREATED = "CASE_GROUP_CREATED"
+CASE_GROUP_RENAMED = "CASE_GROUP_RENAMED"
+CASE_GROUP_DELETED = "CASE_GROUP_DELETED"
+CASE_GROUP_ASSIGNED = "CASE_GROUP_ASSIGNED"
+# ── fin de las históricas ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+# Una persona corrigió a mano un dato extraído (`servicios/datos_extraidos.py`): qué documento (`documentoId`) y qué campo (`ruta`).
+FIELD_CORRECTED = "FIELD_CORRECTED"
 
-ACCIONES = frozenset({ROLE_DENIED, CASE_TYPE_CREATED, CASE_TYPE_SCHEMA_CHANGED, CASE_TYPE_RENAMED, CASE_TYPE_DELETED, CASE_CREATED, CASE_DOCUMENT_ADDED, CASE_DOCUMENT_REMOVED, PROCESS_CREATED, PROCESS_DELETED, DOCUMENT_TYPE_CREATED, DOCUMENT_TYPE_DELETED, DOCUMENT_TYPE_STATE_CHANGED, DOCUMENT_TYPE_CALIBRATED, DOCUMENT_DISCARDED, PASSWORD_RESET_REQUESTED, PASSWORD_RESET_COMPLETED, PASSWORD_CHANGED, FIRST_LOGIN_PASSWORD_CHANGED, PROFILE_UPDATED, CROSS_TENANT_ACCESS, LOGOUT, FORCED_LOGOUT, USER_CREATED, INVITATION_REISSUED, USER_DELETED})
+ACCIONES = frozenset({CASE_GROUP_CREATED, CASE_GROUP_RENAMED, CASE_GROUP_DELETED, CASE_GROUP_ASSIGNED, PROCESS_RUN_RECORDED, ROLE_DENIED, FIELD_CORRECTED,VIRTUAL_CASE_CREATED, VIRTUAL_CASE_DOCUMENT_ADDED, VIRTUAL_CASE_DOCUMENT_REMOVED, VIRTUAL_CASE_DELETED,CASE_TYPE_CREATED, CASE_TYPE_SCHEMA_CHANGED, CASE_TYPE_RENAMED, CASE_TYPE_DELETED, CASE_CREATED, CASE_DOCUMENT_ADDED, CASE_DOCUMENT_REMOVED, PROCESS_CREATED, PROCESS_DELETED, DOCUMENT_TYPE_CREATED, DOCUMENT_TYPE_DELETED, DOCUMENT_TYPE_STATE_CHANGED, DOCUMENT_TYPE_CALIBRATED, DOCUMENT_DISCARDED, PASSWORD_RESET_REQUESTED, PASSWORD_RESET_COMPLETED, PASSWORD_CHANGED, FIRST_LOGIN_PASSWORD_CHANGED, PROFILE_UPDATED, CROSS_TENANT_ACCESS, LOGOUT, FORCED_LOGOUT, USER_CREATED, INVITATION_REISSUED, USER_DELETED})
 
 
 def _ahora() -> datetime:
@@ -117,16 +170,23 @@ def registrar(accion: str, usuario_guid: str | None = None, **datos) -> None:
     responsable de no meter secretos."""
     if accion not in ACCIONES:
         raise ValueError(f"Acción de auditoría desconocida: {accion}")
-    registro.agregar(
-        ARCHIVO,
-        {
-            "evento": "auditoria",
-            "accion": accion,
-            "usuarioGuid": usuario_guid,
-            "en": _ahora().isoformat(timespec="seconds"),
-            **datos,
-        },
-    )
+    evento = {
+        "evento": "auditoria",
+        "accion": accion,
+        "usuarioGuid": usuario_guid,
+        "en": _ahora().isoformat(timespec="seconds"),
+        **datos,
+    }
+    if sql := _sql():
+        return sql.auditoria_registrar(evento)
+    registro.agregar(ARCHIVO, evento)
+
+
+def eventos(acciones: set[str] | frozenset[str] | None = None) -> list[dict]:
+    """Los eventos de la bitácora en el orden en que se escribieron (con `acciones`, solo esos), de donde vivan."""
+    if sql := _sql():
+        return sql.auditoria_eventos(frozenset(acciones) if acciones is not None else None)
+    return [e for e in registro.eventos(ARCHIVO) if acciones is None or e.get("accion") in acciones]
 
 
 def cuando(evento: dict) -> datetime | None:
@@ -147,7 +207,9 @@ def recientes(accion: str, segundos: int = 3600) -> list[tuple[datetime, dict]]:
     el error que el plan de esta pieza traía."""
     desde = _ahora() - timedelta(seconds=segundos)
     salida = []
-    for e in registro.eventos(ARCHIVO):
+    # En SQL la ventana ya la filtra la base (con un segundo de holgura: `en` se guarda al segundo); aquí se vuelve a mirar `en`.
+    leidos = sql.auditoria_eventos(frozenset({accion}), desde - timedelta(seconds=1)) if (sql := _sql()) else registro.eventos(ARCHIVO)
+    for e in leidos:
         if e.get("accion") != accion:
             continue
         hora = cuando(e)

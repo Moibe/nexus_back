@@ -974,8 +974,11 @@ async def clasificar_documento(contenido: bytes, mime_type: str, tenant: str) ->
     """
     procesador_id = clasificadores.id_de(tenant)
     if not procesador_id:
+        # El clasificador se crea al activar el primer tipo documental (`sincronizar_clasificador`). Quien llega aquí vio el
+        # Pipeline, no la configuración, así que el texto le dice QUÉ hacer y DÓNDE, no cómo se llama la pieza interna.
         raise SinClasificador(
-            "Tu organización todavía no tiene clasificador: se crea al activar su primer tipo documental."
+            "Todavía no se pueden clasificar documentos: tu organización no tiene ningún tipo documental activo. "
+            "Crea y activa al menos uno en Configuración, Tipos documentales, y vuelve a intentarlo."
         )
     crudo = await _procesar(
         procesador_id,

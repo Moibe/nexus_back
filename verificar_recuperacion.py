@@ -218,7 +218,7 @@ try:
     r = solicitar("pablo@ejemplo.com")
     rev("la respuesta es la misma de siempre", r.status_code == 200 and r.json() == r_no.json(), r.text)
     mandados = correos()
-    rev("se le manda un correo, pero DISTINTO", len(mandados) == 1 and leer(mandados[0])["Subject"] == "Tu primer acceso a NexusDoc sigue pendiente",
+    rev("se le manda un correo, pero DISTINTO", len(mandados) == 1 and leer(mandados[0])["Subject"] == "Tu primer acceso a Biblioratum sigue pendiente",
         str([leer(f)["Subject"] for f in mandados]))
     texto = cuerpo_texto(mandados[0]) if mandados else ""
     rev("sin enlace de recuperación", "?t=" not in texto and "restablecer-contrasena" not in texto)

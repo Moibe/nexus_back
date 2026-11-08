@@ -46,7 +46,15 @@ se reconstruyen de ahí, así que un reinicio no pierde avisos, a lo sumo los
 retrasa. Con muchos clientes y endpoints lentos, de una en una se quedaría
 corto: para entonces, un pool de hilos y la tabla del DBA.
 
-## Registro
+## Desde el 2026-10-30: en SQL donde hay base
+
+Migración `0008`: donde hay base, el aviso recibido es una fila de `nexus.webhookNotices` (uno por entrada y tipo), cada entrega una de
+`nexus.webhookDeliveries` (con su cuerpo ya armado, su estado y cuántos intentos lleva) y cada vez que se le habló a un endpoint —entrega o
+validación— una de `nexus.webhookAttempts`. Todo se importó una vez desde el JSONL (`servicios/importacion_json.py`); lo que estaba PENDIENTE de
+reintento al importar se cerró como cancelado, para que un ambiente no reenvíe avisos que ya manejaba otro. El trabajador sigue igual: las
+pendientes viven en memoria y al arrancar se reconstruyen de la base. Este módulo elige por `SQLSERVER_HOST` en cada llamada.
+
+## Registro (donde no hay base)
 
 `entregas-webhooks.jsonl` en el NAS, de solo agregar: `aviso` (lo que avisó el
 front), `programada` (con el cuerpo ya armado), `intento` (cuándo, ok, código,
@@ -76,7 +84,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from config import ENTREGAS_WEBHOOKS_ACTIVAS
+from config import ENTREGAS_WEBHOOKS_ACTIVAS, SQLSERVER_HOST
 from servicios import bandeja, entrega_webhooks, registro, webhooks_cliente
 from servicios.almacen import ErrorAlmacen
 
@@ -103,6 +111,15 @@ ESPERAS_VALIDACION_S = (1, 2, 4, 8)
 INTENTOS_VALIDACION = len(ESPERAS_VALIDACION_S) + 1
 MAX_VALIDACIONES_SIMULTANEAS = 3
 _LARGO_TIPO_DOCUMENTAL = 100
+
+
+def _sql():
+    """El módulo de SQL si el `.env` dice que hay base; `None` si no. Se importa tarde: sin base, `pyodbc` ni se carga."""
+    if not SQLSERVER_HOST:
+        return None
+    from servicios import integraciones_sql
+
+    return integraciones_sql
 
 
 def _ahora() -> datetime:
@@ -180,6 +197,33 @@ def avisar(tenant: str, tipo: str, entrada_id: str, tipo_documental: str | None,
     if entrada is None:
         raise AvisoRechazado("Esa entrada no existe o no pasó al pipeline.", 404)
 
+    if sql := _sql():
+        ahora = _ahora()
+        cuerpo = entrega_webhooks.armar_cuerpo(
+            tipo,
+            {
+                "entradaId": entrada_id,
+                "estado": tipo.split(".", 1)[1],
+                "motivo": motivo,
+                "tipoDocumental": tipo_documental,
+                "recibidoEn": entrada.get("recibidoEn"),
+                "terminadoEn": _iso(ahora),
+            },
+            ahora,
+        )
+        destinos = [(entrega_webhooks.nuevo_id_mensaje(), webhook) for webhook in webhooks_cliente.suscritos(tenant, tipo)]
+        resultado = sql.ent_programar(tenant, entrada_id, tipo, ahora, cuerpo, destinos, FINALES)
+        if resultado == "duplicado":
+            return {"programadas": 0, "duplicado": True}
+        if resultado == "final":
+            raise AvisoRechazado("Ya se avisó el resultado final de esa entrada.", 409)
+        nuevas = [_Pendiente(mensaje, webhook, tenant, tipo, cuerpo, 0, ahora) for mensaje, webhook in resultado]
+        with _candado:
+            for p in nuevas:
+                _pendientes[p.id] = p
+        _despertar.set()
+        return {"programadas": len(nuevas), "duplicado": False}
+
     with registro.candado:
         anteriores = [
             e
@@ -234,6 +278,24 @@ def _cargar() -> None:
     global _cargado
     if _cargado:
         return
+    if sql := _sql():
+        try:
+            filas = sql.ent_pendientes()
+        except ErrorAlmacen:
+            logger.warning("No se pudieron leer las entregas pendientes de la base; se reintenta en la siguiente vuelta.")
+            return
+        recuperadas = {}
+        for f in filas:
+            hechos = f["intentos"]
+            proximo = f["ultimoIntento"] + timedelta(seconds=CALENDARIO_S[hechos]) if f["ultimoIntento"] and hechos < len(CALENDARIO_S) else f["creadaEn"]
+            recuperadas[f["id"]] = _Pendiente(f["id"], f["webhook"], f["tenant"], f["tipo"], str(f["cuerpo"]).encode(), hechos, proximo)
+        with _candado:
+            for i, p in recuperadas.items():
+                _pendientes.setdefault(i, p)
+        _cargado = True
+        if recuperadas:
+            logger.info("Entregas de webhooks pendientes recuperadas de la base: %s", len(recuperadas))
+        return
     try:
         eventos = registro.eventos(ARCHIVO)
     except (ErrorAlmacen, ValueError):
@@ -274,7 +336,10 @@ def _cargar() -> None:
 
 def _anotar(evento: dict) -> None:
     try:
-        registro.agregar(ARCHIVO, evento)
+        if sql := _sql():
+            sql.ent_anotar(evento)
+        else:
+            registro.agregar(ARCHIVO, evento)
     except ErrorAlmacen:
         # El intento SÍ ocurrió; lo que se pierde es su línea en el registro (y
         # en las métricas). No se detiene la entrega por eso.
@@ -346,6 +411,13 @@ def procesar_vencidas() -> int:
 def cancelar_de(webhook: str, motivo: str) -> int:
     """Cancela las entregas pendientes de un webhook (se desactivó o se
     eliminó). Devuelve cuántas."""
+    if sql := _sql():
+        # Todas las de la base, no solo las que este proceso tiene en memoria.
+        ids = sql.ent_cancelar_de(webhook, motivo, _ahora())
+        with _candado:
+            for i in ids:
+                _pendientes.pop(i, None)
+        return len(ids)
     with _candado:
         suyas = [p for p in _pendientes.values() if p.webhook == webhook]
     for p in suyas:
@@ -437,16 +509,19 @@ def metricas(tenant: str, webhook: str, desde: datetime, hasta: datetime) -> dic
     except OverflowError as exc:
         raise ValueError("El periodo queda fuera de las fechas que se pueden calcular.") from exc
     suyos = []
-    for e in registro.eventos(ARCHIVO):
-        if (
-            e.get("evento") == "intento"
-            and e.get("webhook") == webhook
-            and e.get("tenant") == tenant
-            and e.get("tipo") != TIPO_VALIDACION
-        ):
-            f = _fecha(e.get("en"))
-            if f:
-                suyos.append((f, e))
+    if sql := _sql():
+        suyos = sql.ent_intentos(tenant, webhook, inicio_anterior, fin, TIPO_VALIDACION)
+    else:
+        for e in registro.eventos(ARCHIVO):
+            if (
+                e.get("evento") == "intento"
+                and e.get("webhook") == webhook
+                and e.get("tenant") == tenant
+                and e.get("tipo") != TIPO_VALIDACION
+            ):
+                f = _fecha(e.get("en"))
+                if f:
+                    suyos.append((f, e))
     return {
         "desde": desde.isoformat(),
         "hasta": hasta.isoformat(),
@@ -512,6 +587,8 @@ def historial(tenant: str, webhook: str, limite: int = 50) -> list[dict]:
     """Cada vez que NexusDoc le habló al endpoint de un webhook —las
     validaciones y las entregas de avisos—, del más reciente al más viejo. De
     las entregas trae además el `entradaId` del documento que avisaban."""
+    if sql := _sql():
+        return sql.ent_historial(tenant, webhook, limite)
     eventos = registro.eventos(ARCHIVO)
     entradas: dict[str, str | None] = {}
     for e in eventos:

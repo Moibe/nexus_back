@@ -12,15 +12,32 @@ Lo que se prueba:
 - lo que no es un proceso (id raro, sin nombre, nodos de un tipo inventado, cables a nodos que no existen, ids repetidos, posiciones
   absurdas, enorme) se rechaza, y lo que el servidor pone no se puede forzar;
 - lo que se guarda sale LIMPIO: del nodo y del cable solo lo que el lienzo necesita;
-- crear y borrar dejan rastro con quién; guardar a secas, no.
+- crear y borrar dejan rastro con quién; guardar a secas, no;
+- (2026-11-05) un proceso ya NO se liga a ningún tipo (se quitaron los expedientes virtuales): si un cliente viejo todavía manda
+  `datos.tipoExpedienteVirtualId` —válido, inexistente o basura— se ignora (se guarda igual, sin él), no viaja al JSON guardado ni se devuelve, ni de lo que
+  el almacén traía guardado de antes; `resultado_conectado` sigue pidiendo el nodo, una regla y su punto «a».
+
+Con `--sql` corre LO MISMO contra SQL Server (migración `0005`, contenedor desechable de `pruebas_sql.py`); lo que lee el JSONL a mano se
+salta ahí.
+
+    .venv/Scripts/python verificar_procesos.py --sql
 """
 
 import json
 import os
 import shutil
+import sys
 import tempfile
 import uuid
 from pathlib import Path
+
+sys.stdout.reconfigure(encoding="utf-8")
+SQL = "--sql" in sys.argv
+if SQL:
+    # ANTES de importar la app: `config.py` lee el entorno una sola vez.
+    import pruebas_sql
+
+    BASE_SQL = pruebas_sql.preparar("nexus-procesos-prueba", 14337, dejar="--dejar" in sys.argv)
 
 RAIZ = Path(tempfile.mkdtemp(prefix="verificar-procesos-"))
 (RAIZ / ".nexus-almacen").touch()
@@ -54,7 +71,6 @@ def cab(bearer: str | None = None, servicio: bool = True) -> dict:
 
 
 c = TestClient(app)
-
 
 def entrar(correo: str, contrasena: str) -> dict:
     r = c.post("/auth/login", json={"email": correo, "password": contrasena, "ip": "127.0.0.1", "userAgent": "verificar"}, headers=cab())
@@ -109,10 +125,10 @@ def ids(bearer: str, tenant: str) -> list[str]:
 
 
 def auditoria(accion: str) -> list[dict]:
-    ruta = RAIZ / ".registro" / "auditoria.jsonl"
-    if not ruta.exists():
-        return []
-    return [e for e in (json.loads(x) for x in ruta.read_text(encoding="utf-8").splitlines() if x.strip()) if e.get("accion") == accion]
+    # Por el servicio y no leyendo el JSONL: con --sql la bitácora vive en nexus.auditEvents (migración 0006).
+    from servicios import auditoria as bitacora
+
+    return bitacora.eventos({accion})
 
 
 def crear_organizacion(bearer_super: str, nombre: str, correo: str, contrasena: str) -> tuple[str, str]:
@@ -298,6 +314,15 @@ try:
     rev("de los datos de un nodo solo lo que el lienzo usa", d["nodos"][0]["data"] == {"tipoId": "tipo-aaaa1111"} and set(d["nodos"][2]["data"]) == {"operador", "a", "b"}, str(d["nodos"]))
     rev("del cable solo id, origen, destino y sus dos puntos", set(d["aristas"][0]) == {"id", "source", "sourceHandle", "target", "targetHandle"}, str(d["aristas"][0]))
     rev("lo demás que mandó la pantalla (la vista) se conserva en `datos`", d.get("vista") == {"x": 10, "y": 20, "zoom": 0.8})
+    # `activo` lo marca la lista de procesos del front (2026-10-29). El back no lo interpreta, pero el front depende de que lo conserve
+    # (también el `false`) y de poder cambiarlo con un guardado normal sobre la revisión que leyó: si algún día `_validar` descarta lo
+    # desconocido, activar y desactivar fallaría en silencio.
+    r = guardar(a_admin, org_a, p3, {**d, "activo": False}, 1)
+    rev("`activo: false` (lo marca la lista de procesos del front) se conserva al guardar", r.status_code == 200 and r.json()["datos"].get("activo") is False and r.json()["revision"] == 2, r.text[:200])
+    leido = next(x for x in listar(a_admin, org_a).json()["procesos"] if x["id"] == p3)
+    rev("y al leer la lista, con su dibujo intacto", leido["datos"].get("activo") is False and leido["datos"]["nodos"] == d["nodos"] and leido["datos"]["aristas"] == d["aristas"])
+    r = guardar(a_admin, org_a, p3, {**leido["datos"], "activo": True}, leido["revision"])
+    rev("y se vuelve a cambiar con un guardado normal (activo: true, revisión 3)", r.status_code == 200 and r.json()["datos"].get("activo") is True and r.json()["revision"] == 3, r.text[:200])
 
     titulo("8b · Las listas: operadores de listas, valores fijos y muestras de varios renglones")
     listas = proceso("Socios")
@@ -351,6 +376,79 @@ try:
     rev("lo que se lee de vuelta es lo mismo que se guardó", leido["datos"]["nodos"] == d["nodos"] and leido["datos"]["aristas"] == d["aristas"])
     c.delete(f"/procesos/{p6}", params={"tenant": org_a}, headers=cab(a_admin))
 
+    titulo("8d · Los nodos FINALES: «Valor final» y «Resultado» (2026-11-03)")
+
+    def nodo_valor_final(nodo_id: str, nombre: str, a: str = "", x: float = 700, y: float = 0) -> dict:
+        return {"id": nodo_id, "type": "valor-final", "position": {"x": x, "y": y}, "data": {"nombre": nombre, "a": a}}
+
+    def nodo_resultado(si: str = "Aprobado", no: str = "Rechazado", sin: str = "Sin datos", nodo_id: str = "resultado-final", x: float = 1000, y: float = 0) -> dict:
+        return {"id": nodo_id, "type": "resultado-final", "position": {"x": x, "y": y}, "data": {"si": si, "no": no, "sin": sin}}
+
+    con_finales = proceso("Con valores finales y resultado")
+    con_finales["nodos"] += [
+        nodo_valor_final("valor-final-1", "RFC del acta", "AB1", y=-200),
+        nodo_valor_final("valor-final-2", "¿Coincide el RFC?", y=-60),
+        nodo_resultado("Certificado", "Rechazado", "Pendiente de documentos"),
+    ]
+    con_finales["aristas"] += [
+        cable("tipo-acta", "rfc", "valor-final-1", "a"),
+        cable("operador-1", "resultado", "valor-final-2", "a"),
+        cable("operador-1", "resultado", "resultado-final", "a"),
+    ]
+    p7 = nuevo_id()
+    r = guardar(a_admin, org_a, p7, con_finales, 0)
+    rev("un proceso con dos valores finales y un resultado se guarda", r.status_code == 200, r.text[:200])
+    d = r.json()["datos"]
+    vf = next(n for n in d["nodos"] if n["id"] == "valor-final-1")
+    res = next(n for n in d["nodos"] if n["id"] == "resultado-final")
+    rev("un valor final guarda su nombre y su ejemplo (nada más)", vf["data"] == {"nombre": "RFC del acta", "a": "AB1"} and set(vf) == {"id", "type", "position", "data"}, str(vf))
+    rev("el resultado guarda sus tres palabras, tal como se escribieron", res["data"] == {"si": "Certificado", "no": "Rechazado", "sin": "Pendiente de documentos"}, str(res))
+    rev("los cables hacia los nodos finales se guardan", {(a["source"], a["target"], a["targetHandle"]) for a in d["aristas"]} >= {("tipo-acta", "valor-final-1", "a"), ("operador-1", "resultado-final", "a")})
+    leido = next(p for p in listar(a_admin, org_a).json()["procesos"] if p["id"] == p7)
+    rev("lo que se lee de vuelta es lo mismo que se guardó", leido["datos"]["nodos"] == d["nodos"] and leido["datos"]["aristas"] == d["aristas"])
+    sucio = proceso("Datos de más")
+    sucio["nodos"] += [
+        {"id": "valor-final-1", "type": "valor-final", "position": {"x": 1, "y": 2}, "data": {"nombre": "X", "a": "", "basura": "x", "valor": "7"}},
+        {"id": "resultado-final", "type": "resultado-final", "position": {"x": 1, "y": 2}, "data": {"si": "Sí", "no": "No", "sin": "?", "basura": "x"}, "selected": True},
+    ]
+    r = guardar(a_admin, org_a, nuevo_id(), sucio, 0)
+    rev("de un nodo final solo se guarda lo suyo (lo que sobra se descarta)", r.status_code == 200 and next(n for n in r.json()["datos"]["nodos"] if n["id"] == "valor-final-1")["data"] == {"nombre": "X", "a": ""} and set(next(n for n in r.json()["datos"]["nodos"] if n["id"] == "resultado-final")["data"]) == {"si", "no", "sin"}, r.text[:200])
+    sin_nombre = proceso("Sin nombre de valor final")
+    sin_nombre["nodos"].append({"id": "valor-final-1", "type": "valor-final", "position": {"x": 1, "y": 2}, "data": {}})
+    r = guardar(a_admin, org_a, nuevo_id(), sin_nombre, 0)
+    rev("un valor final sin nombre se guarda con el nombre vacío (el lienzo le pone el suyo por su número)", r.status_code == 200 and next(n for n in r.json()["datos"]["nodos"] if n["id"] == "valor-final-1")["data"] == {"nombre": "", "a": ""}, r.text[:200])
+    largo = proceso("Nombre de 80")
+    largo["nodos"].append(nodo_valor_final("valor-final-1", "n" * 80))
+    r = guardar(a_admin, org_a, nuevo_id(), largo, 0)
+    rev("un nombre de exactamente 80 caracteres cabe", r.status_code == 200, r.text[:120])
+    largo["nodos"][-1]["data"]["nombre"] = "n" * 81
+    rev("uno de 81 no", guardar(a_admin, org_a, nuevo_id(), largo, 0).status_code == 400)
+    r = guardar(a_admin, org_a, nuevo_id(), {**proceso("Texto de 60"), "nodos": proceso("x")["nodos"] + [nodo_resultado("s" * 60)]}, 0)
+    rev("una palabra del resultado de exactamente 60 caracteres cabe", r.status_code == 200, r.text[:120])
+    rev("una de 61 no", guardar(a_admin, org_a, nuevo_id(), {**proceso("Texto de 61"), "nodos": proceso("x")["nodos"] + [nodo_resultado("s" * 61)]}, 0).status_code == 400)
+    for caso in ("si", "no", "sin"):
+        incompleto = proceso("Resultado incompleto")
+        nodo = nodo_resultado()
+        del nodo["data"][caso]
+        incompleto["nodos"].append(nodo)
+        rev(f"al resultado le falta la palabra «{caso}»: no se guarda", guardar(a_admin, org_a, nuevo_id(), incompleto, 0).status_code == 400)
+        vacio = proceso("Resultado vacío")
+        nodo = nodo_resultado()
+        nodo["data"][caso] = "   "
+        vacio["nodos"].append(nodo)
+        rev(f"la palabra «{caso}» en blanco: no se guarda", guardar(a_admin, org_a, nuevo_id(), vacio, 0).status_code == 400)
+    mala = proceso("Palabra que no es texto")
+    mala["nodos"].append(nodo_resultado(si=7))
+    rev("una palabra del resultado que no es texto: no se guarda", guardar(a_admin, org_a, nuevo_id(), mala, 0).status_code == 400)
+    dos = proceso("Dos resultados")
+    dos["nodos"] += [nodo_resultado(nodo_id="resultado-final"), nodo_resultado("Otra", nodo_id="resultado-final-2", y=200)]
+    r = guardar(a_admin, org_a, nuevo_id(), dos, 0)
+    rev("dos nodos de resultado en un proceso: no se guarda, y dice que es uno solo", r.status_code == 400 and "solo puede tener un resultado" in r.text, r.text[:200])
+    dos_valores = proceso("Dos valores finales")
+    dos_valores["nodos"] += [nodo_valor_final("valor-final-1", "Igual"), nodo_valor_final("valor-final-2", "Igual", y=100)]
+    rev("en cambio puede haber todos los valores finales que hagan falta, aun con el mismo nombre (el lienzo avisa, el servidor no se mete)", guardar(a_admin, org_a, nuevo_id(), dos_valores, 0).status_code == 200)
+    c.delete(f"/procesos/{p7}", params={"tenant": org_a}, headers=cab(a_admin))
+
     titulo("9 · Un proceso vacío y uno con cables a un punto sin nombre")
     p4 = nuevo_id()
     r = guardar(a_admin, org_a, p4, {"nombre": "Vacío", "nodos": [], "aristas": []}, 0)
@@ -379,15 +477,122 @@ try:
     rev("guardar a secas NO deja rastro (el proceso 1 se guardó dos veces y se anotó una sola vez)", sum(1 for e in creados if e.get("procesoId") == p1) == 1 and not any(e.get("procesoId") == p1 for e in borrados))
     rev("el rastro no lleva el dibujo ni los valores de ejemplo", not any("nodos" in e or "aristas" in e or "datos" in e for e in creados + borrados))
 
-    titulo("12 · Resiste un corte a media escritura")
-    ruta = RAIZ / ".registro" / "procesos.jsonl"
-    with open(ruta, "ab") as f:
-        f.write(b'{"op": "guardar", "id": "proceso-roto')
-    antes = ids(a_admin, org_a)
-    rev("una última línea rota se ignora al leer", ids(a_admin, org_a) == antes and len(antes) >= 3)
-    n = nuevo_id()
-    r = guardar(a_admin, org_a, n, proceso("Después del corte"), 0)
-    rev("y el guardado siguiente no queda pegado a ella", r.status_code == 200 and n in ids(a_admin, org_a))
+    if not SQL:  # en SQL no hay archivo que cortar
+        titulo("12 · Resiste un corte a media escritura")
+        ruta = RAIZ / ".registro" / "procesos.jsonl"
+        with open(ruta, "ab") as f:
+            f.write(b'{"op": "guardar", "id": "proceso-roto')
+        antes = ids(a_admin, org_a)
+        rev("una última línea rota se ignora al leer", ids(a_admin, org_a) == antes and len(antes) >= 3)
+        n = nuevo_id()
+        r = guardar(a_admin, org_a, n, proceso("Después del corte"), 0)
+        rev("y el guardado siguiente no queda pegado a ella", r.status_code == 200 and n in ids(a_admin, org_a))
+
+    titulo("13 · Un proceso ya no se liga a ningún tipo (Moibe, 2026-11-05: se quitaron los expedientes virtuales)")
+    from servicios import procesos as servicio_procesos  # noqa: E402
+
+    rev("ningún proceso guardado trae `tipoExpedienteVirtualId`", all("tipoExpedienteVirtualId" not in x["datos"] for x in listar(a_admin, org_a).json()["procesos"]))
+    # Lo que un cliente viejo todavía puede mandar. Antes de esta decisión lo válido se guardaba y lo demás era 400; ahora TODO se ignora y nada falla.
+    mandados = {
+        "un tipo que parece válido": "tipo-expediente-" + "a" * 32,
+        "un tipo que no existe": "tipo-expediente-" + "0" * 32,
+        "algo sin forma de id": "cualquier-cosa",
+        "un número": 123,
+        "null": None,
+    }
+    for que, valor in mandados.items():
+        r = guardar(a_admin, org_a, nuevo_id(), proceso(f"De un cliente viejo con {que}", tipoExpedienteVirtualId=valor), 0)
+        rev(f"un cliente viejo que manda `tipoExpedienteVirtualId` ({que}): se guarda igual (200) y la respuesta no lo trae",
+            r.status_code == 200 and "tipoExpedienteVirtualId" not in r.json()["datos"] and r.json()["revision"] == 1, f"{r.status_code} {r.text[:200]}")
+    listados = listar(a_admin, org_a).json()["procesos"]
+    rev("y al listarlos tampoco: ningún proceso lo trae, ni siquiera `null`", all("tipoExpedienteVirtualId" not in x["datos"] for x in listados) and sum(1 for x in listados if x["datos"]["nombre"].startswith("De un cliente viejo")) == len(mandados))
+    pl = nuevo_id()
+    guardar(a_admin, org_a, pl, proceso("Validar crédito"), 0)
+    r = guardar(a_admin, org_a, pl, proceso("Validar crédito", tipoExpedienteVirtualId="tipo-expediente-" + "b" * 32), 1)
+    rev("actualizar un proceso mandando el campo: se ignora igual, la revisión sube y el dibujo no cambia",
+        r.status_code == 200 and r.json()["revision"] == 2 and "tipoExpedienteVirtualId" not in r.json()["datos"] and r.json()["datos"]["nodos"] == proceso("Validar crédito")["nodos"], r.text[:200])
+    rev("abrir ese proceso por la lista lo devuelve sin el campo", "tipoExpedienteVirtualId" not in next(x for x in listar(a_admin, org_a).json()["procesos"] if x["id"] == pl)["datos"])
+    # Lo que quedó GUARDADO (no solo lo que se devuelve): el campo no viaja al JSON del proceso.
+    if SQL:
+        con = BASE_SQL["conectar"]("usrNexus", BASE_SQL["app"], BASE_SQL["base"])
+        con_campo = con.cursor().execute("SELECT count(*) FROM nexus.processes WHERE dataJson LIKE '%tipoExpedienteVirtualId%'").fetchone()[0]
+        rev("en la base, ningún `dataJson` guarda el campo", con_campo == 0, f"{con_campo} procesos lo guardaron")
+        # Una fila con la liga DENTRO de su JSON: solo se puede por SQL directo (desde la 0005 la liga iba en su propia columna y la 0012 la borró), pero el
+        # contrato dice que el campo NUNCA se devuelve, y eso no puede depender de cómo llegó la fila.
+        legado = nuevo_id()
+        antiguo = {"nombre": "Con la liga dentro de su JSON", "descripcion": "", "nodos": [], "aristas": [], "activo": False, "tipoExpedienteVirtualId": "tipo-expediente-" + "c" * 32}
+        con.cursor().execute("INSERT INTO nexus.processes (publicId, tenant, revision, dataJson, createdBy) VALUES (?, ?, 1, ?, 'x')", legado, org_a, json.dumps(antiguo))
+        visto = next(x for x in listar(a_admin, org_a).json()["procesos"] if x["id"] == legado)
+        rev("una fila con la liga dentro de su JSON (solo por SQL directo) se lee sin ella y con lo demás intacto",
+            "tipoExpedienteVirtualId" not in visto["datos"] and visto["datos"]["nombre"] == "Con la liga dentro de su JSON" and visto["datos"]["activo"] is False, str(visto["datos"]))
+        r = guardar(a_admin, org_a, legado, {**visto["datos"], "nombre": "Con la liga dentro de su JSON (editado)"}, 1)
+        rev("y al editarla se vuelve a guardar sin ella", r.status_code == 200 and "tipoExpedienteVirtualId" not in r.json()["datos"], r.text[:200])
+        quedan = con.cursor().execute("SELECT count(*) FROM nexus.processes WHERE publicId = ? AND dataJson LIKE '%tipoExpedienteVirtualId%'", legado).fetchone()[0]
+        rev("y en la base ya no la guarda", quedan == 0, f"{quedan}")
+        con.close()
+        c.delete(f"/procesos/{legado}", params={"tenant": org_a}, headers=cab(a_admin))
+    else:
+        eventos = [json.loads(x) for x in (RAIZ / ".registro" / "procesos.jsonl").read_text(encoding="utf-8").splitlines() if x.strip().endswith("}")]
+        rev("en el registro, ningún evento `guardar` de lo anterior lleva el campo dentro de `datos`",
+            not any("tipoExpedienteVirtualId" in e.get("datos", {}) for e in eventos if e.get("op") == "guardar"), str([e["datos"].get("nombre") for e in eventos if "tipoExpedienteVirtualId" in e.get("datos", {})]))
+        # Un proceso que el almacén guardó ANTES del 2026-11-05, con la liga dentro de sus datos: se lee sin ella (y con lo demás intacto).
+        legado = nuevo_id()
+        antiguo = {"nombre": "Guardado antes del cambio", "descripcion": "", "nodos": [], "aristas": [], "activo": False, "tipoExpedienteVirtualId": "tipo-expediente-" + "c" * 32}
+        with open(RAIZ / ".registro" / "procesos.jsonl", "ab") as f:
+            f.write((json.dumps({"op": "guardar", "id": legado, "tenant": org_a, "revision": 1, "datos": antiguo, "por": "x", "en": "2026-10-30T00:00:00Z"}) + "\n").encode("utf-8"))
+        visto = next(x for x in listar(a_admin, org_a).json()["procesos"] if x["id"] == legado)
+        rev("un proceso que el almacén guardó ANTES del cambio (con la liga en sus datos) se lee sin ella y con lo demás intacto",
+            "tipoExpedienteVirtualId" not in visto["datos"] and visto["datos"]["nombre"] == "Guardado antes del cambio" and visto["datos"]["activo"] is False, str(visto["datos"]))
+        r = guardar(a_admin, org_a, legado, {**visto["datos"], "nombre": "Guardado antes del cambio (editado)"}, 1)
+        rev("y al editarlo se vuelve a guardar sin ella", r.status_code == 200 and "tipoExpedienteVirtualId" not in r.json()["datos"], r.text[:200])
+        c.delete(f"/procesos/{legado}", params={"tenant": org_a}, headers=cab(a_admin))
+    # `resultado_conectado` es lo que hace EJECUTABLE a un proceso (lo usan `/ejecuciones/procesos` y `/ejecuciones/preparar`).
+    con_resultado = proceso("Con resultado")
+    con_resultado["nodos"].append({"id": "resultado-final", "type": "resultado-final", "position": {"x": 1000, "y": 0}, "data": {"si": "Sí", "no": "No", "sin": "Sin datos"}})
+    con_resultado["aristas"].append(cable("operador-1", "resultado", "resultado-final", "a"))
+    rev("`resultado_conectado`: pide el nodo, la regla (no un campo) y su punto «a»", servicio_procesos.resultado_conectado(con_resultado) and not servicio_procesos.resultado_conectado(proceso("Sin resultado"))
+        and not servicio_procesos.resultado_conectado({**con_resultado, "aristas": [a for a in con_resultado["aristas"] if a["target"] != "resultado-final"]})
+        and not servicio_procesos.resultado_conectado({**con_resultado, "aristas": [cable("tipo-acta", "rfc", "resultado-final", "a")]})
+        and not servicio_procesos.resultado_conectado({**con_resultado, "aristas": [cable("operador-1", "resultado", "resultado-final", "b")]}))
+    rev("el servicio ya no sabe de tipos de expediente: sin `de_tipo` y sin la liga", not hasattr(servicio_procesos, "de_tipo") and not hasattr(servicio_procesos, "tipos_expediente"))
+    titulo("8d · (2026-11-04, NEX-529 y NEX-542) el nombre es único en la organización; el nodo del tipo recuerda su versión")
+    mio = nuevo_id()
+    r = guardar(a_admin, org_a, mio, proceso("Nombre único"), 0)
+    rev("un nombre que nadie tiene se guarda", r.status_code == 200, r.text[:160])
+    r = guardar(a_admin, org_a, nuevo_id(), proceso("Nombre único"), 0)
+    rev("crear otro con el MISMO nombre: 409 `ya_existe`, con su mensaje", r.status_code == 409 and r.json()["detail"]["codigo"] == "ya_existe" and "ese nombre" in r.json()["detail"]["mensaje"], r.text[:200])
+    r = guardar(a_admin, org_a, nuevo_id(), proceso("  NOMBRE   único "), 0)
+    rev("…también con otras mayúsculas y espacios de más", r.status_code == 409 and r.json()["detail"]["codigo"] == "ya_existe", r.text[:200])
+    rev("…y no se creó nada (en la lista sigue uno solo con ese nombre)", [x["datos"]["nombre"] for x in listar(a_admin, org_a).json()["procesos"]].count("Nombre único") == 1)
+    r = guardar(b_admin, org_b, nuevo_id(), proceso("Nombre único"), 0)
+    rev("otra organización SÍ puede usar ese nombre (la regla es por organización)", r.status_code == 200, r.text[:160])
+    otro_nombre = nuevo_id()
+    guardar(a_admin, org_a, otro_nombre, proceso("Otro nombre distinto"), 0)
+    r = guardar(a_admin, org_a, otro_nombre, proceso("nombre único"), 1)
+    rev("renombrar a uno que ya tiene OTRO proceso: 409 `ya_existe` y el proceso se queda como estaba", r.status_code == 409 and r.json()["detail"]["codigo"] == "ya_existe" and next(x for x in listar(a_admin, org_a).json()["procesos"] if x["id"] == otro_nombre)["datos"]["nombre"] == "Otro nombre distinto", r.text[:200])
+    r = guardar(a_admin, org_a, mio, proceso("NOMBRE ÚNICO".replace("Ú", "ú").replace("NOMBRE ", "Nombre ")), 1)
+    rev("cambiar solo las mayúsculas del PROPIO nombre sí se puede (no choca consigo mismo)", r.status_code == 200, r.text[:160])
+    r = guardar(a_admin, org_a, mio, proceso("Nombre único", activo=False), 2)
+    rev("guardar sin cambiar el nombre (activar o desactivar) no se revisa ni falla", r.status_code == 200 and r.json()["datos"]["activo"] is False, r.text[:160])
+    r = guardar(a_admin, org_a, otro_nombre, proceso("Otro nombre libre"), 1)
+    rev("renombrar a uno libre funciona, y el nombre anterior queda libre", r.status_code == 200 and guardar(a_admin, org_a, nuevo_id(), proceso("Otro nombre distinto"), 0).status_code == 200, r.text[:160])
+    rev("sin nombre sigue siendo 400 (no es un conflicto)", guardar(a_admin, org_a, nuevo_id(), proceso("  "), 0).status_code == 400)
+
+    con_version = proceso("Con versión del tipo")
+    con_version["nodos"][0]["data"]["version"] = 3
+    pv = nuevo_id()
+    r = guardar(a_admin, org_a, pv, con_version, 0)
+    rev("el nodo de un tipo documental guarda la versión con la que se armó", r.status_code == 200 and r.json()["datos"]["nodos"][0]["data"].get("version") == 3, r.text[:200])
+    rev("…y los nodos sin versión (procesos de antes) se guardan igual, sin inventarla", "version" not in r.json()["datos"]["nodos"][1]["data"])
+    for malo in (-1, 1.5, "3", True, 10**9):
+        d = proceso(f"Versión mala {malo!r}")
+        d["nodos"][0]["data"]["version"] = malo
+        rev(f"una versión que no es un entero razonable ({malo!r}) se rechaza con 400", guardar(a_admin, org_a, nuevo_id(), d, 0).status_code == 400)
+except Exception:  # noqa: BLE001 — una excepción que no es una aserción (p. ej. un resultado sin la forma que se esperaba) se anota como falla, y la prueba llega a su resumen
+    import traceback
+
+    traceback.print_exc()
+    rev("la prueba se cayó por una EXCEPCIÓN antes de terminar (no por una aserción): " + traceback.format_exc().strip().splitlines()[-1][:200], False)
 finally:
     shutil.rmtree(RAIZ, ignore_errors=True)
 

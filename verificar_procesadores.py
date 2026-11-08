@@ -54,6 +54,8 @@ try:
     rutas = {(metodo.upper(), ruta) for ruta, ops in app.openapi()["paths"].items() for metodo in ops if ruta.startswith("/procesadores")}
     esperadas = {
         ("POST", "/procesadores/activar"),
+        # 2026-10-29: «Generar a partir de un documento» del paso 2 (ver verificar_generar_campos.py).
+        ("POST", "/procesadores/generar-campos"),
         ("POST", "/procesadores/clasificador/sincronizar"),
         ("POST", "/procesadores/clasificador/asegurar"),
         ("GET", "/procesadores/clasificador"),
@@ -66,7 +68,7 @@ try:
     rev("el ayudante de errores sigue ahí", callable(getattr(router, "_mensaje_para", None)))
 
     titulo("2 · Activar: sin la llave de servicio, 401")
-    rev("sin llave: 401", c.post("/procesadores/activar", json={"id": "tipo-x", "nombre": "X", "campos": []}).status_code == 401)
+    rev("sin llave: 401", c.post("/procesadores/activar", json={"tenant": "demo", "id": "tipo-x", "nombre": "X", "campos": []}).status_code == 401)
 
     # El doble de Document AI: anota lo que le llega y contesta como contestaría Google.
     recibido: dict = {}
@@ -83,6 +85,7 @@ try:
 
     titulo("3 · Activar con campos sueltos: pasa tal cual y el esquema sale del generador")
     cuerpo = {
+        "tenant": "demo",
         "id": "tipo-abc",
         "nombre": "Póliza",
         "descripcion": "Póliza de seguro",
@@ -101,6 +104,7 @@ try:
     titulo("4 · Activar con un GRUPO: los subcampos viajan al esquema como un EntityType `object`")
     recibido.clear()
     cuerpo_grupo = {
+        "tenant": "demo",
         "id": "tipo-acta",
         "nombre": "Acta",
         "campos": [
@@ -127,6 +131,22 @@ try:
     rev("y su EntityType es `object` con los dos subcampos en orden", grupo.get("baseTypes") == ["object"] and [h["name"] for h in grupo.get("properties", [])] == ["nombre", "acciones"], str(grupo))
     rev("la obligatoriedad del subcampo se respeta", grupo["properties"][0]["occurrenceType"] == "REQUIRED_ONCE" and grupo["properties"][1]["occurrenceType"] == "OPTIONAL_ONCE")
 
+    titulo("4b · Instrucciones para la extracción (2026-10-30): llegan al esquema como el `documentPrompt` de Google")
+    recibido.clear()
+    r = c.post("/procesadores/activar", json=cuerpo, headers=LLAVE)
+    rev("sin instrucciones: 200 y el esquema NO lleva `documentPrompt`", r.status_code == 200 and "documentPrompt" not in recibido["esquema"], r.text[:200])
+    recibido.clear()
+    r = c.post("/procesadores/activar", json={**cuerpo, "instrucciones": "  La persona que interesa es el titular.  "}, headers=LLAVE)
+    rev(
+        "con instrucciones: 200 y el esquema trae `documentPrompt`, sin los espacios de los extremos",
+        r.status_code == 200 and recibido["esquema"].get("documentPrompt") == "La persona que interesa es el titular.",
+        str(recibido.get("esquema", {}).get("documentPrompt")),
+    )
+    recibido.clear()
+    r = c.post("/procesadores/activar", json={**cuerpo, "instrucciones": "x" * 1001}, headers=LLAVE)
+    rev("de más de 1000 caracteres: 422 y a Google no se le llamó", r.status_code == 422 and not recibido, r.text[:160])
+    rev("de justo 1000: se aceptan", c.post("/procesadores/activar", json={**cuerpo, "instrucciones": "x" * 1000}, headers=LLAVE).status_code == 200)
+
     titulo("5 · Activar rechaza lo que no se puede activar (422, sin llamar a Google)")
     recibido.clear()
     casos = {
@@ -151,7 +171,7 @@ try:
     rev("y el texto técnico (id de proyecto) NO llega al usuario", "62740263137" not in r.text and "PATCH" not in r.text)
     falla[0] = DocumentAIError("Document AI respondió 503", status_code=503)
     r = c.post("/procesadores/activar", json=cuerpo, headers=LLAVE)
-    rev("un 5xx de Google: 502 «no se pudo contactar»", r.status_code == 502 and "No se pudo contactar a Document AI" in r.json()["detail"], r.text[:200])
+    rev("un 5xx de Google: 502 «no se pudo contactar»", r.status_code == 502 and "El servicio de procesamiento no respondió" in r.json()["detail"] and "Document AI" not in r.json()["detail"], r.text[:200])
     falla[0] = RuntimeError("el polling se agotó a los 90 s")
     r = c.post("/procesadores/activar", json=cuerpo, headers=LLAVE)
     rev("un fallo que no es HTTP (polling agotado): 502 genérico", r.status_code == 502 and "No se pudo completar la activación" in r.json()["detail"] and "polling" not in r.text, r.text[:200])
@@ -171,10 +191,15 @@ try:
     router.consultar_procesador = consultar_falso  # type: ignore[assignment]
     router.eliminar_procesador = eliminar_falso  # type: ignore[assignment]
     router.consultar_esquema_clasificador = esquema_falso  # type: ignore[assignment]
-    r = c.get("/procesadores/proc-1", headers=LLAVE)
+    # Desde NEX-550 consultar y borrar piden `tenant` y que el procesador sea de un tipo de esa organización: `proc-1` lo es de uno de «demo».
+    from servicios import tipos_documentales as registro_tipos
+
+    registro_tipos.guardar("demo", "tipo-con-proc1", {"nombre": "Con proc-1", "estado": "activo", "procesadorId": "proc-1", "campos": []}, 0, "verificar")
+    DEMO = {"tenant": "demo"}
+    r = c.get("/procesadores/proc-1", params=DEMO, headers=LLAVE)
     rev("consultar con un 5xx: 502, no 500", r.status_code == 502, r.text[:160])
-    r = c.delete("/procesadores/proc-1", headers=LLAVE)
-    rev("borrar con un 4xx: 502 con SU frase (no la de «revisa los campos»)", r.status_code == 502 and "no permitió borrar" in r.json()["detail"] and "campos" not in r.json()["detail"], r.text[:200])
+    r = c.delete("/procesadores/proc-1", params=DEMO, headers=LLAVE)
+    rev("borrar con un 4xx: 502 con SU frase (no la de «revisa los campos»)", r.status_code == 502 and "No se pudo borrar este procesador" in r.json()["detail"] and "campos" not in r.json()["detail"] and "Document AI" not in r.json()["detail"], r.text[:200])
     # Desde el 2026-10-26 el clasificador es de cada organización: pide `tenant` y la sesión de quien administra (aquí, el administrador
     # de plataforma en su espacio, que es el que pone `verificacion_comun`). `verificar_tipos_documentales.py` prueba el aislamiento.
     r = c.get("/procesadores/clasificador", params={"tenant": "demo"}, headers=LLAVE)
@@ -185,8 +210,8 @@ try:
 
     router.consultar_procesador = inexistente  # type: ignore[assignment]
     router.eliminar_procesador = inexistente  # type: ignore[assignment]
-    rev("consultar uno que ya no existe: 404", c.get("/procesadores/proc-1", headers=LLAVE).status_code == 404)
-    r = c.delete("/procesadores/proc-1", headers=LLAVE)
+    rev("consultar uno que ya no existe: 404", c.get("/procesadores/proc-1", params=DEMO, headers=LLAVE).status_code == 404)
+    r = c.delete("/procesadores/proc-1", params=DEMO, headers=LLAVE)
     rev("borrar uno que ya no existe: éxito (el objetivo ya se cumplió)", r.status_code == 200 and r.json() == {"eliminado": True}, r.text[:160])
 
     titulo("8 · La estructura del procesador se lee de Google UNA vez y se invalida al subir un esquema nuevo")

@@ -6,8 +6,15 @@ llaves, webhooks y bandeja.
 
 ## Qué se anota (auditoría)
 
-Crear, borrar, cambiar de estado (borrador ↔ activo ↔ archivado) y CALIBRAR un tipo dejan su rastro en la bitácora, con quién
-lo hizo. Guardar a secas (editar un campo, subir un ejemplo) no: son muchos guardados y no cambian lo que el tipo ES.
+Crear, borrar y cambiar de estado (borrador ↔ activo ↔ archivado) un tipo dejan su rastro en la bitácora, con quién
+lo hizo. Guardar a secas (editar un campo, subir un ejemplo) no: son muchos guardados y no cambian lo que el tipo ES. Hasta el 2026-11-06 también se
+anotaba CALIBRAR un tipo (`DOCUMENT_TYPE_CALIBRATED`); el paso «Calibrar» se quitó, así que ya no se escribe (lo que quedó en la bitácora se sigue leyendo).
+
+## Sugerir una descripción (2026-11-05)
+
+`POST /sugerir-descripcion` le pide a Gemini (Vertex AI, ver `servicios/gemini.py`) una descripción para el tipo que se está capturando, a partir
+de su nombre y de los nombres de los demás tipos de la organización. No guarda nada: devuelve el texto y la persona lo revisa. Lo puede pedir
+quien puede editar tipos (el mismo rol que guardarlos), porque cada llamada cuesta (centavos).
 
 ## Lo que NO hace todavía
 
@@ -18,12 +25,15 @@ lo hizo. Guardar a secas (editar un campo, subir un ejemplo) no: son muchos guar
 
 import logging
 
-from fastapi import APIRouter, Header, HTTPException, Query, status
+from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from routers.errores import almacen_no_disponible
-from servicios import aislamiento, auditoria, tipos_documentales as registro_tipos
+from routers.ia import _leer_subida
+from servicios import aislamiento, auditoria, gemini, tipos_documentales as registro_tipos
 from servicios.almacen import ErrorAlmacen
+from servicios.subidas import normalizar_tipo
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +51,12 @@ class Guardado(BaseModel):
 class Orden(BaseModel):
     tenant: str
     ids: list[str] = Field(..., max_length=500)
+
+
+class PedidoSugerencia(BaseModel):
+    tenant: str = Field(..., description="La organización")
+    nombre: str = Field(..., max_length=200, description="El nombre del tipo documental que se está capturando")
+    tipoId: str | None = Field(None, description="El tipo que se está editando, si ya existe: no cuenta entre «los otros tipos»")
 
 
 def _anotar(accion: str, actor: aislamiento.Actor, tenant: str, tipo_id: str, **datos) -> None:
@@ -82,14 +98,100 @@ def ordenar(entrada: Orden, authorization: str | None = Header(default=None)):
     return {"ok": True}
 
 
+@router.post(
+    "/sugerir-descripcion",
+    tags=["Tipos documentales"],
+    summary="Sugerir la descripción de un tipo documental (Gemini)",
+    description=(
+        "A partir del nombre del tipo y de los nombres de los demás tipos de la organización (los archivados y el propio `tipoId` no cuentan), "
+        "Gemini propone una descripción para el clasificador: qué documento es y cómo distinguirlo. Devuelve `{descripcion, modelo}`. No guarda "
+        "nada. Lo puede pedir quien puede editar tipos. 400 si el nombre está en blanco; 503 si el servidor no tiene acceso a Gemini; 429 si "
+        "Google pide esperar; 502 si falla, tarda o no devuelve texto."
+    ),
+)
+async def sugerir_descripcion(entrada: PedidoSugerencia, authorization: str | None = Header(default=None)):
+    aislamiento.exigir_administrar(authorization, entrada.tenant, "tipo_documental")
+    nombre = " ".join(entrada.nombre.split())
+    if not nombre:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Escribe primero el nombre del tipo documental.")
+    try:
+        tipos = await run_in_threadpool(registro_tipos.listar, entrada.tenant)
+    except ErrorAlmacen as exc:
+        raise almacen_no_disponible(exc) from exc
+    # Los «otros»: los que la organización ve (no archivados) y que no son este mismo tipo.
+    otros = [t["datos"].get("nombre", "") for t in tipos if t["id"] != entrada.tipoId and t["datos"].get("estado") != "archivado"]
+    try:
+        return await gemini.sugerir_descripcion(nombre, otros)
+    except gemini.ErrorSugerencia as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@router.post(
+    "/sugerir-descripcion-con-documentos",
+    tags=["Tipos documentales"],
+    summary="Sugerir la descripción de un tipo documental a partir de documentos de ejemplo (Gemini)",
+    description=(
+        "Lo mismo que `/sugerir-descripcion`, pero Gemini además VE de 1 a 3 documentos de ejemplo del tipo (`archivos`, multipart: PDF, JPG o PNG; el TIFF no, "
+        "Gemini no lo lee) y describe lo que de verdad traen, sin copiar datos concretos de las personas. Los documentos viajan en la petición a Google y se "
+        "descartan: no se guardan. Pesan a lo más 18 MB en total. Devuelve `{descripcion, modelo, documentos}`. 400 con el nombre en blanco, sin archivos, con más "
+        "de 3 o con un formato que Gemini no lee; 413 si pesan de más; mismos 403, 429, 502 y 503 que la ruta sin documentos."
+    ),
+)
+async def sugerir_descripcion_con_documentos(
+    tenant: str = Form(..., description="La organización"),
+    nombre: str = Form(..., max_length=200, description="El nombre del tipo documental que se está capturando"),
+    tipoId: str = Form("", description="El tipo que se está editando, si ya existe: no cuenta entre «los otros tipos»"),
+    archivos: list[UploadFile] = File(..., description="De 1 a 3 documentos de ejemplo (PDF, JPG o PNG)"),
+    authorization: str | None = Header(default=None),
+):
+    aislamiento.exigir_administrar(authorization, tenant, "tipo_documental")
+    nombre = " ".join(nombre.split())
+    if not nombre:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Escribe primero el nombre del tipo documental.")
+    if not archivos:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Elige al menos un documento de ejemplo.")
+    if len(archivos) > gemini.MAX_DOCUMENTOS_DE_EJEMPLO:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Son demasiados documentos: elige hasta {gemini.MAX_DOCUMENTOS_DE_EJEMPLO}.")
+    # El formato se revisa ANTES de leer nada: un TIFF no se descarga para después rechazarlo.
+    for archivo in archivos:
+        if normalizar_tipo(archivo.content_type) not in gemini.MIME_PARA_GEMINI:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Para sugerir la descripción con documentos usa PDF, JPG o PNG.",
+            )
+    documentos: list[tuple[bytes, str]] = []
+    total = 0
+    for archivo in archivos:
+        contenido = await _leer_subida(archivo)  # formato soportado, no vacío y dentro del tope de una subida
+        total += len(contenido)
+        if total > gemini.MAX_BYTES_DOCUMENTOS:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Los documentos pesan demasiado: entre todos, a lo más {gemini.MAX_BYTES_DOCUMENTOS // (1024 * 1024)} MB.",
+            )
+        documentos.append((contenido, normalizar_tipo(archivo.content_type)))
+    try:
+        tipos = await run_in_threadpool(registro_tipos.listar, tenant)
+    except ErrorAlmacen as exc:
+        raise almacen_no_disponible(exc) from exc
+    otros = [t["datos"].get("nombre", "") for t in tipos if t["id"] != (tipoId or None) and t["datos"].get("estado") != "archivado"]
+    try:
+        resultado = await gemini.sugerir_descripcion(nombre, otros, documentos)
+    except gemini.ErrorSugerencia as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return {**resultado, "documentos": len(documentos)}
+
+
 @router.put(
     "/{tipo_id}",
     tags=["Tipos documentales"],
     summary="Crear o guardar un tipo documental",
     description=(
         "Con `revision: 0` crea el tipo; con otra, lo actualiza SI esa sigue siendo la revisión vigente. Si alguien lo guardó "
-        "antes, responde 409 con `revisionActual`: hay que volver a leerlo y no se pisa nada. Devuelve el tipo con su "
-        "revisión nueva."
+        "antes, responde 409 `conflicto` con `revisionActual`: hay que volver a leerlo y no se pisa nada. El nombre es único en la "
+        "organización (sin distinguir mayúsculas ni espacios de más; los archivados no cuentan): crear, renombrar o desarchivar un "
+        "tipo con el nombre de otro responde 409 `ya_existe`. Guardar sin tocar el nombre no choca, aunque ya hubiera un duplicado "
+        "de antes de esta regla. Devuelve el tipo con su revisión nueva."
     ),
 )
 def guardar(tipo_id: str, entrada: Guardado, authorization: str | None = Header(default=None)):
@@ -109,6 +211,11 @@ def guardar(tipo_id: str, entrada: Guardado, authorization: str | None = Header(
                 "revisionActual": exc.revision_actual,
             },
         ) from exc
+    except registro_tipos.NombreRepetido as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"codigo": "ya_existe", "mensaje": "Ya hay un tipo documental con ese nombre."},
+        ) from exc
     except ErrorAlmacen as exc:
         raise almacen_no_disponible(exc) from exc
 
@@ -119,9 +226,8 @@ def guardar(tipo_id: str, entrada: Guardado, authorization: str | None = Header(
         antes = previo["datos"]
         if antes["estado"] != nuevo["estado"]:
             _anotar(auditoria.DOCUMENT_TYPE_STATE_CHANGED, actor, entrada.tenant, tipo_id, nombre=nuevo["nombre"], de=antes["estado"], a=nuevo["estado"])
-        # Calibrar es lo que permite que un tipo extraiga: quién y cuándo importa.
-        if nuevo.get("calibradoEn") and nuevo.get("calibradoEn") != antes.get("calibradoEn"):
-            _anotar(auditoria.DOCUMENT_TYPE_CALIBRATED, actor, entrada.tenant, tipo_id, nombre=nuevo["nombre"], version=nuevo.get("version"))
+        # Ya no se anota `DOCUMENT_TYPE_CALIBRATED` (2026-11-06): el paso «Calibrar» se quitó y un tipo activo con procesador extrae sin él. Si una caja
+        # vieja todavía trae `calibradoEn` y cambia, es un guardado a secas.
     return tipo
 
 

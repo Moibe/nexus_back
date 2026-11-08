@@ -12,7 +12,9 @@ Lo que se prueba:
 - un tipo de otra organización responde como si no existiera (404), y su tenant, 403 `sin_acceso`;
 - lo que no es un tipo (id raro, sin nombre, estado inventado, enorme) se rechaza, y lo que el servidor pone no se puede forzar;
 - el orden de la biblioteca se guarda por organización;
-- crear, borrar, cambiar de estado y calibrar dejan rastro con quién; guardar a secas, no;
+- el nombre es único en la organización (409 `ya_existe`, sin distinguir mayúsculas ni espacios de más; los archivados no cuentan);
+- crear, borrar y cambiar de estado dejan rastro con quién; guardar a secas, no (tampoco cambiar el `calibradoEn` de un tipo: el paso «Calibrar» se quitó el
+  2026-11-06 y `DOCUMENT_TYPE_CALIBRATED` ya no se escribe, aunque sigue siendo una acción válida de la bitácora);
 - el clasificador de CADA organización se sincroniza SIN cuerpo, con los tipos activos de ESA organización, y `asegurar` solo corrige
   si hay desfase (o lo crea si falta); quien no es de la organización recibe 403 y el administrador de plataforma solo toca el suyo.
 """
@@ -185,6 +187,14 @@ try:
     rev("estado inventado: 400", guardar(a_admin, org_a, nuevo_id(), tipo("X", estado="publicado"), 0).status_code == 400)
     rev("sin estado: 400", guardar(a_admin, org_a, nuevo_id(), {"nombre": "X"}, 0).status_code == 400)
     rev("descripción que no es texto: 400", guardar(a_admin, org_a, nuevo_id(), {**tipo("X"), "descripcion": 5}, 0).status_code == 400)
+    rev("instrucciones para la extracción que no son texto: 400", guardar(a_admin, org_a, nuevo_id(), {**tipo("X"), "instrucciones": 5}, 0).status_code == 400)
+    rev("instrucciones de más de 1000 caracteres: 400", guardar(a_admin, org_a, nuevo_id(), {**tipo("X"), "instrucciones": "x" * 1001}, 0).status_code == 400)
+    # Directo a `validar`, sin crear un tipo: uno de más en la lista movería el orden y las revisiones de las secciones de abajo, y
+    # borrarlo dejaría otro `DOCUMENT_TYPE_DELETED` que la sección de borrado cuenta uno por uno.
+    from servicios.tipos_documentales_comun import MAX_INSTRUCCIONES, validar
+
+    largas = "x" * MAX_INSTRUCCIONES
+    rev("de justo el tope (1000) se aceptan y se conservan tal cual", validar("tipo-abcdef", {**tipo("X"), "instrucciones": largas})["instrucciones"] == largas)
     rev("un tipo de más de 1 MB: 400", guardar(a_admin, org_a, nuevo_id(), tipo("X", relleno="z" * 1_100_000), 0).status_code == 400)
     rev("revisión negativa: 422", c.put(f"/tipos-documentales/{nuevo_id()}", json={"tenant": org_a, "revision": -1, "datos": tipo("X")}, headers=cab(a_admin)).status_code == 422)
     rev("ninguno de esos dejó rastro en la lista", ids(a_admin, org_a) == [ine])
@@ -223,12 +233,32 @@ try:
     rev("activar: 200", r.status_code == 200, r.text[:160])
     cambios = auditoria("DOCUMENT_TYPE_STATE_CHANGED")
     rev("deja `DOCUMENT_TYPE_STATE_CHANGED` borrador → activo, con quién", len(cambios) == 1 and cambios[0].get("de") == "borrador" and cambios[0].get("a") == "activo" and cambios[0].get("usuarioGuid") == guid_omar and cambios[0].get("tipoId") == ine, str(cambios))
+    # Desde el 2026-11-06 no existe el paso «Calibrar»: que cambie el `calibradoEn` en la caja de un tipo (los de antes lo traen) es un guardado a secas.
     r = guardar(a_admin, org_a, ine, {**activo, "calibradoEn": "2026-10-15T01:00:00Z"}, r.json()["revision"])
     cal = auditoria("DOCUMENT_TYPE_CALIBRATED")
-    rev("calibrar deja `DOCUMENT_TYPE_CALIBRATED` con quién", r.status_code == 200 and len(cal) == 1 and cal[0].get("usuarioGuid") == guid_rita and cal[0].get("version") == 1, str(cal))
-    rev("y calibrar NO cuenta como cambio de estado", len(auditoria("DOCUMENT_TYPE_STATE_CHANGED")) == 1)
-    r = guardar(a_admin, org_a, ine, {**activo, "calibradoEn": "2026-10-15T01:00:00Z", "descripcion": "otra"}, r.json()["revision"])
-    rev("guardar otra vez lo ya calibrado no repite el rastro", len(auditoria("DOCUMENT_TYPE_CALIBRATED")) == 1)
+    rev("guardar un tipo cuyo `calibradoEn` cambia (de nulo a una fecha) es un guardado a secas: 200 y YA NO deja `DOCUMENT_TYPE_CALIBRATED` (0 renglones)", r.status_code == 200 and len(cal) == 0, str(cal))
+    rev("y tampoco cuenta como cambio de estado: `DOCUMENT_TYPE_STATE_CHANGED` sigue siendo solo el de activar", len(auditoria("DOCUMENT_TYPE_STATE_CHANGED")) == 1)
+    r = guardar(a_admin, org_a, ine, {**activo, "calibradoEn": "2026-10-15T02:00:00Z", "descripcion": "otra"}, r.json()["revision"])
+    rev("cambiarlo a otra fecha y editar otra cosa en el mismo guardado tampoco deja rastro: sigue en 0", r.status_code == 200 and len(auditoria("DOCUMENT_TYPE_CALIBRATED")) == 0, str(auditoria("DOCUMENT_TYPE_CALIBRATED")))
+    # `DOCUMENT_TYPE_STATE_CHANGED` sigue funcionando aunque el mismo guardado cambie también el `calibradoEn` (aquí se archiva `pasaporte`, que ningún otro apartado usa)
+    rev_pasaporte = next(t["revision"] for t in listar(a_admin, org_a).json()["tipos"] if t["id"] == pasaporte)
+    antes_cambios = len(auditoria("DOCUMENT_TYPE_STATE_CHANGED"))
+    r = guardar(a_admin, org_a, pasaporte, tipo("Pasaporte", estado="archivado", calibradoEn="2026-10-15T03:00:00Z"), rev_pasaporte)
+    cambios = auditoria("DOCUMENT_TYPE_STATE_CHANGED")
+    rev("un guardado que cambia el estado Y el `calibradoEn` deja UN `DOCUMENT_TYPE_STATE_CHANGED` (borrador → archivado, con quién y de qué tipo) y ningún `DOCUMENT_TYPE_CALIBRATED`",
+        r.status_code == 200 and len(cambios) == antes_cambios + 1 and cambios[-1].get("tipoId") == pasaporte and cambios[-1].get("de") == "borrador" and cambios[-1].get("a") == "archivado"
+        and cambios[-1].get("usuarioGuid") == guid_rita and len(auditoria("DOCUMENT_TYPE_CALIBRATED")) == 0, str(cambios[-1:]))
+    # La bitácora es de solo agregar: `DOCUMENT_TYPE_CALIBRATED` ya no se escribe, pero sigue siendo una acción válida (los renglones de antes se siguen leyendo y filtrando con ese nombre).
+    from servicios import auditoria as servicio_auditoria  # noqa: E402
+
+    rev("la acción histórica `DOCUMENT_TYPE_CALIBRATED` conserva su nombre y su lugar en `ACCIONES`", servicio_auditoria.DOCUMENT_TYPE_CALIBRATED == "DOCUMENT_TYPE_CALIBRATED" and "DOCUMENT_TYPE_CALIBRATED" in servicio_auditoria.ACCIONES)
+    try:
+        servicio_auditoria.registrar(servicio_auditoria.DOCUMENT_TYPE_CALIBRATED, guid_rita, tenant=org_a, tipoId=ine, nombre="INE", version=1)  # un renglón «de antes»
+        escrito = True
+    except ValueError:  # la acción dejó de ser válida: la bitácora ya no aceptaría ni leería los renglones de antes con ese nombre
+        escrito = False
+    de_antes = servicio_auditoria.eventos({"DOCUMENT_TYPE_CALIBRATED"})
+    rev("y un renglón de antes se escribe y se lee igual (filtrando por ese nombre), con quién y qué tipo", escrito and len(de_antes) == 1 and de_antes[0].get("usuarioGuid") == guid_rita and de_antes[0].get("tipoId") == ine and de_antes[0].get("version") == 1, str(de_antes))
 
     titulo("10 · Cada organización tiene SU clasificador, armado con SUS tipos activos de ESTE registro")
     guardar(b_admin, org_b, otro_b, tipo("De Beta", estado="activo", version=1, procesadorId="proc-beta-1"), 1)
@@ -398,6 +428,39 @@ try:
     n = nuevo_id()
     r = guardar(a_admin, org_a, n, tipo("Después del corte"), 0)
     rev("y el guardado siguiente no queda pegado a ella", r.status_code == 200 and n in ids(a_admin, org_a))
+
+    titulo("14 · El nombre es único en la organización: 409 `ya_existe` (2026-11-04)")
+
+    def ya_existe(r) -> bool:
+        d = r.json().get("detail") if r.status_code == 409 else None
+        return isinstance(d, dict) and d.get("codigo") == "ya_existe" and d.get("mensaje") == "Ya hay un tipo documental con ese nombre."
+
+    cf = nuevo_id()
+    r = guardar(a_admin, org_a, cf, tipo("Constancia Fiscal"), 0)
+    rev("crear «Constancia Fiscal»: 200", r.status_code == 200, r.text[:200])
+    altas_antes = len(auditoria("DOCUMENT_TYPE_CREATED"))
+    otro = nuevo_id()
+    r = guardar(a_otra, org_a, otro, tipo("  constancia   FISCAL "), 0)
+    rev("otra persona de la organización NO puede crear otro con ese nombre (mayúsculas y espacios de más no cuentan): 409 `ya_existe`", ya_existe(r), r.text[:200])
+    rev("…el repetido no quedó, ni dejó rastro de alta", otro not in ids(a_admin, org_a) and len(auditoria("DOCUMENT_TYPE_CREATED")) == altas_antes)
+    r = guardar(b_admin, org_b, nuevo_id(), tipo("Constancia Fiscal"), 0)
+    rev("otra organización sí puede llamar así a uno suyo", r.status_code == 200, r.text[:200])
+    r = guardar(a_otra, org_a, otro, tipo("Constancia Fiscal 2"), 0)
+    rev("con otro nombre, sí", r.status_code == 200, r.text[:200])
+    r = guardar(a_otra, org_a, otro, tipo("CONSTANCIA FISCAL"), 1)
+    nombre_otro = next(t["datos"]["nombre"] for t in listar(a_admin, org_a).json()["tipos"] if t["id"] == otro)
+    rev("renombrarlo a uno ocupado: 409 `ya_existe`, y conserva su nombre", ya_existe(r) and nombre_otro == "Constancia Fiscal 2", f"{r.text[:160]} / {nombre_otro}")
+    r = guardar(a_admin, org_a, cf, tipo("constancia fiscal"), 1)
+    rev("cambiarle solo las mayúsculas al suyo propio sí se puede", r.status_code == 200, r.text[:200])
+    r = guardar(a_admin, org_a, cf, tipo("constancia fiscal", estado="archivado"), 2)
+    r2 = guardar(a_otra, org_a, otro, tipo("CONSTANCIA FISCAL"), 1)
+    rev("archivar libera el nombre: el otro ya puede tomarlo", r.status_code == 200 and r2.status_code == 200, f"{r.text[:120]} / {r2.text[:120]}")
+    r = guardar(a_admin, org_a, cf, tipo("constancia fiscal", estado="borrador"), 3)
+    rev("desarchivar cuando otro ya tomó su nombre: 409 `ya_existe`", ya_existe(r), r.text[:200])
+    r = guardar(a_admin, org_a, cf, tipo("constancia fiscal", estado="archivado", descripcion="Otra"), 3)
+    rev("guardar el archivado sin desarchivarlo sí se puede", r.status_code == 200, r.text[:200])
+    r = guardar(a_otra, org_a, otro, tipo("Constancia Fiscal 3"), 1)
+    rev("una revisión vieja sigue siendo `conflicto` (no `ya_existe`)", r.status_code == 409 and r.json()["detail"].get("codigo") == "conflicto", r.text[:200])
 finally:
     shutil.rmtree(RAIZ, ignore_errors=True)
 

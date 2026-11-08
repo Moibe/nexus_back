@@ -73,7 +73,7 @@ def revisar_tipo(content_type: str | None) -> str:
     tipo = normalizar_tipo(content_type)
     if tipo not in MIME_SOPORTADOS:
         raise SubidaInvalida(
-            f"Document AI no procesa '{tipo or 'desconocido'}'. "
+            f"No se pueden procesar archivos de tipo '{tipo or 'desconocido'}'. "
             f"Formatos aceptados: {', '.join(sorted(MIME_SOPORTADOS))}.",
             400,
         )

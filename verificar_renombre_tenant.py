@@ -3,14 +3,13 @@
     .venv/Scripts/python verificar_renombre_tenant.py
 
 OFFLINE: arma un almacén temporal con datos REALES de cada servicio en `demo` (un documento en la bandeja, tipos documentales con un ejemplo
-subido, un tipo de expediente y un expediente, procesos, llaves, webhooks) y los mismos datos en otro tenant que debe quedar IDÉNTICO. Después
+subido, un expediente, procesos, llaves, webhooks) y los mismos datos en otro tenant que debe quedar IDÉNTICO. Después
 de renombrar comprueba, leyendo con los propios servicios, que todo aparece bajo `plataforma`, que el archivo se lee por su ruta nueva, que el
 otro tenant no cambió ni un byte, que la simulación no toca nada, que se niega cuando debe y que se deshace corriéndolo al revés.
 """
 
 import contextlib
 import io
-import json
 import os
 import shutil
 import sys
@@ -34,7 +33,6 @@ from servicios import (  # noqa: E402
     registro,
     tenants_registro,
     tipos_documentales,
-    tipos_expediente,
     usuarios,
 )
 
@@ -86,14 +84,13 @@ def sembrar(tenant: str, contenido: bytes) -> dict:
     entrada = bandeja.registrar_entrada(tenant, guardado, "image/png", "ine.png", "MANUAL")
     td_id = "tipo-" + (tenant.replace("-", "") + "0" * 32)[:32]
     tipos_documentales.guardar(tenant, td_id, datos_tipo("INE", guardado["rutaRelativa"], tenant), 0, "guid-de-prueba")
-    te = tipos_expediente.crear(tenant, "Expediente médico", [td_id], "guid-de-prueba")
-    ex = expedientes.crear(tenant, "Juan Pérez", "guid-de-prueba", te["id"])
+    ex = expedientes.crear(tenant, "Juan Pérez", "guid-de-prueba")
     expedientes.agregar_documento(tenant, ex["id"], entrada["documentoId"], "guid-de-prueba")
     registro.agregar("procesos.jsonl", {"op": "guardar", "id": f"proceso-{tenant}", "tenant": tenant, "revision": 1, "datos": {"nombre": "P"}, "por": "x", "en": "2026-10-20T00:00:00+00:00"})
     registro.agregar("llaves.jsonl", {"evento": "emitida", "id": f"llave-{tenant}", "tenant": tenant, "hash": "h" * 8, "creadaEn": "2026-10-20T00:00:00+00:00"})
     registro.agregar("webhooks.jsonl", {"evento": "creado", "id": f"wh-{tenant}", "tenant": tenant, "url": "https://x", "en": "2026-10-20T00:00:00+00:00"})
     registro.agregar("auditoria.jsonl", {"evento": "auditoria", "accion": "CROSS_TENANT_ACCESS", "usuarioGuid": None, "tenantPedido": tenant, "recurso": "archivo", "en": "2026-10-20T00:00:00+00:00"})
-    return {"guardado": guardado, "entrada": entrada, "td": td_id, "te": te["id"], "ex": ex["id"], "contenido": contenido}
+    return {"guardado": guardado, "entrada": entrada, "td": td_id, "ex": ex["id"], "contenido": contenido}
 
 
 try:
@@ -142,7 +139,7 @@ try:
     rev("la carpeta de documentos cambió de nombre y la vieja ya no está", (RAIZ / "plataforma").is_dir() and not (RAIZ / "demo").exists())
     ruta_nueva = demo["guardado"]["rutaRelativa"].replace("demo/", "plataforma/", 1)
     rev("el archivo se LEE por su ruta nueva, con los mismos bytes", almacen.leer(ruta_nueva) == demo["contenido"])
-    rev("los registros propios ya se llaman `plataforma`", all((RAIZ / ".registro" / f"{p}-plataforma.jsonl").exists() and not (RAIZ / ".registro" / f"{p}-demo.jsonl").exists() for p in ("bandeja", "documentos", "expedientes", "tipos-expediente")))
+    rev("los registros propios ya se llaman `plataforma`", all((RAIZ / ".registro" / f"{p}-plataforma.jsonl").exists() and not (RAIZ / ".registro" / f"{p}-demo.jsonl").exists() for p in ("bandeja", "documentos", "expedientes")))
     pend = bandeja.listar_pendientes("plataforma")
     rev("la bandeja de `plataforma` trae el documento, con su ruta nueva", len(pend) == 1 and pend[0]["rutaRelativa"] == ruta_nueva and pend[0]["nombreOriginal"] == "ine.png", str(pend))
     rev("y la de `demo` ya no trae nada", bandeja.listar_pendientes("demo") == [])
@@ -155,8 +152,6 @@ try:
     rev("lo que parecía una ruta pero no lo es NO se tocó (`demo/leeme.txt`, `mi-demo/…`)", "demo/leeme.txt" in ej["nota"] and "mi-demo/ab/cd/" + "e" * 64 in ej["nota"] and "plataforma/leeme" not in ej["nota"], ej["nota"])
     rev("`demo` ya no tiene tipos documentales", tipos_documentales.listar("demo") == [])
     rev("el procesador sigue siendo el dueño de ese tipo (la limpieza de huérfanos no lo verá huérfano)", tipos_documentales.procesadores_con_dueno().get("proc-INE-demo", {}).get("tenant") == "plataforma")
-    tes = tipos_expediente.listar("plataforma")
-    rev("el tipo de expediente pasó, con el tipo documental de su esquema", len(tes) == 1 and tes[0]["id"] == demo["te"] and demo["td"] in json.dumps(tes[0]), str(tes))
     exs = expedientes.listar("plataforma")
     rev("el expediente pasó, con su documento", len(exs) == 1 and exs[0]["id"] == demo["ex"] and exs[0]["totalDocumentos"] == 1, str(exs))
     rev("procesos, llaves y webhooks quedaron con el tenant nuevo", all(

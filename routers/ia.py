@@ -9,13 +9,16 @@ el parseo de la respuesta viven en `servicios.ia`.
 """
 
 import logging
+from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile, status
+from starlette.concurrency import run_in_threadpool
 
 from config import MAX_SUBIDA_BYTES, MAX_SUBIDA_MB
 from errores import ErrorDocumentAI, SinClasificador
-from servicios import aislamiento, ia
+from servicios import aislamiento, clasificadores, datos_extraidos, ia
+from servicios.tipos_documentales import procesadores_con_dueno
 from servicios.subidas import MIME_SOPORTADOS, SubidaInvalida, revisar_tamano, revisar_tipo
 
 logger = logging.getLogger(__name__)
@@ -47,11 +50,11 @@ _POR_MOTIVO: dict[str, tuple[int, str]] = {
     ),
     "cuota": (
         status.HTTP_503_SERVICE_UNAVAILABLE,
-        "Se alcanzó el límite de páginas por minuto de Document AI. Espera un momento y vuelve a intentar.",
+        "Se alcanzó el límite de páginas por minuto. Espera un momento y vuelve a intentar.",
     ),
     "servicio": (
         status.HTTP_502_BAD_GATEWAY,
-        "Document AI no está disponible en este momento. Intenta de nuevo en unos minutos.",
+        "El procesamiento de documentos no está disponible en este momento. Intenta de nuevo en unos minutos.",
     ),
 }
 
@@ -123,9 +126,15 @@ def _fallar(exc: Exception, generico: str) -> HTTPException:
         # bien. Se dice así en vez de "falló", que sería afirmar de más.
         return HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail="Document AI tardó demasiado en responder. El documento puede ser muy grande.",
+            detail="Biblioratum tardó demasiado en responder. El documento puede ser muy grande.",
         )
     return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=generico)
+
+
+def mensaje_de_fallo(exc: Exception, generico: str) -> str:
+    """El texto para la persona de lo que tronó (el de `_fallar`), para quien lo GUARDA en vez de lanzarlo: jamás el texto crudo de la excepción, que trae
+    el nombre del proveedor y lo que contestó."""
+    return str(_fallar(exc, generico).detail)
 
 # `MIME_SOPORTADOS` se importa de `servicios.subidas` (ver el import de arriba):
 # la misma lista la exige `/archivos/`, y tenerla en dos lados garantizaba que un
@@ -197,6 +206,10 @@ async def extraer_generico(
     imagen: UploadFile = File(...),
     procesador: str = Form(...),
     version: str = Form(""),
+    documento: str = Form("", description="Opcional. El documento (`documento-…`) del que se extrae: con él, la corrida y sus datos se GUARDAN (pide `tenant` y `tipoDocumental`)."),
+    tipoDocumental: str = Form("", description="Con `documento`: el tipo documental (`tipo-…`) de la organización cuyo procesador es `procesador`."),
+    tenant: str = Form("", description="Con `documento`: la organización."),
+    authorization: str | None = Header(default=None),
 ):
     procesador = procesador.strip()
     if not procesador:
@@ -205,14 +218,66 @@ async def extraer_generico(
             detail="Falta el procesador con el que extraer.",
         )
 
+    # Guardar es opcional (lo pide el Pipeline; Swagger y las pruebas pueden extraer sin guardar). Si se pide, todo se comprueba ANTES de
+    # pagarle a Google: quién pide, que el documento y el tipo sean de su organización y que el procesador sea el del tipo.
+    guardar = documento.strip()
+    actor = None
+    # Con `tenant` (el BFF siempre lo manda, desde la sesión) el procesador tiene que ser de esa organización aunque no se guarde nada (NEX-550):
+    # sin eso, cualquiera con sesión pagaba extracciones con el procesador de otra. Sin `tenant` (Swagger y las pruebas, con la llave de servicio)
+    # se conserva el comportamiento de siempre.
+    if tenant.strip() and not guardar:
+        actor = aislamiento.exigir(authorization, tenant, "documento")
+        dueno = await run_in_threadpool(procesadores_con_dueno)
+        if (dueno.get(procesador) or {}).get("tenant") != tenant:
+            aislamiento.intento_cruzado(actor, "procesador", procesador, tenant_pedido=tenant)
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ese procesador no existe en tu organización.")
+        actor = None  # no se guarda nada: solo se comprobó quién pide
+    if guardar:
+        actor = aislamiento.exigir(authorization, tenant, "documento")
+        try:
+            await run_in_threadpool(datos_extraidos.comprobar, tenant, guardar, tipoDocumental.strip(), procesador)
+        except datos_extraidos.SinBase as exc:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        except datos_extraidos.DocumentoNoEncontrado as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ese documento no existe.") from exc
+        except datos_extraidos.TipoNoEncontrado as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Ese tipo documental no existe en tu organización o no usa ese procesador.",
+            ) from exc
+
     contenido = await _leer_subida(imagen)
+    iniciada = datetime.now(timezone.utc).replace(tzinfo=None)
     try:
-        return await ia.extraer_con_procesador(
+        resultado = await ia.extraer_con_procesador(
             procesador, contenido, imagen.content_type or "", version.strip()
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Falló la extracción con el procesador %s", procesador)
-        raise _fallar(exc, "No se pudo procesar el documento con Document AI.") from exc
+        error = _fallar(exc, "No se pudo procesar el documento.")
+        if actor is not None:
+            await _guardar_extraccion(tenant, guardar, tipoDocumental.strip(), procesador, version.strip(), iniciada, actor.guid, None, str(error.detail))
+        raise error from exc
+
+    if actor is not None:
+        extraccion = await _guardar_extraccion(tenant, guardar, tipoDocumental.strip(), procesador, version.strip(), iniciada, actor.guid, resultado, None)
+        metadata = resultado.setdefault("_metadata", {})
+        metadata["guardado"] = extraccion is not None
+        if extraccion:
+            metadata["extraccionId"] = extraccion
+    return resultado
+
+
+async def _guardar_extraccion(tenant, documento, tipo, procesador, version, iniciada, por, resultado, error) -> str | None:
+    """Guarda la corrida; si no se puede, lo dice el log y la respuesta (`_metadata.guardado: false`), pero la extracción —que ya se pagó—
+    se entrega igual."""
+    try:
+        return await run_in_threadpool(
+            datos_extraidos.registrar_extraccion, tenant, documento, tipo, procesador, version, iniciada, por, resultado, error
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("No se pudo guardar la extracción del documento %s", documento)
+        return None
 
 
 @router.post(
@@ -231,16 +296,20 @@ async def extraer_generico(
         "`\"otro\"` cuando el documento no corresponde a ningún tipo "
         "configurado — en ese caso NO debe llamarse ningún extractor, el "
         "documento debe quedar marcado para revisión manual. `confianza` "
-        "(0-100) es la de la categoría ganadora."
+        "(0-100) es la de la categoría ganadora. Con `documento`, la clasificación "
+        "se guarda: es lo que dice de qué tipo es ese documento (el expediente lo "
+        "muestra en `tipoDocumental`). Ya no mete el documento a ningún lado: "
+        "desde el 2026-11-05 no hay expedientes virtuales."
     ),
 )
 async def clasificar(
     archivo: UploadFile = File(...),
     tenant: str = Query(..., description="La organización cuyo clasificador se consulta"),
+    documento: str = Query("", description="Opcional. El documento (`documento-…`) que se clasifica: con él, la clasificación se GUARDA."),
     authorization: str | None = Header(default=None),
 ):
     # Primero quién pide y de quién es el clasificador, ANTES de leer el archivo: no se gasta nada en quien no puede.
-    aislamiento.exigir(authorization, tenant, "clasificador")
+    actor = aislamiento.exigir(authorization, tenant, "clasificador")
     # Tercera copia que había de los mismos guardias, y ya había divergido: esta
     # decía "El archivo excede" y `_leer_subida` "La imagen excede". Ahora las
     # tres puertas usan la misma política de `servicios/subidas.py`.
@@ -262,10 +331,20 @@ async def clasificar(
         )
 
     try:
-        return await ia.clasificar_documento(contenido, archivo.content_type, tenant)
+        respuesta = await ia.clasificar_documento(contenido, archivo.content_type, tenant)
     except SinClasificador as exc:
         # Lo escribimos nosotros y no nombra nada de Google: se puede mostrar tal cual.
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         logger.exception("Falló la clasificación del documento")
-        raise _fallar(exc, "No se pudo clasificar el documento con Document AI.") from exc
+        raise _fallar(exc, "No se pudo clasificar el documento.") from exc
+
+    if documento.strip():
+        # Guardarla nunca cambia la respuesta: la clasificación ya se pagó y el Pipeline la necesita para seguir.
+        try:
+            await run_in_threadpool(
+                datos_extraidos.registrar_clasificacion, tenant, documento.strip(), respuesta, clasificadores.id_de(tenant) or "", actor.guid
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo guardar la clasificación del documento %s", documento)
+    return respuesta

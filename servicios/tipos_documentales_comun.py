@@ -18,6 +18,10 @@ RE_ID = re.compile(r"^tipo-[a-z0-9-]{6,58}$")
 #: Tope del documento de un tipo, ya serializado. Un tipo normal pesa unos KB; con muchos ejemplos recortados, decenas.
 TOPE_BYTES = 1_000_000
 
+#: Largo máximo de las «instrucciones para la extracción» de un tipo (`datos.instrucciones`, opcionales). Viajan a Google como el
+#: `documentPrompt` del extractor (ver `esquema.esquema_desde_campos`): un párrafo de contexto, no un manual.
+MAX_INSTRUCCIONES = 1000
+
 #: Lo que NO se acepta dentro de `datos`: lo pone el servidor.
 RESERVADAS = frozenset({"revision", "creadoPor", "creadoEn", "modificadoPor", "modificadoEn", "tenant", "meta"})
 
@@ -36,6 +40,59 @@ class Conflicto(Exception):
     def __init__(self, revision_actual: int | None):
         super().__init__("conflicto de revisión")
         self.revision_actual = revision_actual
+
+
+class NombreRepetido(Exception):
+    """Ya hay OTRO tipo documental con ese nombre en la organización. Ver `exigir_nombre_libre`."""
+
+    def __init__(self):
+        super().__init__("nombre repetido")
+
+
+def clave_de_nombre(nombre: object) -> str:
+    """Con qué se compara un nombre para saber si choca con otro: sin espacios de más y sin distinguir mayúsculas.
+
+    Es la misma regla que ya usan los procesos. «Cédula  profesional » y «CÉDULA PROFESIONAL» chocan;
+    «Cedula profesional» (sin acento) no: es otra palabra.
+    """
+    return " ".join(str(nombre).split()).casefold()
+
+
+def exigir_nombre_libre(nuevo: dict, actual: dict | None, otros: list[dict]) -> None:
+    """`NombreRepetido` si al guardar `nuevo` el tipo pasa a OCUPAR un nombre que ya ocupa otro tipo de la organización.
+
+    La regla (Moibe, 2026-11-04): el nombre de un tipo documental es único en su organización. Dos tipos con el mismo nombre son dos
+    categorías iguales para el clasificador (el nombre es su `displayName`, y la descripción suele ser parecida) y no se distinguen
+    en ningún lado donde se listan por nombre: la Biblioteca, los menús del motor de reglas o la columna «Tipo documental» de un
+    expediente.
+
+    - Un tipo ARCHIVADO no ocupa nombre: no se lista ni entra al clasificador, así que su nombre se puede volver a usar. Guardar uno
+      archivado nunca choca, y los archivados de `otros` no cuentan.
+    - Solo se revisa cuando el tipo ENTRA a un nombre: al crearse, al cambiar de nombre (más allá de mayúsculas o espacios) o al
+      dejar de estar archivado. Guardar sin tocar el nombre —activarlo, subirle un ejemplo— no puede fallar por un
+      duplicado que ya existía antes de esta regla (el mismo criterio que en procesos); esos se resuelven renombrando uno.
+
+    `nuevo` y `actual` son los `datos` (el que llega y el vigente, o `None` si el tipo es nuevo); `otros`, los `datos` de los DEMÁS
+    tipos de la organización (al menos `nombre` y `estado`). Quien llama sabe si hace falta leer `otros`: `entra_a_un_nombre`.
+    """
+    if not entra_a_un_nombre(nuevo, actual):
+        return
+    clave = clave_de_nombre(nuevo.get("nombre", ""))
+    if any(o.get("estado") != "archivado" and clave_de_nombre(o.get("nombre", "")) == clave for o in otros):
+        raise NombreRepetido()
+
+
+def entra_a_un_nombre(nuevo: dict, actual: dict | None) -> bool:
+    """Si este guardado hace que el tipo pase a ocupar un nombre que antes no ocupaba (ver `exigir_nombre_libre`).
+
+    Separado para que el almacenamiento en SQL no lea —ni bloquee— los demás tipos de la organización en cada guardado: la mayoría
+    (el asistente guarda con cada tecla) no tocan el nombre.
+    """
+    if nuevo.get("estado") == "archivado":
+        return False
+    if actual is None or actual.get("estado") == "archivado":
+        return True
+    return clave_de_nombre(actual.get("nombre", "")) != clave_de_nombre(nuevo.get("nombre", ""))
 
 
 def ahora() -> str:
@@ -62,6 +119,9 @@ def validar(tipo_id: str, datos: object) -> dict:
         raise TipoInvalido("El tipo documental necesita un nombre de hasta 200 caracteres.")
     if not isinstance(datos.get("descripcion", ""), str):
         raise TipoInvalido("La descripción del tipo documental debe ser texto.")
+    instrucciones = datos.get("instrucciones", "")
+    if not isinstance(instrucciones, str) or len(instrucciones) > MAX_INSTRUCCIONES:
+        raise TipoInvalido(f"Las instrucciones para la extracción deben ser texto de hasta {MAX_INSTRUCCIONES} caracteres.")
     if datos.get("estado") not in ESTADOS:
         raise TipoInvalido("El estado del tipo documental no es válido.")
     if not isinstance(datos.get("procesadorId", ""), str):

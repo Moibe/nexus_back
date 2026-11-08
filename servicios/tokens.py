@@ -27,7 +27,13 @@ Pedir un enlace nuevo apaga los pendientes del mismo tipo para esa persona
 (HU06 CA-6 lo pide literal para el reenvío de invitación). Si no, el correo
 viejo seguiría sirviendo y bastaría con tener acceso a un buzón antiguo.
 
-## Registro PROVISIONAL
+## Desde el 2026-10-30: en SQL donde hay base
+
+Migración `0008`: donde hay base, los enlaces viven en `nexus.accessTokens` (una fila por enlace; gastarlo o apagarlo son sus columnas
+`usedAt` e `invalidatedAt`), importados una vez desde `tokens.jsonl` (`servicios/importacion_json.py`). Este módulo elige por `SQLSERVER_HOST`
+en cada llamada; el JSONL es lo que corre donde no hay base. `userGuid` todavía no tiene llave foránea: los usuarios siguen en JSON.
+
+## Registro PROVISIONAL (donde no hay base)
 
 Vive en `tokens.jsonl` como los demás, por la misma razón: dev todavía no
 tiene base. El contrato imita a lo que se le pedirá al DBA, para que el cambio
@@ -44,9 +50,19 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import config
+from config import SQLSERVER_HOST
 from servicios import registro
 
 ARCHIVO = "tokens.jsonl"
+
+
+def _sql():
+    """El módulo de SQL si el `.env` dice que hay base; `None` si no. Se importa tarde: sin base, `pyodbc` ni se carga."""
+    if not SQLSERVER_HOST:
+        return None
+    from servicios import integraciones_sql
+
+    return integraciones_sql
 
 #: Para qué sirve cada enlace. El tipo decide la duración y el correo.
 ACTIVACION = "ACTIVACION"
@@ -140,6 +156,9 @@ def crear(usuario_guid: str, tipo: str, motivo_anteriores: str = "REEMPLAZADO") 
     clave = hash_de(token)
     expira = _ahora() + timedelta(hours=horas_de(tipo))
     en = _ahora().isoformat(timespec="seconds")
+    if sql := _sql():
+        sql.tokens_crear(usuario_guid, tipo, clave, motivo_anteriores, str(uuid.uuid4()), _ahora(), expira)
+        return token, expira
     with registro.candado:
         for t in _indice().values():
             if t["usuarioGuid"] == usuario_guid and t["tipo"] == tipo and _vigente(t):
@@ -165,7 +184,14 @@ def crear(usuario_guid: str, tipo: str, motivo_anteriores: str = "REEMPLAZADO") 
 def revisar(token: str, tipo: str) -> dict:
     """Mira si el enlace sirve, SIN consumirlo. Es lo que usa la pantalla al
     abrirse, para decidir si pinta el formulario o el aviso de enlace vencido."""
-    t = _indice().get(hash_de(token))
+    clave = hash_de(token)
+    t = sql.tokens_leer(clave) if (sql := _sql()) else _indice().get(clave)
+    _comprobar(t, tipo)
+    return t
+
+
+def _comprobar(t: dict | None, tipo: str) -> None:
+    """Lo que tiene que cumplir un enlace para servir: existir y ser de ese tipo, no haberse usado ni apagado, y no haber vencido."""
     if t is None or t["tipo"] != tipo:
         raise TokenInvalido()
     if t["usadoEn"] or t["invalidadoEn"]:
@@ -173,22 +199,17 @@ def revisar(token: str, tipo: str) -> dict:
     expira = _fecha(t["expira"])
     if not expira or expira <= _ahora():
         raise Vencido()
-    return t
 
 
 def consumir(token: str, tipo: str) -> dict:
     """Gasta el enlace y devuelve a quién pertenece. Atómico: dos peticiones
     con el mismo token, una gana y la otra recibe `YaUsado`."""
     clave = hash_de(token)
+    if sql := _sql():
+        return sql.tokens_consumir(clave, lambda t: _comprobar(t, tipo), _ahora())
     with registro.candado:
         t = _indice().get(clave)
-        if t is None or t["tipo"] != tipo:
-            raise TokenInvalido()
-        if t["usadoEn"] or t["invalidadoEn"]:
-            raise YaUsado()
-        expira = _fecha(t["expira"])
-        if not expira or expira <= _ahora():
-            raise Vencido()
+        _comprobar(t, tipo)
         registro.agregar(ARCHIVO, {"evento": "usado", "hash": clave, "en": _ahora().isoformat(timespec="seconds")})
         return t
 
@@ -197,6 +218,8 @@ def invalidar_de(usuario_guid: str, tipo: str | None = None, motivo: str = "REVO
     """Apaga los enlaces pendientes de alguien. Se usa al restablecer la
     contraseña (HU10) y al desactivar la cuenta: un enlace emitido antes no
     debería seguir sirviendo. Devuelve cuántos apagó."""
+    if sql := _sql():
+        return sql.tokens_invalidar_de(usuario_guid, tipo, motivo, _ahora())
     en = _ahora().isoformat(timespec="seconds")
     apagados = 0
     with registro.candado:
@@ -213,6 +236,8 @@ def invalidar_de(usuario_guid: str, tipo: str | None = None, motivo: str = "REVO
 def pendientes_de(usuario_guid: str, tipo: str | None = None) -> list[dict]:
     """Los enlaces que esa persona todavía podría usar. Para diagnosticar y
     para el listado de usuarios, que marca a quien sigue sin activar."""
+    if sql := _sql():
+        return sql.tokens_pendientes_de(usuario_guid, tipo, _ahora())
     return [
         t
         for t in _indice().values()
