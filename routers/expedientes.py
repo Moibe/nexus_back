@@ -4,10 +4,11 @@ Un expediente es un RECEPTÁCULO de documentos (desde el 2026-10-29 no tiene tip
 reúne documentos; un documento puede estar en ninguno (el «void»), en uno o en varios. Los documentos NACEN al entrar al sistema
 (`servicios/documentos.py`), no aquí: este router solo los organiza.
 
-Cada expediente vive en un GRUPO (`/grupos`, ver `servicios/grupos.py`): el nivel de arriba, que cada organización usa como quiere (áreas, departamentos,
-trimestres…). El grupo se elige AL CREAR el expediente y es obligatorio (400 sin él; 404 si no es de la organización); los expedientes anteriores a
-los grupos no tienen y se les asigna después con `PUT /{id}/grupo`, que también pasa un expediente de un grupo a otro pero nunca lo deja sin grupo.
-Los grupos solo viven en SQL: sin base, las rutas que los usan responden 503 y los expedientes se crean sin grupo.
+**Sin grupos (Moibe, 2026-11-06: «en aras de la simplicidad por el momento también quitaremos grupos, léase que los expedientes no se agruparán en
+Grupos y no se requiere el menú»).** Entre el 2026-11-03 y ese día cada expediente vivía en un GRUPO (`/grupos`: áreas, departamentos, trimestres…, que se
+elegía al crearlo). Se quitaron: `POST /` pide solo `{tenant, nombre}` (si un cliente viejo todavía manda `grupoId`, se IGNORA en silencio: no falla ni se
+guarda), el expediente ya no trae `grupo` en ninguna respuesta, y `/grupos…` y `PUT /{id}/grupo` ya no existen (404). Un expediente nuevo no depende de
+nada más que de su nombre.
 
 **Sin expedientes virtuales (Moibe, 2026-11-05: «voy a quitar los expedientes virtuales, ahora podremos meter el expediente completo a la ejecución de
 un proceso»).** Entre el 2026-10-29 y ese día un expediente tenía dentro EXPEDIENTES VIRTUALES (`/expedientes/{id}/virtuales…`): grupitos de sus documentos,
@@ -21,16 +22,15 @@ comprueba contra el registro, igual que en tipos documentales, procesos y bandej
 ## Quién puede qué
 
 - **Leer** (listar, ver un expediente, listar documentos): cualquiera que opere en la organización.
-- **Organizar** (crear un expediente, asignarle grupo, meter o sacar un documento, o SUBIRLE un archivo directo): `roles.PUEDEN_ORGANIZAR`
+- **Organizar** (crear un expediente, meter o sacar un documento, o SUBIRLE un archivo directo): `roles.PUEDEN_ORGANIZAR`
   (Administrador, Supervisor, Analista y Operador); Compliance, Auditor y Viewer reciben 403 `sin_permiso`. Es una propuesta de producto
   pendiente de confirmar con César.
 
 ## Qué se anota (auditoría)
 
-`CASE_CREATED` (con el grupo en `grupoId` y `grupoNombre`), `CASE_GROUP_ASSIGNED` (al asignar o cambiar de grupo; no se anota si ya estaba en ese),
-`CASE_DOCUMENT_ADDED` (también al subir un archivo directo a un expediente, con `subida: true`) y `CASE_DOCUMENT_REMOVED`,
-con quién lo hizo. Meter un documento que ya estaba no repite el rastro. (Las acciones `VIRTUAL_CASE_*` y `CASE_TYPE_*` de antes ya no se escriben; las
-que quedaron en la bitácora se siguen leyendo.)
+`CASE_CREATED`, `CASE_DOCUMENT_ADDED` (también al subir un archivo directo a un expediente, con `subida: true`) y `CASE_DOCUMENT_REMOVED`,
+con quién lo hizo. Meter un documento que ya estaba no repite el rastro. (Las acciones `VIRTUAL_CASE_*`, `CASE_TYPE_*` y `CASE_GROUP_*` de antes ya no se
+escriben; las que quedaron en la bitácora se siguen leyendo, y los `CASE_CREATED` del 2026-11-03 al 2026-11-06 conservan su `grupoId` y `grupoNombre`.)
 
 ## El clasificador al subir
 
@@ -39,6 +39,17 @@ páginas en Document AI, pero el archivo ya queda con su tipo documental (la cla
 detalle del expediente lo muestra en `tipoDocumental`). Desde el 2026-11-05 clasificar ya NO mete el documento a ningún lado; lo mismo pasa con
 `/ia/clasificar` con `documento`. Nada de eso puede tumbar la subida: sin clasificador, si Document AI falla o tarda, el archivo se sube igual, sin tipo,
 y la respuesta dice qué pasó.
+
+## La extracción al subir (Moibe, 2026-11-06)
+
+Justo después de clasificar, si el clasificador reconoció un tipo, se EXTRAEN los datos del archivo (`extraccion` en la respuesta) con el procesador de ese
+tipo y se guardan igual que desde `/ia/extraer` (`datos_extraidos.registrar_extraccion`): es lo que leen los procesos, que antes no encontraban nada en
+los archivos subidos directo a un expediente (solo el pipeline de las bandejas extraía; Moibe: «cuando corremos los archivos en las bandejas sí se
+extraen los datos, pero en expedientes no»). Las condiciones: el clasificador reconoció un tipo, y ese tipo está ACTIVO y tiene procesador; nada más. Desde
+el 2026-11-06 el paso «Calibrar» de los tipos documentales ya no existe (Moibe decidió quitarlo), así que un tipo activo con procesador extrae en cuanto está
+activo, y el `calibradoEn` que un tipo viejo todavía traiga en su caja se ignora. Cuesta una
+llamada más a Document AI por archivo reconocido. Tampoco puede tumbar la subida: si no se puede, el archivo queda subido con su tipo y `extraccion.estado`
+dice por qué (`sin_procesador`, `error`, `no_extraido`…). Los archivos subidos ANTES de este cambio no se extraen solos.
 
 ## Duplicados (Moibe, 2026-11-03; sobre el expediente entero desde el 2026-11-05)
 
@@ -53,6 +64,7 @@ No renombra ni borra expedientes, no tiene estado ni folio, y un documento no se
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
@@ -61,9 +73,10 @@ from starlette.concurrency import run_in_threadpool
 from config import SQLSERVER_HOST
 from errores import SinClasificador
 from routers.archivos import guardar_subida
+from routers import ia as ia_router
 from routers.bandeja import MIME_BANDEJA
 from routers.errores import almacen_no_disponible
-from servicios import aislamiento, auditoria, clasificadores, datos_extraidos, documentos, expedientes, grupos, ia
+from servicios import aislamiento, auditoria, clasificadores, datos_extraidos, documentos, expedientes, ia, tipos_documentales
 from servicios.almacen import ErrorAlmacen
 from servicios.subidas import normalizar_tipo
 
@@ -74,25 +87,19 @@ router = APIRouter()
 #: Cuánto se espera al clasificador al subir un archivo (segundos). Pasado ese tiempo el archivo ya está subido y se queda sin clasificar: subir
 #: nunca se cuelga esperando a Google (el BFF espera 130 s y Document AI suele contestar en pocos segundos).
 ESPERA_CLASIFICAR_AL_SUBIR = 60
+# Y lo que se espera a que EXTRAIGA (2026-11-06). Clasificar + extraer tienen que caber en el tiempo de espera del puente del front (130 s).
+ESPERA_EXTRAER_AL_SUBIR = 60
 
 _NO_EXISTE = "Ese expediente no existe."
-_GRUPO_NO_EXISTE = "Ese grupo no existe."
 _DOCUMENTO_NO_EXISTE = "Ese documento no existe."
 _DOCUMENTO_NO_ESTA = "Ese documento no está en el expediente."
 
 
 class NuevoExpediente(BaseModel):
+    # Solo estos dos campos. Un cliente viejo que todavía manda `grupoId` (los grupos se quitaron el 2026-11-06) no falla: pydantic ignora lo que el
+    # modelo no declara, y así el front de antes sigue creando expedientes unos segundos entre el despliegue de este back y el del front nuevo.
     tenant: str = Field(..., description="La organización a la que pertenece el expediente")
     nombre: str = Field(..., description="Cómo se llama el expediente (hasta 200 caracteres)")
-    grupoId: str | None = Field(
-        default=None,
-        description="El grupo en que vive el expediente (`/grupos`), de la misma organización. Obligatorio donde hay base: sin él, 400.",
-    )
-
-
-class AsignacionDeGrupo(BaseModel):
-    tenant: str = Field(..., description="La organización")
-    grupoId: str = Field(..., description="El grupo al que pasa el expediente (`/grupos`), de la misma organización")
 
 
 def _anotar(accion: str, actor: aislamiento.Actor, tenant: str, **datos) -> None:
@@ -132,67 +139,22 @@ def listar(tenant: str = Query(..., description="La organización"), authorizati
     tags=["Expedientes"],
     summary="Crear un expediente",
     description=(
-        "Crea un expediente vacío con ese nombre, dentro del grupo `grupoId` (obligatorio donde hay base: sin él, 400; uno que no es de la "
-        "organización, 404). Dos expedientes pueden llamarse igual. No tiene tipo."
+        "Crea un expediente vacío con ese nombre. Dos expedientes pueden llamarse igual. No tiene tipo ni grupo (los grupos se quitaron el 2026-11-06: "
+        "si el cuerpo trae `grupoId`, se ignora)."
     ),
 )
 def crear(entrada: NuevoExpediente, authorization: str | None = Header(default=None)):
     actor = aislamiento.exigir_organizar(authorization, entrada.tenant, "expediente")
     try:
-        creado = expedientes.crear(entrada.tenant, entrada.nombre, actor.guid, entrada.grupoId)
+        creado = expedientes.crear(entrada.tenant, entrada.nombre, actor.guid)
     except expedientes.ExpedienteInvalido as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except expedientes.GrupoNoEncontrado as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_GRUPO_NO_EXISTE) from exc
-    except grupos.SinBase as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except ValueError as exc:
         raise _tenant_invalido(exc) from exc
     except ErrorAlmacen as exc:
         raise almacen_no_disponible(exc) from exc
-    grupo = creado.get("grupo") or {}
-    _anotar(auditoria.CASE_CREATED, actor, entrada.tenant, expedienteId=creado["id"], nombre=creado["nombre"], grupoId=grupo.get("id"), grupoNombre=grupo.get("nombre"))
+    _anotar(auditoria.CASE_CREATED, actor, entrada.tenant, expedienteId=creado["id"], nombre=creado["nombre"])
     return creado
-
-
-@router.put(
-    "/{expediente_id}/grupo",
-    tags=["Expedientes"],
-    summary="Asignar un expediente a un grupo (o pasarlo a otro)",
-    description=(
-        "Los expedientes anteriores a los grupos no tienen y se les asigna aquí; uno que ya tiene grupo se puede pasar a otro, pero nunca queda sin "
-        "grupo. Idempotente: si ya estaba en ese grupo responde `cambiado: false` y no hace nada. Devuelve el expediente como queda y el grupo en "
-        "que estaba (`grupoAnterior`, `null` si no tenía). Un grupo o un expediente que no son de la organización: 404. Sin base, 503."
-    ),
-)
-def asignar_grupo(expediente_id: str, entrada: AsignacionDeGrupo, authorization: str | None = Header(default=None)):
-    actor = aislamiento.exigir_organizar(authorization, entrada.tenant, "expediente")
-    try:
-        expediente, anterior = expedientes.asignar_grupo(entrada.tenant, expediente_id, entrada.grupoId, actor.guid)
-    except expedientes.NoEncontrado as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE) from exc
-    except expedientes.GrupoNoEncontrado as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_GRUPO_NO_EXISTE) from exc
-    except grupos.SinBase as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise _tenant_invalido(exc) from exc
-    except ErrorAlmacen as exc:
-        raise almacen_no_disponible(exc) from exc
-    cambiado = anterior is None or anterior["id"] != entrada.grupoId
-    if cambiado:
-        grupo = expediente["grupo"] or {}
-        _anotar(
-            auditoria.CASE_GROUP_ASSIGNED,
-            actor,
-            entrada.tenant,
-            expedienteId=expediente_id,
-            nombre=expediente["nombre"],
-            grupoId=grupo.get("id"),
-            grupoNombre=grupo.get("nombre"),
-            grupoAnteriorId=(anterior or {}).get("id"),
-        )
-    return {"cambiado": cambiado, "expediente": expediente, "grupoAnterior": anterior}
 
 
 # Va ANTES de `/{expediente_id}`: si no, «documentos» se tomaría por el id de un expediente. Cuelga de /expedientes y no de /documentos
@@ -469,6 +431,63 @@ async def _clasificar_al_subir(actor: aislamiento.Actor, tenant: str, documento:
     return resultado("clasificado", {"id": anotado["tipoId"], "nombre": anotado["tipoNombre"]}, anotado["confianza"])
 
 
+async def _extraer_al_subir(actor: aislamiento.Actor, tenant: str, documento: dict, archivo: UploadFile, clasificacion: dict) -> dict:
+    """Extrae los datos del archivo recién subido, DESPUÉS de clasificarlo (Moibe, 2026-11-06: «cuando corremos los archivos en las bandejas sí se
+    extraen los datos, pero en expedientes no»). Es la MISMA extracción del pipeline (`ia.extraer_con_procesador`) y se hace si el clasificador reconoció un
+    tipo y ese tipo está ACTIVO y tiene su procesador: nada más. Desde el 2026-11-06 no existe el paso «Calibrar» de los tipos documentales (antes se exigía
+    además `calibradoEn`, la marca que ponía), así que un tipo activo con procesador extrae en cuanto está activo, y el `calibradoEn` que un tipo viejo
+    todavía traiga en su caja no se mira. La corrida y sus datos se guardan igual que desde `/ia/extraer` (`registrar_extraccion`), y es lo que luego
+    leen los procesos.
+    Devuelve `extraccion`; NUNCA levanta: el archivo ya está subido y esto es una consecuencia, así que cualquier falla solo deja el documento sin datos
+    y se dice en `estado`: `extraido`, `no_reconocido` (Document AI no reconoció los campos: la corrida se guarda con esa marca), `sin_tipo` (no se
+    clasificó, o el tipo ya no está activo, así que no hay con qué extraer), `sin_procesador` (el tipo está activo pero sin procesador: lo que falta es
+    trabajo de configuración, no reintentar), `error` (Document AI falló: la corrida fallida queda anotada) o `no_extraido` (tardó demasiado o no se pudo guardar)."""
+    def resultado(estado: str, **mas) -> dict:
+        return {"estado": estado, **mas}
+
+    if clasificacion.get("estado") != "clasificado" or not (clasificacion.get("tipo") or {}).get("id"):
+        return resultado("sin_tipo")
+    tipo_id = clasificacion["tipo"]["id"]
+    try:
+        tipo = await run_in_threadpool(tipos_documentales.obtener, tenant, tipo_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("No se pudo leer el tipo documental %s para extraer al subir", tipo_id)
+        return resultado("no_extraido")
+    datos = (tipo or {}).get("datos") or {}
+    if not tipo or datos.get("estado") != "activo":
+        return resultado("sin_tipo")
+    procesador = str(datos.get("procesadorId") or "").strip()
+    if not procesador:
+        return resultado("sin_procesador")
+    version = str(datos.get("procesadorVersion") or "").strip()
+
+    iniciada = datetime.now(timezone.utc).replace(tzinfo=None)
+    try:
+        contenido = await run_in_threadpool(_releer, archivo)
+        extraido = await asyncio.wait_for(ia.extraer_con_procesador(procesador, contenido, documento["mime"], version), timeout=ESPERA_EXTRAER_AL_SUBIR)
+    except asyncio.TimeoutError:
+        logger.warning("La extracción tardó más de %s s con el documento %s: queda subido y sin datos", ESPERA_EXTRAER_AL_SUBIR, documento["id"])
+        return resultado("no_extraido")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Falló la extracción al subir el documento %s", documento["id"])
+        try:
+            await run_in_threadpool(
+                datos_extraidos.registrar_extraccion, tenant, documento["id"], tipo_id, procesador, version, iniciada, actor.guid, None, ia_router.mensaje_de_fallo(exc, "Falló la extracción.")
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo anotar la extracción fallida del documento %s", documento["id"])
+        return resultado("error")
+    try:
+        corrida = await run_in_threadpool(
+            datos_extraidos.registrar_extraccion, tenant, documento["id"], tipo_id, procesador, version, iniciada, actor.guid, extraido, None
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("No se pudo guardar la extracción del documento %s", documento["id"])
+        return resultado("no_extraido")
+    reconocido = not ((extraido or {}).get("_metadata") or {}).get("quality_alert")
+    return resultado("extraido" if reconocido else "no_reconocido", extraccionId=corrida)
+
+
 @router.post(
     "/{expediente_id}/documentos",
     status_code=status.HTTP_201_CREATED,
@@ -484,7 +503,10 @@ async def _clasificar_al_subir(actor: aislamiento.Actor, tenant: str, documento:
         "Además lo CLASIFICA (lo que cuestan sus dos primeras páginas en Document AI): `clasificacion` dice el `estado` (`clasificado`, "
         "`sin_tipo`, `sin_clasificador` o `no_clasificado`), el `tipo` y la `confianza` (0-100) si lo reconoció: esa clasificación se guarda y es lo "
         "que dice de qué tipo es el documento. Clasificar nunca tumba la subida: si no se puede, el archivo queda subido y sin tipo documental. "
-        "Devuelve `{agregado, documento, clasificacion}`."
+        "Si el clasificador reconoció un tipo activo y con procesador, EXTRAE sus datos con ese procesador, igual que el pipeline de las "
+        "bandejas (lo que luego leen los procesos): `extraccion.estado` es `extraido`, `no_reconocido`, `sin_tipo`, `sin_procesador`, "
+        "`error` o `no_extraido` (y `extraccionId` si se guardó la corrida). Tampoco tumba la subida. "
+        "Devuelve `{agregado, documento, clasificacion, extraccion}`."
     ),
 )
 async def subir_documento(
@@ -500,7 +522,8 @@ async def subir_documento(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato no admitido. Se aceptan PDF, JPEG, PNG y TIFF.")
     documento = await run_in_threadpool(_recibir_en_expediente, actor, tenant, expediente_id, archivo, sha256, mime)
     clasificacion = await _clasificar_al_subir(actor, tenant, documento, archivo)
-    return {"agregado": True, "documento": documento, "clasificacion": clasificacion}
+    extraccion = await _extraer_al_subir(actor, tenant, documento, archivo, clasificacion)
+    return {"agregado": True, "documento": documento, "clasificacion": clasificacion, "extraccion": extraccion}
 
 
 @router.delete(

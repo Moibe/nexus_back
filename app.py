@@ -449,17 +449,6 @@ app.include_router(
     dependencies=[Depends(exigir_llave)],
 )
 
-# Los grupos de cada organización (áreas, departamentos, trimestres…): el nivel de arriba de los expedientes. Se crean antes y al crear un expediente
-# se elige uno. Solo viven en SQL. Como expedientes: llave de servicio Y JWT (HU11).
-from routers.grupos import router as grupos_router  # noqa: E402
-
-app.include_router(
-    grupos_router,
-    prefix="/grupos",
-    tags=["Grupos"],
-    dependencies=[Depends(exigir_llave)],
-)
-
 # Los expedientes de cada organización: conjuntos de documentos. Un documento puede estar en ninguno (el void), en uno o en varios. Los
 # documentos nacen al entrar por la bandeja (`servicios/bandeja.py`); aquí se organizan. Como procesos: llave de servicio Y JWT (HU11).
 from routers.expedientes import router as expedientes_router  # noqa: E402
@@ -480,6 +469,17 @@ app.include_router(
     admins_plataforma_router,
     prefix="/admins-plataforma",
     tags=["Administradores de plataforma"],
+    dependencies=[Depends(exigir_llave)],
+)
+
+# Qué procesadores de Document AI tienen dueño en este ambiente. Lo usa Nexus Monitor para limpiar huérfanos juntando lo de los
+# tres ambientes (el proyecto de Google es uno solo). Solo lectura y solo llave de servicio, como admins-plataforma.
+from routers.duenos_procesadores import router as duenos_procesadores_router  # noqa: E402
+
+app.include_router(
+    duenos_procesadores_router,
+    prefix="/duenos-procesadores",
+    tags=["Procesadores"],
     dependencies=[Depends(exigir_llave)],
 )
 

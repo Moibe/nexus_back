@@ -16,10 +16,13 @@ Lo que se prueba:
 - lo que se devuelve: un párrafo limpio (sin rótulo, viñeta, negritas ni comillas), con techo de largo, y una respuesta cortada por tokens no se
   entrega a medias;
 - que no guarda nada (los tipos quedan igual) y que un nombre en blanco se rechaza sin llamar a Google;
+- CON documentos de ejemplo (2026-11-07): de 1 a 3, en PDF, JPG o PNG, adjuntos a la petición como `inlineData` ANTES del texto; el prompt lo dice y pide no copiar datos
+  de las personas; el TIFF, un cuarto archivo, un archivo vacío, un peso excesivo o un nombre en blanco se rechazan SIN llamar a Gemini; mismos roles y mismos fallos;
 - los fallos: sin proyecto o credencial 503, Google 401/403/404 503, 429 429, 5xx, tiempo agotado, red, vacía o bloqueada 502; y el mensaje nunca trae el
   proyecto, el modelo ni lo que dijo Google.
 """
 
+import base64
 import json
 import os
 import shutil
@@ -302,6 +305,88 @@ try:
     r = pedir(a_admin, org_a, "Acta")
     rev("sin credencial de Google: 503, sin llamar a nadie y sin filtrar el motivo", r.status_code == 503 and len(llamadas) == n and sin_filtrar(r), f"{r.status_code} {r.text[:160]}")
     gemini._token = lambda: "token-falso"
+    titulo("10 · Con documentos de ejemplo")
+    PDF_1 = b"%PDF-1.4\n%ejemplo uno con datos de Juan Perez Lopez\n"
+    PDF_2 = b"%PDF-1.4\n%ejemplo dos\n" + bytes(range(256))
+    PNG_1 = b"\x89PNG\r\n\x1a\n" + b"imagen"
+
+    def pedir_con(bearer, tenant, nombre, archivos, tipo_id="", servicio=True):
+        datos = {"tenant": tenant, "nombre": nombre, **({"tipoId": tipo_id} if tipo_id else {})}
+        return c.post("/tipos-documentales/sugerir-descripcion-con-documentos", data=datos, files=[("archivos", a) for a in archivos], headers=cab(bearer, servicio))
+
+    contestar("Acta que emite un notario y trae los datos de la sociedad.")
+    n = len(llamadas)
+    r = pedir_con(a_admin, org_a, "Acta Constitutiva", [("a.pdf", PDF_1, "application/pdf"), ("b.png", PNG_1, "image/png")])
+    rev("el Administrador, con 2 documentos: 200 con la descripción, el modelo y cuántos documentos se usaron",
+        r.status_code == 200 and r.json() == {"descripcion": "Acta que emite un notario y trae los datos de la sociedad.", "modelo": "modelo-de-prueba", "documentos": 2}, r.text[:200])
+    partes = llamadas[-1]["cuerpo"]["contents"][0]["parts"]
+    rev("a Gemini le llegan 3 partes: los 2 documentos y, AL FINAL, el texto", len(llamadas) == n + 1 and len(partes) == 3 and "inlineData" in partes[0] and "inlineData" in partes[1] and "text" in partes[2], str([list(x) for x in partes]))
+    rev("cada documento va en base64 con su tipo y sus bytes intactos",
+        partes[0]["inlineData"] == {"mimeType": "application/pdf", "data": base64.b64encode(PDF_1).decode()} and partes[1]["inlineData"] == {"mimeType": "image/png", "data": base64.b64encode(PNG_1).decode()})
+    texto = partes[2]["text"]
+    rev("el prompt dice que se adjuntan 2 documentos y pide NO copiar datos de las personas", "Se adjuntan 2 documentos de ejemplo" in texto and "NUNCA copies datos concretos" in texto, texto[:300])
+    rev("y sigue contando el nombre y los otros tipos de la organización", "Tipo: «Acta Constitutiva»." in texto and "INE" in texto and "Pasaporte" in texto and "Viejo archivado" not in texto and "Secreto de Beta" not in texto, texto)
+    rev("el prompt NO trae los bytes ni el contenido de los documentos (solo van como adjuntos)", "Juan Perez" not in texto and "%PDF" not in texto)
+    rev("misma URL, credencial, cabecera y tope de tokens que sin documentos", llamadas[-1]["url"].endswith("modelo-de-prueba:generateContent") and llamadas[-1]["headers"]["x-goog-user-project"] == "proyecto-de-prueba-123" and llamadas[-1]["cuerpo"]["generationConfig"]["maxOutputTokens"] >= 1000)
+
+    r = pedir_con(a_admin, org_a, "Constancia Fiscal 2025", [("a.pdf", PDF_1, "application/pdf")], tipo_id=propio)
+    texto = llamadas[-1]["cuerpo"]["contents"][0]["parts"][-1]["text"]
+    rev("con 1 documento el prompt habla en singular («Se adjunta 1 documento») y editando un tipo él no cuenta entre los otros",
+        r.status_code == 200 and "Se adjunta 1 documento de ejemplo" in texto and "descríbelo a partir de lo que ves en él" in texto and "Otros tipos que ya existen en la organización: INE, Pasaporte." in texto, texto)
+    rev("sin documentos, el prompt es el de siempre (nada de «adjunta»)", "adjunta" not in gemini.armar_prompt("X", ["INE"]) and gemini.armar_prompt("X", ["INE"]) == gemini.armar_prompt("X", ["INE"], 0))
+    r = pedir_con(a_supervisor, org_a, "Acta", [("a.pdf", PDF_1, "application/pdf")])
+    rev("el Supervisor (también edita tipos): 200", r.status_code == 200, r.text[:160])
+    r = pedir_con(a_admin, org_a, "Acta", [("a.jpg", b"\xff\xd8\xff\xe0jpg", "image/jpeg")])
+    rev("un JPG también se lee", r.status_code == 200 and llamadas[-1]["cuerpo"]["contents"][0]["parts"][0]["inlineData"]["mimeType"] == "image/jpeg", r.text[:160])
+
+    n = len(llamadas)
+    r = pedir_con(a_operador, org_a, "Acta", [("a.pdf", PDF_1, "application/pdf")])
+    rev("el Operador: 403 `sin_permiso`, sin llamar a Gemini (no gasta)", r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_permiso" and len(llamadas) == n, r.text[:160])
+    r = pedir_con(b_admin, org_a, "Acta", [("a.pdf", PDF_1, "application/pdf")])
+    rev("el administrador de OTRA organización con el tenant ajeno: 403 `sin_acceso`, sin llamar", r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_acceso" and len(llamadas) == n, r.text[:160])
+    r = pedir_con(None, org_a, "Acta", [("a.pdf", PDF_1, "application/pdf")])
+    rev("sin sesión de persona: no pasa y no llama", r.status_code in (401, 403) and len(llamadas) == n, f"{r.status_code} {r.text[:120]}")
+    r = pedir_con(a_admin, org_a, "Acta", [("a.pdf", PDF_1, "application/pdf")], servicio=False)
+    rev("sin la llave de servicio: no pasa y no llama", r.status_code in (401, 403) and len(llamadas) == n, f"{r.status_code} {r.text[:120]}")
+
+    titulo("10b · Lo que se rechaza sin llamar a Gemini")
+    n = len(llamadas)
+    r = pedir_con(a_admin, org_a, "Acta", [(f"{i}.pdf", PDF_1, "application/pdf") for i in range(4)])
+    rev("un cuarto documento: 400 «elige hasta 3»", r.status_code == 400 and "hasta 3" in r.json()["detail"] and len(llamadas) == n, r.text[:160])
+    r = pedir_con(a_admin, org_a, "Acta", [("a.tif", b"II*\x00tiff", "image/tiff")])
+    rev("un TIFF (que Document AI sí lee, Gemini no): 400 que dice qué formatos usar", r.status_code == 400 and "PDF, JPG o PNG" in r.json()["detail"] and len(llamadas) == n, r.text[:160])
+    r = pedir_con(a_admin, org_a, "Acta", [("a.pdf", PDF_1, "application/pdf"), ("notas.txt", b"hola", "text/plain")])
+    rev("un archivo de texto entre los buenos: 400 y NO se llama con los otros", r.status_code == 400 and len(llamadas) == n, r.text[:160])
+    r = pedir_con(a_admin, org_a, "Acta", [("vacio.pdf", b"", "application/pdf")])
+    rev("un archivo vacío: error de cliente, sin llamar", 400 <= r.status_code < 500 and len(llamadas) == n, f"{r.status_code} {r.text[:160]}")
+    r = pedir_con(a_admin, org_a, "   ", [("a.pdf", PDF_1, "application/pdf")])
+    rev("un nombre en blanco: 400, sin llamar", r.status_code == 400 and len(llamadas) == n, r.text[:160])
+    r = c.post("/tipos-documentales/sugerir-descripcion-con-documentos", data={"tenant": org_a, "nombre": "Acta"}, headers=cab(a_admin))
+    rev("sin ningún archivo: error de cliente, sin llamar", 400 <= r.status_code < 500 and len(llamadas) == n, f"{r.status_code} {r.text[:160]}")
+    pesado = b"%PDF-1.4\n" + b"x" * (7 * 1024 * 1024)
+    casi = b"%PDF-1.4\n" + b"x" * int(6.3 * 1024 * 1024)
+    r = pedir_con(a_admin, org_a, "Acta", [(f"p{i}.pdf", casi, "application/pdf") for i in range(3)])
+    rev("3 documentos de 6.3 MB (casi 19 MB en total, más que el tope de 18): 413 por el peso de todos juntos, sin llamar", r.status_code == 413 and "demasiado" in r.json()["detail"] and "18 MB" in r.json()["detail"] and len(llamadas) == n, f"{r.status_code} {r.text[:160]}")
+    r = pedir_con(a_admin, org_a, "Acta", [(f"p{i}.pdf", pesado, "application/pdf") for i in range(3)])
+    rev("y 3 de 7 MB (21 MB: pasa del tope de TODA subida) también: 413, sin llamar", r.status_code == 413 and len(llamadas) == n, f"{r.status_code} {r.text[:160]}")
+    r = pedir_con(a_admin, org_a, "Acta", [(f"p{i}.pdf", pesado, "application/pdf") for i in range(2)])
+    rev("2 de 7 MB (14 MB) sí caben", r.status_code == 200 and len(llamadas) == n + 1, f"{r.status_code} {r.text[:160]}")
+
+    titulo("10c · No guarda nada y sus fallos son los de siempre")
+    rev("los tipos de la organización quedan exactamente igual", tipos_de(a_admin, org_a) == antes)
+    for estado_g, esperado in ((429, 429), (500, 502), (403, 503)):
+        guion["falla"] = None
+        guion["respuesta"] = (estado_g, {"error": {"status": "X", "message": "proyecto-de-prueba-123 detalle de Google"}})
+        r = pedir_con(a_admin, org_a, "Acta", [("a.pdf", PDF_1, "application/pdf")])
+        rev(f"Gemini contesta {estado_g}: {esperado} con un mensaje que se puede mostrar y sin filtrar el proyecto", r.status_code == esperado and "proyecto-de-prueba" not in r.text and "detalle de Google" not in r.text, f"{r.status_code} {r.text[:200]}")
+    contestar("Vuelve a funcionar.")
+    r = pedir_con(a_admin, org_a, "Acta", [("a.pdf", PDF_1, "application/pdf")])
+    rev("y al volver Google, vuelve a funcionar", r.status_code == 200 and r.json()["descripcion"] == "Vuelve a funcionar.")
+    gemini.DOCAI_PROJECT_ID = ""
+    n = len(llamadas)
+    r = pedir_con(a_admin, org_a, "Acta", [("a.pdf", PDF_1, "application/pdf")])
+    rev("sin proyecto de Google en el .env: 503, sin llamar a nadie", r.status_code == 503 and len(llamadas) == n, f"{r.status_code} {r.text[:160]}")
+    gemini.DOCAI_PROJECT_ID = "proyecto-de-prueba-123"
 finally:
     shutil.rmtree(RAIZ, ignore_errors=True)
 

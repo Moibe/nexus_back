@@ -68,17 +68,6 @@ def cab(bearer: str | None = None) -> dict:
 
 c = TestClient(app)
 
-#: Un grupo «General» por organización, creado la primera vez que se necesita: desde la migración 0010 un expediente nuevo nace en un grupo.
-_GRUPOS: dict[str, str] = {}
-
-
-def grupo_de(bearer: str, tenant: str) -> str:
-    if tenant not in _GRUPOS:
-        r = c.post("/grupos/", json={"tenant": tenant, "nombre": "General"}, headers=cab(bearer))
-        assert r.status_code == 201, r.text
-        _GRUPOS[tenant] = r.json()["id"]
-    return _GRUPOS[tenant]
-
 
 def entrar(correo: str, contrasena: str) -> str:
     r = c.post("/auth/login", json={"email": correo, "password": contrasena, "ip": "127.0.0.1", "userAgent": "verificar"}, headers=cab())
@@ -254,7 +243,7 @@ try:
     tipos = {d["id"]: d["tipoDocumental"] for d in r.json()["documentos"]}
     rev("extraído: el tipo de su extracción", tipos[d1] and tipos[d1]["id"] == acta and tipos[d1]["origen"] == "extraccion", tipos[d1])
     rev("clasificado `otro` y sin extraer: sin tipo", tipos[d2] is None and tipos[d3] is None, (tipos[d2], tipos[d3]))
-    exp = c.post("/expedientes/", json={"tenant": org, "nombre": "ACME", "grupoId": grupo_de(adm, org)}, headers=cab(adm)).json()["id"]
+    exp = c.post("/expedientes/", json={"tenant": org, "nombre": "ACME"}, headers=cab(adm)).json()["id"]
     for d in (d1, d2):
         c.put(f"/expedientes/{exp}/documentos/{d}", params={"tenant": org}, headers=cab(adm))
     detalle = c.get(f"/expedientes/{exp}", params={"tenant": org}, headers=cab(adm)).json()
@@ -279,7 +268,7 @@ try:
     falla_google["si"] = False
     x = datos(adm, org, d1).json()
     rev("la respuesta es el error de siempre (502)", r.status_code == 502, r.status_code)
-    rev("la última corrida dice error con su motivo", x["extraccion"]["estado"] == "error" and "Document AI" in (x["extraccion"]["error"] or ""), x["extraccion"])
+    rev("la última corrida dice error con su motivo", x["extraccion"]["estado"] == "error" and "no está disponible" in (x["extraccion"]["error"] or "") and "Document AI" not in (x["extraccion"]["error"] or ""), x["extraccion"])
     rev("los campos vigentes siguen siendo los de antes", {c_["ruta"]: c_["valor"] for c_ in x["campos"]}.get("denominacion") == "ACME SAPI")
 
     titulo("7 · quality_alert se guarda como no_reconocido")

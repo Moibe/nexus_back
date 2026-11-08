@@ -16,7 +16,7 @@ el nombre del tipo, que la 0009 dejó opcional; una con sus valores finales). Ap
 - la base rechaza un virtual a medias (el id sin el nombre, el nombre sin el id, el nombre del tipo sin virtual) y acepta el completo y el que no existe;
 - `usrNexus`, el usuario de la API, lee y escribe sin problema.
 
-Después aplica TODO lo que siga en la carpeta de migraciones (la 0012 borra las tablas de los virtuales) y comprueba que las ejecuciones viejas
+Después aplica TODO lo que siga en la carpeta de migraciones (la 0012 borra las tablas de los virtuales; la 0013, los grupos) y comprueba que las ejecuciones viejas
 siguen idénticas y siguen leyéndose con su virtual (son una foto: no dependen de esas tablas), que el proceso, el expediente y sus documentos siguen ahí
 (la 0012 no se los lleva), que las tablas de los virtuales y la liga del proceso ya no existen (si la carpeta trae la 0012) y que la base queda en la
 última versión.
@@ -281,7 +281,7 @@ for que, cambios in (
 rev("las demás reglas de la tabla siguen en pie (un caso que no existe)", "CK_processRuns_outcomeCase" in (insertar(outcomeCase="xx") or ""))
 con.close()
 
-titulo("6 · Lo que sigue en la carpeta de migraciones (la 0012 borra las tablas de los virtuales)")
+titulo("6 · Lo que sigue en la carpeta de migraciones (la 0012 borra las tablas de los virtuales; la 0013, los grupos)")
 ok, motivo = aplicar(None)
 rev("el corredor aplica lo que falte", ok, motivo)
 if ok:

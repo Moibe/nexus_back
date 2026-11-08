@@ -52,7 +52,7 @@ class NombreRepetido(Exception):
 def clave_de_nombre(nombre: object) -> str:
     """Con qué se compara un nombre para saber si choca con otro: sin espacios de más y sin distinguir mayúsculas.
 
-    Es la misma regla que ya usan procesos y grupos. «Cédula  profesional » y «CÉDULA PROFESIONAL» chocan;
+    Es la misma regla que ya usan los procesos. «Cédula  profesional » y «CÉDULA PROFESIONAL» chocan;
     «Cedula profesional» (sin acento) no: es otra palabra.
     """
     return " ".join(str(nombre).split()).casefold()
@@ -69,7 +69,7 @@ def exigir_nombre_libre(nuevo: dict, actual: dict | None, otros: list[dict]) -> 
     - Un tipo ARCHIVADO no ocupa nombre: no se lista ni entra al clasificador, así que su nombre se puede volver a usar. Guardar uno
       archivado nunca choca, y los archivados de `otros` no cuentan.
     - Solo se revisa cuando el tipo ENTRA a un nombre: al crearse, al cambiar de nombre (más allá de mayúsculas o espacios) o al
-      dejar de estar archivado. Guardar sin tocar el nombre —activarlo, calibrarlo, subirle un ejemplo— no puede fallar por un
+      dejar de estar archivado. Guardar sin tocar el nombre —activarlo, subirle un ejemplo— no puede fallar por un
       duplicado que ya existía antes de esta regla (el mismo criterio que en procesos); esos se resuelven renombrando uno.
 
     `nuevo` y `actual` son los `datos` (el que llega y el vigente, o `None` si el tipo es nuevo); `otros`, los `datos` de los DEMÁS

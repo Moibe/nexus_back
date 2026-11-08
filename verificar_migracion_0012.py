@@ -4,8 +4,9 @@
 
 Levanta el SQL Server desechable de `pruebas_sql.py` SOLO hasta la 0010 y le arma lo que dev ya tenía: un tipo documental, un tipo de expediente virtual con su
 esquema, un expediente con dos documentos, un expediente virtual con uno de ellos, un proceso ligado a ese tipo y una ejecución vieja que dice sobre qué
-virtual se corrió. Aplica el resto (la 0011 y la 0012) con el corredor real —el mismo usuario de DDL de dev, para que también se pruebe que puede borrar lo
-que creó— y comprueba que:
+virtual se corrió. Aplica la 0011 y la 0012 con el corredor real —el mismo usuario de DDL de dev, para que también se pruebe que puede borrar lo
+que creó— y se detiene EN la 0012 a propósito (`aplicar(12)`): lo que venga después (la 0013 borra los grupos) no es de esta prueba, y la base tiene que decir
+versión 12. Comprueba que:
 
 - las cuatro tablas de los virtuales y la columna con que un proceso se ligaba a su tipo ya no existen, y con ellas se fueron sus llaves foráneas;
 - todo lo demás sigue ahí tal cual: el expediente, sus documentos y la pertenencia, el tipo documental, el proceso (con su dibujo y su revisión) y la
@@ -77,8 +78,8 @@ rev(
 )
 con.close()
 
-print("\n=== 2 · La 0011 y la 0012, con el corredor real ===")
-BASE["aplicar"](None)
+print("\n=== 2 · La 0011 y la 0012, con el corredor real (hasta la 0012: las que vengan después no son de esta prueba) ===")
+BASE["aplicar"](12)
 con = BASE["conectar"]("usrNexus", BASE["app"], BASE["base"])
 k = con.cursor()
 rev("la base dice versión 12", k.execute("SELECT MAX(version) FROM nexus.schemaMigrations").fetchone()[0] == 12)

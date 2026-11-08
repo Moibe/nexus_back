@@ -5,12 +5,17 @@ los SPs de `docs/solicitudes-dba.md`) **se queda como está**: no está en uso n
 y se ve si sirven; no se gasta tiempo en evaluar si las viejas se pueden reutilizar. Este documento es el mapa de lo nuevo.
 
 > **Actualización del 2026-11-05 (Moibe: «voy a quitar los expedientes virtuales, ahora podremos meter el expediente completo a la ejecución de un proceso»).**
-> Lo vigente: un **expediente** es un receptáculo de documentos, **sin tipo** (desde el 2026-10-29) y vive en un **grupo** (`servicios/grupos.py`, migración `0010`). La entidad
+> Lo vigente: un **expediente** es un receptáculo de documentos, **sin tipo** (desde el 2026-10-29). La entidad
 > `tipo_expediente` —que el 2026-10-29 pasó a ser «tipo de expediente virtual», con los expedientes virtuales que salían de él— **ya no existe**: sus rutas (`/tipos-expediente`
 > y `/expedientes/{id}/virtuales`) se quitaron, y un proceso corre sobre el expediente COMPLETO (`servicios/ejecuciones.py`); los tipos documentales que dibuja en su lienzo
 > declaran qué documentos necesita. Sus tablas las borra la migración `0012`. Lo que sigue en este documento sobre tipos de expediente se conserva como **historia** y va
 > marcado como retirado. Lo único que sobrevive es la marca de **duplicados** (dos o más documentos del mismo tipo documental en un expediente), calculada al leer sobre el
 > expediente entero.
+
+> **Actualización del 2026-11-06 (Moibe: «en aras de la simplicidad por el momento también quitaremos grupos, léase que los expedientes no se agruparán en Grupos y no se
+> requiere el menú»).** Entre el 2026-11-03 y ese día un expediente vivía en un **grupo** (el nivel de arriba, un nombre único por organización: áreas, departamentos,
+> trimestres…; migración `0010`). **Ya no existe**: las rutas `/grupos` y `PUT /expedientes/{id}/grupo` se quitaron, crear un expediente pide solo `{tenant, nombre}` (un
+> `grupoId` que todavía llegue se ignora) y el expediente ya no trae `grupo`. La migración `0013` borra la tabla `caseGroups` y la columna `cases.caseGroupId`, sin vuelta atrás.
 
 Mientras no estén los tickets NEX-491 (usuario de migraciones) y NEX-492 (base de desarrollo), cada entidad vive en un registro JSON de solo
 agregar por organización (`{ALMACEN_RUTA}/.registro/`, ver `servicios/registro.py`), **con la forma de una tabla**: el día que pasen a SQL
@@ -52,7 +57,6 @@ Un conjunto de documentos: el **receptáculo** de un caso. **No tiene tipo** (de
 | `id` | `expediente-` + 32 hexadecimales; lo pone el servidor |
 | `tenant` | la organización dueña |
 | `nombre` | texto libre, hasta 200 caracteres; dos expedientes pueden llamarse igual |
-| `grupo` | el grupo en que vive (`servicios/grupos.py`, desde la migración `0010`); obligatorio al crearlo donde hay base, y los de antes pueden no tenerlo |
 | `creadoPor`, `creadoEn` | quién y cuándo |
 
 Al leerlo, además, se calcula (sin guardarse): `totalDocumentos`, `tamanoBytes` y los **duplicados** —los tipos documentales con dos o más documentos en el expediente—.
@@ -70,10 +74,8 @@ Son dos eventos, `agregar` y `quitar`; el estado vigente se arma doblando el reg
 
 ```mermaid
 erDiagram
-    TENANT ||--o{ GRUPO : tiene
     TENANT ||--o{ EXPEDIENTE : tiene
     TENANT ||--o{ DOCUMENTO : tiene
-    GRUPO ||--o{ EXPEDIENTE : agrupa
     EXPEDIENTE }o--o{ DOCUMENTO : "expediente_documento"
     PROCESO }o--o{ TIPO_DOCUMENTAL : "sus entradas (lo que dibuja el lienzo)"
     PROCESO ||--o{ EJECUCION : "se corre sobre un expediente completo"
@@ -101,7 +103,7 @@ erDiagram
 - **2026-10-24 · propuesta mía, pendiente de confirmar con César:** solo `roles.PUEDEN_ORGANIZAR` (Administrador, Supervisor, Analista y Operador)
   crean expedientes y meten o sacan documentos; Compliance, Auditor y Viewer solo leen. *(Lo de que los **tipos** de expediente los crea quien administra quedó retirado con ellos el 2026-11-05.)*
 - **2026-10-24 · propuesta mía:** el nombre de un tipo es único por organización (sin distinguir mayúsculas ni espacios de más), porque un catálogo con
-  dos «Expediente médico» no sirve. Si no se quiere, se quita la comprobación. *(RETIRADA el 2026-11-05; la misma regla sigue en procesos, grupos y tipos documentales.)*
+  dos «Expediente médico» no sirve. Si no se quiere, se quita la comprobación. *(RETIRADA el 2026-11-05; la misma regla sigue en procesos y tipos documentales, y la tuvieron los grupos hasta el 2026-11-06.)*
 - **2026-10-24 · Moisés:** *(RETIRADA el 2026-11-05)* los tipos de expediente se pueden **renombrar y borrar**. **Decisión mía al implementarlo, por confirmar:** un tipo **con
   expedientes no se borra** (409 `con_expedientes`), porque borrarlo dejaría expedientes sin clase o habría que destruirlos con él; renombrar sí es libre.
   Cuando haya cómo mover o borrar expedientes, esto se puede aflojar (por ejemplo, borrar el tipo junto con sus expedientes tras una confirmación fuerte).
@@ -120,9 +122,15 @@ erDiagram
 - **2026-11-05 · Moibe:** «voy a quitar los expedientes virtuales, ahora podremos meter el expediente completo a la ejecución de un proceso». Se quitan los expedientes
   virtuales (grupitos de los documentos de un expediente) y los tipos de expediente virtual de los que salían, con sus rutas, su pantalla y el clasificador que metía
   documentos a virtuales (la clasificación SIGUE guardándose: es lo que dice de qué tipo es cada documento). Un proceso corre sobre el expediente **completo** y sobre
-  cualquiera de la organización (el grupo del expediente tampoco lo limita); lo que se dibuja en su lienzo declara qué tipos documentales necesita. **Se mantiene** el
+  cualquiera de la organización; lo que se dibuja en su lienzo declara qué tipos documentales necesita. **Se mantiene** el
   duplicado: con dos o más documentos de un tipo que el proceso usa, la regla no corre, se avisa y los documentos quedan marcados. El historial de ejecuciones conserva el
   virtual de las que ya se corrieron (migración `0011`: las columnas quedan nulas para las nuevas); las tablas de los virtuales las borra la `0012`, que no tiene vuelta atrás.
+- **2026-11-03 · Moibe** *(RETIRADA el 2026-11-06)*: varios expedientes viven juntos en un **grupo** (un solo nivel; cada organización lo llamaba como quería), que se creaba antes en
+  el módulo de configuración y se elegía al crear el expediente (migración `0010`, `/grupos`).
+- **2026-11-06 · Moibe:** «en aras de la simplicidad por el momento también quitaremos grupos, léase que los expedientes no se agruparán en Grupos y no se requiere el menú». Se
+  quita todo de la aplicación: las rutas `/grupos` y `PUT /expedientes/{id}/grupo`, el `grupo` del expediente (en la lista, el detalle y la respuesta de crear) y el `grupoId` al
+  crear (si un cliente viejo todavía lo manda, se ignora). La migración `0013` borra `caseGroups` y `cases.caseGroupId` con su llave foránea y su índice, **sin vuelta atrás**; no toca
+  expedientes, documentos, procesos ni ejecuciones.
 
 ## Lo que todavía no existe
 

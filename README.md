@@ -555,7 +555,7 @@ conoce el cliente, el `id` que recibió al subir. Lo subido a mano no se avisa.
 | procesado | `documento.completado` | — |
 | no soportado / no reconocido / sin tipo que aplique | `documento.rechazado` | `formato_no_soportado` / `documento_no_reconocido` / `tipo_no_identificado` |
 | error del servicio | `documento.fallido` | `error_del_servicio` |
-| tipo reconocido pero sin extractor o sin calibrar | `documento.fallido` | `tipo_sin_configurar` |
+| tipo reconocido pero sin extractor | `documento.fallido` | `tipo_sin_configurar` |
 
 **No se le cree a ciegas al front** (hasta el 2026-10-07 se alcanzaba desde internet sin
 iniciar sesión; hoy pide login y esta ruta, además, comprueba por su cuenta que la persona sea de ese cliente: ver
@@ -1727,7 +1727,7 @@ responde 404 igual que uno que no existe.
 **El nombre es único en la organización (2026-11-04).** Sin distinguir mayúsculas ni espacios de más (la misma regla que procesos y
 grupos): crear, renombrar o desarchivar un tipo con el nombre de otro es 409 `ya_existe`. Los **archivados no ocupan
 nombre**. Solo se revisa cuando el tipo ENTRA a un nombre: los duplicados que ya existían se siguen guardando mientras no se toque su
-nombre (activarlos, calibrarlos, editar la descripción), y se resuelven renombrando, archivando o borrando uno. Lo cuida el servicio
+nombre (activarlos, editar la descripción), y se resuelven renombrando, archivando o borrando uno. Lo cuida el servicio
 (`exigir_nombre_libre` en `tipos_documentales_comun.py`, igual en el JSONL y en SQL, con candado dentro de la transacción), no un índice
 único: la regla depende del estado, que vive dentro del JSON.
 
@@ -1738,8 +1738,10 @@ otra— también es 409.
 **Ids.** Los inventa el cliente (`tipo-` + 32 hexadecimales). Tienen que ser únicos en TODAS las organizaciones, porque el id
 nombra cada categoría del clasificador y cada procesador en Google, y el registro lo busca sin mirar el tenant.
 
-**Auditoría.** Crear, borrar, cambiar de estado y calibrar dejan `DOCUMENT_TYPE_CREATED`, `DOCUMENT_TYPE_DELETED`,
-`DOCUMENT_TYPE_STATE_CHANGED` y `DOCUMENT_TYPE_CALIBRATED`, con quién y de qué organización. Guardar a secas, no.
+**Auditoría.** Crear, borrar y cambiar de estado dejan `DOCUMENT_TYPE_CREATED`, `DOCUMENT_TYPE_DELETED` y
+`DOCUMENT_TYPE_STATE_CHANGED`, con quién y de qué organización. Guardar a secas, no. (`DOCUMENT_TYPE_CALIBRATED`, que se anotaba al marcar un
+tipo como calibrado, ya no se escribe desde el 2026-11-06, cuando se quitó el paso «Calibrar»; los renglones que ya estaban en la bitácora se
+siguen leyendo.)
 
 ### El clasificador sale de este registro, y es de cada organización
 
@@ -2024,6 +2026,20 @@ expediente (el «void»), en **uno** o en **varios**. El modelo completo, sus de
 > `virtualCaseTypeDocumentTypes`) y la columna `processes.virtualCaseTypePublicId`, **sin vuelta atrás**. En la bitácora, las acciones `CASE_TYPE_*` y
 > `VIRTUAL_CASE_*` dejan de escribirse (las constantes y lo ya anotado se conservan).
 
+> **Se quitaron los grupos (Moibe, 2026-11-06).** Moibe: «en aras de la simplicidad por el momento también quitaremos grupos, léase que los expedientes no se
+> agruparán en Grupos y no se requiere el menú». Entre el 2026-11-03 y ese día cada expediente vivía en un **grupo** (el nivel de arriba: áreas, departamentos,
+> trimestres…, que se creaba antes y se elegía al crear el expediente; migración `0010`). Ya no: un expediente es solo un receptáculo con su nombre. **Las rutas
+> que desaparecen (6, todas responden 404 ahora):** `GET /grupos/`, `POST /grupos/`, `GET /grupos/{id}`, `PATCH /grupos/{id}`, `DELETE /grupos/{id}` y
+> `PUT /expedientes/{id}/grupo`. Y cambia lo que se pide y lo que se devuelve: `POST /expedientes/` pide solo `{tenant, nombre}` (si un cliente viejo todavía manda
+> `grupoId`, se **ignora** en silencio: no falla, no se guarda y el expediente se crea igual, con o sin base), y `GET /expedientes/`, `GET /expedientes/{id}` y la
+> respuesta de crear **ya no traen `grupo`**. Un expediente nuevo ya no depende de que existan grupos.
+> **Base:** la migración `0013` borra la columna `cases.caseGroupId` con su llave foránea compuesta `FK_cases_caseGroup` y su índice `IX_cases_caseGroup`, y la tabla
+> `caseGroups`, **sin vuelta atrás** (los grupos y a cuál pertenecía cada expediente se pierden: donde haya datos reales hay que respaldar antes). No toca expedientes,
+> documentos, clasificaciones, datos extraídos, procesos ni ejecuciones (los procesos nunca se limitaron por grupo). En la bitácora, las acciones `CASE_GROUP_*` dejan de
+> escribirse (las constantes y lo ya anotado se conservan; los `CASE_CREATED` del 2026-11-03 al 2026-11-06 siguen con su `grupoId` y `grupoNombre`, los nuevos ya no).
+> **Al desplegar:** el `POST_BUILD` aplica la `0013` antes del reinicio, y el proceso viejo —que todavía junta los grupos al listar expedientes— falla esos segundos; el
+> front de antes (que pide `/grupos` y manda `grupoId` al crear) debe cambiarse DESPUÉS del back.
+
 **Duplicados** (Moibe, 2026-11-03; se mantienen sobre el expediente entero desde el 2026-11-05). Si un expediente trae DOS O MÁS documentos del mismo tipo
 documental, no se sabe cuál es «el INE»: un proceso que usa ese tipo no corre sobre él y los documentos quedan marcados. `GET /expedientes/{id}` trae `duplicado`
 en cada documento (hay otro del mismo tipo en ESTE expediente) y `duplicados` en el expediente (`[{tipoId, tipoNombre, documentos: [{id, nombre}]}]`, los tipos con
@@ -2032,18 +2048,17 @@ nada**: se calcula al leer, así que sacar uno de los dos quita la marca sola.
 
 | Ruta | Qué hace | Quién |
 |---|---|---|
-| `GET /expedientes/?tenant=` | los expedientes de la organización, cada uno con su `grupo`, su `totalDocumentos` y su `tamanoBytes` (lo que pesan sus documentos juntos; se calcula al consultar) | cualquiera que opere en ella |
+| `GET /expedientes/?tenant=` | los expedientes de la organización, cada uno con su `totalDocumentos` y su `tamanoBytes` (lo que pesan sus documentos juntos; se calcula al consultar) | cualquiera que opere en ella |
 | `GET /expedientes/{id}?tenant=` | el expediente (con los mismos totales) y sus documentos completos, en el orden en que se agregaron; cada documento con su `tipoDocumental` y `duplicado`, y el expediente con sus `duplicados` (ver arriba) | ídem |
 | `POST /expedientes/documentos` (formulario: `archivo`, `tenant`, `sha256?`) | **registra el documento de una carga manual** (la del Pipeline del front): guarda los bytes y lo anota con `canal: MANUAL`; mismo formato que la bandeja (PDF, JPEG, PNG, TIFF) y mismos límites; cualquier persona de la organización (la sesión manda, como en `/archivos`); dos cargas del mismo archivo son dos documentos con los mismos bytes. Es lo que llena «Archivos procesados» con lo que no llegó por la API (desde el 2026-10-29; antes solo nacían los de la API) |
 | `GET /expedientes/documentos?tenant=&sin_expediente=` | los documentos y los expedientes en que está cada uno; `true` = solo el void, `false` = solo los organizados | ídem |
-| `POST /expedientes/` `{tenant, nombre, grupoId}` | crea un expediente vacío (201) DENTRO de un grupo (desde el 2026-11-03, ver «Grupos» abajo): `grupoId` es obligatorio donde hay base (400 sin él; 404 si el grupo no es de la organización). El expediente ya no tiene tipo (desde el 2026-10-29) | `roles.PUEDEN_ORGANIZAR` |
-| `PUT /expedientes/{id}/grupo` `{tenant, grupoId}` | asigna el expediente a un grupo o lo pasa a otro (nunca queda sin grupo); idempotente (`cambiado: false` si ya estaba) | ídem |
+| `POST /expedientes/` `{tenant, nombre}` | crea un expediente vacío (201). No tiene tipo (desde el 2026-10-29) ni grupo (desde el 2026-11-06: si el cuerpo trae `grupoId`, se ignora) | `roles.PUEDEN_ORGANIZAR` |
 | `PUT /expedientes/{id}/documentos/{documento_id}?tenant=` | mete un documento; idempotente (`agregado: false` si ya estaba) | ídem |
 | `DELETE /expedientes/{id}/documentos/{documento_id}?tenant=` | lo saca; el documento NO se borra y, si era su último expediente, vuelve al void | ídem |
-| `POST /expedientes/{id}/documentos` (formulario: `archivo`, `tenant`, `sha256?`) | sube un archivo DIRECTO al expediente: nace como carga manual y entra al expediente en una llamada, y además lo **clasifica** (`clasificacion: {estado, tipo, confianza}`, con `estado` `clasificado`, `sin_tipo`, `sin_clasificador` o `no_clasificado`; clasificar nunca tumba la subida). Responde `{agregado, documento, clasificacion}` | ídem |
+| `POST /expedientes/{id}/documentos` (formulario: `archivo`, `tenant`, `sha256?`) | sube un archivo DIRECTO al expediente: nace como carga manual y entra al expediente en una llamada, y además lo **clasifica** (`clasificacion: {estado, tipo, confianza}`, con `estado` `clasificado`, `sin_tipo`, `sin_clasificador` o `no_clasificado`; clasificar nunca tumba la subida). Si el clasificador reconoció un tipo **activo y con procesador**, justo después también **extrae** sus datos y los guarda (`extraccion: {estado}`, con `estado` `extraido`, `no_reconocido`, `sin_tipo`, `sin_procesador`, `error` o `no_extraido`; es lo que luego leen los procesos; tampoco tumba la subida y los archivos subidos antes de ese cambio, el 2026-11-06, no se extraen solos). Responde `{agregado, documento, clasificacion, extraccion}` | ídem |
 
 Todas piden la llave de servicio **y** el JWT de la persona (HU11); un id de otra organización responde 404 como si no existiera. Crear, meter y
-sacar dejan `CASE_CREATED` (con su grupo), `CASE_DOCUMENT_ADDED` y `CASE_DOCUMENT_REMOVED` en la bitácora.
+sacar dejan `CASE_CREATED`, `CASE_DOCUMENT_ADDED` y `CASE_DOCUMENT_REMOVED` en la bitácora.
 Los roles de solo consulta (Compliance, Auditor y Viewer) reciben 403 `sin_permiso` al intentar organizar (propuesta de producto, pendiente de confirmar con César).
 
 `POST /bandeja/` no cambia para quien sube, salvo que la entrada trae además su `documentoId`. Los documentos viven en
@@ -2052,37 +2067,6 @@ Los roles de solo consulta (Compliance, Auditor y Viewer) reciben 403 `sin_permi
 
 Verificarlo, offline: `venv/bin/python verificar_expedientes.py`; con `--sql` (Docker) corre lo mismo contra SQL Server y suma lo que solo la base puede probar: los
 duplicados (un documento solo tiene tipo donde hay base) y la clasificación al subir, con Document AI falseado.
-
-## Grupos: el nivel de arriba de los expedientes (2026-11-03)
-
-Decisión de producto (Moibe, 2026-11-03): varios expedientes viven juntos en un **grupo**. Cada organización lo usa como quiere —áreas, departamentos,
-trimestres del año…—, así que el nombre genérico es «Grupo». Es **un solo nivel**: un grupo tiene expedientes y nada más; los expedientes no se anidan
-dentro de expedientes ni los grupos dentro de grupos. El grupo se crea ANTES (módulo de configuración) y al crear un expediente se elige a cuál pertenece.
-
-| Ruta | Qué hace | Quién |
-|---|---|---|
-| `GET /grupos/?tenant=` | los grupos de la organización, en el orden de su creación, cada uno con su `totalExpedientes` | cualquiera que opere en ella |
-| `GET /grupos/{id}?tenant=` | un grupo y cuántos expedientes tiene | ídem |
-| `POST /grupos/` `{tenant, nombre}` | crea un grupo vacío (201); el nombre es único en la organización sin distinguir mayúsculas ni espacios de más (409 `ya_existe`) | `roles.PUEDEN_ADMINISTRAR` |
-| `PATCH /grupos/{id}` `{tenant, nombre}` | lo renombra (el `id` no cambia: sus expedientes ven el nombre nuevo); solo cambiar las mayúsculas del propio nombre sí se puede; idempotente (`cambiado: false`) | ídem |
-| `DELETE /grupos/{id}?tenant=` | lo borra y libera su nombre; **solo si no tiene expedientes** (409 `con_expedientes`, con cuántos): un expediente con grupo no puede quedarse sin él | ídem |
-| `POST /expedientes/` con `grupoId` · `PUT /expedientes/{id}/grupo` | meter un expediente a un grupo, al crearlo o después (ver la tabla de expedientes) | `roles.PUEDEN_ORGANIZAR` |
-
-- **Los expedientes de antes no tienen grupo** (la migración `0010` agrega `cases.caseGroupId` NULLABLE a propósito) y salen con `grupo: null`: se les asigna después con
-  `PUT /expedientes/{id}/grupo`. Uno que ya tiene grupo se puede pasar a otro, pero **no dejarlo sin grupo** (no hay forma de quitarlo: `grupoId` es obligatorio). Los
-  expedientes nuevos sí lo exigen.
-- **Lo cuida la base, no solo el servicio:** la llave foránea `FK_cases_caseGroup` es compuesta (organización + grupo), así que un expediente no puede apuntar a un
-  grupo de otra organización; los nombres no se repiten por debajo (`UQ_caseGroups_tenant_name`, base CI) y un grupo con expedientes no se borra aunque alguien lo intente
-  por fuera (sin `ON DELETE`). Crear, asignar y borrar bloquean la fila del grupo (`UPDLOCK, HOLDLOCK`), así que un expediente nuevo no se cuela entre la cuenta y el borrado.
-- **La lista y el detalle de un expediente traen `grupo`** (`{id, nombre}` o `null`). El detalle de un expediente de un grupo borrado no existe: no se puede borrar un grupo con expedientes.
-- **Solo en SQL** (decisión del 2026-10-28: todo lo nuevo directo a SQL): sin base (la laptop, las pruebas offline) `/grupos` responde 503, los expedientes se crean sin grupo
-  y se ven con `grupo: null`.
-- **Auditoría:** `CASE_GROUP_CREATED`, `CASE_GROUP_RENAMED` (nombre `antes` y `despues`), `CASE_GROUP_DELETED` y `CASE_GROUP_ASSIGNED` (el expediente, el grupo y el que tenía:
-  `grupoAnteriorId`, `null` si no tenía; no se anota si ya estaba en ese); `CASE_CREATED` ahora lleva `grupoId` y `grupoNombre`.
-- Quién puede qué es una propuesta de producto, pendiente de confirmar con César: crear, renombrar y borrar grupos es de quien administra (Administrador y Supervisor); asignar
-  un expediente a un grupo es de quien organiza (también Analista y Operador).
-
-Verificarlo (contra SQL Server en Docker, con todas las migraciones aplicadas por el corredor de verdad): `.venv/Scripts/python verificar_grupos.py`.
 
 ## Procesos: el motor de reglas guarda su dibujo, por organización (2026-10-20)
 
@@ -2150,7 +2134,7 @@ se tomó cada dato. Lo hace `servicios/ejecuciones.py` (con `routers/ejecuciones
 `nexus.processRunFinalValues`); **solo SQL**: sin base, escribir levanta 503 y el historial sale vacío.
 
 **Sobre el expediente completo (Moibe, 2026-11-05).** Hasta ese día se corría sobre un *expediente virtual* (un subconjunto de los documentos de un expediente). Se
-quitaron los virtuales: el proceso corre sobre **cualquier expediente de su organización** (el grupo del expediente tampoco lo limita) y toma del expediente completo los
+quitaron los virtuales: el proceso corre sobre **cualquier expediente de su organización** y toma del expediente completo los
 documentos de los tipos documentales que dibuja en su lienzo. Se fue con ellos el motivo de rechazo `no_corre_aqui`. Las **ejecuciones de antes** conservan su virtual (la
 migración `0011` solo dejó nulas las columnas de virtual, no reescribió nada): se leen con `virtual: {id, nombre, tipoNombre}`; las nuevas, con `virtual: null`.
 
@@ -2237,7 +2221,8 @@ código de «no se puede ejecutar», los valores vigentes con correcciones, grup
 `ejecutable`, guardar sin virtual y leer lo guardado, cada validación, el conflicto de revisión, que el historial sobreviva a borrar su proceso, las ejecuciones de
 antes con su virtual junto a las nuevas, los filtros del historial (fecha con y sin zona, proceso, persona y estado, combinados y paginados, y las opciones que se
 ofrecen), el aislamiento entre organizaciones, los roles y la auditoría. La lógica pura que corre el front se prueba aparte, en el front (`verificar-ejecutar.mjs`).
-La migración `0011` sobre una base con ejecuciones de antes la prueba `verificar_migracion_0011.py` (y la `0012`, `verificar_migracion_0012.py`).
+La migración `0011` sobre una base con ejecuciones de antes la prueba `verificar_migracion_0011.py` (y la `0012`, `verificar_migracion_0012.py`; la `0013`, que borra los grupos
+sobre una base que ya los tiene, `verificar_migracion_0013.py`).
 
 ## Grupos de campos y forma del resultado de la extracción (2026-10-16)
 

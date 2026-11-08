@@ -570,7 +570,7 @@ verificar(h.status_code == 422 and h.detail == "El documento tiene 25 páginas y
 h = _fallar(ErrorDocumentAI("x", 422, "limite_paginas"), "generico")
 verificar(h.status_code == 422 and "excede el máximo de páginas" in h.detail and "25" not in h.detail, "sin números, el texto general", f"{h.status_code} {h.detail!r}")
 h = _fallar(ErrorDocumentAI("x", 503, "servicio", paginas=25, limite=20), "generico")
-verificar(h.status_code == 502 and h.detail == "Document AI no está disponible en este momento. Intenta de nuevo en unos minutos.", "otro motivo no se toca (aunque traiga números)", f"{h.status_code} {h.detail!r}")
+verificar(h.status_code == 502 and h.detail == "El procesamiento de documentos no está disponible en este momento. Intenta de nuevo en unos minutos.", "otro motivo no se toca (aunque traiga números)", f"{h.status_code} {h.detail!r}")
 
 print()
 if fallas:

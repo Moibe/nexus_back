@@ -24,7 +24,7 @@ El nombre de un tipo es único en su organización, sin distinguir mayúsculas n
 contesta con 409 `ya_existe`). Antes no había regla y se colaron duplicados: dos tipos con el mismo nombre son dos categorías
 iguales para el clasificador y no se distinguen en ningún lado donde se listan por nombre. Los ARCHIVADOS no ocupan nombre (se
 puede reusar), y solo se revisa cuando un tipo entra a un nombre —crearse, renombrarse, desarchivarse—: los duplicados de antes de
-la regla se siguen pudiendo guardar sin tocar su nombre (activar, calibrar…), y se resuelven renombrando uno. Detalle en
+la regla se siguen pudiendo guardar sin tocar su nombre (activar, editar la descripción…), y se resuelven renombrando uno. Detalle en
 `tipos_documentales_comun.exigir_nombre_libre`.
 
 ## Ids
