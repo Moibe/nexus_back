@@ -472,6 +472,17 @@ app.include_router(
     dependencies=[Depends(exigir_llave)],
 )
 
+# Qué procesadores de Document AI tienen dueño en este ambiente. Lo usa Nexus Monitor para limpiar huérfanos juntando lo de los
+# tres ambientes (el proyecto de Google es uno solo). Solo lectura y solo llave de servicio, como admins-plataforma.
+from routers.duenos_procesadores import router as duenos_procesadores_router  # noqa: E402
+
+app.include_router(
+    duenos_procesadores_router,
+    prefix="/duenos-procesadores",
+    tags=["Procesadores"],
+    dependencies=[Depends(exigir_llave)],
+)
+
 # Archivos SÍ se registra siempre, a diferencia de Documentos: no depende de la
 # base, solo del almacén. Si `ALMACEN_RUTA` está vacía el endpoint responde un
 # 503 que NOMBRA la variable que falta — más útil que esconder la ruta y dejar
