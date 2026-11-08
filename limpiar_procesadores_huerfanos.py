@@ -55,7 +55,7 @@ async def main() -> int:
         print(f"No se pudo leer el registro de tipos documentales: {exc}", file=sys.stderr)
         return 1
     try:
-        en_google = await procesadores.listar_procesadores_nexusdoc()
+        en_google = await procesadores.listar_procesadores_de_la_aplicacion()
     except (procesadores.DocumentAIError, RuntimeError) as exc:
         print(f"No se pudo listar los procesadores en Document AI: {exc}", file=sys.stderr)
         return 1
@@ -68,7 +68,7 @@ async def main() -> int:
         return 1
     reparto = procesadores_huerfanos.clasificar(en_google, con_dueno, protegidos, organizaciones)
 
-    print(f"Procesadores nexusdoc en Google: {len(en_google)}")
+    print(f"Procesadores de la aplicación en Google (biblioratum / nexusdoc): {len(en_google)}")
     print(f"\nCon dueño ({len(reparto['con_dueno'])}) — no se tocan:")
     for p in reparto["con_dueno"]:
         print(_linea(p) + f"   ← tipo {p['dueno']['tipo']}")

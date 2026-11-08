@@ -141,7 +141,7 @@ def _exigir_dueno(actor: aislamiento.Actor, tenant: str, procesador_id: str) -> 
         "`versionDefault`, que el front debe guardar junto al tipo — la versión "
         "se fija en cada extracción para que el resultado sea reproducible — "
         "más `procesadorDisplayName`, que es el nombre VISIBLE del procesador "
-        "en la consola de GCP (algo como `nexusdoc--tipo-abc--v2--ine`): sirve "
+        "en la consola de GCP (algo como `biblioratum--tipo-abc--v2--ine`): sirve "
         "para que una persona pueda casar el tipo documental de NexusDoc con "
         "el procesador que ve en Document AI."
     ),

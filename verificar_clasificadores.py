@@ -288,11 +288,17 @@ try:
         {"id": "k2", "displayName": "nexusdoc-clasificador--una-organizacion-purgada", "tipo": "CUSTOM_CLASSIFICATION_PROCESSOR", "creado": "2026-10-20"},
         {"id": "k3", "displayName": "nexusdoc-clasificador", "tipo": "CUSTOM_CLASSIFICATION_PROCESSOR", "creado": "2026-09-06"},
         {"id": "k4", "displayName": "nexusdoc--tipo-x--v1--huerfano", "tipo": "CUSTOM_EXTRACTION_PROCESSOR", "creado": "2026-10-01"},
+        {"id": "k5", "displayName": "biblioratum--tipo-y--v1--huerfano-nuevo", "tipo": "CUSTOM_EXTRACTION_PROCESSOR", "creado": "2026-11-09"},
+        {"id": "k6", "displayName": "biblioratum--tipo-z--v1--con-dueno", "tipo": "CUSTOM_EXTRACTION_PROCESSOR", "creado": "2026-11-09"},
+        {"id": "k7", "displayName": "biblioratum-algo-ajeno", "tipo": "CUSTOM_EXTRACTION_PROCESSOR", "creado": "2026-11-09"},
     ]
-    rep = procesadores_huerfanos.clasificar(en_google, {}, set(), {org_a, org_b})
+    rep = procesadores_huerfanos.clasificar(en_google, {"k6": {"tenant": "demo", "tipo": "tipo-z"}}, set(), {org_a, org_b})
     rev("el clasificador de una organización que EXISTE queda a salvo", "k1" in [p["id"] for p in rep["protegidos"]])
     rev("el de una que ya NO existe es huérfano", "k2" in [p["id"] for p in rep["huerfanos"]], str(rep))
     rev("el de plataforma sigue protegido y el extractor sin dueño sigue siendo huérfano", "k3" in [p["id"] for p in rep["protegidos"]] and "k4" in [p["id"] for p in rep["huerfanos"]])
+    rev("un extractor NUEVO (`biblioratum--`) sin dueño también es huérfano", "k5" in [p["id"] for p in rep["huerfanos"]], str(rep))
+    rev("y con dueño queda con dueño, no se toca", "k6" in [p["id"] for p in rep["con_dueno"]], str(rep))
+    rev("un nombre que solo se parece (`biblioratum-algo`, un guion) NO es de la aplicación: queda a salvo", "k7" in [p["id"] for p in rep["protegidos"]], str(rep))
     rev("cada uno está en UNA sola lista", sum(len(v) for v in rep.values()) == len(en_google))
     rep_sin_lista = procesadores_huerfanos.clasificar(en_google, {}, set())
     rev("sin saber cuáles organizaciones existen, TODOS los de organización quedan a salvo", {"k1", "k2"} <= {p["id"] for p in rep_sin_lista["protegidos"]})
