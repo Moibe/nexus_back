@@ -1215,6 +1215,41 @@ try:
             router_expedientes.tipos_documentales.obtener = orig_obtener
             router_expedientes.ESPERA_EXTRAER_AL_SUBIR = orig_espera_ex
             router_expedientes.ESPERA_CLASIFICAR_AL_SUBIR = orig_espera_cl
+
+    # Al final a propósito: borra expedientes de Alfa, y las secciones de arriba cuentan los que hay.
+    titulo("24 · Borrar un expediente completo (Moibe, 2026-11-10): se va el expediente, sus documentos NO (los que no están en otro quedan en el void)")
+
+    def borrar(bearer, tenant, exp):
+        return c.delete(f"/expedientes/{exp}", params={"tenant": tenant}, headers=cab(bearer))
+
+    xb = crear(a_admin, org_a, "Para borrar").json()["id"]
+    xo = crear(a_admin, org_a, "El otro").json()["id"]
+    solo = subir(a_admin, org_a, "solo-en-el-borrado.pdf", pdf(2401)).json()["documentoId"]
+    compartido = subir(a_admin, org_a, "tambien-en-otro.pdf", pdf(2402)).json()["documentoId"]
+    meter(a_admin, org_a, xb, solo)
+    meter(a_admin, org_a, xb, compartido)
+    meter(a_admin, org_a, xo, compartido)
+    antes_lista = len(listar(a_admin, org_a).json()["expedientes"])
+    antes_docs = set(ids_docs(a_admin, org_a))
+    for rol in SOLO_LEEN:
+        r = borrar(P[rol], org_a, xb)
+        rev(f"{rol}: borrar da 403 sin_permiso", r.status_code == 403 and r.json().get("detail", {}).get("codigo") == "sin_permiso", r.text[:150])
+    rev("otra organización no lo puede borrar (403 con su organización ajena, 404 con la suya)", borrar(b_admin, org_a, xb).status_code == 403 and borrar(b_admin, org_b, xb).status_code == 404)
+    rev("un id que no existe o no tiene forma de expediente: 404", borrar(a_admin, org_a, "expediente-" + "0" * 32).status_code == 404 and borrar(a_admin, org_a, "documentos").status_code == 404)
+    rev("nada de eso borró nada", ver(a_admin, org_a, xb).status_code == 200 and len(listar(a_admin, org_a).json()["expedientes"]) == antes_lista)
+    r = borrar(P["OPERADOR"], org_a, xb)
+    rev("quien organiza (aquí un Operador) lo borra: 200 `{borrado: true}`", r.status_code == 200 and r.json() == {"borrado": True}, r.text[:200])
+    rev("ya no se puede abrir (404) ni sale en la lista", ver(a_admin, org_a, xb).status_code == 404 and xb not in [e["id"] for e in listar(a_admin, org_a).json()["expedientes"]] and len(listar(a_admin, org_a).json()["expedientes"]) == antes_lista - 1)
+    rev("sus documentos NO se borraron: siguen siendo de la organización", set(ids_docs(a_admin, org_a)) == antes_docs)
+    rev("el que solo estaba ahí quedó en el void; el compartido sigue en el otro expediente", solo in ids_docs(a_admin, org_a, True) and compartido not in ids_docs(a_admin, org_a, True) and ids_docs_de(a_admin, org_a, xo) == [compartido])
+    en_docs = {d["id"]: d["expedientes"] for d in docs(a_admin, org_a).json()["documentos"]}
+    rev("y ningún documento dice estar en el expediente borrado", all(xb not in [e["id"] for e in v] for v in en_docs.values()))
+    rev("borrarlo otra vez: 404", borrar(a_admin, org_a, xb).status_code == 404)
+    rastro = [x for x in auditoria("CASE_DELETED") if x.get("expedienteId") == xb]
+    rev("deja UN `CASE_DELETED` con el nombre, cuántos documentos tenía y quién", len(rastro) == 1 and rastro[0].get("nombre") == "Para borrar" and rastro[0].get("documentos") == 2 and rastro[0].get("usuarioGuid"), str(rastro))
+    rev("un documento del void se puede volver a meter a otro expediente", meter(a_admin, org_a, xo, solo).status_code == 200 and solo in ids_docs_de(a_admin, org_a, xo))
+    vacio = crear(a_admin, org_a, "Vacío").json()["id"]
+    rev("un expediente vacío también se borra", borrar(a_admin, org_a, vacio).status_code == 200 and ver(a_admin, org_a, vacio).status_code == 404)
 except Exception:  # noqa: BLE001 — una excepción que no es una aserción (p. ej. un resultado sin la forma que se esperaba) se anota como falla, y la prueba llega a su resumen
     import traceback
 

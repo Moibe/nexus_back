@@ -24,8 +24,12 @@ Un documento puede estar en ningún expediente, en uno o en varios (`servicios/d
 es un lugar ni una entidad: es un documento sin ninguna pertenencia, y `listar_documentos(sin_expediente=True)` lo encuentra. Sacar un
 documento de su último expediente lo devuelve solo al void; nunca se borra un documento por salir de un expediente.
 
+**Borrar un expediente** (Moibe, 2026-11-10: «que pueda borrar un expediente completo») quita el expediente y TODAS sus pertenencias, pero
+ningún documento: igual que sacarlos uno por uno, los que no estaban en otro expediente vuelven al void. Su historial de ejecuciones
+(`servicios/ejecuciones.py`) guarda el id y el nombre del expediente como texto, así que se conserva intacto.
+
 La pertenencia es una entidad propia —en el modelo de tablas, `expediente_documento`— y vive en este mismo registro como dos eventos,
-`agregar` y `quitar`, para que meter un documento sea UNA sola escritura. Nada de esto toca al documento.
+`agregar` y `quitar` (más `borrar`, el expediente entero), para que meter un documento sea UNA sola escritura. Nada de esto toca al documento.
 
 ## Lo que decide el servidor
 
@@ -126,6 +130,8 @@ def _doblar(tenant: str) -> dict[str, dict]:
                 exp["documentos"].append(doc)
             elif op == "quitar" and doc in exp["documentos"]:
                 exp["documentos"].remove(doc)
+        elif op == "borrar":
+            expedientes.pop(e.get("expediente"), None)
     return expedientes
 
 
@@ -242,6 +248,21 @@ def quitar_documento(tenant: str, expediente_id: str, documento_id: str, por: st
         if documento_id not in e["documentos"]:
             raise DocumentoNoEncontrado(documento_id)
         registro.agregar(_nombre(tenant), {"op": "quitar", "expediente": expediente_id, "documento": documento_id, "tenant": tenant, "por": por, "en": _ahora()})
+
+
+def borrar(tenant: str, expediente_id: str, por: str) -> dict:
+    """Borra el expediente y sus pertenencias; sus documentos NO se borran (los que no están en otro expediente vuelven al void). Devuelve
+    `{"nombre", "totalDocumentos"}` de lo que se borró (para la bitácora). `NoEncontrado` si no es de esa organización."""
+    if not isinstance(expediente_id, str) or not _RE_ID.match(expediente_id):
+        raise NoEncontrado(expediente_id)
+    if sql := _sql():
+        return sql.expedientes_borrar(almacen._validar_tenant(tenant), expediente_id)
+    with registro.candado:
+        e = _doblar(tenant).get(expediente_id)
+        if e is None:
+            raise NoEncontrado(expediente_id)
+        registro.agregar(_nombre(tenant), {"op": "borrar", "expediente": expediente_id, "tenant": tenant, "por": por, "en": _ahora()})
+    return {"nombre": e["nombre"], "totalDocumentos": len(e["documentos"])}
 
 
 def listar_documentos(tenant: str, sin_expediente: bool | None = None) -> list[dict]:
