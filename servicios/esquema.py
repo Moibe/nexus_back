@@ -243,8 +243,8 @@ def esquema_desde_campos(nombre_tipo: str, descripcion_tipo: str, campos: list[d
             *tipos_auxiliares,
         ],
     }
-    if (instrucciones or "").strip():
-        esquema["documentPrompt"] = instrucciones.strip()
+    # `instrucciones` ya NO se manda como `documentPrompt` (Quitadas el 2026-11-10 (Moibe: «adelante», tras medir que la descripción del campo logra lo mismo)): se acepta el parámetro para no romper a quien llame, pero no
+    # cambia el esquema. Los procesadores ya creados conservan el suyo.
     return esquema
 
 

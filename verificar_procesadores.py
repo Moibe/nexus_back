@@ -131,15 +131,15 @@ try:
     rev("y su EntityType es `object` con los dos subcampos en orden", grupo.get("baseTypes") == ["object"] and [h["name"] for h in grupo.get("properties", [])] == ["nombre", "acciones"], str(grupo))
     rev("la obligatoriedad del subcampo se respeta", grupo["properties"][0]["occurrenceType"] == "REQUIRED_ONCE" and grupo["properties"][1]["occurrenceType"] == "OPTIONAL_ONCE")
 
-    titulo("4b · Instrucciones para la extracción (2026-10-30): llegan al esquema como el `documentPrompt` de Google")
+    titulo("4b · «Instrucciones» (quitadas el 2026-11-10): se aceptan por compatibilidad pero ya no llegan a Google")
     recibido.clear()
     r = c.post("/procesadores/activar", json=cuerpo, headers=LLAVE)
     rev("sin instrucciones: 200 y el esquema NO lleva `documentPrompt`", r.status_code == 200 and "documentPrompt" not in recibido["esquema"], r.text[:200])
     recibido.clear()
     r = c.post("/procesadores/activar", json={**cuerpo, "instrucciones": "  La persona que interesa es el titular.  "}, headers=LLAVE)
     rev(
-        "con instrucciones: 200 y el esquema trae `documentPrompt`, sin los espacios de los extremos",
-        r.status_code == 200 and recibido["esquema"].get("documentPrompt") == "La persona que interesa es el titular.",
+        "con instrucciones: 200 y el esquema TAMPOCO lleva `documentPrompt` (ya no se usan)",
+        r.status_code == 200 and "documentPrompt" not in recibido["esquema"],
         str(recibido.get("esquema", {}).get("documentPrompt")),
     )
     recibido.clear()

@@ -616,9 +616,7 @@ async def generar_campos(
     va tal cual lo midió esa prueba: «Indicaciones del cliente para leer este tipo de documento: …»; cambiarlo es cambiar lo medido."""
     instruccion = _INSTRUCCION_GENERAR
     # Una sola línea: los saltos de línea de la caja no le aportan nada al modelo y así el prompt queda como el que se midió.
-    indicaciones = " ".join((instrucciones_tipo or "").split())
-    if indicaciones:
-        instruccion = f"Indicaciones del cliente para leer este tipo de documento: {indicaciones} {instruccion}"
+    # `instrucciones_tipo` ya no se usa (Quitadas el 2026-11-10 (Moibe: «adelante», tras medir que la descripción del campo logra lo mismo)); el parámetro se conserva por compatibilidad.
     contexto = " ".join(p for p in ((nombre_tipo or "").strip(), (descripcion_tipo or "").strip()) if p)
     if contexto:
         instruccion = f"El documento es de este tipo: {contexto}. {instruccion}"
