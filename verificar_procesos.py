@@ -331,6 +331,10 @@ try:
         {"id": "operador-2", "type": "operador", "position": {"x": 700, "y": 10}, "data": {"operador": "cantidad", "a": muestra_larga, "b": "", "resultado": "200"}},
         {"id": "constante-1", "type": "constante", "position": {"x": 700, "y": 300}, "data": {"familia": "numero", "valor": "2", "basura": "x"}, "selected": True},
         {"id": "operador-3", "type": "operador", "position": {"x": 1000, "y": 10}, "data": {"operador": "mayor"}},
+        # «Entre» (2026-11-10): la única regla con TRES entradas; su tercera muestra va en `c`. Otro operador que la mande no la guarda.
+        {"id": "operador-4", "type": "operador", "position": {"x": 1300, "y": 10}, "data": {"operador": "entre", "a": "2026-06-15", "b": "2026-01-01", "c": "2026-12-31"}},
+        {"id": "operador-5", "type": "operador", "position": {"x": 1600, "y": 10}, "data": {"operador": "entre"}},
+        {"id": "operador-6", "type": "operador", "position": {"x": 1900, "y": 10}, "data": {"operador": "igual", "a": "x", "b": "y", "c": "no va"}},
     ]
     listas["aristas"] += [cable("operador-2", "resultado", "operador-3", "a"), cable("constante-1", "valor", "operador-3", "b")]
     p5 = nuevo_id()
@@ -343,6 +347,10 @@ try:
     rev("el valor fijo guarda solo su clase y su valor", fijo["data"] == {"familia": "numero", "valor": "2"} and set(fijo) == {"id", "type", "position", "data"}, str(fijo))
     rev("de un operador solo se guardan cuál es y sus dos muestras (lo que calculó, no)", set(cant["data"]) == {"operador", "a", "b"}, str(cant["data"]))
     rev("un operador sin muestras en sus datos las guarda vacías", next(n for n in d["nodos"] if n["id"] == "operador-3")["data"] == {"operador": "mayor", "a": "", "b": ""})
+    datos_de = lambda nodo_id: next(n for n in d["nodos"] if n["id"] == nodo_id)["data"]
+    rev("«Entre» guarda sus TRES muestras (valor, desde y hasta)", datos_de("operador-4") == {"operador": "entre", "a": "2026-06-15", "b": "2026-01-01", "c": "2026-12-31"}, str(datos_de("operador-4")))
+    rev("«Entre» sin muestras guarda las tres vacías", datos_de("operador-5") == {"operador": "entre", "a": "", "b": "", "c": ""}, str(datos_de("operador-5")))
+    rev("otro operador que mande `c` no la guarda (solo tiene dos entradas)", datos_de("operador-6") == {"operador": "igual", "a": "x", "b": "y"}, str(datos_de("operador-6")))
     rev("los cables del valor fijo y del resultado se guardan", {(a["source"], a["sourceHandle"]) for a in d["aristas"]} >= {("operador-2", "resultado"), ("constante-1", "valor")})
     n = proceso("x")
     n["nodos"][2]["data"]["a"] = "x" * 5000
