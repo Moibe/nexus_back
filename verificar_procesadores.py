@@ -131,15 +131,15 @@ try:
     rev("y su EntityType es `object` con los dos subcampos en orden", grupo.get("baseTypes") == ["object"] and [h["name"] for h in grupo.get("properties", [])] == ["nombre", "acciones"], str(grupo))
     rev("la obligatoriedad del subcampo se respeta", grupo["properties"][0]["occurrenceType"] == "REQUIRED_ONCE" and grupo["properties"][1]["occurrenceType"] == "OPTIONAL_ONCE")
 
-    titulo("4b · Instrucciones para la extracción (2026-10-30): llegan al esquema como el `documentPrompt` de Google")
+    titulo("4b · «Instrucciones» (quitadas el 2026-11-10): se aceptan por compatibilidad pero ya no llegan a Google")
     recibido.clear()
     r = c.post("/procesadores/activar", json=cuerpo, headers=LLAVE)
     rev("sin instrucciones: 200 y el esquema NO lleva `documentPrompt`", r.status_code == 200 and "documentPrompt" not in recibido["esquema"], r.text[:200])
     recibido.clear()
     r = c.post("/procesadores/activar", json={**cuerpo, "instrucciones": "  La persona que interesa es el titular.  "}, headers=LLAVE)
     rev(
-        "con instrucciones: 200 y el esquema trae `documentPrompt`, sin los espacios de los extremos",
-        r.status_code == 200 and recibido["esquema"].get("documentPrompt") == "La persona que interesa es el titular.",
+        "con instrucciones: 200 y el esquema TAMPOCO lleva `documentPrompt` (ya no se usan)",
+        r.status_code == 200 and "documentPrompt" not in recibido["esquema"],
         str(recibido.get("esquema", {}).get("documentPrompt")),
     )
     recibido.clear()
@@ -258,6 +258,52 @@ try:
         resultado = asyncio.run(svc.activar_tipo_documental("tipo-zz", "Z", {"entityTypes": [{"name": "custom_extraction_document_type", "properties": []}]}, 0))
         rev("(activar con los dobles termina)", resultado["procesadorId"] == "pr-1", str(resultado))
         rev("activar un esquema nuevo INVALIDA la memoria de ese procesador", "pr-1" not in svc._CACHE_ESTRUCTURA)
+    finally:
+        svc._pedir = original  # type: ignore[assignment]
+
+    titulo("9 · Los extractores NUEVOS se llaman `biblioratum--…`; los de antes (`nexusdoc--…`) se siguen encontrando")
+    en_google_9: list[dict] = []
+    posts_9: list[dict] = []
+    ESQUEMA_9 = {"entityTypes": [{"name": "custom_extraction_document_type", "properties": []}]}
+
+    async def pedir_google_9(cliente, metodo, api, ruta, **kw):
+        if metodo == "GET" and ruta.endswith("/processors"):
+            return {"processors": list(en_google_9)}
+        if metodo == "POST" and ruta.endswith("/processors"):
+            posts_9.append(kw["json"])
+            nuevo = {"name": f"{svc._PADRE}/processors/pr-{len(posts_9)}", "displayName": kw["json"]["displayName"], "type": kw["json"]["type"], "createTime": "2026-11-09T10:00:00Z"}
+            en_google_9.append(nuevo)
+            return nuevo
+        if metodo == "GET":
+            return next((p for p in en_google_9 if p["name"] == ruta), {"name": ruta, "displayName": ""})
+        return {}
+
+    svc._pedir = pedir_google_9  # type: ignore[assignment]
+    try:
+        r1 = asyncio.run(svc.activar_tipo_documental("tipo-aa", "INE Frontal", ESQUEMA_9, 0))
+        rev("un tipo nuevo se crea con el prefijo `biblioratum--`", r1["creado"] is True and posts_9[-1]["displayName"] == "biblioratum--tipo-aa--v1--ine-frontal", str(posts_9))
+        rev("y lo que se devuelve para mostrar es ese nombre", r1["procesadorDisplayName"] == "biblioratum--tipo-aa--v1--ine-frontal", r1["procesadorDisplayName"])
+        r1b = asyncio.run(svc.activar_tipo_documental("tipo-aa", "INE Frontal renombrado", ESQUEMA_9, 0))
+        rev("el doble clic (misma versión, aunque se renombre el tipo) adopta el que ya hay: nada se duplica", r1b["creado"] is False and r1b["procesadorId"] == r1["procesadorId"] and len(posts_9) == 1, str(posts_9))
+
+        en_google_9.append({"name": f"{svc._PADRE}/processors/viejo-bb", "displayName": "nexusdoc--tipo-bb--v1--ine", "type": "CUSTOM_EXTRACTION_PROCESSOR", "createTime": "2026-10-01T10:00:00Z"})
+        antes = len(posts_9)
+        r2 = asyncio.run(svc.activar_tipo_documental("tipo-bb", "INE", ESQUEMA_9, 0))
+        rev("un procesador que YA existía con el nombre de antes (`nexusdoc--`) se adopta, no se duplica", r2["creado"] is False and r2["procesadorId"] == "viejo-bb" and len(posts_9) == antes, str(r2))
+        r3 = asyncio.run(svc.activar_tipo_documental("tipo-bb", "INE", ESQUEMA_9, 1))
+        rev("pero la versión SIGUIENTE de ese tipo nace con el nombre nuevo", r3["creado"] is True and posts_9[-1]["displayName"] == "biblioratum--tipo-bb--v2--ine", str(posts_9[-1]))
+
+        en_google_9.append({"name": f"{svc._PADRE}/processors/v10-nuevo", "displayName": "biblioratum--tipo-cc--v10--x", "type": "CUSTOM_EXTRACTION_PROCESSOR", "createTime": "2026-11-09T10:00:00Z"})
+        en_google_9.append({"name": f"{svc._PADRE}/processors/v10-viejo", "displayName": "nexusdoc--tipo-cc--v10--x", "type": "CUSTOM_EXTRACTION_PROCESSOR", "createTime": "2026-10-01T10:00:00Z"})
+        r4 = asyncio.run(svc.activar_tipo_documental("tipo-cc", "C", ESQUEMA_9, 0))
+        rev("la v1 NO se confunde con la v10, con ninguno de los dos prefijos", r4["creado"] is True and posts_9[-1]["displayName"] == "biblioratum--tipo-cc--v1--c", str(posts_9[-1]))
+
+        en_google_9.append({"name": f"{svc._PADRE}/processors/ajeno", "displayName": "mi-procesador-a-mano", "type": "CUSTOM_EXTRACTION_PROCESSOR", "createTime": "2026-01-01T10:00:00Z"})
+        en_google_9.append({"name": f"{svc._PADRE}/processors/clas", "displayName": "nexusdoc-clasificador", "type": "CUSTOM_CLASSIFICATION_PROCESSOR", "createTime": "2026-09-06T10:00:00Z"})
+        listados = asyncio.run(svc.listar_procesadores_de_la_aplicacion())
+        nombres = {p["displayName"] for p in listados}
+        rev("listar trae los `biblioratum--`, los `nexusdoc--` y los clasificadores", {"biblioratum--tipo-aa--v1--ine-frontal", "nexusdoc--tipo-bb--v1--ine", "nexusdoc-clasificador"} <= nombres, str(sorted(nombres)))
+        rev("y NO trae lo que no es de la aplicación", "mi-procesador-a-mano" not in nombres, str(sorted(nombres)))
     finally:
         svc._pedir = original  # type: ignore[assignment]
 finally:

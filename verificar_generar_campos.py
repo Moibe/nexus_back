@@ -291,28 +291,19 @@ try:
     rev("sin nombre ni descripción, la instrucción no inventa contexto", "El documento es de este tipo" not in generaciones()[-1][2]["generateSchemaVersionParams"]["prompt"])
     rev("y sin instrucciones del tipo tampoco hay «indicaciones» (el prompt de siempre)", "Indicaciones del cliente" not in generaciones()[-1][2]["generateSchemaVersionParams"]["prompt"])
 
-    # Las instrucciones para la extracción orientan la propuesta (medido contra Google el 2026-11-05: el generador las obedece como filtro).
+    # Las «instrucciones» se QUITARON el 2026-11-10 (la descripción del campo logra lo mismo): el parámetro se acepta y no cambia el prompt.
     asyncio.run(
         svc.generar_campos(b"x", "application/pdf", "Certificado", "De una oficina", "  La persona que interesa es el titular,\n no el beneficiario.  ")
     )
     prompt = generaciones()[-1][2]["generateSchemaVersionParams"]["prompt"]
-    rev(
-        "las instrucciones del tipo viajan en el prompt, con el texto que midió la prueba real",
-        "Indicaciones del cliente para leer este tipo de documento: La persona que interesa es el titular, no el beneficiario. " in prompt,
-        prompt,
-    )
-    rev("en una sola línea: sin saltos ni espacios de sobra", "\n" not in prompt and "  " not in prompt, repr(prompt))
-    rev("junto al contexto del tipo y a la instrucción fija", "El documento es de este tipo: Certificado De una oficina." in prompt and "snake_case" in prompt)
-    rev(
-        "en este orden: contexto del tipo, indicaciones, instrucción fija",
-        prompt.index("El documento es de este tipo") < prompt.index("Indicaciones del cliente") < prompt.index("snake_case"),
-    )
+    rev("las instrucciones del tipo YA NO viajan en el prompt", "Indicaciones del cliente" not in prompt and "titular" not in prompt, prompt)
+    rev("el contexto del tipo y la instrucción fija siguen", "El documento es de este tipo: Certificado De una oficina." in prompt and "snake_case" in prompt)
     asyncio.run(svc.generar_campos(b"x", "application/pdf", "Certificado", "", "  \n \t "))
     rev("instrucciones en blanco no agregan nada al prompt", "Indicaciones del cliente" not in generaciones()[-1][2]["generateSchemaVersionParams"]["prompt"])
     asyncio.run(svc.generar_campos(b"x", "application/pdf", "", "", "Ignora la fecha de inicio de operaciones."))
     rev(
-        "las instrucciones viajan aunque el tipo todavía no tenga nombre ni descripción",
-        "Ignora la fecha de inicio de operaciones." in generaciones()[-1][2]["generateSchemaVersionParams"]["prompt"]
+        "tampoco sin nombre ni descripción",
+        "Ignora la fecha" not in generaciones()[-1][2]["generateSchemaVersionParams"]["prompt"]
         and "El documento es de este tipo" not in generaciones()[-1][2]["generateSchemaVersionParams"]["prompt"],
     )
 
@@ -371,10 +362,8 @@ try:
 
     r = generar(a_admin, org_a, nombre="Certificado", instrucciones="La persona que interesa es el titular.")
     rev(
-        "las instrucciones del tipo llegan a Google por la ruta",
-        r.status_code == 200
-        and "Indicaciones del cliente para leer este tipo de documento: La persona que interesa es el titular. "
-        in generaciones()[-1][2]["generateSchemaVersionParams"]["prompt"],
+        "las instrucciones por la ruta se aceptan (200) pero NO llegan a Google",
+        r.status_code == 200 and "titular" not in generaciones()[-1][2]["generateSchemaVersionParams"]["prompt"],
         r.text[:200],
     )
     r = generar(a_admin, org_a, nombre="Certificado")

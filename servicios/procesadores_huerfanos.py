@@ -7,7 +7,7 @@ Google y borra es `limpiar_procesadores_huerfanos.py`.
 
 ## Qué cuenta como huérfano
 
-Un procesador `nexusdoc--…` cuyo id no está en ningún tipo del registro: ni como procesador vigente, ni en su historial de
+Un procesador `biblioratum--…` (o `nexusdoc--…`, los creados antes del 2026-11-08) cuyo id no está en ningún tipo del registro: ni como procesador vigente, ni en su historial de
 versiones, ni como la versión que se está editando. Nunca lo son:
 
 - el clasificador del espacio de plataforma (`nexusdoc-clasificador`) y el procesador cuyo id está en `protegidos` (el
@@ -15,13 +15,18 @@ versiones, ni como la versión que se está editando. Nunca lo son:
 - el clasificador de una organización que existe (`nexusdoc-clasificador--{guid}`, ver `servicios/clasificadores.py`): no lo señala ningún
   tipo, lo señala la organización. SÍ es huérfano el de una organización que ya no está en el registro (se purgó) — pero solo si quien
   llama dice cuáles organizaciones existen (`organizaciones`); sin esa lista no se sabe y se deja a salvo;
-- cualquier procesador cuyo nombre NO empiece con `nexusdoc--`: no es de la aplicación.
+- cualquier procesador cuyo nombre NO empiece con `biblioratum--` ni con `nexusdoc--`: no es de la aplicación.
 """
 
 import re
 from datetime import date
 
-PREFIJO_EXTRACTOR = "nexusdoc--"
+# Los extractores nuevos se nombran `biblioratum--…` (desde el 2026-11-08, Moibe: «solo para los nuevos»). Los de antes se quedan `nexusdoc--…`
+# en Google, porque Document AI no deja renombrar un procesador: por eso TODO lo que busca, lista o limpia extractores acepta las dos marcas.
+# El clasificador de plataforma y los de cada organización conservan `nexusdoc-clasificador…` (se ubican por nombre exacto).
+MARCA_EXTRACTOR_NUEVO = "biblioratum"
+MARCA_EXTRACTOR_ANTIGUA = "nexusdoc"
+PREFIJOS_EXTRACTOR = (f"{MARCA_EXTRACTOR_NUEVO}--", f"{MARCA_EXTRACTOR_ANTIGUA}--")
 PREFIJO_CLASIFICADOR_ORGANIZACION = "nexusdoc-clasificador--"
 
 _FECHA = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -40,7 +45,7 @@ def clasificar(
         if p["id"] not in protegidos and nombre.startswith(PREFIJO_CLASIFICADOR_ORGANIZACION) and organizaciones is not None:
             vivo = nombre[len(PREFIJO_CLASIFICADOR_ORGANIZACION) :] in organizaciones
             reparto["protegidos" if vivo else "huerfanos"].append(p)
-        elif p["id"] in protegidos or not nombre.startswith(PREFIJO_EXTRACTOR):
+        elif p["id"] in protegidos or not nombre.startswith(PREFIJOS_EXTRACTOR):
             reparto["protegidos"].append(p)
         elif p["id"] in con_dueno:
             reparto["con_dueno"].append({**p, "dueno": con_dueno[p["id"]]})

@@ -1824,7 +1824,7 @@ hospedaje (US$0.05 por hora) es solo de versiones propias desplegadas, y estos c
 Al pasar el catálogo al servidor sin migrar lo de cada computadora, los extractores que esas pruebas crearon en Google quedaron
 sin dueño. `limpiar_procesadores_huerfanos.py` los lista (solo lectura) y, con `--borrar`, borra ÚNICAMENTE los que ningún tipo
 señala —ni como vigente, ni en su historial—, pidiendo escribir BORRAR. Nunca toca el clasificador de plataforma, el extractor de INE
-del `.env` ni lo que no se llame `nexusdoc--…`. El clasificador de una organización que existe queda a salvo; el de una que ya NO existe
+del `.env` ni lo que no se llame `biblioratum--…` o `nexusdoc--…` (los extractores nuevos llevan `biblioratum--` desde el 2026-11-08; los de antes conservan `nexusdoc--` porque Document AI no deja renombrar, y todo lo que busca, lista o limpia acepta los dos). El clasificador de una organización que existe queda a salvo; el de una que ya NO existe
 (se purgó con `purgar_creado_por.py`) sí sale como huérfano. Se corre en el servidor (necesita las credenciales de Google y el almacén).
 
 `--antes-de AAAA-MM-DD` es un corte de seguridad: solo borra los huérfanos creados ANTES de esa fecha y lista aparte (sin tocar) los

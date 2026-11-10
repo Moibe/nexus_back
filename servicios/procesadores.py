@@ -20,7 +20,8 @@ extrae con confianza >0.99.
 Sobre la idempotencia, que aquí es una trampa real: `processors.create` NO es
 idempotente (no acepta requestId) y `processors.list` no tiene filtro. Un
 doble clic en "Activar" crearía dos procesadores. El guardia es el
-displayName: se nombra `nexusdoc--{id_del_tipo}--v{version}` y ANTES de crear
+displayName: se nombra `biblioratum--{id_del_tipo}--v{version}` (hasta el 2026-11-08 era `nexusdoc--…`: esos siguen así en Google y también
+se buscan) y ANTES de crear
 se lista y se busca ese nombre exacto — si ya existe, se adopta en lugar de
 duplicar.
 
@@ -62,6 +63,7 @@ from errores import SinClasificador
 from servicios import clasificadores
 from servicios.esquema import campos_desde_esquema, esquema_clasificador_desde_tipos, estructura_desde_esquema
 from servicios.ia import SCOPES, _token  # misma credencial cacheada que /ia
+from servicios.procesadores_huerfanos import MARCA_EXTRACTOR_ANTIGUA, MARCA_EXTRACTOR_NUEVO
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +98,7 @@ def _slug(texto: str) -> str:
     return "-".join(significativas)[:60]
 
 
-def _prefijo_display(id_tipo: str, version: int) -> str:
+def _prefijo_display(id_tipo: str, version: int, marca: str = MARCA_EXTRACTOR_NUEVO) -> str:
     """El PREFIJO estable que identifica UNA VERSIÓN de un tipo documental en
     Document AI.
 
@@ -115,13 +117,21 @@ def _prefijo_display(id_tipo: str, version: int) -> str:
     del mismo tipo, en momentos distintos, nunca se confundan entre sí ni se
     adopten por error.
     """
-    return f"nexusdoc--{id_tipo}--v{version}"
+    return f"{marca}--{id_tipo}--v{version}"
+
+
+def _prefijos_de_busqueda(id_tipo: str, version: int) -> list[str]:
+    """Los prefijos con los que PUDO haberse creado esa versión: el de ahora (`biblioratum--…`) y el de antes del 2026-11-08 (`nexusdoc--…`).
+
+    Se CREA con el primero, pero se BUSCA con los dos: un procesador que ya existía con el nombre viejo (por ejemplo, el de un doble clic
+    que cayó justo en el cambio) se adopta en vez de duplicarse, porque Document AI no permite renombrarlo."""
+    return [_prefijo_display(id_tipo, version, marca) for marca in (MARCA_EXTRACTOR_NUEVO, MARCA_EXTRACTOR_ANTIGUA)]
 
 
 def _display_completo(id_tipo: str, version: int, nombre: str) -> str:
     """El displayName real que se manda a crear: prefijo estable (con
     versión) + nombre legible, para que la consola de GCP diga algo como
-    "nexusdoc--tipo-mtaq965y-1--v2--ine" en vez de "tipo-mtaq965y-1" a secas.
+    "biblioratum--tipo-mtaq965y-1--v2--ine" en vez de "tipo-mtaq965y-1" a secas.
 
     Si el tipo se renombra después de activado, este texto se queda con el
     nombre VIEJO — Document AI no ofrece un `patch` para actualizarlo (se
@@ -192,8 +202,8 @@ async def _esperar_operacion(cliente: httpx.AsyncClient, nombre_op: str) -> dict
     raise RuntimeError(f"La operación {nombre_op} no terminó en 90s.")
 
 
-async def _buscar_por_prefijo(cliente: httpx.AsyncClient, prefijo: str) -> dict | None:
-    """Busca un procesador cuyo displayName EMPIECE con `prefijo`, paginando
+async def _buscar_por_prefijo(cliente: httpx.AsyncClient, prefijos: list[str]) -> dict | None:
+    """Busca un procesador cuyo displayName EMPIECE con alguno de `prefijos` (ver `_prefijos_de_busqueda`), paginando
     `list` (Document AI no tiene filtro server-side por nada que no sea
     id/parent — se verificó contra la API real).
 
@@ -218,7 +228,7 @@ async def _buscar_por_prefijo(cliente: httpx.AsyncClient, prefijo: str) -> dict 
         pagina = await _pedir(cliente, "GET", "v1", ruta, params=params)
         for p in pagina.get("processors", []):
             display = p.get("displayName", "")
-            if display == prefijo or display.startswith(f"{prefijo}--"):
+            if any(display == prefijo or display.startswith(f"{prefijo}--") for prefijo in prefijos):
                 return p
         token = pagina.get("nextPageToken", "")
         if not token:
@@ -268,9 +278,9 @@ async def activar_tipo_documental(
         raise RuntimeError("Falta DOCAI_PROJECT_ID en el .env — revisa .env.example")
 
     version_a_publicar = version_actual + 1
-    prefijo = _prefijo_display(id_tipo, version_a_publicar)
+    prefijos = _prefijos_de_busqueda(id_tipo, version_a_publicar)
     async with httpx.AsyncClient() as cliente:
-        existente = await _buscar_por_prefijo(cliente, prefijo)
+        existente = await _buscar_por_prefijo(cliente, prefijos)
         creado = existente is None
 
         if existente is None:
@@ -345,7 +355,7 @@ async def activar_tipo_documental(
         "procesadorId": nombre_recurso.split("/")[-1],
         "procesadorNombre": nombre_recurso,
         # El nombre VISIBLE en la consola de GCP (`_display_completo`, algo
-        # como "nexusdoc--tipo-mtaq965y-1--v2--ine"), aparte del `name` de
+        # como "biblioratum--tipo-mtaq965y-1--v2--ine"), aparte del `name` de
         # arriba, que es la ruta del recurso. Se devuelve desde el 2026-09-08
         # a pedido explícito: el front lo guarda y lo muestra en la ficha del
         # tipo documental para que una persona pueda casar lo que ve en
@@ -606,9 +616,7 @@ async def generar_campos(
     va tal cual lo midió esa prueba: «Indicaciones del cliente para leer este tipo de documento: …»; cambiarlo es cambiar lo medido."""
     instruccion = _INSTRUCCION_GENERAR
     # Una sola línea: los saltos de línea de la caja no le aportan nada al modelo y así el prompt queda como el que se midió.
-    indicaciones = " ".join((instrucciones_tipo or "").split())
-    if indicaciones:
-        instruccion = f"Indicaciones del cliente para leer este tipo de documento: {indicaciones} {instruccion}"
+    # `instrucciones_tipo` ya no se usa (Quitadas el 2026-11-10 (Moibe: «adelante», tras medir que la descripción del campo logra lo mismo)); el parámetro se conserva por compatibilidad.
     contexto = " ".join(p for p in ((nombre_tipo or "").strip(), (descripcion_tipo or "").strip()) if p)
     if contexto:
         instruccion = f"El documento es de este tipo: {contexto}. {instruccion}"
@@ -678,9 +686,9 @@ async def eliminar_procesador(procesador_id: str) -> None:
             await _esperar_operacion(cliente, op["name"])
 
 
-async def listar_procesadores_nexusdoc() -> list[dict]:
-    """TODOS los procesadores del proyecto cuyo nombre visible empieza con `nexusdoc`: los extractores
-    (`nexusdoc--{id}--v{n}--{nombre}`) y los clasificadores (`nexusdoc-clasificador` y `nexusdoc-clasificador--{organización}`). Lectura pura: no cobra y no cambia nada.
+async def listar_procesadores_de_la_aplicacion() -> list[dict]:
+    """TODOS los procesadores del proyecto cuyo nombre visible empieza con `biblioratum` o `nexusdoc`: los extractores
+    (`biblioratum--{id}--v{n}--{nombre}`, y los de antes del 2026-11-08 `nexusdoc--…`) y los clasificadores (`nexusdoc-clasificador` y `nexusdoc-clasificador--{organización}`). Lectura pura: no cobra y no cambia nada.
 
     Existe para la limpieza de procesadores huérfanos (`limpiar_procesadores_huerfanos.py`): Document AI no ofrece
     filtro, así que se pagina `processors.list` completo."""
@@ -695,7 +703,7 @@ async def listar_procesadores_nexusdoc() -> list[dict]:
             pagina = await _pedir(cliente, "GET", "v1", ruta, params=params)
             for p in pagina.get("processors", []):
                 nombre = p.get("displayName", "")
-                if nombre.startswith("nexusdoc"):
+                if nombre.startswith((MARCA_EXTRACTOR_NUEVO, MARCA_EXTRACTOR_ANTIGUA)):
                     encontrados.append(
                         {
                             "id": p.get("name", "").split("/")[-1],

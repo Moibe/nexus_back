@@ -84,6 +84,7 @@ class TipoDocumentalEntrada(BaseModel):
     descripcion: str = ""
     # Opcional (2026-10-30): contexto para leer el documento, que viaja como el `documentPrompt` del extractor. Orienta qué se
     # extrae; no sirve para reescribir valores. Ver `esquema_desde_campos`.
+    # `instrucciones` se sigue ACEPTANDO (clientes viejos) pero ya no viaja a Google (Quitadas el 2026-11-10 (Moibe: «adelante», tras medir que la descripción del campo logra lo mismo)).
     instrucciones: str = Field(default="", max_length=MAX_INSTRUCCIONES)
     campos: list[CampoEntrada]
     # La versión YA publicada (0 = nunca activado). "Activar" siempre manda 0;
@@ -141,7 +142,7 @@ def _exigir_dueno(actor: aislamiento.Actor, tenant: str, procesador_id: str) -> 
         "`versionDefault`, que el front debe guardar junto al tipo — la versión "
         "se fija en cada extracción para que el resultado sea reproducible — "
         "más `procesadorDisplayName`, que es el nombre VISIBLE del procesador "
-        "en la consola de GCP (algo como `nexusdoc--tipo-abc--v2--ine`): sirve "
+        "en la consola de GCP (algo como `biblioratum--tipo-abc--v2--ine`): sirve "
         "para que una persona pueda casar el tipo documental de NexusDoc con "
         "el procesador que ve en Document AI."
     ),
@@ -179,9 +180,7 @@ async def activar(tipo: TipoDocumentalEntrada, authorization: str | None = Heade
                 detail=f"El grupo «{campo.nombre}» tiene un grupo adentro; los grupos solo pueden tener campos sueltos.",
             )
 
-    esquema = esquema_desde_campos(
-        tipo.nombre, tipo.descripcion, [c.model_dump() for c in tipo.campos], tipo.instrucciones
-    )
+    esquema = esquema_desde_campos(tipo.nombre, tipo.descripcion, [c.model_dump() for c in tipo.campos])
     try:
         resultado = await activar_tipo_documental(tipo.id, tipo.nombre, esquema, tipo.version)
     except DocumentAIError as exc:
@@ -234,14 +233,14 @@ async def generar_campos(
     instrucciones: str = Form(
         "",
         max_length=MAX_INSTRUCCIONES,
-        description="Sus instrucciones para la extracción, si ya se escribieron: también orientan la propuesta (p. ej. qué persona interesa o qué dato dejar fuera)",
+        description="Ya no se usa (2026-11-10); se acepta por compatibilidad",
     ),
     authorization: str | None = Header(default=None),
 ):
     aislamiento.exigir_administrar(authorization, tenant, "tipo_documental")
     contenido = await _leer_subida(archivo)
     try:
-        campos = await _generar_campos(contenido, archivo.content_type or "application/pdf", nombre, descripcion, instrucciones)
+        campos = await _generar_campos(contenido, archivo.content_type or "application/pdf", nombre, descripcion)
     except DocumentAIError as exc:
         logger.exception("Falló la generación de campos a partir de un documento")
         if 400 <= exc.status_code < 500:
