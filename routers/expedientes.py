@@ -440,7 +440,7 @@ async def _extraer_al_subir(actor: aislamiento.Actor, tenant: str, documento: di
     leen los procesos.
     Devuelve `extraccion`; NUNCA levanta: el archivo ya está subido y esto es una consecuencia, así que cualquier falla solo deja el documento sin datos
     y se dice en `estado`: `extraido`, `no_reconocido` (Document AI no reconoció los campos: la corrida se guarda con esa marca), `sin_tipo` (no se
-    clasificó, o el tipo ya no está activo, así que no hay con qué extraer), `sin_procesador` (el tipo está activo pero sin procesador: lo que falta es
+    clasificó, así que no hay con qué extraer), `tipo_no_activo` (se clasificó, pero ese tipo está desactivado o en edición), `sin_procesador` (el tipo está activo pero sin procesador: lo que falta es
     trabajo de configuración, no reintentar), `error` (Document AI falló: la corrida fallida queda anotada) o `no_extraido` (tardó demasiado o no se pudo guardar)."""
     def resultado(estado: str, **mas) -> dict:
         return {"estado": estado, **mas}
@@ -454,8 +454,11 @@ async def _extraer_al_subir(actor: aislamiento.Actor, tenant: str, documento: di
         logger.exception("No se pudo leer el tipo documental %s para extraer al subir", tipo_id)
         return resultado("no_extraido")
     datos = (tipo or {}).get("datos") or {}
-    if not tipo or datos.get("estado") != "activo":
+    if not tipo:
         return resultado("sin_tipo")
+    if datos.get("estado") != "activo":
+        # El clasificador todavía reconoce el tipo, pero está desactivado o en edición (2026-11-10, Moibe: que el aviso lo diga).
+        return resultado("tipo_no_activo")
     procesador = str(datos.get("procesadorId") or "").strip()
     if not procesador:
         return resultado("sin_procesador")
@@ -504,7 +507,7 @@ async def _extraer_al_subir(actor: aislamiento.Actor, tenant: str, documento: di
         "`sin_tipo`, `sin_clasificador` o `no_clasificado`), el `tipo` y la `confianza` (0-100) si lo reconoció: esa clasificación se guarda y es lo "
         "que dice de qué tipo es el documento. Clasificar nunca tumba la subida: si no se puede, el archivo queda subido y sin tipo documental. "
         "Si el clasificador reconoció un tipo activo y con procesador, EXTRAE sus datos con ese procesador, igual que el pipeline de las "
-        "bandejas (lo que luego leen los procesos): `extraccion.estado` es `extraido`, `no_reconocido`, `sin_tipo`, `sin_procesador`, "
+        "bandejas (lo que luego leen los procesos): `extraccion.estado` es `extraido`, `no_reconocido`, `sin_tipo`, `tipo_no_activo`, `sin_procesador`, "
         "`error` o `no_extraido` (y `extraccionId` si se guardó la corrida). Tampoco tumba la subida. "
         "Devuelve `{agregado, documento, clasificacion, extraccion}`."
     ),

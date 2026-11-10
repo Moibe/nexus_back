@@ -1109,15 +1109,15 @@ try:
             rb1 = subir_a(a_admin, org_a, ex_exp, "borrador.pdf", pdf(2316))
             reconoce_x(tx_archivado)
             rb2 = subir_a(a_admin, org_a, ex_exp, "archivado.pdf", pdf(2317))
-            rev("el clasificador pudo decir un tipo borrador o archivado, pero NO se extrae (`sin_tipo`, sin llamar a Google ni guardar corrida)",
-                rb1.status_code == 201 and rb2.status_code == 201 and rb1.json()["extraccion"] == {"estado": "sin_tipo"} and rb2.json()["extraccion"] == {"estado": "sin_tipo"} and len(LL_EX) == n_ex and corridas_totales() == n_corr,
+            rev("el clasificador pudo decir un tipo borrador o archivado, pero NO se extrae (`tipo_no_activo`, sin llamar a Google ni guardar corrida)",
+                rb1.status_code == 201 and rb2.status_code == 201 and rb1.json()["extraccion"] == {"estado": "tipo_no_activo"} and rb2.json()["extraccion"] == {"estado": "tipo_no_activo"} and len(LL_EX) == n_ex and corridas_totales() == n_corr,
                 f"{rb1.text[:150]} {rb2.text[:150]}")
             reconoce_x(tx_vuela)
             CL["antes_de_responder"] = lambda: cambiar_estado(a_admin, org_a, tx_vuela, "archivado")
             rv = subir_a(a_admin, org_a, ex_exp, "se-archiva-en-el-aire.pdf", pdf(2318))
             CL["antes_de_responder"] = None
-            rev("un tipo que se archiva JUSTO mientras se clasificaba (era activo al empezar) ya no se extrae: `sin_tipo` y no se llama a Google",
-                rv.status_code == 201 and rv.json()["clasificacion"]["estado"] == "clasificado" and rv.json()["extraccion"] == {"estado": "sin_tipo"} and len(LL_EX) == n_ex and corridas_totales() == n_corr, rv.text[:300])
+            rev("un tipo que se archiva JUSTO mientras se clasificaba (era activo al empezar) ya no se extrae: `tipo_no_activo` y no se llama a Google",
+                rv.status_code == 201 and rv.json()["clasificacion"]["estado"] == "clasificado" and rv.json()["extraccion"] == {"estado": "tipo_no_activo"} and len(LL_EX) == n_ex and corridas_totales() == n_corr, rv.text[:300])
             cambiar_estado(a_admin, org_a, tx_vuela, "activo")
             reconoce_x(tx_vuela)
             rv2 = subir_a(a_admin, org_a, ex_exp, "otra-vez-activo.pdf", pdf(2319))
