@@ -78,7 +78,7 @@ for tipo, esperado in [
     ("numero", "number"),
     ("fecha", "datetime"),
     ("moneda", "money"),
-    ("booleano", "checkbox"),
+    ("booleano", "boolean"),
     ("desconocido_futuro", "string"),
 ]:
     e = esquema_desde_campos("T", "", [{"nombre": "c", "tipoDato": tipo}])

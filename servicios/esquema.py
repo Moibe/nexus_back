@@ -27,7 +27,9 @@ _VALUE_TYPES = {
     "numero": "number",
     "fecha": "datetime",
     "moneda": "money",
-    "booleano": "checkbox",
+    # "boolean", no "checkbox": Google rechaza "checkbox" en el esquema de un Custom Extractor ("Missing entity type: checkbox";
+    # medido contra Document AI el 2026-11-10, Moibe: «cuando uno de mis campos es booleano nunca me deja activar»).
+    "booleano": "boolean",
 }
 
 # (obligatorio, cardinalidad) -> OccurrenceType. El producto cartesiano cubre
