@@ -52,10 +52,11 @@ class PedidoParecido(BaseModel):
     tags=["Procesos"],
     summary="Qué tanto se parecen dos textos, según IA (operador «Parecido a»)",
     description=(
-        "Para cada par `{a, b}` devuelve `{porcentaje, razon}`: qué tan probable es que los dos textos se refieran a LO MISMO (0 a 100), según Gemini, "
-        "contando abreviaturas («S.A. de C.V.» = «Sociedad Anónima de Capital Variable»), mayúsculas, acentos y puntuación. Si «pasa» lo decide el "
-        "operador con su mínimo, no esta ruta. Hasta 20 pares por petición; el mismo par da la misma respuesta mientras el servidor no se reinicie. "
-        "Pide el rol que organiza (quien arma procesos y quien los ejecuta)."
+        "Para cada par `{a, b}` devuelve `{porcentaje, razon}`: qué tan probable es que los dos textos sean EL MISMO valor (0 a 100), según Gemini, "
+        "contando abreviaturas («S.A. de C.V.» = «Sociedad Anónima de Capital Variable»), puntuación y errores de captura. Mayúsculas, acentos y espacios "
+        "de más no cuentan: se quitan ANTES de preguntar, y si con eso los textos quedan iguales la respuesta es 100 sin preguntarle a la IA. Si «pasa» "
+        "lo decide el operador con su mínimo, no esta ruta. Hasta 20 pares por petición, cada uno en su propia pregunta; el mismo par da la misma "
+        "respuesta mientras el servidor no se reinicie. Pide el rol que organiza (quien arma procesos y quien los ejecuta)."
     ),
 )
 async def medir_parecido(entrada: PedidoParecido, authorization: str | None = Header(default=None)):

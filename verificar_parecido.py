@@ -6,8 +6,10 @@ OFFLINE: Gemini se sustituye por un doble (`servicios.gemini._llamar`), así que
 `ALMACEN_RUTA` temporal, como los demás `verificar_*`. Lo que prueba:
 
 1. Quién puede: los roles que organizan (Administrador, Supervisor, Analista, Operador); Compliance, Auditor y Viewer reciben 403; otra organización, 403.
-2. La respuesta: un `{porcentaje, razon}` por par y en orden; el porcentaje se recorta a 0-100 y se redondea.
+2. La respuesta: un `{porcentaje, razon}` por par y en orden; el porcentaje se recorta a 0-100 y se redondea; un par por llamada a Gemini.
 3. La caché: el mismo par (en cualquier orden y con espacios de más) no vuelve a preguntarle a Gemini; dos veces el mismo par en una petición, una pregunta.
+8. La forma de escribir no cuenta (2026-11-10, «KEYSI» ~ «KEISY» no pasaba y «Keysi» ~ «KEISY» sí): Gemini recibe los textos en mayúsculas y sin
+   acentos, las variantes comparten la caché, lo que solo se escribe distinto es 100 sin preguntar, y si una llamada falla lo que sí salió se guarda.
 4. Lo que se rechaza: sin pares, más de 20, un texto vacío o de más de 500 letras.
 5. Los fallos de Gemini con su mensaje para la persona: 429 → 429, 403/404 → 503, 500 → 502, respuesta que no se entiende → 502; sin proyecto → 503.
 6. El tope por persona (pares por minuto) → 429.
@@ -64,8 +66,8 @@ RESPUESTA = {"estado": 200, "cuerpo": None, "texto": None}
 
 async def falso_llamar(url, headers, cuerpo, timeout):
     LLAMADAS.append(cuerpo)
-    if RESPUESTA["estado"] != 200:
-        return RESPUESTA["estado"], {"error": {"status": "X", "message": "fallo de prueba"}}
+    if RESPUESTA["estado"] != 200 or "FALLA-AQUI" in cuerpo["contents"][0]["parts"][0]["text"]:
+        return (RESPUESTA["estado"] if RESPUESTA["estado"] != 200 else 500), {"error": {"status": "X", "message": "fallo de prueba"}}
     if RESPUESTA["texto"] is not None:
         texto = RESPUESTA["texto"]
     else:
@@ -147,7 +149,8 @@ try:
     rev("en el mismo orden (100 y luego 30)", [x["porcentaje"] for x in res[:2]] == [100, 30], str(res))
     rev("un porcentaje de 140.5 se recorta a 100 y uno negativo a 0", res[2]["porcentaje"] == 100 and res[3]["porcentaje"] == 0, str(res[2:]))
     rev("cada uno trae su razón", all(x["razon"] for x in res), str(res))
-    rev("una sola llamada a Gemini para los cuatro pares", len(LLAMADAS) == 1, str(len(LLAMADAS)))
+    pares_por_llamada = [x["contents"][0]["parts"][0]["text"].split("Pares:\n", 1)[1].count(". A: ") for x in LLAMADAS]
+    rev("una llamada a Gemini POR PAR (tres), y «ACME» ~ «acme» ni pregunta: es el mismo texto", pares_por_llamada == [1, 1, 1], str(pares_por_llamada))
     cfg = LLAMADAS[0]["generationConfig"]
     rev("con temperatura 0 y respuesta JSON", cfg.get("temperature") == 0 and cfg.get("responseMimeType") == "application/json", str(cfg))
     rev("y dice qué modelo contestó", bool(r.json().get("modelo")))
@@ -156,9 +159,9 @@ try:
     LLAMADAS.clear()
     r = medir(O["ADMIN"], O["guid"], [{"a": "acme", "b": "ACME"}, {"a": "  ACME ", "b": "Otra   cosa"}])
     rev("el mismo par al revés y con espacios de más: sale de la caché, sin llamar a Gemini", r.status_code == 200 and len(LLAMADAS) == 0 and [x["porcentaje"] for x in r.json()["resultados"]] == [100, 30], f"{len(LLAMADAS)} {r.text[:150]}")
-    r = medir(O["ADMIN"], O["guid"], [{"a": "Nuevo uno", "b": "nuevo UNO"}, {"a": "nuevo UNO", "b": "Nuevo uno"}])
+    r = medir(O["ADMIN"], O["guid"], [{"a": "Nuevo uno", "b": "Otro dos"}, {"a": "otro DOS", "b": "nuevo uno"}])
     pregunta = LLAMADAS[0]["contents"][0]["parts"][0]["text"] if LLAMADAS else ""
-    rev("dos veces el mismo par en una petición: se pregunta una sola vez", len(LLAMADAS) == 1 and pregunta.count("Nuevo uno") + pregunta.count("nuevo UNO") == 2 and len(r.json()["resultados"]) == 2, pregunta[-200:])
+    rev("dos veces el mismo par en una petición: se pregunta una sola vez", len(LLAMADAS) == 1 and pregunta.count("NUEVO UNO") == 1 and pregunta.count("OTRO DOS") == 1 and len(r.json()["resultados"]) == 2, pregunta[-200:])
 
     titulo("4 · Lo que se rechaza")
     rev("sin pares: 422", medir(O["ADMIN"], O["guid"], []).status_code == 422)
@@ -213,6 +216,31 @@ try:
         except procesos.ProcesoInvalido:
             rev(f"`minimo` = {malo!r} se rechaza", True)
     rev("los otros operadores no llevan `minimo` (aunque lo traigan)", "minimo" not in procesos._nodo(nodo({"operador": "igual", "minimo": 50}))["data"])
+
+    titulo("8 · La forma de escribir no cuenta")
+    rev("comparable: mayúsculas, sin acentos ni tilde de la ñ, sin espacios de más", parecido.comparable("  Pérez   lópez ") == "PEREZ LOPEZ" and parecido.comparable("Peña") == "PENA" and parecido.comparable("Straße") == "STRASSE")
+    LLAMADAS.clear()
+    r = medir(O["ANALISTA"], O["guid"], [{"a": "KEYSI", "b": "KEISY"}])
+    primero = r.json()["resultados"][0]["porcentaje"] if r.status_code == 200 else None
+    pregunta = LLAMADAS[0]["contents"][0]["parts"][0]["text"].split("Pares:\n", 1)[1] if LLAMADAS else ""
+    rev("«KEYSI» ~ «KEISY»: se le pregunta a Gemini una vez", r.status_code == 200 and len(LLAMADAS) == 1, f"{r.status_code} {len(LLAMADAS)}")
+    for a, b in (("Keysi", "KEISY"), ("keysi", "keisy"), ("Keisy", "Keysi")):
+        r = medir(O["ANALISTA"], O["guid"], [{"a": a, "b": b}])
+        rev(f"«{a}» ~ «{b}»: la misma respuesta y SIN volver a preguntar", r.status_code == 200 and r.json()["resultados"][0]["porcentaje"] == primero and len(LLAMADAS) == 1, f"{r.text[:120]} llamadas {len(LLAMADAS)}")
+    LLAMADAS.clear()
+    medir(O["ANALISTA"], O["guid"], [{"a": "José Pérez", "b": "JOSE PERES"}])
+    pregunta = LLAMADAS[0]["contents"][0]["parts"][0]["text"].split("Pares:\n", 1)[1] if LLAMADAS else ""
+    rev("Gemini recibe los textos ya en mayúsculas y sin acentos", '"JOSE PEREZ"' in pregunta and '"JOSE PERES"' in pregunta and "é" not in pregunta, pregunta)
+    LLAMADAS.clear()
+    r = medir(O["ANALISTA"], O["guid"], [{"a": "Peña  Núñez", "b": "PENA NUNEZ"}, {"a": "acme", "b": "ACME"}])
+    res = r.json().get("resultados", [])
+    rev("lo que solo se escribe distinto: 100, «es el mismo texto», y sin preguntarle a Gemini", r.status_code == 200 and [x["porcentaje"] for x in res] == [100, 100] and all(x["razon"] == parecido.RAZON_MISMO_TEXTO for x in res) and not LLAMADAS, f"{r.text[:160]} llamadas {len(LLAMADAS)}")
+    LLAMADAS.clear()
+    r = medir(O["ANALISTA"], O["guid"], [{"a": "sale bien", "b": "zz"}, {"a": "FALLA-AQUI", "b": "zz"}])
+    rev("si la llamada de un par falla, la petición falla (502): no se devuelve una medición a medias", r.status_code == 502 and len(LLAMADAS) == 2, f"{r.status_code} {len(LLAMADAS)}")
+    LLAMADAS.clear()
+    r = medir(O["ANALISTA"], O["guid"], [{"a": "SALE BIEN", "b": "ZZ"}])
+    rev("…pero el par que sí salió quedó en la caché", r.status_code == 200 and not LLAMADAS, f"{r.status_code} {len(LLAMADAS)}")
 finally:
     shutil.rmtree(RAIZ, ignore_errors=True)
 

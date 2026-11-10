@@ -13,12 +13,20 @@ no sabe de abreviaturas; un modelo de lenguaje sí. Se eligió así (y no un dic
 Qué devuelve por par: `porcentaje` (0 a 100, entero) y `razon` (una frase corta en español que dice por qué). Quién decide si «pasa» NO es este
 módulo: es el operador del front, que compara el porcentaje con el mínimo que se puso en el nodo (`reglas.ts`, la única definición del motor).
 
+**La forma de escribir no cuenta** (2026-11-10, Moibe: «KEYSI» contra «KEISY» no pasaba y «Keysi» contra «KEISY» sí; «para mí carece de sentido»).
+Medido con Gemini real, el MISMO nombre daba 20 %, 90 % o 40 % según las mayúsculas, aunque el prompt ya decía que no importaban: lo que el modelo
+ve le cambia el juicio. Por eso, antes de preguntar, los dos textos pasan por `comparable` (mayúsculas, sin acentos, sin espacios de más): el modelo
+recibe siempre la misma pregunta, y la caché la reconoce. Si así quedan iguales, es el mismo texto: 100 sin preguntarle a nadie. Y cada par se
+pregunta SOLO, en su propia llamada (en paralelo): juntos en una misma pregunta, lo que el modelo decidía de un par podía depender de los otros.
+
 Usa la misma credencial, región y modelo que `servicios/gemini.py` (`GEMINI_MODELO`, `GEMINI_REGION`, `GEMINI_TIMEOUT`).
 """
 
+import asyncio
 import json
 import logging
 import time
+import unicodedata
 from collections import OrderedDict
 
 import httpx
@@ -40,6 +48,11 @@ MAX_CACHE = 5000
 #: pregunta una vez. Esto frena un cliente descontrolado, no el uso normal.
 MAX_PARES_POR_MINUTO = 200
 MAX_RAZON = 200
+#: Cuántos pares se le preguntan a Gemini a la vez (cada uno en su llamada).
+MAX_LLAMADAS_A_LA_VEZ = 5
+
+#: Lo que se contesta, sin preguntarle a la IA, cuando los dos textos solo se escriben distinto. El front dice lo mismo (`MISMO_TEXTO` de `reglas.ts`).
+RAZON_MISMO_TEXTO = "Es el mismo texto: solo cambian mayúsculas, acentos o espacios."
 
 MENSAJE_NO_DISPONIBLE = "La comparación con IA no está disponible en este servidor. Avisa al equipo técnico."
 MENSAJE_FALLO = "No se pudo medir el parecido con IA. Intenta de nuevo en un momento."
@@ -58,9 +71,17 @@ _CACHE: "OrderedDict[tuple[str, str], dict]" = OrderedDict()
 _PEDIDOS: dict[str, list[tuple[float, int]]] = {}
 
 
+def comparable(texto: str) -> str:
+    """El texto como se compara: en mayúsculas, sin acentos (ni la tilde de la ñ) y sin espacios de más. «Pérez  lópez» → «PEREZ LOPEZ».
+
+    Es la misma regla que `textoComparable` de `reglas.ts` en el front (las marcas que se quitan son las de la categoría Unicode M, igual que `\\p{M}`)."""
+    sin_marcas = "".join(c for c in unicodedata.normalize("NFD", texto) if not unicodedata.category(c).startswith("M"))
+    return " ".join(sin_marcas.upper().split())
+
+
 def _llave(a: str, b: str) -> tuple[str, str]:
-    """El parecido es simétrico y no depende de espacios de más: «A ~ B» y «B ~ A» son la misma pregunta."""
-    x, y = " ".join(a.split()), " ".join(b.split())
+    """El parecido es simétrico y no depende de cómo se escriba: «A ~ B», «B ~ A» y «a ~ b» son la misma pregunta."""
+    x, y = comparable(a), comparable(b)
     return (x, y) if x <= y else (y, x)
 
 
@@ -76,16 +97,21 @@ def frenar(quien: str, pares: int) -> None:
 
 
 def armar_prompt(pares: list[tuple[str, str]]) -> str:
-    """El texto que se le manda al modelo: los pares numerados y cómo contestar (JSON)."""
+    """El texto que se le manda al modelo: los pares numerados (ya pasados por `comparable`) y cómo contestar (JSON).
+
+    Los ejemplos del prompt NO son los casos con que se probó (KEYSI/KEISY se midió aparte, sin estar aquí): son para que el modelo entienda la
+    regla, no para que se aprenda respuestas."""
     renglones = "\n".join(f"{i}. A: {json.dumps(a, ensure_ascii=False)} | B: {json.dumps(b, ensure_ascii=False)}" for i, (a, b) in enumerate(pares))
     return (
-        "Compara cada par de textos (A y B), que vienen de documentos de empresas en México, y di qué tan probable es que se refieran a LO MISMO, "
-        "como un porcentaje de 0 a 100.\n"
-        "Cuenta como iguales las diferencias que no cambian el significado: mayúsculas y minúsculas, acentos, puntuación, espacios, el orden de las palabras, "
-        "errores de captura menores y abreviaturas comunes (por ejemplo «S.A. de C.V.» es «Sociedad Anónima de Capital Variable», «S. de R.L.» es "
-        "«Sociedad de Responsabilidad Limitada», «Cía.» es «Compañía», «Av.» es «Avenida»).\n"
-        "Si los textos nombran cosas distintas aunque se escriban parecido (por ejemplo «Acme Comercial» y «Acme Industrial», o dos personas, fechas o "
-        "números distintos), el porcentaje debe ser bajo. 100 solo si significan exactamente lo mismo.\n"
+        "Compara cada par de textos (A y B), que vienen de documentos de personas y empresas en México, y di qué tan probable es que sean EL MISMO "
+        "valor escrito de otra forma, como un porcentaje de 0 a 100.\n"
+        "Los textos ya vienen en mayúsculas, sin acentos y sin espacios de más: eso nunca es una diferencia.\n"
+        "Tampoco cambian el valor la puntuación, el orden de las palabras ni las abreviaturas comunes (por ejemplo «S.A. DE C.V.» es «SOCIEDAD ANONIMA "
+        "DE CAPITAL VARIABLE», «S. DE R.L.» es «SOCIEDAD DE RESPONSABILIDAD LIMITADA», «CIA.» es «COMPANIA», «AV.» es «AVENIDA»).\n"
+        "Una o dos letras distintas, de más, de menos o en otro orden dentro de una palabra son un error de captura del mismo valor, no otro valor: "
+        "si se pronuncia igual (por ejemplo «MAYRA» y «MAIRA», o «GONZALEZ» y «GONZALES»), 90 o más; si cambia cómo suena, entre 70 y 89.\n"
+        "Si los textos nombran cosas distintas (otra palabra, como «ACME COMERCIAL» y «ACME INDUSTRIAL»; otro nombre de persona, como «JUAN PEREZ» y "
+        "«MARIA PEREZ»; otra fecha u otro número), el porcentaje debe ser bajo. 100 solo si son exactamente el mismo valor.\n"
         "Contesta SOLO con un arreglo JSON, un objeto por par y en el mismo orden: "
         '[{"indice": 0, "porcentaje": 96, "razon": "una frase corta en español que diga por qué"}].\n'
         f"Pares:\n{renglones}"
@@ -120,26 +146,44 @@ def _leer(texto: str, cuantos: int) -> list[dict]:
 
 
 async def medir(pares: list[tuple[str, str]]) -> list[dict]:
-    """Qué tanto se parece cada par: `[{porcentaje, razon}]` en el mismo orden. Lo que ya está en la caché no se vuelve a preguntar."""
-    resultados: list[dict | None] = [_CACHE.get(_llave(a, b)) for a, b in pares]
-    pendientes = [i for i, r in enumerate(resultados) if r is None]
-    # Dos veces el mismo par en la petición: se pregunta una sola.
-    unicos: list[int] = []
-    vistas: set[tuple[str, str]] = set()
-    for i in pendientes:
-        llave = _llave(*pares[i])
-        if llave not in vistas:
-            vistas.add(llave)
-            unicos.append(i)
-    if unicos:
-        nuevos = await _preguntar([pares[i] for i in unicos])
-        for i, r in zip(unicos, nuevos):
-            _CACHE[_llave(*pares[i])] = r
-            _CACHE.move_to_end(_llave(*pares[i]))
+    """Qué tanto se parece cada par: `[{porcentaje, razon}]` en el mismo orden.
+
+    Un par que solo se escribe distinto es 100 sin preguntar; lo que ya está en la caché no se vuelve a preguntar; el resto se pregunta un par por
+    llamada (`MAX_LLAMADAS_A_LA_VEZ` a la vez), con los textos ya pasados por `comparable`. Si una llamada falla, lo que sí salió queda en la caché y
+    se levanta el error de la primera que falló: no se devuelve una medición a medias."""
+    mismo = {"porcentaje": 100, "razon": RAZON_MISMO_TEXTO}
+    llaves = [_llave(a, b) for a, b in pares]
+    # Lo que ya se sabe se toma AQUÍ y no al final: guardar lo nuevo puede sacar de la caché algo viejo que esta misma petición usa.
+    conocidos: dict[tuple[str, str], dict] = {}
+    por_preguntar: list[tuple[str, str]] = []
+    for llave in llaves:
+        # Dos veces el mismo par en la petición: se pregunta una sola.
+        if llave[0] == llave[1] or llave in conocidos or llave in por_preguntar:
+            continue
+        if llave in _CACHE:
+            conocidos[llave] = _CACHE[llave]
+            _CACHE.move_to_end(llave)
+        else:
+            por_preguntar.append(llave)
+    if por_preguntar:
+        limite = asyncio.Semaphore(MAX_LLAMADAS_A_LA_VEZ)
+
+        async def una(llave: tuple[str, str]) -> dict:
+            async with limite:
+                return (await _preguntar([llave]))[0]
+
+        nuevos = await asyncio.gather(*(una(llave) for llave in por_preguntar), return_exceptions=True)
+        for llave, r in zip(por_preguntar, nuevos):
+            if isinstance(r, dict):
+                conocidos[llave] = r
+                _CACHE[llave] = r
+                _CACHE.move_to_end(llave)
         while len(_CACHE) > MAX_CACHE:
             _CACHE.popitem(last=False)
-        resultados = [_CACHE.get(_llave(a, b)) for a, b in pares]
-    return [dict(r) for r in resultados]  # type: ignore[arg-type]
+        error = next((r for r in nuevos if isinstance(r, BaseException)), None)
+        if error is not None:
+            raise error
+    return [dict(mismo if llave[0] == llave[1] else conocidos[llave]) for llave in llaves]
 
 
 async def _preguntar(pares: list[tuple[str, str]]) -> list[dict]:
