@@ -2068,6 +2068,22 @@ Los roles de solo consulta (Compliance, Auditor y Viewer) reciben 403 `sin_permi
 Verificarlo, offline: `venv/bin/python verificar_expedientes.py`; con `--sql` (Docker) corre lo mismo contra SQL Server y suma lo que solo la base puede probar: los
 duplicados (un documento solo tiene tipo donde hay base) y la clasificación al subir, con Document AI falseado.
 
+## «Parecido a»: qué tanto se parecen dos textos, según IA (2026-11-10)
+
+Operador del motor de reglas que pasa si dos textos se parecen al menos un porcentaje (`minimo` del nodo, 90 por defecto, entero de 1 a 100;
+lo valida `servicios/procesos.py`). El parecido lo mide **Gemini** (`servicios/parecido.py`, misma credencial y modelo que «Sugerir
+descripción»), porque una distancia entre letras no sabe que «S.A. de C.V.» es «Sociedad Anónima de Capital Variable».
+
+- `POST /procesos/parecido` `{tenant, pares: [{a, b}]}` → `{resultados: [{porcentaje, razon}], modelo}`. Hasta 20 pares por petición, 500 letras por
+  texto; pide el rol que organiza (Administrador, Supervisor, Analista, Operador). Un tope de 200 pares por minuto por persona (429).
+- `temperature: 0` y una caché en memoria por par (simétrica, sin espacios de más): el mismo par da el mismo número mientras el servidor no se
+  reinicie. Lo que hace reproducible una decisión es que la **ejecución guarda** en su detalle el porcentaje, la razón y el mínimo.
+- Si «pasa» lo decide el front (`reglas.ts`), no esta ruta. El lienzo pregunta solo al cambiar los ejemplos; una ejecución mide los valores reales
+  ANTES de correr y, si la IA no responde, NO se ejecuta.
+- Errores con mensaje para la persona: 429 (cuota), 503 (sin proyecto/credencial o modelo no disponible), 502 (fallo o respuesta ilegible).
+
+`verificar_parecido.py` (offline, Gemini sustituido por un doble).
+
 ## Procesos: el motor de reglas guarda su dibujo, por organización (2026-10-20)
 
 Un **proceso** es un conjunto de reglas y corre sobre un **expediente** (un conjunto de documentos). Se arma en un lienzo del front:

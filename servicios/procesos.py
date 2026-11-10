@@ -5,7 +5,7 @@
 Un proceso es un conjunto de reglas y corre sobre un EXPEDIENTE (un conjunto de documentos). Se arma en un lienzo: los tipos
 documentales de la organización son sus entradas (nodos de tipo `tipo-documental`: lo que se dibuja ahí es la declaración de qué documentos
 necesita el proceso del expediente), las reglas son operadores (nodos de tipo
-`operador`: igual, distinto, contiene, mayor, menor; cantidad, suma, alguno, todos y unicos, que trabajan con LISTAS; existe, que
+`operador`: igual, distinto, contiene, parecido (con su `minimo`, en %), mayor, menor; cantidad, suma, alguno, todos y unicos, que trabajan con LISTAS; existe, que
 pregunta si el expediente trae un documento; y, o, no, implica),
 un `constante` es un valor fijo que se escribe en el lienzo (por ejemplo el «2» de «más de 2 socios») y los cables llevan un campo,
 el documento entero (el punto `@documento` de un tipo, solo para `existe`), un valor fijo o el resultado de una regla a la entrada
@@ -106,6 +106,8 @@ MAX_TEXTO = 500
 #: El valor de ejemplo de una LISTA son varios renglones (uno por elemento), así que cabe mucho más que un valor suelto.
 MAX_MUESTRA = 5000
 TOPE_BYTES = 1_000_000
+#: El parecido mínimo (en %) de «Parecido a» cuando el nodo no trae otro. El mismo valor por defecto que pone el lienzo.
+MINIMO_PARECIDO = 90
 
 #: Lo que NO se acepta dentro de `datos`: lo pone el servidor.
 _RESERVADAS = frozenset({"revision", "creadoPor", "creadoEn", "modificadoPor", "modificadoEn", "tenant", "meta"})
@@ -224,6 +226,12 @@ def _nodo(n: object) -> dict:
         # Los valores de ejemplo con los que se probó la regla: texto libre, pueden estar vacíos. De una lista, varios renglones.
         limpio_datos["a"] = _texto(datos.get("a", ""), "Un valor de ejemplo", MAX_MUESTRA, obligatorio=False)
         limpio_datos["b"] = _texto(datos.get("b", ""), "Un valor de ejemplo", MAX_MUESTRA, obligatorio=False)
+        if limpio_datos["operador"] == "parecido":
+            # «Parecido a» (2026-11-10): el porcentaje mínimo de parecido para que pase. Sin él, el de siempre.
+            minimo = datos.get("minimo", MINIMO_PARECIDO)
+            if isinstance(minimo, bool) or not isinstance(minimo, int) or not 1 <= minimo <= 100:
+                raise ProcesoInvalido("El parecido mínimo de «Parecido a» debe ser un número entero de 1 a 100.")
+            limpio_datos["minimo"] = minimo
     return {
         "id": nodo_id,
         "type": n["type"],
