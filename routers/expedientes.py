@@ -22,14 +22,14 @@ comprueba contra el registro, igual que en tipos documentales, procesos y bandej
 ## Quién puede qué
 
 - **Leer** (listar, ver un expediente, listar documentos): cualquiera que opere en la organización.
-- **Organizar** (crear un expediente, meter o sacar un documento, o SUBIRLE un archivo directo): `roles.PUEDEN_ORGANIZAR`
+- **Organizar** (crear o BORRAR un expediente, meter o sacar un documento, o SUBIRLE un archivo directo): `roles.PUEDEN_ORGANIZAR`
   (Administrador, Supervisor, Analista y Operador); Compliance, Auditor y Viewer reciben 403 `sin_permiso`. Es una propuesta de producto
   pendiente de confirmar con César.
 
 ## Qué se anota (auditoría)
 
-`CASE_CREATED`, `CASE_DOCUMENT_ADDED` (también al subir un archivo directo a un expediente, con `subida: true`) y `CASE_DOCUMENT_REMOVED`,
-con quién lo hizo. Meter un documento que ya estaba no repite el rastro. (Las acciones `VIRTUAL_CASE_*`, `CASE_TYPE_*` y `CASE_GROUP_*` de antes ya no se
+`CASE_CREATED`, `CASE_DOCUMENT_ADDED` (también al subir un archivo directo a un expediente, con `subida: true`) `CASE_DOCUMENT_REMOVED` y `CASE_DELETED`
+(borrar el expediente entero, con cuántos documentos tenía), con quién lo hizo. Meter un documento que ya estaba no repite el rastro. (Las acciones `VIRTUAL_CASE_*`, `CASE_TYPE_*` y `CASE_GROUP_*` de antes ya no se
 escriben; las que quedaron en la bitácora se siguen leyendo, y los `CASE_CREATED` del 2026-11-03 al 2026-11-06 conservan su `grupoId` y `grupoNombre`.)
 
 ## El clasificador al subir
@@ -59,7 +59,7 @@ sus documentos). Es solo una marca informativa que se calcula al leer (`expedien
 
 ## Lo que NO hace todavía
 
-No renombra ni borra expedientes, no tiene estado ni folio, y un documento no se descarta desde aquí. Se agregan cuando haga falta.
+No renombra expedientes (borrarlos sí, desde el 2026-11-10: `DELETE /expedientes/{id}`), no tiene estado ni folio, y un documento no se descarta desde aquí. Se agregan cuando haga falta.
 """
 
 import asyncio
@@ -440,7 +440,7 @@ async def _extraer_al_subir(actor: aislamiento.Actor, tenant: str, documento: di
     leen los procesos.
     Devuelve `extraccion`; NUNCA levanta: el archivo ya está subido y esto es una consecuencia, así que cualquier falla solo deja el documento sin datos
     y se dice en `estado`: `extraido`, `no_reconocido` (Document AI no reconoció los campos: la corrida se guarda con esa marca), `sin_tipo` (no se
-    clasificó, o el tipo ya no está activo, así que no hay con qué extraer), `sin_procesador` (el tipo está activo pero sin procesador: lo que falta es
+    clasificó, así que no hay con qué extraer), `tipo_no_activo` (se clasificó, pero ese tipo está desactivado o en edición), `sin_procesador` (el tipo está activo pero sin procesador: lo que falta es
     trabajo de configuración, no reintentar), `error` (Document AI falló: la corrida fallida queda anotada) o `no_extraido` (tardó demasiado o no se pudo guardar)."""
     def resultado(estado: str, **mas) -> dict:
         return {"estado": estado, **mas}
@@ -454,8 +454,11 @@ async def _extraer_al_subir(actor: aislamiento.Actor, tenant: str, documento: di
         logger.exception("No se pudo leer el tipo documental %s para extraer al subir", tipo_id)
         return resultado("no_extraido")
     datos = (tipo or {}).get("datos") or {}
-    if not tipo or datos.get("estado") != "activo":
+    if not tipo:
         return resultado("sin_tipo")
+    if datos.get("estado") != "activo":
+        # El clasificador todavía reconoce el tipo, pero está desactivado o en edición (2026-11-10, Moibe: que el aviso lo diga).
+        return resultado("tipo_no_activo")
     procesador = str(datos.get("procesadorId") or "").strip()
     if not procesador:
         return resultado("sin_procesador")
@@ -504,7 +507,7 @@ async def _extraer_al_subir(actor: aislamiento.Actor, tenant: str, documento: di
         "`sin_tipo`, `sin_clasificador` o `no_clasificado`), el `tipo` y la `confianza` (0-100) si lo reconoció: esa clasificación se guarda y es lo "
         "que dice de qué tipo es el documento. Clasificar nunca tumba la subida: si no se puede, el archivo queda subido y sin tipo documental. "
         "Si el clasificador reconoció un tipo activo y con procesador, EXTRAE sus datos con ese procesador, igual que el pipeline de las "
-        "bandejas (lo que luego leen los procesos): `extraccion.estado` es `extraido`, `no_reconocido`, `sin_tipo`, `sin_procesador`, "
+        "bandejas (lo que luego leen los procesos): `extraccion.estado` es `extraido`, `no_reconocido`, `sin_tipo`, `tipo_no_activo`, `sin_procesador`, "
         "`error` o `no_extraido` (y `extraccionId` si se guardó la corrida). Tampoco tumba la subida. "
         "Devuelve `{agregado, documento, clasificacion, extraccion}`."
     ),
@@ -524,6 +527,29 @@ async def subir_documento(
     clasificacion = await _clasificar_al_subir(actor, tenant, documento, archivo)
     extraccion = await _extraer_al_subir(actor, tenant, documento, archivo, clasificacion)
     return {"agregado": True, "documento": documento, "clasificacion": clasificacion, "extraccion": extraccion}
+
+
+@router.delete(
+    "/{expediente_id}",
+    tags=["Expedientes"],
+    summary="Borrar un expediente completo",
+    description=(
+        "Borra el expediente (Moibe, 2026-11-10). Sus documentos NO se borran: igual que al sacarlos uno por uno, los que no estaban en otro expediente "
+        "quedan sin expediente. El historial de ejecuciones que se corrieron sobre él se conserva. No se puede deshacer."
+    ),
+)
+def borrar(expediente_id: str, tenant: str = Query(..., description="La organización"), authorization: str | None = Header(default=None)):
+    actor = aislamiento.exigir_organizar(authorization, tenant, "expediente")
+    try:
+        borrado = expedientes.borrar(tenant, expediente_id, actor.guid)
+    except expedientes.NoEncontrado as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE) from exc
+    except ValueError as exc:
+        raise _tenant_invalido(exc) from exc
+    except ErrorAlmacen as exc:
+        raise almacen_no_disponible(exc) from exc
+    _anotar(auditoria.CASE_DELETED, actor, tenant, expedienteId=expediente_id, nombre=borrado["nombre"], documentos=borrado["totalDocumentos"])
+    return {"borrado": True}
 
 
 @router.delete(

@@ -5,7 +5,8 @@
 Un proceso es un conjunto de reglas y corre sobre un EXPEDIENTE (un conjunto de documentos). Se arma en un lienzo: los tipos
 documentales de la organización son sus entradas (nodos de tipo `tipo-documental`: lo que se dibuja ahí es la declaración de qué documentos
 necesita el proceso del expediente), las reglas son operadores (nodos de tipo
-`operador`: igual, distinto, contiene, mayor, menor; cantidad, suma, alguno, todos y unicos, que trabajan con LISTAS; existe, que
+`operador`: igual, distinto, contiene, parecido (con su `minimo`, en %), mayor, mayor_igual, menor, menor_igual, entre (el único con TRES entradas:
+valor, desde y hasta; su tercera muestra va en `c`); antiguedad (una fecha contra hoy, con su `maximo` y su `unidad`: dias, meses o anios); cantidad, suma, alguno, todos y unicos, que trabajan con LISTAS; existe, que
 pregunta si el expediente trae un documento; y, o, no, implica),
 un `constante` es un valor fijo que se escribe en el lienzo (por ejemplo el «2» de «más de 2 socios») y los cables llevan un campo,
 el documento entero (el punto `@documento` de un tipo, solo para `existe`), un valor fijo o el resultado de una regla a la entrada
@@ -106,6 +107,18 @@ MAX_TEXTO = 500
 #: El valor de ejemplo de una LISTA son varios renglones (uno por elemento), así que cabe mucho más que un valor suelto.
 MAX_MUESTRA = 5000
 TOPE_BYTES = 1_000_000
+#: El parecido mínimo (en %) de «Parecido a» cuando el nodo no trae otro. El mismo valor por defecto que pone el lienzo.
+MINIMO_PARECIDO = 90
+#: Los operadores con una TERCERA entrada, cuya muestra va en `c` (2026-11-10: «Entre» = valor, desde y hasta). Solo ellos la guardan; los demás
+#: siguen guardándose con `a` y `b`, como el lienzo (`usaTerceraEntrada` en reglas.ts del front).
+OPERADORES_CON_TERCERA_ENTRADA = frozenset({"entre"})
+#: «Antigüedad contra hoy» (2026-11-10): pasa si la fecha tiene como máximo `maximo` días, meses o años (`unidad`) contados hasta hoy. Sin ellos, 3
+#: meses, como el lienzo (`MAXIMO_ANTIGUEDAD` y `UNIDAD_ANTIGUEDAD` en reglas.ts). La fecha de «hoy» con que se prueba en el lienzo NO se guarda: una
+#: ejecución usa la del día en que corre.
+MAXIMO_ANTIGUEDAD = 3
+TOPE_MAXIMO_ANTIGUEDAD = 9999
+UNIDAD_ANTIGUEDAD = "meses"
+UNIDADES_DE_TIEMPO = ("dias", "meses", "anios")
 
 #: Lo que NO se acepta dentro de `datos`: lo pone el servidor.
 _RESERVADAS = frozenset({"revision", "creadoPor", "creadoEn", "modificadoPor", "modificadoEn", "tenant", "meta"})
@@ -224,6 +237,23 @@ def _nodo(n: object) -> dict:
         # Los valores de ejemplo con los que se probó la regla: texto libre, pueden estar vacíos. De una lista, varios renglones.
         limpio_datos["a"] = _texto(datos.get("a", ""), "Un valor de ejemplo", MAX_MUESTRA, obligatorio=False)
         limpio_datos["b"] = _texto(datos.get("b", ""), "Un valor de ejemplo", MAX_MUESTRA, obligatorio=False)
+        if limpio_datos["operador"] in OPERADORES_CON_TERCERA_ENTRADA:
+            limpio_datos["c"] = _texto(datos.get("c", ""), "Un valor de ejemplo", MAX_MUESTRA, obligatorio=False)
+        if limpio_datos["operador"] == "parecido":
+            # «Parecido a» (2026-11-10): el porcentaje mínimo de parecido para que pase. Sin él, el de siempre.
+            minimo = datos.get("minimo", MINIMO_PARECIDO)
+            if isinstance(minimo, bool) or not isinstance(minimo, int) or not 1 <= minimo <= 100:
+                raise ProcesoInvalido("El parecido mínimo de «Parecido a» debe ser un número entero de 1 a 100.")
+            limpio_datos["minimo"] = minimo
+        if limpio_datos["operador"] == "antiguedad":
+            maximo = datos.get("maximo", MAXIMO_ANTIGUEDAD)
+            if isinstance(maximo, bool) or not isinstance(maximo, int) or not 1 <= maximo <= TOPE_MAXIMO_ANTIGUEDAD:
+                raise ProcesoInvalido(f"El máximo de «Antigüedad contra hoy» debe ser un número entero de 1 a {TOPE_MAXIMO_ANTIGUEDAD}.")
+            unidad = datos.get("unidad", UNIDAD_ANTIGUEDAD)
+            if unidad not in UNIDADES_DE_TIEMPO:
+                raise ProcesoInvalido("La unidad de «Antigüedad contra hoy» debe ser días, meses o años.")
+            limpio_datos["maximo"] = maximo
+            limpio_datos["unidad"] = unidad
     return {
         "id": nodo_id,
         "type": n["type"],

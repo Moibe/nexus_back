@@ -13,6 +13,7 @@ Desde el 2026-10-26 cada organización tiene SU clasificador (`servicios/clasifi
 JWT de la persona (HU11), igual que tipos documentales, y solo tocan el de esa organización.
 """
 
+import json
 import logging
 
 import httpx
@@ -21,8 +22,10 @@ from pydantic import BaseModel, Field, model_validator
 
 from errores import SinClasificador
 from routers.ia import _leer_subida
-from servicios import aislamiento
+from servicios import aislamiento, gemini
 from servicios import tipos_documentales as registro_tipos
+from servicios import ubicar_campos as ubicar
+from servicios.subidas import normalizar_tipo
 from servicios.almacen import ErrorAlmacen
 from servicios.esquema import CATEGORIA_OTRO, TIPO_GRUPO, esquema_clasificador_desde_tipos, esquema_desde_campos
 from servicios.procesadores import (
@@ -265,6 +268,46 @@ async def generar_campos(
             detail="No se pudieron proponer campos. Intenta de nuevo; si el problema persiste, avisa al equipo técnico.",
         ) from exc
     return {"campos": campos}
+
+
+@router.post(
+    "/ubicar-campos",
+    tags=["Procesadores"],
+    summary="Ubicar los campos propuestos sobre un documento de ejemplo",
+    description=(
+        "Acompaña a `/generar-campos` (Moibe, 2026-11-11: «que a un lado mostremos el documento y marcados etiquetados los campos seleccionados»). "
+        "Recibe el documento de ejemplo y `campos` (JSON: `[{nombre, descripcion}]`, hasta 60) y devuelve, de los que encuentra, la página y la caja "
+        "`[ymin, xmin, ymax, xmax]` (de 0 a 1000 respecto a la página) donde está su valor, para marcarlos sobre el documento. Lo hace Gemini: es una "
+        "ayuda visual, no la extracción del procesador, y no guarda nada. Solo PDF, JPG o PNG (Gemini no lee TIFF). Pide el rol que administra tipos documentales."
+    ),
+)
+async def ubicar_campos(
+    archivo: UploadFile = File(..., description="El documento de ejemplo (PDF, JPG o PNG)"),
+    tenant: str = Form(..., description="La organización"),
+    campos: str = Form(..., max_length=40000, description="JSON: `[{nombre, descripcion}]` de los campos a ubicar"),
+    authorization: str | None = Header(default=None),
+):
+    aislamiento.exigir_administrar(authorization, tenant, "tipo_documental")
+    try:
+        pedidos = ubicar.limpiar_campos(json.loads(campos))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Los campos no son un JSON válido.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    # El formato se revisa ANTES de leer nada (como en «Sugerir descripción con documentos»).
+    mime = normalizar_tipo(archivo.content_type)
+    if mime not in gemini.MIME_PARA_GEMINI:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Para marcar los campos sobre el documento usa PDF, JPG o PNG.")
+    contenido = await _leer_subida(archivo)
+    if len(contenido) > gemini.MAX_BYTES_DOCUMENTOS:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"El documento pesa demasiado para marcar los campos: a lo más {gemini.MAX_BYTES_DOCUMENTOS // (1024 * 1024)} MB.",
+        )
+    try:
+        return await ubicar.ubicar(contenido, mime, pedidos)
+    except ubicar.ErrorUbicar as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 def _tipos_activos(tenant: str) -> list[dict]:

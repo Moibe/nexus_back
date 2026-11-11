@@ -2068,6 +2068,27 @@ Los roles de solo consulta (Compliance, Auditor y Viewer) reciben 403 `sin_permi
 Verificarlo, offline: `venv/bin/python verificar_expedientes.py`; con `--sql` (Docker) corre lo mismo contra SQL Server y suma lo que solo la base puede probar: los
 duplicados (un documento solo tiene tipo donde hay base) y la clasificación al subir, con Document AI falseado.
 
+## «Parecido a»: qué tanto se parecen dos textos, según IA (2026-11-10)
+
+Operador del motor de reglas que pasa si dos textos se parecen al menos un porcentaje (`minimo` del nodo, 90 por defecto, entero de 1 a 100;
+lo valida `servicios/procesos.py`). El parecido lo mide **Gemini** (`servicios/parecido.py`, misma credencial y modelo que «Sugerir
+descripción»), porque una distancia entre letras no sabe que «S.A. de C.V.» es «Sociedad Anónima de Capital Variable».
+
+- `POST /procesos/parecido` `{tenant, pares: [{a, b}]}` → `{resultados: [{porcentaje, razon}], modelo}`. Hasta 20 pares por petición, 500 letras por
+  texto; pide el rol que organiza (Administrador, Supervisor, Analista, Operador). Un tope de 200 pares por minuto por persona (429).
+- **La forma de escribir no cuenta** (corregido el mismo día: con Gemini real, «KEYSI ~ KEISY» daba 20 %, «Keysi ~ KEISY» 90 % y «keysi ~ keisy»
+  40 %). Antes de preguntar, los textos pasan por `parecido.comparable` (mayúsculas, sin acentos ni tilde de la ñ, sin espacios de más; el front usa
+  la misma regla, `textoComparable`): Gemini recibe siempre la misma pregunta y, si así quedan iguales, la respuesta es 100 («Es el mismo texto…») sin
+  llamarlo. Cada par va en **su propia llamada** (hasta 5 a la vez), para que lo que se decide de uno no dependa de los otros. El prompt dice cómo
+  tratar un error de captura (una o dos letras; si suena igual, 90 o más) con ejemplos que NO son los casos con que se midió.
+- `temperature: 0` y una caché en memoria por par (simétrica, con esa misma forma de comparar): el mismo par da el mismo número mientras el servidor
+  no se reinicie. Lo que hace reproducible una decisión es que la **ejecución guarda** en su detalle el porcentaje, la razón y el mínimo.
+- Si «pasa» lo decide el front (`reglas.ts`), no esta ruta. El lienzo pregunta solo al cambiar los ejemplos; una ejecución mide los valores reales
+  ANTES de correr y, si la IA no responde, NO se ejecuta.
+- Errores con mensaje para la persona: 429 (cuota), 503 (sin proyecto/credencial o modelo no disponible), 502 (fallo o respuesta ilegible).
+
+`verificar_parecido.py` (offline, Gemini sustituido por un doble).
+
 ## Procesos: el motor de reglas guarda su dibujo, por organización (2026-10-20)
 
 Un **proceso** es un conjunto de reglas y corre sobre un **expediente** (un conjunto de documentos). Se arma en un lienzo del front:

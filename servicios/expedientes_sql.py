@@ -192,6 +192,20 @@ def expedientes_quitar_documento(tenant: str, expediente_id: str, documento_id: 
             raise DocumentoNoEncontrado(documento_id)
 
 
+def expedientes_borrar(tenant: str, expediente_id: str) -> dict:
+    """Borra el expediente; sus pertenencias se van con él (`FK_caseDocuments_case` es ON DELETE CASCADE) y los documentos se quedan."""
+    from servicios.expedientes import NoEncontrado
+
+    with tablas.transaccion() as cur:
+        e = expediente_bloqueado(cur, tenant, expediente_id)
+        if e is None:
+            raise NoEncontrado(expediente_id)
+        cur.execute("SELECT count(*) AS n FROM nexus.caseDocuments WHERE caseId = ?", e["caseId"])
+        total = int(tablas.una(cur)["n"])
+        cur.execute("DELETE FROM nexus.cases WHERE caseId = ?", e["caseId"])
+    return {"nombre": e["name"], "totalDocumentos": total}
+
+
 def expedientes_listar_documentos(tenant: str, sin_expediente: bool | None) -> list[dict]:
     with tablas.lectura() as cur:
         cur.execute(f"SELECT documentId, {COLUMNAS_DOC} FROM nexus.documents WHERE tenant = ? ORDER BY documentId", tenant)

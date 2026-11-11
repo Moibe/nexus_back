@@ -27,7 +27,7 @@ from fastapi import APIRouter, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from routers.errores import almacen_no_disponible
-from servicios import aislamiento, auditoria, procesos as registro_procesos
+from servicios import aislamiento, auditoria, parecido, procesos as registro_procesos
 from servicios.almacen import ErrorAlmacen
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,41 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _NO_EXISTE = "Ese proceso no existe."
+
+
+class ParDeTextos(BaseModel):
+    a: str = Field(..., min_length=1, max_length=parecido.MAX_TEXTO)
+    b: str = Field(..., min_length=1, max_length=parecido.MAX_TEXTO)
+
+
+class PedidoParecido(BaseModel):
+    tenant: str = Field(..., description="La organización")
+    pares: list[ParDeTextos] = Field(..., min_length=1, max_length=parecido.MAX_PARES)
+
+
+@router.post(
+    "/parecido",
+    tags=["Procesos"],
+    summary="Qué tanto se parecen dos textos, según IA (operador «Parecido a»)",
+    description=(
+        "Para cada par `{a, b}` devuelve `{porcentaje, razon}`: qué tan probable es que los dos textos sean EL MISMO valor (0 a 100), según Gemini, "
+        "contando abreviaturas («S.A. de C.V.» = «Sociedad Anónima de Capital Variable»), puntuación y errores de captura. Mayúsculas, acentos y espacios "
+        "de más no cuentan: se quitan ANTES de preguntar, y si con eso los textos quedan iguales la respuesta es 100 sin preguntarle a la IA. Si «pasa» "
+        "lo decide el operador con su mínimo, no esta ruta. Hasta 20 pares por petición, cada uno en su propia pregunta; el mismo par da la misma "
+        "respuesta mientras el servidor no se reinicie. Pide el rol que organiza (quien arma procesos y quien los ejecuta)."
+    ),
+)
+async def medir_parecido(entrada: PedidoParecido, authorization: str | None = Header(default=None)):
+    actor = aislamiento.exigir_organizar(authorization, entrada.tenant, "proceso")
+    pares = [(p.a.strip(), p.b.strip()) for p in entrada.pares]
+    if any(not a or not b for a, b in pares):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cada par necesita los dos textos.")
+    try:
+        parecido.frenar(actor.guid, len(pares))
+        resultados = await parecido.medir(pares)
+    except parecido.ErrorParecido as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return {"resultados": resultados, "modelo": parecido.GEMINI_MODELO}
 
 
 class Guardado(BaseModel):

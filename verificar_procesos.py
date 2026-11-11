@@ -331,6 +331,14 @@ try:
         {"id": "operador-2", "type": "operador", "position": {"x": 700, "y": 10}, "data": {"operador": "cantidad", "a": muestra_larga, "b": "", "resultado": "200"}},
         {"id": "constante-1", "type": "constante", "position": {"x": 700, "y": 300}, "data": {"familia": "numero", "valor": "2", "basura": "x"}, "selected": True},
         {"id": "operador-3", "type": "operador", "position": {"x": 1000, "y": 10}, "data": {"operador": "mayor"}},
+        # «Entre» (2026-11-10): la única regla con TRES entradas; su tercera muestra va en `c`. Otro operador que la mande no la guarda.
+        {"id": "operador-4", "type": "operador", "position": {"x": 1300, "y": 10}, "data": {"operador": "entre", "a": "2026-06-15", "b": "2026-01-01", "c": "2026-12-31"}},
+        {"id": "operador-5", "type": "operador", "position": {"x": 1600, "y": 10}, "data": {"operador": "entre"}},
+        {"id": "operador-6", "type": "operador", "position": {"x": 1900, "y": 10}, "data": {"operador": "igual", "a": "x", "b": "y", "c": "no va"}},
+        # «Antigüedad contra hoy» (2026-11-10): guarda su `maximo` y su `unidad` (3 meses si no trae); el `hoy` de ejemplo del lienzo NO se guarda.
+        {"id": "operador-7", "type": "operador", "position": {"x": 2200, "y": 10}, "data": {"operador": "antiguedad", "a": "2026-09-10", "b": "", "maximo": 90, "unidad": "dias", "hoy": "2026-11-04"}},
+        {"id": "operador-8", "type": "operador", "position": {"x": 2500, "y": 10}, "data": {"operador": "antiguedad"}},
+        {"id": "operador-9", "type": "operador", "position": {"x": 2800, "y": 10}, "data": {"operador": "mayor", "a": "1", "b": "2", "maximo": 5, "unidad": "dias"}},
     ]
     listas["aristas"] += [cable("operador-2", "resultado", "operador-3", "a"), cable("constante-1", "valor", "operador-3", "b")]
     p5 = nuevo_id()
@@ -343,6 +351,18 @@ try:
     rev("el valor fijo guarda solo su clase y su valor", fijo["data"] == {"familia": "numero", "valor": "2"} and set(fijo) == {"id", "type", "position", "data"}, str(fijo))
     rev("de un operador solo se guardan cuál es y sus dos muestras (lo que calculó, no)", set(cant["data"]) == {"operador", "a", "b"}, str(cant["data"]))
     rev("un operador sin muestras en sus datos las guarda vacías", next(n for n in d["nodos"] if n["id"] == "operador-3")["data"] == {"operador": "mayor", "a": "", "b": ""})
+    datos_de = lambda nodo_id: next(n for n in d["nodos"] if n["id"] == nodo_id)["data"]
+    rev("«Entre» guarda sus TRES muestras (valor, desde y hasta)", datos_de("operador-4") == {"operador": "entre", "a": "2026-06-15", "b": "2026-01-01", "c": "2026-12-31"}, str(datos_de("operador-4")))
+    rev("«Entre» sin muestras guarda las tres vacías", datos_de("operador-5") == {"operador": "entre", "a": "", "b": "", "c": ""}, str(datos_de("operador-5")))
+    rev("otro operador que mande `c` no la guarda (solo tiene dos entradas)", datos_de("operador-6") == {"operador": "igual", "a": "x", "b": "y"}, str(datos_de("operador-6")))
+    rev("«Antigüedad contra hoy» guarda su máximo y su unidad, y NO el hoy de ejemplo", datos_de("operador-7") == {"operador": "antiguedad", "a": "2026-09-10", "b": "", "maximo": 90, "unidad": "dias"}, str(datos_de("operador-7")))
+    rev("«Antigüedad contra hoy» sin máximo ni unidad guarda 3 meses", datos_de("operador-8") == {"operador": "antiguedad", "a": "", "b": "", "maximo": 3, "unidad": "meses"}, str(datos_de("operador-8")))
+    rev("otro operador que mande máximo o unidad no los guarda", datos_de("operador-9") == {"operador": "mayor", "a": "1", "b": "2"}, str(datos_de("operador-9")))
+    for que, malo in (("máximo 0", {"maximo": 0}), ("máximo 10000", {"maximo": 10000}), ("máximo con decimales", {"maximo": 2.5}), ("máximo como texto", {"maximo": "3"}), ("máximo true", {"maximo": True}), ("unidad «semanas»", {"unidad": "semanas"}), ("unidad «años» con ñ", {"unidad": "años"})):
+        mal = proceso("Antigüedad mala")
+        mal["nodos"] = mal["nodos"] + [{"id": "operador-7", "type": "operador", "position": {"x": 2200, "y": 10}, "data": {"operador": "antiguedad", **malo}}]
+        r = guardar(a_admin, org_a, nuevo_id(), mal, 0)
+        rev(f"«Antigüedad contra hoy» con {que}: 400", r.status_code == 400 and "Antigüedad contra hoy" in r.text, f"{r.status_code} {r.text[:160]}")
     rev("los cables del valor fijo y del resultado se guardan", {(a["source"], a["sourceHandle"]) for a in d["aristas"]} >= {("operador-2", "resultado"), ("constante-1", "valor")})
     n = proceso("x")
     n["nodos"][2]["data"]["a"] = "x" * 5000
