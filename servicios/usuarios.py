@@ -1,11 +1,21 @@
-"""Usuarios, credenciales, intentos de login y sesiones — registro PROVISIONAL.
+"""Usuarios, credenciales, intentos de login y sesiones.
 
-Lo definitivo son las tablas y los SPs pedidos al DBA en **NEX-319**
-(`docs/solicitudes-dba.md`, sección 6). Mientras llegan, todo vive en un
-registro de solo agregar en el NAS, `usuarios.jsonl` (ver `servicios/registro.py`),
-como las llaves y los webhooks. El día que existan los SPs, cambia ESTE módulo y
-nada más: cada función de aquí es el espejo de un SP, con el mismo contrato (salvo
-las tres que se listan debajo de esta tabla).
+## Desde el 2026-11-11: en SQL donde hay base
+
+Migración `0014`: donde hay base, todo esto vive en SQL Server (`nexus.users`, `userMemberships`, `userSessions`, `loginAttempts`,
+`loginOrigins` y `userAdminEvents`), importado una vez desde `usuarios.jsonl` (`servicios/importacion_json.py`). Este módulo elige por
+`SQLSERVER_HOST` en cada llamada (`_sql()`): con base, guarda y lee `servicios/usuarios_sql.py`; sin base (las pruebas que corren sin SQL
+Server), el JSONL de siempre, que es lo que describe el resto de este texto. Las reglas —validaciones, la política de intentos, cómo se separa un
+nombre, por qué no se puede retirar a alguien— viven AQUÍ y valen igual para los dos; las garantías que daba el candado del archivo (lo atómico
+de abajo) las da en SQL una transacción con un candado de aplicación por persona. `verificar_usuarios_sql.py` comprueba que los dos caminos
+contesten lo mismo.
+
+## El registro de solo agregar (donde no hay base)
+
+Lo que en su día se le pidió al DBA en **NEX-319** (`docs/solicitudes-dba.md`, sección 6) nunca llegó: desde la decisión del 2026-10-21
+(«Nexus sin stored procedures») el esquema es nuestro y lo de arriba lo reemplaza. Donde no hay base, todo vive en un
+registro de solo agregar en el NAS, `usuarios.jsonl` (ver `servicios/registro.py`). Cada función de aquí nació como el
+espejo de un SP, con el mismo contrato (salvo las tres que se listan debajo de esta tabla).
 
     bootstrap_admin            ↔ security.uspBootstrapPlatformAdmin
     crear_usuario              ↔ (HU02/HU06: alta de usuario dentro de un tenant)
@@ -61,11 +71,21 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import config
+from config import SQLSERVER_HOST
 from servicios import auditoria, registro, roles
 
 logger = logging.getLogger(__name__)
 
 ARCHIVO = "usuarios.jsonl"
+
+
+def _sql():
+    """El módulo de SQL si el `.env` dice que hay base; `None` si no. Se importa tarde: sin base, `pyodbc` ni se carga."""
+    if not SQLSERVER_HOST:
+        return None
+    from servicios import usuarios_sql
+
+    return usuarios_sql
 
 MOTIVOS_CONTRASENA = {"FIRST_LOGIN", "RESET", "CHANGE"}
 # Con estos motivos, cambiar la contraseña cierra TODAS las sesiones, la actual
@@ -184,11 +204,17 @@ def separar_nombre(nombre: str, apellidos: str = "") -> tuple[str, str, str]:
     return " ".join(unidades[:-2]), unidades[-2], unidades[-1]
 
 
-def _construir_indice(eventos: list[dict]) -> tuple[dict[str, dict], dict[str, str], dict[str, dict]]:
+def _construir_indice(
+    eventos: list[dict], retirados: dict[str, dict] | None = None
+) -> tuple[dict[str, dict], dict[str, str], dict[str, dict]]:
     """(usuarios por guid, guid por correo, sesiones por guid de sesión), repasando
     los eventos en el orden en que se escribieron. Es LINEAL en el número de
     eventos: hasta el 2026-10-12 cada revocación recorría todas las sesiones, y con
-    miles de ellas el repaso tardaba segundos."""
+    miles de ellas el repaso tardaba segundos.
+
+    Con `retirados` (lo usa la importación a SQL) guarda ahí, además, cada cuenta tal
+    como estaba al retirarse, con la fecha en `eliminadoEn`: en la base se quedan como
+    filas, porque su rastro (sesiones, intentos, enlaces) las sigue apuntando."""
     usuarios: dict[str, dict] = {}
     por_correo: dict[str, str] = {}
     sesiones: dict[str, dict] = {}
@@ -247,6 +273,8 @@ def _construir_indice(eventos: list[dict]) -> tuple[dict[str, dict], dict[str, s
             correo = _normalizar_correo(u["email"])
             if por_correo.get(correo) == guid:
                 del por_correo[correo]
+            if retirados is not None:
+                retirados[guid] = {**u, "eliminadoEn": e.get("en")}
             del usuarios[guid]
         elif tipo == "invitacion" and u:
             # Una contraseña temporal NUEVA para una cuenta que sigue en su primer acceso: la anterior deja de
@@ -446,6 +474,13 @@ def bootstrap_admin(email: str, nombre: str, apellidos: str, hash_contrasena: st
     nombre, apellidos = nombre.strip(), apellidos.strip()
     if not nombre or not apellidos:
         raise ValueError("Nombre y apellidos son obligatorios.")
+    if sql := _sql():
+        guid = str(uuid.uuid4())
+        # El JSONL guarda nombre y apellidos juntos y los separa al leerlos; la base los guarda ya separados, con la misma regla.
+        nombres, paterno, materno = separar_nombre(nombre, apellidos)
+        if not sql.crear(guid, email, nombres, paterno, materno, None, {}, True, hash_contrasena, _ahora()):
+            raise YaExiste("Ya existe un usuario con ese correo.")
+        return por_guid(guid)
     with registro.candado:
         usuarios, por_correo, _ = _indice()
         if email in por_correo:
@@ -474,6 +509,8 @@ def administradores_de_plataforma() -> list[dict]:
     Es el control que `bootstrap_admin.py` no daba: saber quiénes son, si ya hicieron su primer acceso y si siguen activos.
     Los que se retiraron (`eliminar_usuario`) ya no están: el índice los quita de todos lados, y su rastro vive en la bitácora.
     Sin el hash de la contraseña (`_publico`)."""
+    if sql := _sql():
+        return [_publico(u) for u in sql.administradores()]
     indice, _, _ = _indice()
     admins = [_publico(u) for u in indice.values() if u["esAdminPlataforma"]]
     admins.sort(key=lambda u: u["creadoEn"] or "")
@@ -512,6 +549,11 @@ def crear_usuario(
         nombres, paterno, materno = " ".join(nombre.split()), paterno_dado, materno_dado
     else:
         nombres, paterno, materno = separar_nombre(nombre, apellidos)
+    if sql := _sql():
+        guid = str(uuid.uuid4())
+        if not sql.crear(guid, email, nombres, paterno, materno, telefono, recuperacion or {}, False, hash_contrasena, _ahora(), tenant_guid or None, rol):
+            raise YaExiste("El correo electrónico ingresado ya se encuentra registrado, por favor intenta nuevamente")
+        return por_guid(guid)
     with registro.candado:
         _, por_correo, _ = _indice()
         if email in por_correo:
@@ -545,6 +587,10 @@ def crear_usuario(
 
 
 def agregar_membresia(guid: str, tenant_guid: str, rol: str = "ADMIN") -> dict:
+    if sql := _sql():
+        if not sql.agregar_membresia(guid, tenant_guid, rol, _ahora()):
+            raise NoEncontrado(guid)
+        return por_guid(guid)
     with registro.candado:
         usuarios, _, _ = _indice()
         if guid not in usuarios:
@@ -568,17 +614,23 @@ def actualizar_datos(guid: str, nombre: str, apellidos: str = "", telefono: str 
     nombre, apellidos = " ".join(nombre.split()), " ".join((apellidos or "").split())
     if not nombre:
         raise ValueError("El nombre es obligatorio.")
+
+    def decidir(actual: dict) -> tuple[str, str, str]:
+        if not apellidos and nombre == " ".join(f"{actual['nombre']} {actual['apellidos']}".split()):
+            # El formulario manda de vuelta el nombre completo tal como lo mostró el listado: si no lo tocaron, no se vuelve a
+            # separar, o se desharía lo que la persona corrigió en su perfil.
+            return actual["nombre"], actual["apellidoPaterno"], actual["apellidoMaterno"]
+        return separar_nombre(nombre, apellidos)
+
+    if sql := _sql():
+        if not sql.actualizar_datos(guid, decidir, telefono):
+            raise NoEncontrado(guid)
+        return por_guid(guid)
     with registro.candado:
         usuarios, _, _ = _indice()
         if guid not in usuarios:
             raise NoEncontrado(guid)
-        actual = usuarios[guid]
-        if not apellidos and nombre == " ".join(f"{actual['nombre']} {actual['apellidos']}".split()):
-            # El formulario manda de vuelta el nombre completo tal como lo mostró el listado: si no lo tocaron, no se vuelve a
-            # separar, o se desharía lo que la persona corrigió en su perfil.
-            nombres, paterno, materno = actual["nombre"], actual["apellidoPaterno"], actual["apellidoMaterno"]
-        else:
-            nombres, paterno, materno = separar_nombre(nombre, apellidos)
+        nombres, paterno, materno = decidir(usuarios[guid])
         registro.agregar(
             ARCHIVO,
             {
@@ -637,6 +689,10 @@ def actualizar_perfil(
     if not nombre:
         raise ValueError("El nombre es obligatorio.")
     paterno, materno = apellido_paterno.strip(), apellido_materno.strip()
+    if sql := _sql():
+        if not sql.actualizar_perfil(guid, nombre, paterno, materno, telefono, recuperacion or {}):
+            raise NoEncontrado(guid)
+        return por_guid(guid)
     with registro.candado:
         usuarios, _, _ = _indice()
         if guid not in usuarios:
@@ -660,6 +716,8 @@ def actualizar_perfil(
 
 def de_tenant(tenant_guid: str) -> list[dict]:
     """Los usuarios de una organización, para su listado."""
+    if sql := _sql():
+        return [_publico(u) for u in sql.de_tenant(tenant_guid)]
     usuarios, _, _ = _indice()
     de_la_organizacion = [
         _publico(u)
@@ -675,11 +733,16 @@ def de_tenant(tenant_guid: str) -> list[dict]:
 def para_login(email: str) -> dict | None:
     """Lo que el login necesita, CON el hash (no sale de este proceso). `None`
     si el correo no existe."""
-    usuarios, por_correo, _ = _indice()
-    guid = por_correo.get(_normalizar_correo(email))
-    if not guid:
-        return None
-    u = usuarios[guid]
+    if sql := _sql():
+        u = sql.por_correo(_normalizar_correo(email))
+        if u is None:
+            return None
+    else:
+        usuarios, por_correo, _ = _indice()
+        guid = por_correo.get(_normalizar_correo(email))
+        if not guid:
+            return None
+        u = usuarios[guid]
     bloqueo = _bloqueo_vigente(u)
     return {
         **_publico(u),
@@ -690,8 +753,7 @@ def para_login(email: str) -> dict | None:
 
 
 def por_guid(guid: str) -> dict:
-    usuarios, _, _ = _indice()
-    u = usuarios.get(guid)
+    u = sql.por_guid(guid) if (sql := _sql()) else _indice()[0].get(guid)
     if not u:
         raise NoEncontrado(guid)
     return _publico(u)
@@ -700,8 +762,10 @@ def por_guid(guid: str) -> dict:
 def tiene_sesion(guid: str, ahora: datetime | None = None) -> bool:
     """¿Tiene alguna sesión sin revocar y sin vencer? Es decir, ¿hay un navegador que todavía puede renovar su acceso?
     Una sesión sin fecha de vencimiento legible se toma por vencida, igual que al canjear el refresh."""
-    _, _, sesiones = _indice()
     ahora = ahora or _ahora()
+    if sql := _sql():
+        return sql.tiene_sesion(guid, ahora)
+    _, _, sesiones = _indice()
     return any(
         x["guid"] == guid and not x["revocadaEn"] and (_fecha(x["expira"]) or ahora) > ahora for x in sesiones.values()
     )
@@ -758,6 +822,11 @@ def por_guid_y_sesion(guid: str, sesion_guid: str) -> tuple[dict, bool]:
 
     No levanta nada por una sesión muerta: quien llama decide el código. Sí
     levanta `NoEncontrado` si el usuario no existe."""
+    if sql := _sql():
+        u, viva = sql.por_guid_y_sesion(guid, sesion_guid)
+        if u is None:
+            raise NoEncontrado(guid)
+        return _publico(u), viva
     usuarios, _, sesiones = _indice()
     u = usuarios.get(guid)
     if not u:
@@ -782,7 +851,13 @@ def registrar_resultado_login(
     """Anota el intento y aplica la política de la CUENTA. Devuelve
     (fallidos, bloqueadoHasta) tal como quedan. `motivo`: BAD_PASSWORD | LOCKED
     | INACTIVE | UNKNOWN_EMAIL | EXPIRED (la contraseña temporal era la correcta pero ya caducó). `origen` identifica al navegador y es lo que
-    lee `estado_origen`; aquí solo se guarda."""
+    lee `estado_origen`; aquí solo se guarda (en SQL, además, se lleva ya su contador: `plegar_intento_origen`)."""
+    if sql := _sql():
+        fallidos, hasta = sql.registrar_intento(
+            guid, _normalizar_correo(email), exitoso, motivo, ip, (user_agent or "")[:500] or None, origen, _ahora()
+        )
+        hasta = hasta.replace(tzinfo=timezone.utc) if hasta else None
+        return fallidos, hasta.isoformat() if hasta and hasta > _ahora() else None
     with registro.candado:
         registro.agregar(
             ARCHIVO,
@@ -826,12 +901,41 @@ def registrar_resultado_login(
 MOTIVOS_QUE_CUENTAN = {"BAD_PASSWORD", "UNKNOWN_EMAIL"}
 
 
+def plegar_intento_cuenta(fallidos: int, hasta: datetime | None, exitoso: bool, motivo: str | None, en: datetime) -> tuple[int, datetime | None]:
+    """La política de la CUENTA aplicada a UN intento: `(fallidos, bloqueado hasta)` como quedan. Es la misma que aplica el repaso del JSONL
+    (`_construir_indice`); en SQL se aplica al anotar el intento y el resultado se guarda en la cuenta. Un acierto lo pone todo en cero; la
+    contraseña mala suma, y la quinta bloquea `AUTH_BLOQUEO_MIN` minutos contados desde ese intento (el contador vuelve a cero); lo demás
+    (bloqueada, desactivada, caducada) es bitácora y no cuenta."""
+    if exitoso:
+        return 0, None
+    if motivo == "BAD_PASSWORD":
+        fallidos += 1
+        if fallidos >= config.AUTH_MAX_INTENTOS:
+            return 0, en + timedelta(minutes=config.AUTH_BLOQUEO_MIN)
+    return fallidos, hasta
+
+
+def plegar_intento_origen(fallidos: int, hasta: datetime | None, exitoso: bool, motivo: str | None, en: datetime) -> tuple[int, datetime | None]:
+    """Lo mismo para el contador del NAVEGADOR (`estado_origen`): ahí cuentan la contraseña mala y el correo que no existe."""
+    if exitoso:
+        return 0, None
+    if motivo in MOTIVOS_QUE_CUENTAN:
+        fallidos += 1
+        if fallidos >= config.AUTH_MAX_INTENTOS:
+            return 0, en + timedelta(minutes=config.AUTH_BLOQUEO_MIN)
+    return fallidos, hasta
+
+
 def estado_origen(origen: str | None) -> tuple[int, str | None]:
     """(fallidos seguidos, bloqueadoHasta) de ese navegador. Sin `origen`
     —un cliente que no manda cookie— devuelve el estado vacío: el contador de
     la cuenta sigue aplicando igual."""
     if not origen:
         return 0, None
+    if sql := _sql():
+        fallidos, guardado = sql.estado_origen(origen)
+        vigente = guardado.replace(tzinfo=timezone.utc) if guardado else None
+        return fallidos, vigente.isoformat() if vigente and vigente > _ahora() else None
     fallidos = 0
     hasta: datetime | None = None
     for e in registro.eventos(ARCHIVO):
@@ -869,6 +973,9 @@ def reiniciar_intentos_de_origen(origen: str | None) -> None:
     prudente, porque el enlace solo lo tiene quien controla el correo, y un
     bloqueo ajeno no debería poder borrarse desde ahí."""
     if not origen:
+        return
+    if sql := _sql():
+        sql.reiniciar_origen(origen, _ahora())
         return
     registro.agregar(
         ARCHIVO,
@@ -915,6 +1022,9 @@ def fijar_contrasena_y_cerrar(
     cierran todas). Se revocan una por una, con su propio evento, para que el índice no necesite una regla nueva."""
     if motivo not in MOTIVOS_CONTRASENA:
         raise ValueError(f"Motivo inválido: {motivo}")
+    if sql := _sql():
+        cerradas = sql.fijar_contrasena(guid, hash_contrasena, motivo in MOTIVOS_QUE_CIERRAN_SESIONES, sesion_guid, hash_verificado, _ahora())
+        return por_guid(guid), cerradas
     with registro.candado:
         usuarios, _, sesiones = _indice()
         if guid not in usuarios:
@@ -981,7 +1091,7 @@ def _negativa_de_eliminar(usuarios: dict, guid: str, forzar: bool) -> NoSePuedeE
 def puede_eliminar(guid: str, forzar: bool = False) -> None:
     """Levanta `NoEncontrado` o `NoSePuedeEliminar` si `eliminar_usuario` se negaría; si no, no hace nada. Es la
     simulación de `retirar_cuenta.py`."""
-    usuarios, _, _ = _indice()
+    usuarios = sql.para_retiro(guid) if (sql := _sql()) else _indice()[0]
     if guid not in usuarios:
         raise NoEncontrado(guid)
     negativa = _negativa_de_eliminar(usuarios, guid, forzar)
@@ -1001,6 +1111,8 @@ def eliminar_usuario(guid: str, motivo: str, por: str | None = None, forzar: boo
     motivo = (motivo or "").strip()
     if not motivo:
         raise ValueError("El motivo es obligatorio.")
+    if sql := _sql():
+        return _publico(sql.eliminar(guid, motivo, por, forzar, _ahora()))
     with registro.candado:
         usuarios, _, _ = _indice()
         if guid not in usuarios:
@@ -1020,6 +1132,9 @@ def emitir_temporal(guid: str, hash_contrasena: str) -> dict:
     se perdió): la anterior deja de servir, las 48 horas empiezan otra vez, se levantan los bloqueos y se
     cierran las sesiones que se hubieran abierto con la anterior. Levanta `NoEncontrado` si la cuenta no existe
     y `NoPendiente` si ya hizo su primer acceso (para eso está "Olvidé mi contraseña")."""
+    if sql := _sql():
+        sql.emitir_temporal(guid, hash_contrasena, _ahora())
+        return por_guid(guid)
     with registro.candado:
         usuarios, _, _ = _indice()
         if guid not in usuarios:
@@ -1071,6 +1186,9 @@ def crear_sesion(
     entra aquí: no cambia la contraseña ni desactiva la cuenta, y la persona puede volver
     a entrar —README, HU05—.)"""
     sesion_guid = str(uuid.uuid4())
+    if sql := _sql():
+        sql.crear_sesion(guid, sesion_guid, refresh_hash, expira, ip, (user_agent or "")[:500] or None, hash_verificado, _ahora())
+        return sesion_guid
     with registro.candado:
         usuarios, _, _ = _indice()
         if guid not in usuarios:
@@ -1113,6 +1231,10 @@ def rotar_sesion(
       · un cierre forzado o un restablecimiento de contraseña que llegara a la mitad
         revocaba las sesiones que existían entonces, y la sucesora nacía después, viva.
     Es lo mismo que ya hace `tokens.consumir` con los enlaces de un solo uso."""
+    if sql := _sql():
+        sesion_guid = str(uuid.uuid4())
+        u = sql.rotar_sesion(refresh_hash, nuevo_refresh_hash, sesion_guid, expira, ip, (user_agent or "")[:500] or None, _ahora())
+        return sesion_guid, _publico(u)
     with registro.candado:
         usuarios, _, sesiones = _indice()
         s = next((x for x in sesiones.values() if x["refreshHash"] == refresh_hash), None)
@@ -1147,6 +1269,12 @@ def sesion_por_hash(refresh_hash: str) -> dict | None:
     """La sesión y su usuario (sin hash de contraseña), o `None` si no existe.
     Quien llama decide qué hacer si está revocada o vencida: se devuelven tal
     cual para que el motivo del rechazo sea el correcto."""
+    if sql := _sql():
+        encontrada = sql.sesion_por_hash(refresh_hash)
+        if encontrada is None:
+            return None
+        s, u = encontrada
+        return {**s, "usuario": _publico(u) if u else None}
     usuarios, _, sesiones = _indice()
     for s in sesiones.values():
         if s["refreshHash"] == refresh_hash:
@@ -1158,6 +1286,8 @@ def sesion_por_hash(refresh_hash: str) -> dict | None:
 def revocar_sesiones(guid: str, sesion_guid: str | None, motivo: str) -> int:
     """Una sesión (logout) o todas las del usuario (`sesion_guid=None`).
     Devuelve cuántas quedaron revocadas con esta llamada."""
+    if sql := _sql():
+        return sql.revocar_sesiones(guid, sesion_guid, motivo, _ahora())
     with registro.candado:
         _, _, sesiones = _indice()
         vivas = [
@@ -1185,7 +1315,10 @@ def cambiar_estado(guid: str, activo: bool, motivo: str | None = None, por: str 
     `GET /auth/sesion` (`desactivada`): ver README, "El JWT de acceso y la
     sesión cerrada". El `motivo` es
     obligatorio en la pantalla y queda en el registro, que es lo que lo vuelve
-    auditable."""
+    auditable (en SQL, en `nexus.userAdminEvents`)."""
+    if sql := _sql():
+        sql.cambiar_estado(guid, activo, motivo, por, _ahora())
+        return por_guid(guid)
     with registro.candado:
         usuarios, _, _ = _indice()
         if guid not in usuarios:
@@ -1242,7 +1375,10 @@ def cerrar_sesiones(guid: str, motivo: str, por: str | None = None) -> int:
     segundos: pregunta por `GET /auth/sesion` (ver README).
 
     El rastro (`cierre_forzado`) se escribe ANTES de revocar, a propósito: si no
-    se puede escribir, no se cierra nada."""
+    se puede escribir, no se cierra nada. (En SQL van los dos en la misma
+    transacción, en `nexus.userAdminEvents` y `userSessions`.)"""
+    if sql := _sql():
+        return sql.cerrar_sesiones(guid, motivo, por, _ahora())
     with registro.candado:
         usuarios, _, _ = _indice()
         if guid not in usuarios:

@@ -997,9 +997,10 @@ tail -2 /home/mbriseno/webhook-central/logs/deploys.jsonl
 
 HU01 (alta de administradores), HU03 (login), HU04 (cambio de contraseña en el
 primer acceso) y HU10 (recuperar la contraseña, más abajo). Código: `routers/auth.py`, `servicios/auth.py`
-(argon2id, reglas, JWT, refresh) y `servicios/usuarios.py` (registro
-PROVISIONAL `usuarios.jsonl`, espejo de los SPs pedidos en **NEX-319**; cuando
-lleguen, cambia solo ese módulo). Verificación: `verificar_auth.py`.
+(argon2id, reglas, JWT, refresh) y `servicios/usuarios.py` (las reglas de cuentas, intentos y sesiones). Donde hay base, todo esto vive
+en SQL desde el 2026-11-11 (`servicios/usuarios_sql.py`, migración `0014`: ver «Usuarios en SQL» más abajo); sin base, en el registro
+`usuarios.jsonl` del almacén, que es lo que describe esta sección. Verificación: `verificar_auth.py` (sin base) y
+`verificar_usuarios_sql.py` (con SQL Server en Docker).
 
 **Configurar** (los dos procesos, back y front):
 
@@ -1319,7 +1320,8 @@ contestan 401 `sesion_cerrada` (o 403 `desactivada`). Lo que hay que saber:
   refresh viejo dentro de la gracia de la renovación (ver abajo) también pasa por esta
   pregunta, con el JWT nuevo: un cierre no se cuela por ahí.
 - **Para que preguntar tan seguido fuera viable hubo que arreglar el registro
-  provisional.** `usuarios._indice()` releía y repasaba `usuarios.jsonl` completo en
+  provisional** (hoy solo corre donde no hay base: con base es una consulta por guid de
+  persona y de sesión, ver «Usuarios en SQL»). `usuarios._indice()` releía y repasaba `usuarios.jsonl` completo en
   CADA llamada. Ahora se guarda mientras el archivo no cambie (su "firma": ruta, inodo,
   tamaño y fecha; el registro es de solo agregar, y lo que agrega otro proceso, como
   `bootstrap_admin.py`, también se nota por el tamaño; una edición EN SITIO del mismo
@@ -1947,6 +1949,43 @@ creada del esquema `nexus`, y que un id repetido no se cuela ni escribiendo SQL 
 **Verificación:** `verificar_corredor.py`, `verificar_linea_base.py` y `verificar_health_esquema.py` (sin base, rápidas) y `verificar_migraciones_sql.py` (SQL Server de verdad en un contenedor:
 aplica la línea base a una base vacía y comprueba el círculo completo, la simulación que no deja nada, la transacción por migración, la cadena, `marcar`, el candado
 y que los procedimientos congelados funcionan con los permisos de `usrNexus`).
+
+### Usuarios en SQL: ya no queda ningún registro en JSONL (migración `0014`, 2026-11-11)
+
+Moibe, 2026-11-11: «hagamos lo de sql faltante, o sea usuarios, para ya dejar todo sin jsons». `usuarios.jsonl` era el último registro del producto en el
+almacén; desde la `0014`, donde hay base, **nada se lee ni se escribe ya en archivos JSONL** (los archivos del almacén —los documentos mismos— siguen en el NAS:
+no son registros).
+
+**Qué guarda la base.** El JSONL era una bitácora de hechos de la que se calculaba el estado al leerla; la base guarda el ESTADO de cada cuenta y aparte lo que
+necesita historia:
+
+| Tabla | Qué es |
+|---|---|
+| `nexus.users` | La cuenta: correo (único entre las que existen), nombre y apellidos por separado, teléfono, recuperación, hash de la contraseña, si es temporal y desde cuándo, intentos fallidos y bloqueo, último acceso, activa, y `deletedAt` si se retiró (borrado lógico: su correo queda libre). |
+| `nexus.userMemberships` | Organización y rol. El orden importa (la primera va en el JWT) y, como en el JSONL, cambiar el rol manda la membresía al final. |
+| `nexus.userSessions` | Una por inicio de sesión (y una nueva al renovar): el SHA-256 del refresh, vencimiento, y cuándo y por qué se cerró. |
+| `nexus.loginAttempts` | Cada intento de inicio de sesión, acierte o no, con el navegador. |
+| `nexus.loginOrigins` | El contador de cada navegador (cinco errores lo bloquean, teclee el correo que teclee). |
+| `nexus.userAdminEvents` | Lo que un administrador, un script o Nexus Monitor le hizo a una cuenta, con su motivo y quién: desactivar, reactivar, retirar, cerrar sus sesiones. |
+
+Y `accessTokens.userGuid` (0008) gana su llave foránea a `users` (WITH NOCHECK: lo de antes no se revisa).
+
+**La importación** (`servicios/importacion_json.py`, una vez por ambiente, como la 0006 y la 0008): las cuentas salen del MISMO repaso que usaba el JSONL, así
+que entran como el producto las veía. Entran también las retiradas y **todas las sesiones**: nadie tiene que volver a iniciar sesión por la mudanza. La
+recuperación que un administrador de antes del 2026-10-14 heredaba de su organización entra ya resuelta (la de una organización no se edita). Lo que no se puede
+importar se salta y se cuenta (nunca tumba la importación: sin ella nadie podría entrar): una cuenta con un guid o un correo que no sirven, una membresía de
+una organización que no existe, una sesión sin un refresh legible, un enlace de una cuenta que no existe. Si dos cuentas vigentes compartían correo (tres
+ambientes escribían el mismo archivo), la primera se queda con él y la otra entra retirada, con su motivo; en el JSONL tampoco podía entrar.
+
+**Lo atómico.** Lo que el candado del archivo garantizaba a UN proceso —un refresh se canjea una sola vez; un login cuya contraseña se verificó fuera del candado
+no abre sesión si mientras tanto se restableció o se desactivó la cuenta; cambiar la contraseña desde una sesión cerrada no la pisa; dos retiros no dejan a la
+plataforma sin administradores— ahora lo da una transacción con un candado de aplicación por persona (`nexus-usuario-<guid>`), para todos los procesos y
+ambientes. `verificar_usuarios_sql.py` lo prueba con hilos a la vez, además de comparar cada lectura y cada escritura contra el JSONL.
+
+**Lo que sigue en archivos, y por qué.** `usuarios.py` conserva el camino del JSONL para lo que corre SIN base: las pruebas offline (`verificar_auth.py` y
+compañía). Las herramientas que reescriben registros del almacén (`renombrar_tenant.py`, `purgar_creado_por.py`) solo ven el JSONL, así que donde hay base ya no
+tocan las cuentas. Retirar esos caminos (los `*_archivo.py`, `registro.py` y los JSONL) es el paso siguiente si se quiere: exige mover las pruebas offline a un
+SQL Server desechable.
 
 ## El espacio de plataforma se llama `plataforma` (2026-10-26)
 

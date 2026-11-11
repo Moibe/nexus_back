@@ -5,7 +5,8 @@
 
 Levanta el SQL Server desechable de `pruebas_sql.py` hasta la 0007, le mete lo que dev ya tenía (un documento con una llave que aún no existe en
 SQL, otro con una que sí existirá), siembra los JSONL como los tiene dev (con lo que NO se puede importar: una llave de una organización que no
-existe, un webhook repetido, una entrega pendiente, miles de líneas de uso), aplica la 0008 con el corredor real, y luego:
+existe, un webhook repetido, una entrega pendiente, miles de líneas de uso), aplica la 0008 con el corredor real (y después las que siguen, para que
+el código de hoy corra sobre el esquema de hoy; desde la 0014 los dueños de los enlaces son cuentas sembradas en `usuarios.jsonl`), y luego:
 
 1. importa una sola vez y compara cada lectura contra el MISMO módulo leyendo el JSONL (se cambia `SQLSERVER_HOST` del módulo para elegir);
 2. hace las mismas escrituras en los dos y compara lo que devuelven, incluido el trabajador de entregas con su reloj y su reinicio;
@@ -64,6 +65,9 @@ def titulo(t: str) -> None:
 ORG_A = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
 ORG_B = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
 NO_EXISTE = "dddddddd-4444-4444-8444-dddddddddddd"
+# Los dueños de los enlaces de un solo uso. Desde la 0014 (usuarios en SQL) un enlace apunta con llave foránea a una cuenta que exista, así
+# que estas personas se siembran en `usuarios.jsonl` y entran a la base con la importación, como en un ambiente real.
+U1, U2, U3, UW1, UH, UH2 = (f"a1000000-0000-4000-8000-{i:012x}" for i in range(1, 7))
 AHORA = datetime.now(timezone.utc).replace(microsecond=0)
 E1 = "1" * 32
 
@@ -103,14 +107,19 @@ try:
         {"evento": "creada", "guid": ORG_A, "nombre": "Alfa", "slug": "alfa", "codigo": "NEX-00001", "adminGuid": "admin-a", "recuperacion": {}, "en": hace(1000)},
         {"evento": "creada", "guid": ORG_B, "nombre": "Beta", "slug": "beta", "codigo": "NEX-00002", "adminGuid": "admin-b", "recuperacion": {}, "en": hace(999)},
     ])
+    escribir("usuarios.jsonl", [
+        {"evento": "creado", "guid": u, "email": f"persona{i}@ejemplo.com", "nombre": "Persona", "apellidos": f"Número {i}", "esAdminPlataforma": False,
+         "hash": None, "debeCambiar": True, "en": hace(2000)}
+        for i, u in enumerate((U1, U2, U3, UW1, UH, UH2), start=1)
+    ])
     escribir("tokens.jsonl", [
-        {"evento": "creado", "guid": "00000000-0000-4000-8000-000000000001", "hash": hash_de("tok-uno"), "usuarioGuid": "u1", "tipo": "ACTIVACION", "expira": luego(48), "en": hace(60)},
-        {"evento": "creado", "guid": "00000000-0000-4000-8000-000000000002", "hash": hash_de("tok-dos"), "usuarioGuid": "u1", "tipo": "RECUPERACION", "expira": luego(1), "en": hace(50)},
+        {"evento": "creado", "guid": "00000000-0000-4000-8000-000000000001", "hash": hash_de("tok-uno"), "usuarioGuid": U1, "tipo": "ACTIVACION", "expira": luego(48), "en": hace(60)},
+        {"evento": "creado", "guid": "00000000-0000-4000-8000-000000000002", "hash": hash_de("tok-dos"), "usuarioGuid": U1, "tipo": "RECUPERACION", "expira": luego(1), "en": hace(50)},
         {"evento": "usado", "hash": hash_de("tok-dos"), "en": hace(40)},
-        {"evento": "creado", "guid": "00000000-0000-4000-8000-000000000003", "hash": hash_de("tok-tres"), "usuarioGuid": "u2", "tipo": "ACTIVACION", "expira": luego(48), "en": hace(30)},
+        {"evento": "creado", "guid": "00000000-0000-4000-8000-000000000003", "hash": hash_de("tok-tres"), "usuarioGuid": U2, "tipo": "ACTIVACION", "expira": luego(48), "en": hace(30)},
         {"evento": "invalidado", "hash": hash_de("tok-tres"), "motivo": "REEMPLAZADO", "en": hace(20)},
-        {"evento": "creado", "guid": "00000000-0000-4000-8000-000000000004", "hash": hash_de("tok-cuatro"), "usuarioGuid": "u2", "tipo": "RECUPERACION", "expira": hace(10), "en": hace(70)},
-        {"evento": "creado", "guid": "00000000-0000-4000-8000-000000000005", "hash": "no-es-un-hash", "usuarioGuid": "u3", "tipo": "ACTIVACION", "expira": luego(1), "en": hace(5)},
+        {"evento": "creado", "guid": "00000000-0000-4000-8000-000000000004", "hash": hash_de("tok-cuatro"), "usuarioGuid": U2, "tipo": "RECUPERACION", "expira": hace(10), "en": hace(70)},
+        {"evento": "creado", "guid": "00000000-0000-4000-8000-000000000005", "hash": "no-es-un-hash", "usuarioGuid": U3, "tipo": "ACTIVACION", "expira": luego(1), "en": hace(5)},
     ])
     def armar(ident: str, relleno: str) -> str:
         """Una llave de cliente de verdad (formato y checksum) con ese identificador."""
@@ -172,6 +181,9 @@ try:
     rev("la base dice versión 8", k.execute("SELECT MAX(version) FROM nexus.schemaMigrations").fetchone()[0] == 8)
     rev("los dos documentos con llave siguen ahí (la llave foránea nueva no se les exige: WITH NOCHECK)", k.execute("SELECT count(*) FROM nexus.documents WHERE keyId IS NOT NULL").fetchone()[0] == 2)
     con.close()
+    # El código de hoy corre sobre el esquema de hoy: las que siguen a la 0008 (entre ellas la 0014, usuarios en SQL, que el login de la
+    # sección 7 ya necesita).
+    BASE["aplicar"](None)
 
     from servicios import bandeja, entrega_webhooks, entregas_webhooks, importacion_json, llaves_cliente, tokens, uso_llaves, webhooks_cliente  # noqa: E402
 
@@ -236,7 +248,7 @@ try:
         ("vencido", "tok-cuatro", "RECUPERACION"), ("de otro tipo", "tok-uno", "RECUPERACION"), ("que no existe", "tok-nada", "ACTIVACION"),
     ):
         igual(f"tokens.revisar, {etiqueta}", lambda token=token, tipo=tipo: probar(tokens.revisar, token, tipo))
-    igual("tokens.pendientes_de (la de u1 es la activación vigente; u2 no tiene)", lambda: ([t["guid"] for t in tokens.pendientes_de("u1")], tokens.pendientes_de("u2")))
+    igual("tokens.pendientes_de (la de u1 es la activación vigente; u2 no tiene)", lambda: ([t["guid"] for t in tokens.pendientes_de(U1)], tokens.pendientes_de(U2)))
     modo(False)
     archivo_llaves = [l for l in llaves_cliente.listar(ORG_A) if l["id"] != "zz_9"]
     modo(True)
@@ -281,21 +293,21 @@ try:
 
     def escenario_tokens():
         salida = []
-        t1, _ = tokens.crear("u-w1", tokens.ACTIVACION)
-        t2, _ = tokens.crear("u-w1", tokens.ACTIVACION)
+        t1, _ = tokens.crear(UW1, tokens.ACTIVACION)
+        t2, _ = tokens.crear(UW1, tokens.ACTIVACION)
         salida.append(probar(tokens.revisar, t1, "ACTIVACION")[:2])
         salida.append(tokens.revisar(t2, "ACTIVACION")["motivo"])
         salida.append(probar(tokens.consumir, t2, "RECUPERACION")[:2])
         salida.append(tokens.consumir(t2, "ACTIVACION")["usuarioGuid"])
         salida.append(probar(tokens.consumir, t2, "ACTIVACION")[:2])
-        tokens.crear("u-w1", tokens.RECUPERACION)
-        tokens.crear("u-w1", tokens.ACTIVACION)
-        salida.append(sorted(t["tipo"] for t in tokens.pendientes_de("u-w1")))
-        salida.append(tokens.invalidar_de("u-w1", tokens.RECUPERACION, motivo="X"))
-        salida.append(sorted(t["tipo"] for t in tokens.pendientes_de("u-w1")))
-        salida.append(tokens.invalidar_de("u-w1", motivo="RESET"))
-        salida.append(tokens.pendientes_de("u-w1"))
-        salida.append(probar(tokens.crear, "u-w1", "NOPE")[:2])
+        tokens.crear(UW1, tokens.RECUPERACION)
+        tokens.crear(UW1, tokens.ACTIVACION)
+        salida.append(sorted(t["tipo"] for t in tokens.pendientes_de(UW1)))
+        salida.append(tokens.invalidar_de(UW1, tokens.RECUPERACION, motivo="X"))
+        salida.append(sorted(t["tipo"] for t in tokens.pendientes_de(UW1)))
+        salida.append(tokens.invalidar_de(UW1, motivo="RESET"))
+        salida.append(tokens.pendientes_de(UW1))
+        salida.append(probar(tokens.crear, UW1, "NOPE")[:2])
         return salida
 
     a, s = ambos(escenario_tokens)
@@ -472,12 +484,12 @@ try:
         with ThreadPoolExecutor(max_workers=n) as pool:
             return list(pool.map(lambda _: probar(fn), range(n)))
 
-    token, _ = tokens.crear("u-hilos", tokens.RECUPERACION)
+    token, _ = tokens.crear(UH, tokens.RECUPERACION)
     r = en_paralelo(lambda: tokens.consumir(token, tokens.RECUPERACION))
     rev("un enlace consumido por 8 hilos a la vez: UNO gana y los demás lo ven ya usado", sum(1 for x in r if x[0] == "ok") == 1 and sum(1 for x in r if x[1:2] == ("YaUsado",)) == 7, str(r))
     with ThreadPoolExecutor(max_workers=8) as pool:
-        list(pool.map(lambda _: tokens.crear("u-hilos2", tokens.ACTIVACION), range(8)))
-    rev("8 enlaces nuevos a la vez para la misma persona: queda UNO solo vigente", len(tokens.pendientes_de("u-hilos2", tokens.ACTIVACION)) == 1)
+        list(pool.map(lambda _: tokens.crear(UH2, tokens.ACTIVACION), range(8)))
+    rev("8 enlaces nuevos a la vez para la misma persona: queda UNO solo vigente", len(tokens.pendientes_de(UH2, tokens.ACTIVACION)) == 1)
     r = en_paralelo(lambda: webhooks_cliente.registrar(ORG_A, "https://hilos.example/", ["documento.completado"]))
     rev("la misma URL registrada por 8 hilos a la vez: UNA se registra y las demás son duplicado", sum(1 for x in r if x[0] == "ok") == 1 and sum(1 for x in r if x[1:2] == ("Duplicado",)) == 7, str(r))
     ids = [x[1][1]["id"] for x in en_paralelo(lambda: llaves_cliente.emitir(ORG_A, "n", "d", 7), 10) if x[0] == "ok"]

@@ -12,8 +12,9 @@ comando, y si el correo no salió es la única forma de que la persona entre.
 Puede haber varios super admins (decisión del 2026-10-09): cada corrida con
 otro correo crea otro; con un correo ya registrado no hace nada y lo dice. Al entrar con la contraseña temporal, la app obliga a cambiarla (HU04).
 
-Lee el mismo `.env` que la API (`ALMACEN_RUTA`): escribe en el registro
-`usuarios.jsonl` del NAS, que es donde la API lo va a buscar.
+Lee el mismo `.env` que la API: escribe donde la API lo va a buscar. Con base
+(`SQLSERVER_HOST`, desde la migración 0014), en `nexus.users`; sin base, en el
+registro `usuarios.jsonl` del almacén (`ALMACEN_RUTA`).
 """
 
 import argparse
