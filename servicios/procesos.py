@@ -55,35 +55,18 @@ borra la migración `0012`; este módulo ya no la lee ni la escribe.
 
 ## Cómo se guarda
 
-Desde el 2026-10-29, donde hay base, en `nexus.processes` (migración `0005`, `servicios/procesos_sql.py`).
-Este módulo valida igual en los dos casos y elige por `SQLSERVER_HOST` en cada llamada. Donde no hay base (la laptop, las pruebas offline),
-un solo archivo de solo-agregar (`procesos.jsonl`, ver `servicios/registro.py`) con dos clases de evento: `guardar` (el proceso COMPLETO,
-con su revisión nueva) y `eliminar`. El estado vigente se arma doblando el archivo de principio a fin.
-
-⚠️ En el almacén cada guardado escribe el proceso entero y el archivo crece con cada edición; la salida de verdad es la base, que ya existe.
+En `nexus.processes` (migración `0005`, `servicios/procesos_sql.py`). Este módulo valida; aquel guarda. Hasta el 2026-11-11, donde no
+había base, iban a un JSONL de solo agregar; ese camino ya no existe.
 """
 
 import json
 import logging
 import math
 import re
-from datetime import datetime, timezone
 
-from config import SQLSERVER_HOST
-from servicios import registro
-
-
-def _sql():
-    """El módulo de SQL si el `.env` dice que hay base; `None` si no. Se importa tarde: sin base, `pyodbc` ni se carga."""
-    if not SQLSERVER_HOST:
-        return None
-    from servicios import procesos_sql
-
-    return procesos_sql
+from servicios import procesos_sql
 
 logger = logging.getLogger(__name__)
-
-ARCHIVO = "procesos.jsonl"
 
 _RE_ID = re.compile(r"^proceso-[a-z0-9-]{6,58}$")
 
@@ -158,32 +141,6 @@ class Conflicto(Exception):
     def __init__(self, revision_actual: int | None):
         super().__init__("conflicto de revisión")
         self.revision_actual = revision_actual
-
-
-def _ahora() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _doblar() -> dict[str, dict]:
-    """El estado vigente: `{id: proceso}`. Se llama con el candado puesto."""
-    procesos: dict[str, dict] = {}
-    for e in registro.eventos(ARCHIVO):
-        op = e.get("op")
-        if op == "guardar" and isinstance(e.get("id"), str) and isinstance(e.get("datos"), dict):
-            previo = procesos.get(e["id"])
-            procesos[e["id"]] = {
-                "id": e["id"],
-                "tenant": e.get("tenant", ""),
-                "revision": int(e.get("revision", 1)),
-                "datos": e["datos"],
-                "creadoPor": previo["creadoPor"] if previo else e.get("por"),
-                "creadoEn": previo["creadoEn"] if previo else e.get("en"),
-                "modificadoPor": e.get("por"),
-                "modificadoEn": e.get("en"),
-            }
-        elif op == "eliminar":
-            procesos.pop(e.get("id"), None)
-    return procesos
 
 
 def _texto(valor: object, que: str, maximo: int = MAX_TEXTO, obligatorio: bool = True) -> str:
@@ -311,46 +268,22 @@ def _validar(proceso_id: str, datos: object) -> dict:
     return limpio
 
 
-def _publico(p: dict) -> dict:
-    """El proceso como lo ve quien consulta. Sin lo que se descarta (`_DESCARTADAS`): un proceso guardado en el almacén ANTES del 2026-11-05 trae
-    `tipoExpedienteVirtualId` dentro de sus datos y no se devuelve."""
-    datos = {**{k: v for k, v in p["datos"].items() if k not in _DESCARTADAS}, "id": p["id"]}
-    return {
-        "id": p["id"],
-        "revision": p["revision"],
-        "datos": datos,
-        "creadoPor": p["creadoPor"],
-        "creadoEn": p["creadoEn"],
-        "modificadoPor": p["modificadoPor"],
-        "modificadoEn": p["modificadoEn"],
-    }
-
-
 def _sin_id(p: dict) -> dict:
-    """Lo que devuelve SQL solo necesita el `id` dentro de `datos`, como en el almacén. Y sin lo que se descarta (`_DESCARTADAS`): una fila con
+    """Lo que devuelve SQL, con el `id` también dentro de `datos`. Y sin lo que se descarta (`_DESCARTADAS`): una fila con
     `tipoExpedienteVirtualId` dentro de su JSON (solo posible por SQL directo: desde la 0005 la liga iba en su propia columna, y la 0012 la borró) no se
-    devuelve, igual que `_publico` lo hace con el almacén; el contrato es que ese campo nunca sale, venga la fila de donde venga."""
+    devuelve; el contrato es que ese campo nunca sale."""
     datos = {k: v for k, v in p["datos"].items() if k not in _DESCARTADAS}
     return {**p, "datos": {**datos, "id": p["id"]}}
 
 
 def listar(tenant: str) -> list[dict]:
     """Los procesos de UNA organización, en el orden de su creación."""
-    if sql := _sql():
-        return [_sin_id(p) for p in sql.listar(tenant)]
-    with registro.candado:
-        procesos = _doblar()
-    return [_publico(p) for p in procesos.values() if p["tenant"] == tenant]
+    return [_sin_id(p) for p in procesos_sql.listar(tenant)]
 
 
 def obtener(tenant: str, proceso_id: str) -> dict | None:
-    if sql := _sql():
-        p = sql.obtener(tenant, proceso_id)
-        return _sin_id(p) if p else None
-    with registro.candado:
-        procesos = _doblar()
-    p = procesos.get(proceso_id)
-    return _publico(p) if p and p["tenant"] == tenant else None
+    p = procesos_sql.obtener(tenant, proceso_id)
+    return _sin_id(p) if p else None
 
 
 def resultado_conectado(datos: dict) -> bool:
@@ -375,45 +308,10 @@ def guardar(tenant: str, proceso_id: str, datos: object, revision: int, por: str
     limpio = _validar(proceso_id, datos)
     if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
         raise ProcesoInvalido("La revisión no es válida.")
-    if sql := _sql():
-        nuevo, actual = sql.guardar(tenant, proceso_id, limpio, revision, por)
-        return _sin_id(nuevo), _sin_id(actual) if actual else None
-    with registro.candado:
-        procesos = _doblar()
-        actual = procesos.get(proceso_id)
-        if revision == 0:
-            if actual is not None:
-                # Repetido en esta organización: se dice cuál es la vigente. En OTRA: no se nombra de quién es.
-                raise Conflicto(actual["revision"] if actual["tenant"] == tenant else None)
-            nueva = 1
-        else:
-            if actual is None or actual["tenant"] != tenant:
-                raise NoEncontrado(proceso_id)
-            if actual["revision"] != revision:
-                raise Conflicto(actual["revision"])
-            nueva = revision + 1
-        # El nombre es único en la organización. Solo se revisa si es nuevo o si cambió: guardar sin tocar el nombre (activar o desactivar desde la
-        # lista, por ejemplo) no puede fallar por un duplicado que ya existía antes de esta regla.
-        if actual is None or clave_de_nombre(actual["datos"]["nombre"]) != clave_de_nombre(limpio["nombre"]):
-            exigir_nombre_libre(
-                limpio["nombre"], [p["datos"]["nombre"] for i, p in procesos.items() if p["tenant"] == tenant and i != proceso_id]
-            )
-        registro.agregar(
-            ARCHIVO,
-            {"op": "guardar", "id": proceso_id, "tenant": tenant, "revision": nueva, "datos": limpio, "por": por, "en": _ahora()},
-        )
-        procesos = _doblar()
-        return _publico(procesos[proceso_id]), _publico(actual) if actual else None
+    nuevo, actual = procesos_sql.guardar(tenant, proceso_id, limpio, revision, por)
+    return _sin_id(nuevo), _sin_id(actual) if actual else None
 
 
 def eliminar(tenant: str, proceso_id: str, por: str) -> dict:
     """Quita un proceso de la organización. Devuelve el que se quitó. `NoEncontrado` si no es de ella."""
-    if sql := _sql():
-        return _sin_id(sql.eliminar(tenant, proceso_id))
-    with registro.candado:
-        procesos = _doblar()
-        actual = procesos.get(proceso_id)
-        if actual is None or actual["tenant"] != tenant:
-            raise NoEncontrado(proceso_id)
-        registro.agregar(ARCHIVO, {"op": "eliminar", "id": proceso_id, "tenant": tenant, "por": por, "en": _ahora()})
-        return _publico(actual)
+    return _sin_id(procesos_sql.eliminar(tenant, proceso_id))

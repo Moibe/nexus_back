@@ -1201,3 +1201,84 @@ que uno inventado), sin decir que existe. El back ya lo hace; la segunda red es 
    cuando lo pida el diseño. ¿Algún problema con el nombre?
 3. ¿`OFFSET/FETCH` te parece suficiente para paginar, o prefieres paginación por llave (`receivedAt, fileId`) pensando en tenants con
    cientos de miles de archivos?
+
+## 8 · Datos · Usuario de solo lectura, separado por organización, para consultas en lenguaje natural — BORRADOR 2026-11-11 (para Charlie, aún sin crear en Jira)
+
+**Título del ticket:** `Datos · Usuario de SOLO LECTURA, separado por organización, para consultas en lenguaje natural`
+
+Texto del ticket (en Jira va sin esta primera frase):
+
+### Por qué
+
+Queremos que cada organización pueda hacer preguntas en lenguaje natural sobre lo que ya se extrajo de sus documentos («¿cuántas
+INE vencen este año?», «¿qué campos fallan más en las actas?»). Lo haremos con una herramienta de texto a SQL: un modelo
+de lenguaje escribe la consulta y la ejecuta contra la base.
+
+Como la consulta la escribe un modelo, la base tiene que garantizar dos cosas por sí sola, sin depender de que el modelo acierte:
+1. **Solo lectura.** No puede correr con `usrNexus`, que lee y escribe todo y ejecuta cualquier SP.
+2. **Solo su organización.** Un `WHERE` escrito por el modelo no basta: se le puede olvidar, o alguien puede engañarlo para que lo
+   quite.
+
+### Lo que YA existe
+
+La migración `0015` creó en `[nexus]` las vistas `vDocumentoExtraido` (un renglón por documento con su extracción vigente) y
+`vDatoExtraido` (un renglón por campo vigente). Traen **todas** las organizaciones, así que este usuario **no** debe leerlas
+directamente. Hoy existen en `IA_Nexus_Dev`.
+
+### Cómo se separan las organizaciones
+
+1. En un esquema nuevo, `[consulta]`, nosotros creamos con una migración (la `0016`) dos vistas con los mismos nombres. Cada una lee
+   la de `[nexus]` y filtra por la organización fijada en la conexión:
+   ```sql
+   WHERE organizacionGuid = CAST(SESSION_CONTEXT(N'organizacion') AS varchar(63))
+   ```
+2. Al abrir cada conexión, nuestra aplicación ejecuta primero:
+   ```sql
+   EXEC sys.sp_set_session_context @key = N'organizacion', @value = '<organización>', @read_only = 1;
+   ```
+   Con `@read_only = 1`, SQL Server no deja cambiar el valor en esa conexión, aunque el modelo lo intente (error 15664).
+3. Si la conexión no fija organización, las vistas no devuelven nada.
+
+### Lo que se pide
+
+Todo **solo en `IA_Nexus_Dev`**. Staging y producción se pedirán en otro ticket, cuando las consultas estén probadas. Un login de
+SQL, como `usrNexus`; proponemos el nombre `usrNexusLectura`:
+
+```sql
+CREATE LOGIN usrNexusLectura WITH PASSWORD = '<la que tú definas>', CHECK_POLICY = ON;
+GO
+USE IA_Nexus_Dev;
+GO
+CREATE SCHEMA consulta AUTHORIZATION nexusOwner;
+GO
+CREATE USER usrNexusLectura FOR LOGIN usrNexusLectura;
+GRANT SELECT ON SCHEMA::consulta TO usrNexusLectura;
+-- para que nuestra migración pueda crear las vistas filtradas:
+GRANT ALTER ON SCHEMA::consulta TO usrNexusDDL;
+```
+
+Y **nada más** para `usrNexusLectura`: sin `db_datareader`, sin `db_datawriter`, sin `EXECUTE`, y sin `SELECT` sobre `[nexus]` ni
+sobre ninguna tabla. `[consulta]` y `[nexus]` son del mismo dueño (`nexusOwner`): por encadenamiento de propiedad, el `SELECT` sobre
+el esquema basta para que las vistas funcionen sin dar acceso a las tablas, y las vistas que agreguemos después quedan cubiertas sin
+otro ticket.
+
+La contraseña, por favor, directo a Moisés por un canal seguro, no en el ticket.
+
+### Cómo sabremos que quedó
+
+Conectado como `usrNexusLectura` a `IA_Nexus_Dev`, después de que creemos la `0016`:
+
+1. **Sin fijar organización:** `SELECT * FROM consulta.vDatoExtraido` devuelve **0 renglones**.
+2. **Con una organización fijada:** solo devuelve los renglones de esa organización.
+3. Volver a llamar `sp_set_session_context` con otra organización en la misma conexión **falla** (error 15664).
+4. `SELECT TOP (1) * FROM nexus.vDatoExtraido` y `nexus.entityFacts` **fallan** por permiso (error 229).
+5. Cualquier `INSERT`, `UPDATE`, `DELETE`, `CREATE` o `EXEC` de un SP nuestro **falla**.
+6. No puede entrar a `IA_Nexus` ni a `IA_Nexus_Staging`.
+
+### De este lado (no va en el ticket)
+
+- Login de SQL y no de dominio; el límite de las consultas pesadas es un tiempo máximo en la aplicación, sin Resource Governor (que
+  sería de toda la instancia, producción incluida).
+- La conexión de Vanna no usa pool (o lo reinicia en cada pregunta): el valor de sesión de solo lectura vive lo que vive la conexión.
+- Las salidas que se nos ocurren (`OPENROWSET`/consultas ad hoc, `EXECUTE AS`) las probamos nosotros con ese usuario al recibirlo,
+  junto con las seis comprobaciones.

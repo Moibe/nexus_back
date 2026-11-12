@@ -310,6 +310,50 @@ async def ubicar_campos(
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
+@router.post(
+    "/describir-campo",
+    tags=["Procesadores"],
+    summary="Proponer la descripción de un campo a partir de su recuadro sobre un documento de ejemplo",
+    description=(
+        "Acompaña a `/ubicar-campos` (Moibe, 2026-11-11): mover o dibujar un recuadro no cambia el esquema, pero la DESCRIPCIÓN del campo sí es "
+        "lo que lee el extractor. Recibe el documento, `campo` (JSON: `{nombre, tipoDato, descripcion}`), la `pagina` y la `caja` (JSON: "
+        "`[ymin, xmin, ymax, xmax]` de 0 a 1000) que marcó la persona, y opcionalmente el nombre y la descripción del tipo. Gemini mira esa zona y "
+        "devuelve `{descripcion, valor, modelo}`: una descripción que sirva para cualquier documento del tipo (sin datos de este) y el texto que leyó "
+        "en la caja. No guarda nada. Solo PDF, JPG o PNG. Pide el rol que administra tipos documentales."
+    ),
+)
+async def describir_campo(
+    archivo: UploadFile = File(..., description="El documento de ejemplo (PDF, JPG o PNG)"),
+    tenant: str = Form(..., description="La organización"),
+    campo: str = Form(..., max_length=2000, description="JSON: `{nombre, tipoDato, descripcion}`"),
+    pagina: int = Form(1, description="La página del recuadro, desde 1"),
+    caja: str = Form(..., max_length=200, description="JSON: `[ymin, xmin, ymax, xmax]` de 0 a 1000"),
+    nombreTipo: str = Form("", max_length=200),
+    descripcionTipo: str = Form("", max_length=2000),
+    authorization: str | None = Header(default=None),
+):
+    aislamiento.exigir_administrar(authorization, tenant, "tipo_documental")
+    try:
+        pedido = ubicar.limpiar_pedido_descripcion(json.loads(campo), pagina, json.loads(caja), nombreTipo, descripcionTipo)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El campo o el recuadro no son un JSON válido.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    mime = normalizar_tipo(archivo.content_type)
+    if mime not in gemini.MIME_PARA_GEMINI:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Para sugerir la descripción con el recuadro usa PDF, JPG o PNG.")
+    contenido = await _leer_subida(archivo)
+    if len(contenido) > gemini.MAX_BYTES_DOCUMENTOS:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"El documento pesa demasiado: a lo más {gemini.MAX_BYTES_DOCUMENTOS // (1024 * 1024)} MB.",
+        )
+    try:
+        return await ubicar.describir(contenido, mime, pedido)
+    except ubicar.ErrorUbicar as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
 def _tipos_activos(tenant: str) -> list[dict]:
     """Los tipos activos de ESTA organización, del registro del servidor. 503 si el registro no se puede leer."""
     try:

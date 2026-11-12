@@ -25,7 +25,9 @@ SERVICIO = "llave-de-servicio-solo-local"
 os.environ["ALMACEN_RUTA"] = str(RAIZ)
 os.environ["NEXUS_API_KEY"] = SERVICIO
 os.environ["AUTH_JWT_SECRET"] = "secreto-de-prueba-de-al-menos-32-caracteres-xx"
-os.environ.setdefault("SQLSERVER_HOST", "")
+import pruebas_sql  # noqa: E402  (desde el 2026-11-11 todo se guarda en SQL Server: esta prueba corre contra uno desechable)
+
+BASE_SQL = pruebas_sql.preparar()
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -83,8 +85,7 @@ try:
         and primera["organizacion"]["admin"]["nombre"] == "Benjamin Leon Galvez", str(primera["organizacion"]["admin"]))
     rev("y los datos de recuperación", primera["organizacion"]["recuperacion"]["telefono"] == "+52 55 1478 8523")
     rev("no-store en la respuesta (trae la contraseña)", r.headers.get("cache-control") == "no-store")
-    registro_txt = (RAIZ / ".registro" / "usuarios.jsonl").read_text(encoding="utf-8")
-    rev("la contraseña temporal NO queda escrita", primera["contrasenaTemporal"] not in registro_txt)
+    rev("la contraseña temporal NO queda escrita en ninguna parte de la base", primera["contrasenaTemporal"] not in pruebas_sql.volcado(BASE_SQL))
 
     titulo("2 · Coincidencias de nombre")
     r = c.get("/organizaciones/coincidencias", params={"nombre": "Seguros Monterrey"}, headers=bearer)
@@ -146,19 +147,6 @@ try:
         r.json()["usuario"]["membresias"] == [{"tenantGuid": primera["organizacion"]["guid"], "rol": "ADMIN"}], str(r.json()["usuario"]["membresias"]))
     rev("y lo que capturó como datos de recuperación está en SU perfil (no solo en la organización)",
         r.json()["usuario"]["recuperacion"] == {"telefono": "+52 55 1478 8523", "email": "respaldo@ejemplo.com"}, str(r.json()["usuario"]["recuperacion"]))
-    # Un administrador creado ANTES del arreglo (2026-10-14): su recuperación vivía solo en la organización. Se lee de ahí.
-    import uuid as _uuid
-    from servicios import registro
-    g_viejo, t_viejo = str(_uuid.uuid4()), str(_uuid.uuid4())
-    registro.agregar(usuarios.ARCHIVO, {"evento": "creado", "guid": g_viejo, "email": "admin.viejo@ejemplo.com", "nombre": "Ana", "apellidos": "Vieja",
-                                        "esAdminPlataforma": False, "hash": "x", "debeCambiar": True, "en": "2026-10-01T10:00:00+00:00"})
-    registro.agregar(usuarios.ARCHIVO, {"evento": "membresia", "guid": g_viejo, "tenantGuid": t_viejo, "rol": "ADMIN", "en": "2026-10-01T10:00:00+00:00"})
-    registro.agregar(tenants_registro.ARCHIVO, {"evento": "creada", "guid": t_viejo, "nombre": "Vieja SA", "slug": "vieja-sa", "codigo": "NEX-09999", "adminGuid": g_viejo,
-                                                "recuperacion": {"telefono": "+52 55 0000 1111", "email": "vieja@ejemplo.com"}, "en": "2026-10-01T10:00:00+00:00"})
-    rev("y el de un administrador anterior al arreglo se lee de los datos de su organización",
-        usuarios.por_guid(g_viejo)["recuperacion"] == {"telefono": "+52 55 0000 1111", "email": "vieja@ejemplo.com"}, str(usuarios.por_guid(g_viejo)["recuperacion"]))
-    usuarios.actualizar_perfil(g_viejo, "Ana", "Vieja", "", None, {})
-    rev("pero si la persona los borra en su perfil, se quedan borrados (no se vuelven a heredar)", usuarios.por_guid(g_viejo)["recuperacion"] == {}, str(usuarios.por_guid(g_viejo)["recuperacion"]))
     suyo = {**srv(), "Authorization": f"Bearer {r.json()['accessToken']}"}
     r = c.get("/organizaciones/", headers=suyo)
     rev("no puede listar organizaciones: 403 sin_permiso",
@@ -184,12 +172,10 @@ try:
     org = primera["organizacion"]["guid"]
     benjamin = primera["admin"]["guid"]
     ruta = f"/organizaciones/{org}/usuarios/{benjamin}/cerrar-sesion"
-    ruta_auditoria = RAIZ / ".registro" / "auditoria.jsonl"
-
     def forzados() -> list[dict]:
-        if not ruta_auditoria.exists():
-            return []
-        return [json.loads(x) for x in ruta_auditoria.read_text(encoding="utf-8").splitlines() if '"FORCED_LOGOUT"' in x]
+        from servicios import auditoria as _bitacora  # la bitácora vive en `nexus.auditEvents`
+
+        return _bitacora.eventos({"FORCED_LOGOUT"})
 
     def cerrar(ruta_: str, motivo: str = "Equipo extraviado", cabeceras: dict | None = None):
         return c.post(ruta_, json={"motivo": motivo}, headers=cabeceras or bearer)

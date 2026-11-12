@@ -28,7 +28,9 @@ os.environ["NEXUS_API_KEY"] = SERVICIO
 os.environ["AUTH_JWT_SECRET"] = "secreto-de-prueba-de-al-menos-32-caracteres-xx"
 os.environ["CORREO_MODO"] = "archivo"
 os.environ["FRONT_URL"] = "http://localhost:3400"
-os.environ.setdefault("SQLSERVER_HOST", "")
+import pruebas_sql  # noqa: E402  (desde el 2026-11-11 todo se guarda en SQL Server: esta prueba corre contra uno desechable)
+
+BASE_SQL = pruebas_sql.preparar()
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -92,12 +94,21 @@ def contrasena_del_correo(mensaje: dict) -> str:
     return m.group(1).strip() if m else ""
 
 
+def sql(consulta: str, *parametros):
+    """Una consulta directa a la base de la prueba, con el usuario de la API."""
+    con = BASE_SQL["conectar"]("usrNexus", BASE_SQL["app"], BASE_SQL["base"])
+    try:
+        cur = con.cursor()
+        cur.execute(consulta, *parametros)
+        return cur.fetchall() if cur.description else None
+    finally:
+        con.close()
+
+
 def eventos(accion: str) -> list[dict]:
-    ruta = RAIZ / ".registro" / "auditoria.jsonl"
-    if not ruta.exists():
-        return []
-    lineas = (json.loads(x) for x in ruta.read_text(encoding="utf-8").splitlines() if x.strip())
-    return [e for e in lineas if e.get("accion") == accion]
+    from servicios import auditoria as _bitacora  # la bitácora vive en `nexus.auditEvents`
+
+    return _bitacora.eventos({accion})
 
 
 recolector = Recolector()
@@ -222,7 +233,7 @@ try:
     rev("el alta dejó su evento USER_CREATED: el creado, su rol, quién lo dio de alta y qué pasó con el correo",
         len(alta) == 1 and alta[0]["rol"] == "ADMIN" and alta[0]["actor"] == s["usuario"]["guid"]
         and alta[0]["correo"] == "enviado" and alta[0]["tenantGuid"] == cuerpo["organizacion"]["guid"], str(alta))
-    rev("y el evento no lleva la contraseña", pwd_beto not in (RAIZ / ".registro" / "auditoria.jsonl").read_text(encoding="utf-8"))
+    rev("y el evento no lleva la contraseña", pwd_beto not in pruebas_sql.volcado(BASE_SQL))
 
     # (c) El administrador de la organización da de alta a un usuario (HU06).
     cambio = c.post("/auth/contrasena", json={"nueva": "Nueva-Segura-123!", "confirmacion": "Nueva-Segura-123!"}, headers=bearer_beto)
@@ -313,8 +324,7 @@ try:
         return c.post("/auth/login", json={"email": correo, "password": contrasena}, headers=srv())
 
     def sesiones_vivas(guid: str) -> int:
-        _, _, ses = usuarios._indice()
-        return sum(1 for x in ses.values() if x["guid"] == guid and not x["revocadaEn"])
+        return sql("SELECT count(*) FROM nexus.userSessions WHERE userGuid = ? AND revokedAt IS NULL", guid)[0][0]
 
     # La regla sola, con fechas exactas.
     ahora_fijo = datetime(2026, 10, 13, 12, 0, tzinfo=timezone.utc)
@@ -357,7 +367,8 @@ try:
     codigos = [entrar("gael@ejemplo.com", pwd_gael).status_code for _ in range(6)]
     rev("seis intentos más con la correcta: siempre 403, nunca 423 (caducar no cuenta como intento fallido)", codigos == [403] * 6, str(codigos))
     rev("y la cuenta no acumuló intentos fallidos", usuarios.para_login("gael@ejemplo.com")["fallidos"] == fallidos_antes)
-    ultimo = [e for e in usuarios.registro.eventos(usuarios.ARCHIVO) if e.get("evento") == "intento" and e.get("guid") == guid_gael][-1]
+    f = sql("SELECT TOP 1 succeeded, reason FROM nexus.loginAttempts WHERE userGuid = ? ORDER BY attemptId DESC", guid_gael)[0]
+    ultimo = {"exitoso": bool(f[0]), "motivo": f[1]}
     rev("el intento quedó en la bitácora como EXPIRED", ultimo["exitoso"] is False and ultimo["motivo"] == "EXPIRED", str(ultimo))
     r = c.post("/auth/contrasena", json={"nueva": "Nueva-Segura-456!", "confirmacion": "Nueva-Segura-456!"}, headers=token_gael)
     rev("quien entró a tiempo pero NO terminó tampoco puede completar el primer acceso después: 403",
@@ -413,7 +424,7 @@ try:
     alta = [e for e in eventos("INVITATION_REISSUED") if e.get("usuarioGuid") == guid_gael]
     rev("quedó el evento INVITATION_REISSUED con quién la pidió y qué pasó con el correo, sin la contraseña",
         len(alta) == 1 and alta[0]["actor"] == s["usuario"]["guid"] and alta[0]["correo"] == "enviado"
-        and nueva_pwd not in (RAIZ / ".registro" / "auditoria.jsonl").read_text(encoding="utf-8"), str(alta))
+        and nueva_pwd not in pruebas_sql.volcado(BASE_SQL), str(alta))
     volver()
 
     # Las sesiones abiertas con la contraseña anterior mueren.

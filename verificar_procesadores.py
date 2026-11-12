@@ -24,7 +24,9 @@ SERVICIO = "llave-de-servicio-solo-local"
 os.environ["ALMACEN_RUTA"] = str(RAIZ)
 os.environ["NEXUS_API_KEY"] = SERVICIO
 os.environ["AUTH_JWT_SECRET"] = "secreto-de-prueba-de-al-menos-32-caracteres-xx"
-os.environ.setdefault("SQLSERVER_HOST", "")
+import pruebas_sql  # noqa: E402  (desde el 2026-11-11 todo se guarda en SQL Server: esta prueba corre contra uno desechable)
+
+BASE_SQL = pruebas_sql.preparar()
 
 import verificacion_comun  # noqa: E402
 
@@ -56,6 +58,10 @@ try:
         ("POST", "/procesadores/activar"),
         # 2026-10-29: «Generar a partir de un documento» del paso 2 (ver verificar_generar_campos.py).
         ("POST", "/procesadores/generar-campos"),
+        # 2026-11-11: el documento de ejemplo con los campos marcados (aa9e345, ver verificar_ubicar_campos.py) y la descripción sugerida
+        # desde el recuadro de un campo (97f16a3, ver verificar_describir_campo.py). Ninguna guarda nada.
+        ("POST", "/procesadores/ubicar-campos"),
+        ("POST", "/procesadores/describir-campo"),
         ("POST", "/procesadores/clasificador/sincronizar"),
         ("POST", "/procesadores/clasificador/asegurar"),
         ("GET", "/procesadores/clasificador"),

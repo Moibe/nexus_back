@@ -1,31 +1,11 @@
-"""Registro PROVISIONAL de la bandeja de entrada: qué archivos llegaron por la
-API y siguen esperando en la bandeja de preparación del front.
+"""La bandeja de entrada: qué archivos llegaron (por la API o a mano) y siguen esperando en la bandeja de preparación del front.
 
-## Por qué existe, y por qué es provisional
+## Por qué existe
 
-La bandeja del front vivía solo en la memoria del navegador: un archivo que
-un cliente sube por la API no tenía forma de aparecer ahí. Lo definitivo es
-una fila en `[documents].[files]` dentro del expediente de entrada del tenant
-(ver `docs/solicitudes-dba.md`, sección 4), pero eso espera los SPs del DBA.
-Esto hace el mismo trabajo mientras tanto, para no depender de ese calendario.
-
-El día que existan los SPs, lo que cambia es ESTE módulo: `registrar_entrada`,
-`listar_pendientes` y `retirar` pasan a llamar a la base, y ni el router ni el
-front se enteran. Los eventos ya guardados aquí sirven para el backfill: traen
-exactamente lo que pide `uspCreateFile`.
-
-## Dónde y cómo se guarda
-
-Un registro de solo agregar por tenant, `bandeja-{tenant}.jsonl` (ver
-`servicios/registro.py`, que tiene los detalles de escritura, cortes y
-concurrencia): cada línea es un evento, `entrada` o `retiro`, y lo pendiente es
-lo que entró y no ha salido.
-
-## Desde el 2026-10-29: en SQL donde hay base
-
-Migración `0006`: donde hay base, las entradas viven en `nexus.inboxEntries` (una fila por entrada; el retiro son sus columnas
-`removedAt`, `removalReason` y `removalDetail`), importadas una vez desde los `bandeja-*.jsonl` (`servicios/importacion_json.py`). Este
-módulo elige por `SQLSERVER_HOST` en cada llamada; los JSONL son lo que corre donde no hay base.
+La bandeja del front vivía solo en la memoria del navegador: un archivo que un cliente sube por la API no tenía forma de aparecer ahí. Desde
+el 2026-10-29 (migración `0006`) las entradas viven en `nexus.inboxEntries`: una fila por entrada, y el retiro (al pipeline o descartada) son
+sus columnas `removedAt`, `removalReason` y `removalDetail`. Se importaron una vez desde los viejos `bandeja-*.jsonl`
+(`servicios/importacion_json.py`); desde el 2026-11-11 no hay otro almacenamiento. Lo pendiente es lo que entró y no ha salido.
 
 ## Cada entrada es también un documento
 
@@ -34,30 +14,12 @@ bandeja al pasar al pipeline o al descartarse); el documento no: es lo que despu
 """
 
 import re
-import uuid
-from datetime import datetime, timezone
 
-from config import SQLSERVER_HOST
-from servicios import almacen, documentos, registro
-
-
-def _sql():
-    """El módulo de SQL si el `.env` dice que hay base; `None` si no. Se importa tarde: sin base, `pyodbc` ni se carga."""
-    if not SQLSERVER_HOST:
-        return None
-    from servicios import registros_sql
-
-    return registros_sql
+from servicios import almacen, documentos, registros_sql
 
 
 CANALES = {"API", "MANUAL"}
 MOTIVOS_RETIRO = {"pipeline", "descartado"}
-
-
-def _nombre(tenant: str) -> str:
-    # Valida el tenant con la MISMA regla que el almacén: es también la defensa
-    # contra un `../` en el nombre del archivo de registro.
-    return f"bandeja-{almacen._validar_tenant(tenant)}.jsonl"
 
 
 def registrar_entrada(
@@ -71,8 +33,8 @@ def registrar_entrada(
     """Anota que un archivo YA GUARDADO en el almacén entró a la bandeja.
 
     Va después de `almacen.guardar`, nunca antes — el mismo orden que tendrá
-    la fila de `file`: bytes primero, registro después. Si esto falla, queda un
-    objeto sin registro, que es barato; al revés quedaría una entrada apuntando
+    la fila de `file`: bytes primero, fila después. Si esto falla, queda un
+    objeto sin fila, que es barato; al revés quedaría una entrada apuntando
     a un archivo que no existe.
 
     `llave_id` es el identificador público de la llave de cliente con la que se
@@ -84,63 +46,24 @@ def registrar_entrada(
     # El documento NACE aquí, al entrar al sistema, y antes que la entrada: si fallara la entrada quedaría un documento sin expediente
     # (permanente y sin daño); al revés quedaría una entrada pendiente que no es un documento. `documentoId` las une.
     documento = documentos.nacer(tenant, guardado, mime, nombre_original, canal, llave_id)
-    if sql := _sql():
-        return sql.bandeja_entrar(almacen._validar_tenant(tenant), documento["id"], guardado, mime, nombre_original, canal, llave_id)
-    entrada = {
-        "evento": "entrada",
-        "id": uuid.uuid4().hex,
-        "documentoId": documento["id"],
-        "tenant": tenant,
-        "rutaRelativa": guardado["rutaRelativa"],
-        "sha256": guardado["hash"],
-        "tamanoBytes": guardado["bytes"],
-        "mime": mime,
-        "nombreOriginal": nombre_original,
-        "canal": canal,
-        "llaveId": llave_id,
-        "recibidoEn": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-    }
-    registro.agregar(_nombre(tenant), entrada)
-    return _publica(entrada)
+    return registros_sql.bandeja_entrar(almacen._validar_tenant(tenant), documento["id"], guardado, mime, nombre_original, canal, llave_id)
 
 
 def listar_pendientes(tenant: str) -> list[dict]:
     """Lo que entró y todavía no se retira, del más viejo al más nuevo."""
-    if sql := _sql():
-        return sql.bandeja_pendientes(almacen._validar_tenant(tenant))
-    eventos = registro.eventos(_nombre(tenant))
-    retirados = {e.get("id") for e in eventos if e.get("evento") == "retiro"}
-    return [
-        _publica(e)
-        for e in eventos
-        if e.get("evento") == "entrada" and e.get("id") not in retirados
-    ]
+    return registros_sql.bandeja_pendientes(almacen._validar_tenant(tenant))
 
 
 def datos_de_entrada(tenant: str, id_entrada: str) -> dict | None:
     """La entrada tal como llegó (de ese tenant), o `None`. Para anotar qué documento se descartó."""
-    if sql := _sql():
-        f = sql.bandeja_entrada(almacen._validar_tenant(tenant), id_entrada) if isinstance(id_entrada, str) else None
-        return sql._a_entrada(f) if f else None
-    for e in registro.eventos(_nombre(tenant)):
-        if e.get("evento") == "entrada" and e.get("id") == id_entrada:
-            return _publica(e)
-    return None
+    f = registros_sql.bandeja_entrada(almacen._validar_tenant(tenant), id_entrada) if isinstance(id_entrada, str) else None
+    return registros_sql._a_entrada(f) if f else None
 
 
 def listar_descartadas(tenant: str) -> list[dict]:
     """Lo que se DESCARTÓ de esa bandeja, del descarte más reciente al más viejo: la entrada tal como llegó, más `descartadaEn` y,
     si la persona lo escribió, `detalle`. Es lo que ve el filtro «Descartado» de la bandeja; el archivo sigue en el almacén."""
-    if sql := _sql():
-        return sql.bandeja_descartadas(almacen._validar_tenant(tenant))
-    eventos = registro.eventos(_nombre(tenant))
-    entradas = {e["id"]: e for e in eventos if e.get("evento") == "entrada" and isinstance(e.get("id"), str)}
-    descartadas = [
-        {**_publica(entradas[e["id"]]), "descartadaEn": e.get("en"), **({"detalle": e["detalle"]} if e.get("detalle") else {})}
-        for e in eventos
-        if e.get("evento") == "retiro" and e.get("motivo") == "descartado" and e.get("id") in entradas
-    ]
-    return list(reversed(descartadas))
+    return registros_sql.bandeja_descartadas(almacen._validar_tenant(tenant))
 
 
 def retirar(tenant: str, id_entrada: str, motivo: str, detalle: str | None = None) -> bool:
@@ -153,29 +76,7 @@ def retirar(tenant: str, id_entrada: str, motivo: str, detalle: str | None = Non
     """
     if motivo not in MOTIVOS_RETIRO:
         raise ValueError(f"Motivo de retiro inválido: {motivo!r}")
-    if sql := _sql():
-        return isinstance(id_entrada, str) and sql.bandeja_retirar(almacen._validar_tenant(tenant), id_entrada, motivo, detalle or None)
-    nombre = _nombre(tenant)
-    # Leer y agregar bajo el MISMO candado: dos retiros simultáneos de la misma
-    # entrada no deben dejar dos eventos de retiro.
-    with registro.candado:
-        eventos = registro.eventos(nombre)
-        entro = any(e.get("evento") == "entrada" and e.get("id") == id_entrada for e in eventos)
-        salio = any(e.get("evento") == "retiro" and e.get("id") == id_entrada for e in eventos)
-        if not entro or salio:
-            return False
-        registro.agregar(
-            nombre,
-            {
-                "evento": "retiro",
-                "id": id_entrada,
-                "motivo": motivo,
-                # Lo que escribió la persona al descartar (opcional): el porqué, para quien revise después.
-                **({"detalle": detalle} if detalle else {}),
-                "en": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            },
-        )
-    return True
+    return isinstance(id_entrada, str) and registros_sql.bandeja_retirar(almacen._validar_tenant(tenant), id_entrada, motivo, detalle or None)
 
 
 _RE_ID = re.compile(r"[0-9a-f]{32}")
@@ -185,17 +86,11 @@ def existe_en_otro_tenant(tenant: str, id_entrada: str) -> bool:
     """¿Hay una entrada con ese id en la bandeja de OTRO tenant? Solo para anotar un intento cruzado (HU11 CA-6): a quien
     pidió se le contesta igual que si no existiera.
 
-    Repasa el registro de cada tenant, así que un valor que ni tiene forma de id (32 hexadecimales) no se busca: no cuesta
-    nada rechazarlo y no se puede usar para hacer trabajar al servidor."""
+    Un valor que ni tiene forma de id (32 hexadecimales) no se busca: no cuesta nada rechazarlo y no se puede usar para hacer
+    trabajar al servidor."""
     if not _RE_ID.fullmatch(id_entrada):
         return False
-    if sql := _sql():
-        return sql.bandeja_en_otro_tenant(almacen._validar_tenant(tenant), id_entrada)
-    propio = _nombre(tenant)
-    for archivo in registro.ruta(propio).parent.glob("bandeja-*.jsonl"):
-        if archivo.name != propio and any(e.get("evento") == "entrada" and e.get("id") == id_entrada for e in registro.eventos(archivo.name)):
-            return True
-    return False
+    return registros_sql.bandeja_en_otro_tenant(almacen._validar_tenant(tenant), id_entrada)
 
 
 def entrada_en_pipeline(tenant: str, id_entrada: str) -> dict | None:
@@ -203,19 +98,5 @@ def entrada_en_pipeline(tenant: str, id_entrada: str) -> dict | None:
     AL PIPELINE. `None` si no existe, es de otro tenant, sigue pendiente o se
     descartó. Es lo que deja aceptar un aviso de "este documento terminó" solo
     de algo que de verdad se mandó a procesar (ver `entregas_webhooks.avisar`)."""
-    if sql := _sql():
-        f = sql.bandeja_entrada(almacen._validar_tenant(tenant), id_entrada) if isinstance(id_entrada, str) else None
-        return sql._a_entrada(f) if f and f["removalReason"] == "pipeline" else None
-    eventos = registro.eventos(_nombre(tenant))
-    entrada = next((e for e in eventos if e.get("evento") == "entrada" and e.get("id") == id_entrada), None)
-    if entrada is None:
-        return None
-    retiro = next((e for e in eventos if e.get("evento") == "retiro" and e.get("id") == id_entrada), None)
-    if retiro is None or retiro.get("motivo") != "pipeline":
-        return None
-    return _publica(entrada)
-
-
-def _publica(entrada: dict) -> dict:
-    """La entrada como la ve quien consulta, sin el campo interno `evento`."""
-    return {k: v for k, v in entrada.items() if k != "evento"}
+    f = registros_sql.bandeja_entrada(almacen._validar_tenant(tenant), id_entrada) if isinstance(id_entrada, str) else None
+    return registros_sql._a_entrada(f) if f and f["removalReason"] == "pipeline" else None

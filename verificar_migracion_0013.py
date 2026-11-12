@@ -351,7 +351,8 @@ if nuevo is not None:
 
 titulo("6 · Volver a aplicar no hace nada")
 antes_de_reaplicar = control()
-ok, motivo = aplicar(None)
+# Hasta la 13: las que vinieron después (la 0014, usuarios en SQL) no son de esta prueba.
+ok, motivo = aplicar(13)
 rev("el corredor, otra vez sobre la misma base: termina bien (no hay nada pendiente)", ok, motivo)
 rev("la tabla de control queda IDÉNTICA (mismas trece filas, mismas fechas)", control() == antes_de_reaplicar and len(control()) == 13, str(len(control())))
 rev("y el catálogo no se movió", catalogo() == despues_catalogo)

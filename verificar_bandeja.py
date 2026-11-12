@@ -8,7 +8,7 @@ Las variables van ANTES de los imports por la misma razón que allá.
 
 Lo que importa probar no es el 201: es que lo que entra aparezca, que lo que
 se retira no vuelva, que un cliente no vea lo de otro, y que dos subidas al
-mismo tiempo no se pisen en el registro.
+mismo tiempo no se pisen.
 """
 
 import os
@@ -21,7 +21,9 @@ RAIZ = Path(tempfile.mkdtemp(prefix="verificar-bandeja-"))
 LLAVE = "llave-de-prueba-solo-local"
 os.environ["ALMACEN_RUTA"] = str(RAIZ)
 os.environ["NEXUS_API_KEY"] = LLAVE
-os.environ.setdefault("SQLSERVER_HOST", "")
+import pruebas_sql  # noqa: E402  (desde el 2026-11-11 todo se guarda en SQL Server: esta prueba corre contra uno desechable)
+
+BASE_SQL = pruebas_sql.preparar()
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -150,20 +152,10 @@ def main() -> int:
     rev("las 20 respondieron 201", len(ids) == 20, str(errores))
     rev("y las 20 están en la bandeja", set(ids) <= {x["id"] for x in lista}, f"{len(set(ids) & {x['id'] for x in lista})} de 20")
 
-    titulo("8 · Una línea rota en el registro no tumba la bandeja")
-    registro = RAIZ / ".registro" / "bandeja-demo.jsonl"
-    with open(registro, "a", encoding="utf-8") as f:
-        f.write('{"evento": "entrada", "id": "cort')  # un corte a media escritura
-    estado, lista = pendientes(c)
-    rev("sigue listando", estado == 200 and len(lista) > 0, str(estado))
-    rn = subir(c, contenido=PNG + b"despues", nombre="despues.png")
-    _, lista = pendientes(c)
-    rev("y lo que entra después también aparece", rn.json()["id"] in [x["id"] for x in lista])
-
-    titulo("9 · Con el montaje caído, 503 — ni se lista ni se escribe")
+    titulo("8 · Con el montaje caído: la bandeja se sigue listando (vive en la base), pero no entra nada (los bytes van al NAS): 503")
     (RAIZ / almacen.CENTINELA).unlink()
     try:
-        rev("listar da 503", pendientes(c)[0] == 503)
+        rev("listar sigue respondiendo 200", pendientes(c)[0] == 200)
         rev("subir da 503", subir(c, contenido=PNG + b"caido").status_code == 503)
     finally:
         (RAIZ / almacen.CENTINELA).touch()

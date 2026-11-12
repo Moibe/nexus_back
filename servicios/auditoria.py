@@ -1,4 +1,4 @@
-"""Bitácora de auditoría — registro PROVISIONAL.
+"""Bitácora de auditoría (`nexus.auditEvents`, migración `0006`).
 
 Los criterios de aceptación de varias historias piden "registrar el evento X
 en el audit trail" (`PASSWORD_RESET_REQUESTED`, `PASSWORD_RESET_COMPLETED`, y
@@ -15,12 +15,11 @@ tendrá el renglón de la tabla:
 No sustituye al audit trail: es lo que hay para no dejar el criterio sin nada
 y para tener los datos listos el día que la tabla exista.
 
-**Ese día llegó el 2026-10-29 (migración `0006`):** donde hay base, los eventos
-van a `nexus.auditEvents`, UNA tabla general (no una por entidad), con el
-evento entero en `dataJson` tal como se escribía aquí, importada una vez desde
-`auditoria.jsonl` (`servicios/importacion_json.py`). Este módulo elige por
-`SQLSERVER_HOST` en cada llamada. Quien necesite LEER la bitácora usa
-`eventos()`, nunca el JSONL a mano: donde hay base, el archivo ya no crece.
+**Ese día llegó el 2026-10-29 (migración `0006`):** los eventos van a
+`nexus.auditEvents`, UNA tabla general (no una por entidad), con el evento
+entero en `dataJson` tal como se escribía en el viejo `auditoria.jsonl`,
+importado una vez (`servicios/importacion_json.py`). Desde el 2026-11-11 no hay
+otro almacenamiento. Quien necesite LEER la bitácora usa `eventos()`.
 
 ## Dos usos
 
@@ -35,20 +34,8 @@ evento entero en `dataJson` tal como se escribía aquí, importada una vez desde
 
 from datetime import datetime, timedelta, timezone
 
-from config import SQLSERVER_HOST
-from servicios import registro
+from servicios import registros_sql
 
-
-def _sql():
-    """El módulo de SQL si el `.env` dice que hay base; `None` si no. Se importa tarde: sin base, `pyodbc` ni se carga."""
-    if not SQLSERVER_HOST:
-        return None
-    from servicios import registros_sql
-
-    return registros_sql
-
-
-ARCHIVO = "auditoria.jsonl"
 
 PASSWORD_RESET_REQUESTED = "PASSWORD_RESET_REQUESTED"
 PASSWORD_RESET_COMPLETED = "PASSWORD_RESET_COMPLETED"
@@ -180,16 +167,12 @@ def registrar(accion: str, usuario_guid: str | None = None, **datos) -> None:
         "en": _ahora().isoformat(timespec="seconds"),
         **datos,
     }
-    if sql := _sql():
-        return sql.auditoria_registrar(evento)
-    registro.agregar(ARCHIVO, evento)
+    registros_sql.auditoria_registrar(evento)
 
 
 def eventos(acciones: set[str] | frozenset[str] | None = None) -> list[dict]:
     """Los eventos de la bitácora en el orden en que se escribieron (con `acciones`, solo esos), de donde vivan."""
-    if sql := _sql():
-        return sql.auditoria_eventos(frozenset(acciones) if acciones is not None else None)
-    return [e for e in registro.eventos(ARCHIVO) if acciones is None or e.get("accion") in acciones]
+    return registros_sql.auditoria_eventos(frozenset(acciones) if acciones is not None else None)
 
 
 def cuando(evento: dict) -> datetime | None:
@@ -203,15 +186,15 @@ def cuando(evento: dict) -> datetime | None:
 def recientes(accion: str, segundos: int = 3600) -> list[tuple[datetime, dict]]:
     """Los eventos de esa acción de los últimos `segundos`, con su hora.
 
-    Se lee el registro UNA vez: quien necesita varios conteos (la recuperación
+    Se lee la bitácora UNA vez: quien necesita varios conteos (la recuperación
     de contraseña calcula cinco límites) los saca de esta lista en memoria en
-    vez de repasar el archivo cinco veces. La unidad es SEGUNDOS, la misma que
+    vez de consultarla cinco veces. La unidad es SEGUNDOS, la misma que
     usan las variables de configuración: mezclar minutos y segundos fue justo
     el error que el plan de esta pieza traía."""
     desde = _ahora() - timedelta(seconds=segundos)
     salida = []
-    # En SQL la ventana ya la filtra la base (con un segundo de holgura: `en` se guarda al segundo); aquí se vuelve a mirar `en`.
-    leidos = sql.auditoria_eventos(frozenset({accion}), desde - timedelta(seconds=1)) if (sql := _sql()) else registro.eventos(ARCHIVO)
+    # La ventana ya la filtra la base (con un segundo de holgura: `en` se guarda al segundo); aquí se vuelve a mirar `en`.
+    leidos = registros_sql.auditoria_eventos(frozenset({accion}), desde - timedelta(seconds=1))
     for e in leidos:
         if e.get("accion") != accion:
             continue

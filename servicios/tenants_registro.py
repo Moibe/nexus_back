@@ -1,23 +1,8 @@
 """Organizaciones (tenants).
 
-**Desde el 2026-10-29 (migración `0006`), donde hay base, viven en `nexus.tenants`** (`servicios/registros_sql.py`), importadas una vez
-desde `tenants.jsonl` la primera vez que se usan en cada ambiente (`servicios/importacion_json.py`). Este módulo valida igual en los dos
-casos y elige por `SQLSERVER_HOST` en cada llamada; el JSONL de abajo es lo que corre donde no hay base (la laptop, las pruebas offline).
-El espacio de plataforma (`plataforma`, `csi`, `demo`) NO es una organización y no se registra aquí (decisión de Moibe: «plataforma se
-trata aparte»). Lo de abajo es la historia de este registro:
-
-Lo definitivo es `security.tenants` con `uspCreateTenant`, que YA EXISTEN
-(ver `repositorios/tenants.py`). No se usan todavía por una razón práctica: el
-ambiente **dev no tiene base de datos** (`SQLSERVER_HOST` vacío a propósito,
-ver `nexus_back_dev.conf`), así que contra SQL esta pantalla no se podría ni
-probar. Mientras tanto vive en `tenants.jsonl` como las llaves, los webhooks y
-los usuarios; cuando haya base dev, cambia ESTE módulo y nada más.
-
-El contrato imita al de la base para que el cambio sea mecánico:
-
-    crear      ↔ security.uspCreateTenant(@name, @slug, @settingsJson)
-    listar     ↔ (falta un SP de listado; se le pedirá al DBA)
-    por_guid   ↔ security.uspGetTenant(@tenantGuid)
+Viven en `nexus.tenants` (migración `0006`, `servicios/registros_sql.py`), importadas una vez desde el viejo `tenants.jsonl`
+(`servicios/importacion_json.py`). Desde el 2026-11-11 no hay otro almacenamiento. El espacio de plataforma (`plataforma`, `csi`, `demo`)
+NO es una organización y no se registra aquí (decisión de Moibe: «plataforma se trata aparte»).
 
 ## El nombre, el slug y el código
 
@@ -28,29 +13,14 @@ chips, **ID encontrado** e **ID asignado**. Eso es exactamente el `slug` de la
 tabla: el nombre se puede repetir, el slug no. Al segundo "Seguros Monterrey"
 le toca `seguros-monterrey-1`.
 
-El `tenantCode` (`NEX-00001`) lo genera la base con su propia secuencia. Aquí
-se imita con un contador sobre los códigos ya emitidos.
+El `tenantCode` (`NEX-00001`) se asigna con un contador sobre los códigos ya
+emitidos (`registros_sql.orgs_crear`).
 """
 
 import re
 import unicodedata
-import uuid
-from datetime import datetime, timezone
 
-from config import SQLSERVER_HOST
-from servicios import registro
-
-
-def _sql():
-    """El módulo de SQL si el `.env` dice que hay base; `None` si no. Se importa tarde: sin base, `pyodbc` ni se carga."""
-    if not SQLSERVER_HOST:
-        return None
-    from servicios import registros_sql
-
-    return registros_sql
-
-
-ARCHIVO = "tenants.jsonl"
+from servicios import registros_sql
 
 PREFIJO_CODIGO = "NEX"
 _LARGO_NOMBRE = 200
@@ -65,10 +35,6 @@ class NoEncontrado(Exception):
     pass
 
 
-def _ahora() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 def slug_de(nombre: str) -> str:
     """`"Seguros Monterrey"` → `"seguros-monterrey"`. Sin acentos ni signos, que
     es lo que acepta la columna (`varchar(63)`)."""
@@ -77,49 +43,9 @@ def slug_de(nombre: str) -> str:
     return limpio[:_LARGO_SLUG].strip("-")
 
 
-def _indice() -> dict[str, dict]:
-    """Las organizaciones vivas, por guid, en el orden en que se crearon."""
-    tenants: dict[str, dict] = {}
-    for e in registro.eventos(ARCHIVO):
-        tipo = e.get("evento")
-        guid = e.get("guid")
-        if not isinstance(guid, str):
-            continue
-        if tipo == "creada":
-            tenants.setdefault(
-                guid,
-                {
-                    "guid": guid,
-                    "nombre": e.get("nombre", ""),
-                    "slug": e.get("slug", ""),
-                    "codigo": e.get("codigo", ""),
-                    "estado": "ACTIVE",
-                    "adminGuid": e.get("adminGuid"),
-                    "recuperacion": e.get("recuperacion") or {},
-                    "creadaEn": e.get("en"),
-                },
-            )
-        elif tipo == "estado" and guid in tenants:
-            tenants[guid]["estado"] = e.get("estado", "ACTIVE")
-    return tenants
-
-
-def indice_archivo() -> dict[str, dict]:
-    """Lo que dice el JSONL, aunque haya base: es lo que importa `servicios/importacion_json.py`."""
-    return _indice()
-
-
 def _todas() -> list[dict]:
-    """Todas, de donde vivan, en el orden en que se crearon."""
-    if sql := _sql():
-        return list(reversed(sql.orgs_listar()))
-    return list(_indice().values())
-
-
-def _siguiente_codigo(tenants: dict[str, dict]) -> str:
-    usados = [t["codigo"] for t in tenants.values() if t["codigo"].startswith(f"{PREFIJO_CODIGO}-")]
-    numeros = [int(c.split("-", 1)[1]) for c in usados if c.split("-", 1)[1].isdigit()]
-    return f"{PREFIJO_CODIGO}-{max(numeros, default=0) + 1:05d}"
+    """Todas, en el orden en que se crearon."""
+    return list(reversed(registros_sql.orgs_listar()))
 
 
 def _slug_libre(base: str, tomados: set[str]) -> str:
@@ -168,40 +94,16 @@ def crear(nombre: str, admin_guid: str, recuperacion: dict | None = None) -> dic
     base = slug_de(nombre)
     if not base:
         raise ValueError("El nombre debe tener al menos una letra o un número.")
-    if sql := _sql():
-        return por_guid(sql.orgs_crear(nombre, base, admin_guid, recuperacion or {}, _slug_libre, PREFIJO_CODIGO))
-    with registro.candado:
-        tenants = _indice()
-        slug = _slug_libre(base, {t["slug"] for t in tenants.values()})
-        guid = str(uuid.uuid4())
-        registro.agregar(
-            ARCHIVO,
-            {
-                "evento": "creada",
-                "guid": guid,
-                "nombre": nombre,
-                "slug": slug,
-                "codigo": _siguiente_codigo(tenants),
-                "adminGuid": admin_guid,
-                "recuperacion": recuperacion or {},
-                "en": _ahora().isoformat(timespec="seconds"),
-            },
-        )
-    return por_guid(guid)
+    return por_guid(registros_sql.orgs_crear(nombre, base, admin_guid, recuperacion or {}, _slug_libre, PREFIJO_CODIGO))
 
 
 def listar() -> list[dict]:
     """Todas, de la más nueva a la más vieja (el listado las muestra así)."""
-    # El registro guarda la hora al segundo: dos altas en el mismo segundo
-    # empatan, y entonces manda el orden en que se escribieron.
-    if sql := _sql():
-        return sql.orgs_listar()
-    orden = list(_indice().values())
-    return [t for _, t in sorted(enumerate(orden), key=lambda x: (x[1]["creadaEn"] or "", x[0]), reverse=True)]
+    return registros_sql.orgs_listar()
 
 
 def por_guid(guid: str) -> dict:
-    t = (sql.orgs_por_guid(guid) if isinstance(guid, str) else None) if (sql := _sql()) else _indice().get(guid)
+    t = registros_sql.orgs_por_guid(guid) if isinstance(guid, str) else None
     if not t:
         raise NoEncontrado(guid)
     return t
@@ -210,15 +112,6 @@ def por_guid(guid: str) -> dict:
 def cambiar_estado(guid: str, estado: str) -> dict:
     if estado not in {"ACTIVE", "SUSPENDED", "CLOSED"}:
         raise ValueError(f"Estado inválido: {estado}")
-    if sql := _sql():
-        if not sql.orgs_cambiar_estado(guid, estado):
-            raise NoEncontrado(guid)
-        return por_guid(guid)
-    with registro.candado:
-        if guid not in _indice():
-            raise NoEncontrado(guid)
-        registro.agregar(
-            ARCHIVO,
-            {"evento": "estado", "guid": guid, "estado": estado, "en": _ahora().isoformat(timespec="seconds")},
-        )
+    if not registros_sql.orgs_cambiar_estado(guid, estado):
+        raise NoEncontrado(guid)
     return por_guid(guid)

@@ -18,13 +18,9 @@ de llave: una inundación de identificadores inventados hacía crecer sin tope e
 hubiera jamás un cliente detrás. Mientras el puerto 8083 solo se alcanzaba
 desde la intranet era una rareza; con la API publicada en internet, no.
 
-Desde el 2026-10-30 (migración `0008`), donde hay base, cada llamada es una fila de `nexus.apiKeyUsage` (con llave foránea a la llave),
-importada una vez desde el JSONL; el índice en memoria de abajo se calienta de ahí y sigue siendo lo que contesta el tope y las métricas. Donde
-no hay base, registro PROVISIONAL de solo agregar en el NAS, `uso-llaves.jsonl` (ver
-`servicios/registro.py`), igual que las llaves y la bandeja. Cuando exista la
-tabla del DBA cambia este módulo y nada más. Un archivo para todas las llaves:
-las consultas son por llave y periodo, y lo que hoy entra son decenas de
-líneas al día, no miles.
+Cada llamada es una fila de `nexus.apiKeyUsage` (migración `0008`, con llave foránea a la llave), importada una vez desde el viejo
+`uso-llaves.jsonl`; desde el 2026-11-11 no hay otro almacenamiento. El índice en memoria de abajo se calienta de la tabla y es lo que contesta
+el tope y las métricas.
 
 ## El tope semanal
 
@@ -36,14 +32,14 @@ sigue llamando martillaría sin límite. Está implementado a pedido explícito
 desde `AVISO_DESDE`.
 """
 
+import logging
 import statistics
 import threading
 from datetime import datetime, timedelta, timezone
 
-from config import SQLSERVER_HOST
-from servicios import registro
+from servicios import integraciones_sql
 
-ARCHIVO = "uso-llaves.jsonl"
+logger = logging.getLogger(__name__)
 LIMITE_SEMANAL = 500_000
 AVISO_DESDE = 0.80
 
@@ -52,24 +48,15 @@ def _ahora() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _sql():
-    """El módulo de SQL si el `.env` dice que hay base; `None` si no. Se importa tarde: sin base, `pyodbc` ni se carga."""
-    if not SQLSERVER_HOST:
-        return None
-    from servicios import integraciones_sql
-
-    return integraciones_sql
-
-
 # ── El índice por llave, en memoria ──────────────────────────────────────────
 #
-# El registro se consulta en CADA petición con llave de cliente (para el tope)
+# El uso se consulta en CADA petición con llave de cliente (para el tope)
 # y cada vez que se abren las métricas, y releer el archivo completo escala
 # mal: con 400,000 líneas eran casi 3 segundos por llamada (medido). Así que los
 # eventos viven en memoria agrupados por llave: se calientan leyendo el archivo
 # UNA vez, y de ahí cada `registrar` agrega el suyo. Es exacto mientras haya un
 # solo proceso (que es el caso: un uvicorn sin workers, ver README). Si el
-# registro no se pudo leer al calentar, se arranca vacío y se vuelve a intentar
+# uso no se pudo leer al calentar, se arranca vacío y se vuelve a intentar
 # en la siguiente llamada — mejor subestimar el consumo que bloquear a alguien
 # por un fallo de lectura.
 #
@@ -83,30 +70,12 @@ _indice_listo = False
 _indice_candado = threading.Lock()
 
 
-def _compacto(e: dict) -> tuple[str, _Evento] | None:
-    f = _fecha(e)
-    llave = e.get("llave")
-    if not f or not isinstance(llave, str):
-        return None
-    try:
-        return llave, (f, int(e.get("status", 0)), int(e.get("ms", 0)), int(e.get("bytes", 0)))
-    except (TypeError, ValueError):
-        return None
-
-
 def _calentar() -> None:
     """Carga el índice del archivo si todavía no está. Bajo `_indice_candado`."""
     global _indice_listo
     if _indice_listo:
         return
-    nuevo: dict[str, list[_Evento]] = {}
-    if sql := _sql():
-        nuevo = sql.uso_cargar()
-    else:
-        for e in registro.eventos(ARCHIVO):
-            par = _compacto(e)
-            if par:
-                nuevo.setdefault(par[0], []).append(par[1])
+    nuevo = integraciones_sql.uso_cargar()
     _indice.clear()
     _indice.update(nuevo)
     _indice_listo = True
@@ -126,40 +95,18 @@ def _eventos_de(llave_id: str) -> list[_Evento]:
 
 def registrar(llave_id: str, ruta: str, metodo: str, status: int, ms: int, bytes_: int) -> None:
     """Anota una llamada. NUNCA levanta: registrar uso no puede tumbar la
-    petición que lo generó — si el NAS falla, se pierde esta línea y ya."""
+    petición que lo generó — si la base falla, se pierde esta línea y ya."""
     ahora = _ahora()
     with _indice_candado:
         try:
             _calentar()
         except Exception:  # noqa: BLE001
-            registro.logger.exception("No se pudo calentar el índice de uso")
+            logger.exception("No se pudo calentar el índice de uso")
         _indice.setdefault(llave_id, []).append((ahora, status, ms, bytes_))
     try:
-        if sql := _sql():
-            sql.uso_registrar(llave_id, ruta, metodo, status, ms, bytes_, ahora)
-        else:
-            registro.agregar(
-                ARCHIVO,
-                {
-                    "en": _ahora().isoformat(timespec="milliseconds"),
-                    "llave": llave_id,
-                    "ruta": ruta,
-                    "metodo": metodo,
-                    "status": status,
-                    "ms": ms,
-                    "bytes": bytes_,
-                },
-            )
+        integraciones_sql.uso_registrar(llave_id, ruta, metodo, status, ms, bytes_, ahora)
     except Exception:  # noqa: BLE001
-        registro.logger.exception("No se pudo registrar el uso de la llave %s", llave_id)
-
-
-def _fecha(e: dict) -> datetime | None:
-    try:
-        f = datetime.fromisoformat(e["en"])
-        return f if f.tzinfo else f.replace(tzinfo=timezone.utc)
-    except (KeyError, ValueError, TypeError):
-        return None
+        logger.exception("No se pudo registrar el uso de la llave %s", llave_id)
 
 
 def inicio_de_semana(momento: datetime) -> datetime:

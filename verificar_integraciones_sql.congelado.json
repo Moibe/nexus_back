@@ -1,0 +1,1101 @@
+{
+ "entregas.historial de otra organización: vacío": [],
+ "entregas.historial: los 50 más recientes, con el documento de cada entrega": [
+  {
+   "codigo": 503,
+   "en": "<fecha>",
+   "entradaId": "11111111111111111111111111111111",
+   "mensajeId": "msg_ago",
+   "motivo": "HTTP 503",
+   "ms": 40,
+   "n": 6,
+   "ok": false,
+   "tipo": "documento.completado"
+  },
+  {
+   "codigo": 503,
+   "en": "<fecha>",
+   "entradaId": "11111111111111111111111111111111",
+   "mensajeId": "msg_ago",
+   "motivo": "HTTP 503",
+   "ms": 40,
+   "n": 5,
+   "ok": false,
+   "tipo": "documento.completado"
+  },
+  {
+   "codigo": 503,
+   "en": "<fecha>",
+   "entradaId": "11111111111111111111111111111111",
+   "mensajeId": "msg_ago",
+   "motivo": "HTTP 503",
+   "ms": 40,
+   "n": 4,
+   "ok": false,
+   "tipo": "documento.completado"
+  },
+  {
+   "codigo": 503,
+   "en": "<fecha>",
+   "entradaId": "11111111111111111111111111111111",
+   "mensajeId": "msg_ago",
+   "motivo": "HTTP 503",
+   "ms": 40,
+   "n": 3,
+   "ok": false,
+   "tipo": "documento.completado"
+  },
+  {
+   "codigo": 503,
+   "en": "<fecha>",
+   "entradaId": "11111111111111111111111111111111",
+   "mensajeId": "msg_ago",
+   "motivo": "HTTP 503",
+   "ms": 40,
+   "n": 2,
+   "ok": false,
+   "tipo": "documento.completado"
+  },
+  {
+   "codigo": 503,
+   "en": "<fecha>",
+   "entradaId": "11111111111111111111111111111111",
+   "mensajeId": "msg_ago",
+   "motivo": "HTTP 503",
+   "ms": 40,
+   "n": 1,
+   "ok": false,
+   "tipo": "documento.completado"
+  },
+  {
+   "codigo": 200,
+   "en": "<fecha>",
+   "entradaId": "11111111111111111111111111111111",
+   "mensajeId": "msg_ok",
+   "motivo": null,
+   "ms": 12,
+   "n": 1,
+   "ok": true,
+   "tipo": "documento.completado"
+  },
+  {
+   "codigo": 500,
+   "en": "<fecha>",
+   "entradaId": "11111111111111111111111111111111",
+   "mensajeId": "msg_pend",
+   "motivo": "HTTP 500",
+   "ms": 30,
+   "n": 1,
+   "ok": false,
+   "tipo": "documento.completado"
+  },
+  {
+   "codigo": 200,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": null,
+   "ms": 7,
+   "n": 6,
+   "ok": true,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 5,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 4,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 3,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 2,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 1,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 5,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 4,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 3,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 2,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 1,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 5,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 4,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 3,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 2,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 1,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 5,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 4,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 3,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 2,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 1,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 5,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 4,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 3,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 2,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 1,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 5,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 4,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 3,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 2,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 1,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 5,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 4,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 3,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 2,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 1,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 5,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 4,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 3,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 2,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 1,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  },
+  {
+   "codigo": null,
+   "en": "<fecha>",
+   "entradaId": null,
+   "mensajeId": "msg_val",
+   "motivo": "sin respuesta",
+   "ms": null,
+   "n": 5,
+   "ok": false,
+   "tipo": "webhook.validacion"
+  }
+ ],
+ "entregas.metricas: intentos, errores y percentiles (los de validar no cuentan)": {
+  "actual": {
+   "errores": 7,
+   "p50Ms": 40,
+   "p90Ms": 40,
+   "p99Ms": 40,
+   "solicitudes": 8,
+   "tasaError": 87.5
+  },
+  "anterior": {
+   "errores": 0,
+   "p50Ms": null,
+   "p90Ms": null,
+   "p99Ms": null,
+   "solicitudes": 0,
+   "tasaError": null
+  },
+  "desde": "<fecha>",
+  "hasta": "<fecha>"
+ },
+ "entregas: avisar (duplicado, resultado final repetido, entrada ajena, tipo que no existe), reintentos con el calendario, reinicio, agotada, historial, métricas y cancelar": [
+  {
+   "duplicado": false,
+   "programadas": 2
+  },
+  {
+   "duplicado": true,
+   "programadas": 0
+  },
+  [
+   "error",
+   "AvisoRechazado",
+   409
+  ],
+  {
+   "duplicado": false,
+   "programadas": 2
+  },
+  [
+   "error",
+   "AvisoRechazado",
+   404
+  ],
+  [
+   "error",
+   "AvisoRechazado",
+   400
+  ],
+  [
+   "error",
+   "AvisoRechazado",
+   400
+  ],
+  4,
+  4,
+  2,
+  0,
+  [
+   [
+    "<fecha>",
+    "documento.fallido",
+    6,
+    false,
+    503,
+    40,
+    "HTTP 503",
+    0,
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeee4"
+   ],
+   [
+    "<fecha>",
+    "documento.fallido",
+    5,
+    false,
+    503,
+    40,
+    "HTTP 503",
+    0,
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeee4"
+   ],
+   [
+    "<fecha>",
+    "documento.fallido",
+    4,
+    false,
+    503,
+    40,
+    "HTTP 503",
+    0,
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeee4"
+   ],
+   [
+    "<fecha>",
+    "documento.fallido",
+    3,
+    false,
+    503,
+    40,
+    "HTTP 503",
+    0,
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeee4"
+   ],
+   [
+    "<fecha>",
+    "documento.fallido",
+    2,
+    false,
+    503,
+    40,
+    "HTTP 503",
+    0,
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeee4"
+   ],
+   [
+    "<fecha>",
+    "documento.completado",
+    2,
+    true,
+    200,
+    11,
+    null,
+    1,
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+   ],
+   [
+    "<fecha>",
+    "documento.fallido",
+    1,
+    false,
+    503,
+    40,
+    "HTTP 503",
+    0,
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeee4"
+   ],
+   [
+    "<fecha>",
+    "documento.completado",
+    1,
+    false,
+    500,
+    30,
+    "HTTP 500",
+    1,
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+   ]
+  ],
+  [
+   {
+    "errores": 7,
+    "p50Ms": 40,
+    "p90Ms": 40,
+    "p99Ms": 40,
+    "solicitudes": 8,
+    "tasaError": 87.5
+   },
+   {
+    "errores": 0,
+    "p50Ms": null,
+    "p90Ms": null,
+    "p99Ms": null,
+    "solicitudes": 0,
+    "tasaError": null
+   }
+  ],
+  {
+   "duplicado": false,
+   "programadas": 2
+  },
+  1,
+  1,
+  8
+ ],
+ "llaves.buscar_por_id": [
+  {
+   "expira_en": "<fecha>",
+   "id": "aB12",
+   "revocada_en": null,
+   "secret_hash": "d2f3a21fdda10aa86e50b90d61b411cc591a818e3541178567258d9a9bbe3983",
+   "tenant": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+  },
+  {
+   "expira_en": "<fecha>",
+   "id": "AB12",
+   "revocada_en": "<fecha>",
+   "secret_hash": "74ec8713b46b5c74f01725c387586c9e8ecef08b87ecec19c596a2ebe76aa05a",
+   "tenant": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+  },
+  {
+   "expira_en": "<fecha>",
+   "id": "pl01",
+   "revocada_en": null,
+   "secret_hash": "0d578522e164b654487d47c4c3a466f9f56a731b597bdf82a8463ed276ede66b",
+   "tenant": "plataforma"
+  },
+  null
+ ],
+ "llaves.existe_en_otro_tenant": [
+  true,
+  false,
+  false
+ ],
+ "llaves.listar de la organización": [
+  {
+   "creadaEn": "<fecha>",
+   "descripcion": "de prueba",
+   "expiraEn": "<fecha>",
+   "id": "aB12",
+   "nombre": "Llave aB12",
+   "revocadaEn": null,
+   "tenant": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+  },
+  {
+   "creadaEn": "<fecha>",
+   "descripcion": "de prueba",
+   "expiraEn": "<fecha>",
+   "id": "AB12",
+   "nombre": "Llave AB12",
+   "revocadaEn": "<fecha>",
+   "tenant": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+  }
+ ],
+ "llaves.listar de plataforma": [
+  {
+   "creadaEn": "<fecha>",
+   "descripcion": "de prueba",
+   "expiraEn": "<fecha>",
+   "id": "pl01",
+   "nombre": "Llave pl01",
+   "revocadaEn": null,
+   "tenant": "plataforma"
+  }
+ ],
+ "llaves: emitir, verificar, revocar (idempotente y solo en su organización), validaciones y el listado": [
+  "Mi llave",
+  "para pruebas",
+  null,
+  true,
+  true,
+  true,
+  [
+   true,
+   true,
+   null,
+   null
+  ],
+  true,
+  false,
+  [
+   "error",
+   "ValueError"
+  ],
+  [
+   "error",
+   "ValueError"
+  ],
+  [
+   "error",
+   "ValueError"
+  ],
+  true
+ ],
+ "tokens.pendientes_de (la de u1 es la activación vigente; u2 no tiene)": [
+  [
+   "00000000-0000-4000-8000-000000000001"
+  ],
+  []
+ ],
+ "tokens.revisar, apagado": [
+  "error",
+  "YaUsado",
+  null
+ ],
+ "tokens.revisar, de otro tipo": [
+  "error",
+  "TokenInvalido",
+  null
+ ],
+ "tokens.revisar, que no existe": [
+  "error",
+  "TokenInvalido",
+  null
+ ],
+ "tokens.revisar, vencido": [
+  "error",
+  "Vencido",
+  null
+ ],
+ "tokens.revisar, vigente": [
+  "ok",
+  {
+   "creadoEn": "<fecha>",
+   "expira": "<fecha>",
+   "guid": "00000000-0000-4000-8000-000000000001",
+   "hash": "2dcfd153189b9f3c7b25bdfb276d4e92ac869cff102fc3d731223ab3cee2dc30",
+   "invalidadoEn": null,
+   "motivo": null,
+   "tipo": "ACTIVACION",
+   "usadoEn": null,
+   "usuarioGuid": "a1000000-0000-4000-8000-000000000001"
+  }
+ ],
+ "tokens.revisar, ya usado": [
+  "error",
+  "YaUsado",
+  null
+ ],
+ "tokens: crear apaga el anterior, consumir gasta una vez, invalidar_de cuenta, un tipo desconocido se rechaza": [
+  [
+   "error",
+   "YaUsado"
+  ],
+  null,
+  [
+   "error",
+   "TokenInvalido"
+  ],
+  "a1000000-0000-4000-8000-000000000004",
+  [
+   "error",
+   "YaUsado"
+  ],
+  [
+   "ACTIVACION",
+   "RECUPERACION"
+  ],
+  1,
+  [
+   "ACTIVACION"
+  ],
+  1,
+  [],
+  [
+   "error",
+   "ValueError"
+  ]
+ ],
+ "uso.excede_limite": false,
+ "uso.metricas de una llave con otro estado": {
+  "actual": {
+   "bytes": 3018,
+   "errores": 1,
+   "exitosas": 2,
+   "latenciaP50Ms": 16,
+   "porcentajeExito": 66.7,
+   "solicitudes": 3
+  },
+  "anterior": {
+   "bytes": 0,
+   "errores": 0,
+   "exitosas": 0,
+   "latenciaP50Ms": null,
+   "porcentajeExito": null,
+   "solicitudes": 0
+  },
+  "desde": "<fecha>",
+  "hasta": "<fecha>",
+  "limiteSemanal": {
+   "avisoDesde": 0.8,
+   "limite": 500000
+  },
+  "porDia": 3,
+  "ultimoUso": "<fecha>"
+ },
+ "uso.metricas: solicitudes, exitosas, p50, bytes, total por día, tope semanal y último uso": {
+  "actual": {
+   "bytes": 1626150,
+   "errores": 215,
+   "exitosas": 1285,
+   "latenciaP50Ms": 28,
+   "porcentajeExito": 85.7,
+   "solicitudes": 1500
+  },
+  "anterior": {
+   "bytes": 0,
+   "errores": 0,
+   "exitosas": 0,
+   "latenciaP50Ms": null,
+   "porcentajeExito": null,
+   "solicitudes": 0
+  },
+  "desde": "<fecha>",
+  "hasta": "<fecha>",
+  "limiteSemanal": {
+   "avisoDesde": 0.8,
+   "limite": 500000
+  },
+  "porDia": 1500,
+  "ultimoUso": "<fecha>"
+ },
+ "uso.ultimos_usos": {
+  "AB12": "<fecha>",
+  "aB12": "<fecha>",
+  "nada": null,
+  "pl01": null
+ },
+ "webhooks.existe_en_otro_tenant": [
+  true,
+  false,
+  false
+ ],
+ "webhooks.listar de la organización, con su estado, su validación y su fallo": [
+  {
+   "creadoEn": "<fecha>",
+   "estado": "inactivo",
+   "eventos": [
+    "documento.fallido",
+    "documento.rechazado"
+   ],
+   "fallidaEn": "<fecha>",
+   "id": "wh_a2",
+   "url": "https://a.example/2",
+   "validadoEn": null
+  },
+  {
+   "creadoEn": "<fecha>",
+   "estado": "activo",
+   "eventos": [
+    "documento.completado",
+    "documento.fallido"
+   ],
+   "fallidaEn": "<fecha>",
+   "id": "wh_a1",
+   "url": "https://a.example/hook",
+   "validadoEn": "<fecha>"
+  }
+ ],
+ "webhooks.listar de la otra organización": [
+  {
+   "creadoEn": "<fecha>",
+   "estado": "activo",
+   "eventos": [
+    "documento.completado"
+   ],
+   "fallidaEn": null,
+   "id": "wh_b1",
+   "url": "https://b.example/",
+   "validadoEn": "<fecha>"
+  }
+ ],
+ "webhooks.para_entregar: el validado sí; el no validado, el eliminado y el que no existe, no": [
+  [
+   "https://a.example/hook",
+   "whsec_QUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJD"
+  ],
+  null,
+  null,
+  null
+ ],
+ "webhooks.secret_para_firmar: se descifra con la llave del .env; el eliminado, no hay": [
+  "whsec_QUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJD",
+  null,
+  null
+ ],
+ "webhooks.suscritos (vigentes, validados, activos y suscritos)": [
+  [
+   "wh_a1"
+  ],
+  [
+   "wh_a1"
+  ],
+  [],
+  []
+ ],
+ "webhooks: registrar, duplicado, validar, activar, editar (la URL nueva pide validar de nuevo), eliminar (el secreto se va, la URL queda libre)": [
+  "https://w.example/Hook?x=1",
+  [
+   "documento.completado",
+   "documento.fallido"
+  ],
+  "activo",
+  null,
+  null,
+  true,
+  true,
+  [
+   "error",
+   "Duplicado"
+  ],
+  [
+   "error",
+   "ValueError"
+  ],
+  [
+   "error",
+   "ValueError"
+  ],
+  "https://w.example/Hook?x=1",
+  true,
+  [
+   null,
+   true
+  ],
+  false,
+  [
+   true,
+   true
+  ],
+  false,
+  "inactivo",
+  [
+   [
+    "wh_a1"
+   ],
+   null
+  ],
+  "activo",
+  null,
+  [
+   "error",
+   "ValueError"
+  ],
+  [
+   true,
+   [
+    "documento.completado"
+   ]
+  ],
+  [
+   "https://w.example/otra",
+   [
+    "documento.fallido",
+    "documento.rechazado"
+   ],
+   null,
+   null
+  ],
+  [
+   "error",
+   "Duplicado"
+  ],
+  null,
+  "https://w.example/otra",
+  [
+   false,
+   true,
+   true,
+   false
+  ],
+  [
+   null,
+   null,
+   false
+  ],
+  "https://w.example/otra"
+ ]
+}

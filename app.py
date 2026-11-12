@@ -483,6 +483,17 @@ app.include_router(
     dependencies=[Depends(exigir_llave)],
 )
 
+# Los datos extraídos de todas las organizaciones, para la sección «Datos» de Nexus Monitor. Solo lectura y solo llave de servicio. A
+# diferencia de los dos de arriba SÍ trae datos de negocio: Monitor los enmascara en producción.
+from routers.datos_monitor import router as datos_monitor_router  # noqa: E402
+
+app.include_router(
+    datos_monitor_router,
+    prefix="/monitor-datos",
+    tags=["Nexus Monitor"],
+    dependencies=[Depends(exigir_llave)],
+)
+
 # Archivos SÍ se registra siempre, a diferencia de Documentos: no depende de la
 # base, solo del almacén. Si `ALMACEN_RUTA` está vacía el endpoint responde un
 # 503 que NOMBRA la variable que falta — más útil que esconder la ruta y dejar

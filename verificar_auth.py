@@ -31,7 +31,9 @@ SERVICIO = "llave-de-servicio-solo-local"
 os.environ["ALMACEN_RUTA"] = str(RAIZ)
 os.environ["NEXUS_API_KEY"] = SERVICIO
 os.environ["AUTH_JWT_SECRET"] = "secreto-de-prueba-de-al-menos-32-caracteres-xx"
-os.environ.setdefault("SQLSERVER_HOST", "")
+import pruebas_sql  # noqa: E402  (desde el 2026-11-11 todo se guarda en SQL Server: esta prueba corre contra uno desechable)
+
+BASE_SQL = pruebas_sql.preparar()
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -57,11 +59,35 @@ def nota(texto: str) -> None:
 
 
 def eventos_de_auditoria(accion: str) -> list[dict]:
-    ruta = RAIZ / ".registro" / "auditoria.jsonl"
-    if not ruta.exists():
-        return []
-    lineas = [json.loads(x) for x in ruta.read_text(encoding="utf-8").splitlines() if x.strip()]
-    return [e for e in lineas if e.get("accion") == accion]
+    from servicios import auditoria as _bitacora  # la bitácora vive en `nexus.auditEvents`
+
+    return _bitacora.eventos({accion})
+
+
+def texto_bitacora() -> str:
+    """La bitácora entera como texto: para comprobar que ningún evento lleva una contraseña, un hash o datos de la persona."""
+    from servicios import auditoria as _bitacora
+
+    return json.dumps(_bitacora.eventos(), ensure_ascii=False)
+
+
+def sql(consulta: str, *parametros):
+    """Una consulta directa a la base de la prueba, con el usuario de la API."""
+    con = BASE_SQL["conectar"]("usrNexus", BASE_SQL["app"], BASE_SQL["base"])
+    try:
+        cur = con.cursor()
+        cur.execute(consulta, *parametros)
+        return cur.fetchall() if cur.description else None
+    finally:
+        con.close()
+
+
+def sesiones_de(guid: str) -> dict[str, dict]:
+    """Las sesiones de esa persona en la base, por su guid: `{sesionGuid, revocadaEn, revocadaPor}`."""
+    return {
+        f[0]: {"sesionGuid": f[0], "revocadaEn": f[1], "revocadaPor": f[2]}
+        for f in sql("SELECT guid, revokedAt, revocationReason FROM nexus.userSessions WHERE userGuid = ? ORDER BY sessionId", guid)
+    }
 
 
 def titulo(t: str) -> None:
@@ -93,8 +119,8 @@ try:
         rev("con un correo ya registrado se rechaza", False)
     except usuarios.YaExiste:
         rev("con un correo ya registrado se rechaza", True)
-    registro = (RAIZ / ".registro" / "usuarios.jsonl").read_text(encoding="utf-8")
-    rev("la contraseña temporal NO está en el registro; el hash es argon2id", temporal not in registro and "$argon2id$" in registro)
+    guardado = pruebas_sql.volcado(BASE_SQL)
+    rev("la contraseña temporal NO está en la base; el hash es argon2id", temporal not in guardado and "$argon2id$" in guardado)
 
     titulo("2 · Login: correo, contraseña, intentos y bloqueo")
     rev("sin llave de servicio: 401", c.post("/auth/login", json={"email": "a@b.co", "password": "x"}).status_code == 401)
@@ -113,23 +139,9 @@ try:
     r = login(c, "admin@ejemplo.com", temporal)
     rev("bloqueada, incluso con la contraseña correcta", r.status_code == 423)
     rev("...y el bloqueo NO se alarga por intentar", r.json()["detail"]["hastaEn"] == hasta)
-    # Se adelanta el reloj del bloqueo: se reescribe el evento que bloqueó, como
-    # si hubiera pasado hace 16 minutos.
-    ruta = RAIZ / ".registro" / "usuarios.jsonl"
-    lineas = ruta.read_text(encoding="utf-8").splitlines()
-    hace = (datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat(timespec="seconds")
-    import json as _json
-    nuevas = []
-    for l in lineas:
-        e = _json.loads(l)
-        if e.get("evento") == "intento" and e.get("motivo") == "BAD_PASSWORD":
-            e["en"] = hace
-        nuevas.append(_json.dumps(e, ensure_ascii=False))
-    ruta.write_text("\n".join(nuevas) + "\n", encoding="utf-8")
-    # Una reescritura EN SITIO del mismo tamaño solo se nota por la fecha de modificación (el registro
-    # es de solo agregar y esto lo contradice a propósito); si cae en el mismo tick de esa fecha la firma
-    # no cambia, así que se le avisa a la caché para que la prueba no dependa del reloj del sistema.
-    usuarios._cache_indice = None
+    # Se adelanta el reloj del bloqueo: en la base, el bloqueo de la cuenta (y el de cualquier navegador) ya venció.
+    sql("UPDATE nexus.users SET lockedUntil = DATEADD(minute, -1, SYSUTCDATETIME()) WHERE email = 'admin@ejemplo.com'")
+    sql("UPDATE nexus.loginOrigins SET lockedUntil = DATEADD(minute, -1, SYSUTCDATETIME()) WHERE lockedUntil IS NOT NULL")
     r = login(c, "admin@ejemplo.com", "mala")
     rev("pasados los 15 min se puede intentar de nuevo, y el contador arrancó en cero", r.status_code == 401 and r.json()["detail"]["intentosRestantes"] == 4, r.text)
 
@@ -189,7 +201,7 @@ try:
         len(primeros) == primeros_antes + 1 and primeros[-1]["usuarioGuid"] == vera["guid"] and primeros[-1]["sesionGuid"] == auth.verificar_acceso(sesion_vera["accessToken"])["sid"]
         and bool(primeros[-1]["en"]), str(primeros[-1:]))
     rev("y no lleva la contraseña ni su hash",
-        "Cobre-Lento-Azul-77!" not in (RAIZ / ".registro" / "auditoria.jsonl").read_text(encoding="utf-8") and "$argon2id$" not in (RAIZ / ".registro" / "auditoria.jsonl").read_text(encoding="utf-8"))
+        "Cobre-Lento-Azul-77!" not in texto_bitacora() and "$argon2id$" not in texto_bitacora())
 
     titulo("4 · Sesión normal: refresh rota, logout revoca, cambio con actual")
     r = login(c, "admin@ejemplo.com", "Nueva-Segura-123!")
@@ -321,54 +333,19 @@ try:
     rev("sin Bearer: 401 sin_sesion (no se pudo contestar; no quiere decir que la sesión murió)", estado(None) == (401, "sin_sesion"))
     rev("un Bearer que no es un JWT: 401 sesion_invalida", estado("basura") == (401, "sesion_invalida"))
     rev("sin llave de servicio: 401", c.get("/auth/sesion", headers={"Authorization": f"Bearer {de_cuarta['accessToken']}"}).status_code == 401)
-    # Un montaje del almacén caído NO es una sesión muerta: se contesta 503 ("no se pudo contestar"), no un 500 anónimo.
+    # Las sesiones viven en la base (2026-11-11), no en el NAS: con el almacén caído, la pregunta se sigue contestando.
     centinela = RAIZ / ".nexus-almacen"
+    antes_de_caer = c.get("/auth/sesion", headers=con(de_cuarta["accessToken"])).json()
     centinela.unlink()
     try:
         r = c.get("/auth/sesion", headers=con(de_cuarta["accessToken"]))
-        rev("con el almacén sin montar: 503, no un 500 anónimo", r.status_code == 503, f"{r.status_code} {r.text[:80]}")
+        rev("con el almacén sin montar: se contesta igual que antes (200, mismo estado)", r.status_code == 200 and r.json() == antes_de_caer, f"{r.status_code} {r.text[:80]}")
     finally:
         centinela.touch()
     rev("al volver el almacén, contesta de nuevo", estado(de_cuarta["accessToken"])[0] == 200)
 
-    titulo("4f · El índice de usuarios se guarda mientras el registro no cambie (la consulta de sesión corre cada pocos segundos por cada sesión abierta)")
-    contadas = {"n": 0}
-    leer_original = usuarios.registro.eventos
-
-    def leer_contando(nombre):
-        contadas["n"] += 1
-        return leer_original(nombre)
-
-    usuarios.registro.eventos = leer_contando
-    try:
-        s4f = login(c, "admin@ejemplo.com", "Otra-Segura-456!").json()
-        claims_4f = auth.verificar_acceso(s4f["accessToken"])
-        usuarios.por_guid_y_sesion(claims_4f["sub"], claims_4f["sid"])  # deja la caché al día tras el login
-        contadas["n"] = 0
-        for _ in range(50):
-            usuarios.por_guid_y_sesion(claims_4f["sub"], claims_4f["sid"])
-        rev("50 consultas sin que nadie escriba: el registro NO se vuelve a leer", contadas["n"] == 0, str(contadas["n"]))
-        for _ in range(5):
-            c.get("/auth/sesion", headers=con(s4f["accessToken"]))
-        rev("ni por el endpoint (5 consultas más)", contadas["n"] == 0, str(contadas["n"]))
-        usuarios.crear_sesion(u["guid"], "hash-4f", datetime.now(timezone.utc) + timedelta(days=1), None, None)
-        contadas["n"] = 0
-        usuarios.por_guid(u["guid"])
-        rev("tras una escritura, la siguiente consulta lee UNA vez", contadas["n"] == 1, str(contadas["n"]))
-        usuarios.por_guid(u["guid"])
-        rev("y la que sigue ya no", contadas["n"] == 1, str(contadas["n"]))
-        # Un cambio hecho por FUERA de este proceso (un script, otro proceso) también debe verse.
-        ruta_usuarios = RAIZ / ".registro" / "usuarios.jsonl"
-        with open(ruta_usuarios, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"evento": "estado", "guid": u["guid"], "activo": False, "motivo": "otro proceso", "en": "2026-10-12T00:00:00+00:00"}) + chr(10))
-        rev("un cambio hecho por FUERA del proceso se ve, sin reiniciar nada", usuarios.por_guid(u["guid"])["activo"] is False)
-        with open(ruta_usuarios, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"evento": "estado", "guid": u["guid"], "activo": True, "motivo": "otro proceso", "en": "2026-10-12T00:00:01+00:00"}) + chr(10))
-        rev("y el siguiente también", usuarios.por_guid(u["guid"])["activo"] is True)
-    finally:
-        usuarios.registro.eventos = leer_original
-
-    titulo("4g · El repaso del registro es LINEAL y sigue las mismas reglas que el cuadrático de antes (prueba diferencial)")
+    titulo("4g · El repaso del viejo usuarios.jsonl (hoy lo usa la importación a SQL) es LINEAL y sigue las reglas del cuadrático de antes")
+    from servicios import json_heredado
 
     def repaso_viejo(eventos: list[dict]) -> dict:
         """Las sesiones tal como las calculaba `_indice()` hasta el 2026-10-12: cada revocación recorría TODAS."""
@@ -392,7 +369,7 @@ try:
         return {k: (v["guid"], v["revocadaEn"], v["revocadaPor"]) for k, v in sesiones_.items()}
 
     def repaso_nuevo(eventos: list[dict]) -> dict:
-        _, _, ses = usuarios._construir_indice(eventos)
+        _, _, ses = json_heredado.usuarios_indice(eventos)
         return {k: (v["guid"], v["revocadaEn"], v["revocadaPor"]) for k, v in ses.items()}
 
     azar = random.Random(20261012)
@@ -450,7 +427,7 @@ try:
         mejor = float("inf")
         for _ in range(3):  # el mejor de tres: lo que cuenta es el costo, no un tropiezo del sistema
             t0 = time.perf_counter()
-            usuarios._construir_indice(ev)
+            json_heredado.usuarios_indice(ev)
             mejor = min(mejor, time.perf_counter() - t0)
         return mejor
 
@@ -465,8 +442,7 @@ try:
     titulo("4h · El canje del refresh es ATÓMICO (un refresh es de un solo uso) y el login no abre sesión con la credencial vieja")
 
     def vivas_de(guid: str) -> list[dict]:
-        _, _, ses = usuarios._indice()
-        return [s for s in ses.values() if s["guid"] == guid and not s["revocadaEn"]]
+        return [s for s in sesiones_de(guid).values() if not s["revocadaEn"]]
 
     # (a) Ocho hilos canjean a la vez el MISMO refresh, varias rondas: antes salían varias sesiones.
     rondas_mal = 0
@@ -616,7 +592,7 @@ try:
     detalle = r.json().get("detail", {}) if r.headers.get("content-type", "").startswith("application/json") else {}
     rev("login con la cuenta desactivada a media petición: 403 desactivada", r.status_code == 403 and detalle.get("codigo") == "desactivada", r.text[:200])
     rev("...sin sesión viva", not vivas_de(beto4["guid"]))
-    intentos_beto = [e for e in usuarios.registro.eventos(usuarios.ARCHIVO) if e.get("evento") == "intento" and e.get("guid") == beto4["guid"]]
+    intentos_beto = [{"exitoso": bool(f[0]), "motivo": f[1]} for f in sql("SELECT succeeded, reason FROM nexus.loginAttempts WHERE userGuid = ? ORDER BY attemptId", beto4["guid"])]
     rev("...y el intento quedó como INACTIVE, no como acierto", bool(intentos_beto) and intentos_beto[-1]["exitoso"] is False and intentos_beto[-1]["motivo"] == "INACTIVE", str(intentos_beto[-1:]))
 
     # (c) POST /auth/refresh: ocho peticiones a la vez con el MISMO refresh (el cableado del router, no solo `rotar_sesion`).
@@ -732,68 +708,68 @@ try:
     sid_g = usuarios.crear_sesion(gaby4["guid"], h_g, v_g, None, None)
     refresh_g2, h_g2, v_g2 = auth.nuevo_refresh()
     sid_g2, _ = usuarios.rotar_sesion(h_g, h_g2, v_g2, None, None)
-    _, _, ses_g = usuarios._indice()
+    ses_g = sesiones_de(gaby4["guid"])
     rev("rotar deja la sesión vieja revocada por ROTATED y la nueva viva", ses_g[sid_g]["revocadaPor"] == "ROTATED" and not ses_g[sid_g2]["revocadaEn"], str(ses_g[sid_g]["revocadaPor"]))
-    usuarios.registro.agregar(usuarios.ARCHIVO, {"evento": "estado", "guid": gaby4["guid"], "activo": False, "motivo": "a mano (4i)", "en": ahora_iso()})
+    sql("UPDATE nexus.users SET isActive = 0 WHERE guid = ?", gaby4["guid"])
     r = c.post("/auth/refresh", json={"refreshToken": refresh_g2}, headers=srv())
     rev("renovar una sesión VIVA de una cuenta desactivada (sin revocarla): 401 sesion_invalida", r.status_code == 401 and r.json()["detail"]["codigo"] == "sesion_invalida", r.text[:160])
-    usuarios.registro.agregar(usuarios.ARCHIVO, {"evento": "estado", "guid": gaby4["guid"], "activo": True, "motivo": "a mano (4i)", "en": ahora_iso()})
+    sql("UPDATE nexus.users SET isActive = 1 WHERE guid = ?", gaby4["guid"])
     refresh_v, h_v, _ = auth.nuevo_refresh()
     usuarios.crear_sesion(gaby4["guid"], h_v, datetime.now(timezone.utc) - timedelta(minutes=1), None, None)
     r = c.post("/auth/refresh", json={"refreshToken": refresh_v}, headers=srv())
     rev("renovar un refresh vencido: 401 sesion_vencida", r.status_code == 401 and r.json()["detail"]["codigo"] == "sesion_vencida", r.text[:160])
 
-    # (h) El canje son DOS escrituras (revocar la vieja, crear la nueva): si falla alguna, nunca quedan dos sesiones.
+    # (h) El canje es UNA transacción (revocar la vieja y crear la nueva): si la base falla a la mitad, no cambia nada.
+    import pyodbc as _pyodbc
+    from servicios import usuarios_sql as _usuarios_sql
+
     hugo4 = usuario_4i("cuatro-i-hugo@ejemplo.com", "Cuatro-I-Hugo-123!")
-    agregar_original = usuarios.registro.agregar
-    for cual, vivas_esperadas, que in ((1, 1, "la primera: no cambió nada, la sesión sigue viva"), (2, 0, "la segunda: queda CERRADA (debe volver a entrar), nunca con dos")):
-        usuarios.cerrar_sesiones(hugo4["guid"], "limpiar 4i")
-        refresh_h, h_h, v_h = auth.nuevo_refresh()
-        usuarios.crear_sesion(hugo4["guid"], h_h, v_h, None, None)
-        cuenta = {"n": 0}
+    usuarios.cerrar_sesiones(hugo4["guid"], "limpiar 4i")
+    refresh_h, h_h, v_h = auth.nuevo_refresh()
+    usuarios.crear_sesion(hugo4["guid"], h_h, v_h, None, None)
+    insertar_original = _usuarios_sql._insertar_sesion
 
-        def agregar_que_falla(nombre, evento, cuenta=cuenta, cual=cual):
-            cuenta["n"] += 1
-            if cuenta["n"] == cual:
-                raise ErrorAlmacen("disco lleno (prueba 4i)")
-            return agregar_original(nombre, evento)
+    def insertar_que_falla(*a, **k):
+        raise _pyodbc.OperationalError("08S01", "la base dejó de contestar (prueba 4i)")
 
-        usuarios.registro.agregar = agregar_que_falla
-        try:
-            r = c.post("/auth/refresh", json={"refreshToken": refresh_h}, headers=srv())
-        finally:
-            usuarios.registro.agregar = agregar_original
-        rev(f"si falla la escritura {cual} del canje: 503, y {que}", r.status_code == 503 and len(vivas_de(hugo4["guid"])) == vivas_esperadas, f"{r.status_code} vivas={len(vivas_de(hugo4['guid']))}")
+    _usuarios_sql._insertar_sesion = insertar_que_falla
+    try:
+        r = c.post("/auth/refresh", json={"refreshToken": refresh_h}, headers=srv())
+    finally:
+        _usuarios_sql._insertar_sesion = insertar_original
+    rev("si la base falla al crear la sucesora: 503, y no cambió nada (la sesión sigue viva y su refresh todavía sirve)",
+        r.status_code == 503 and len(vivas_de(hugo4["guid"])) == 1
+        and c.post("/auth/refresh", json={"refreshToken": refresh_h}, headers=srv()).status_code == 200, f"{r.status_code} vivas={len(vivas_de(hugo4['guid']))}")
 
     # (i) y (j) El candado, de forma DETERMINISTA: un competidor que llega JUSTO antes de escribir debe esperar a que termine
     # quien ya está dentro. (Con hilos al azar la carrera solo se ve a veces; aquí se fuerza el entrelazado.)
-    def con_competidor_antes_de_escribir(cuando, competidor):
-        """Parchea `registro.agregar`: antes de escribir el primer evento que cumpla `cuando`, lanza `competidor` en otro hilo y le da
-        0.5 s. Con el candado, el competidor se queda esperando y termina DESPUÉS de esa escritura; sin él, termina antes."""
-        original = usuarios.registro.agregar
+    def con_competidor_antes_de_escribir(funcion: str, competidor):
+        """Parchea `usuarios_sql.<funcion>` (que corre DENTRO de la transacción, con el candado de la persona puesto): la primera vez,
+        antes de escribir, lanza `competidor` en otro hilo y le da 0.5 s. Con el candado, el competidor espera y termina DESPUÉS de esa
+        transacción; sin él, terminaría antes."""
+        original = getattr(_usuarios_sql, funcion)
         hecho = {"hilo": None}
 
-        def agregar(nombre, evento):
-            if hecho["hilo"] is None and cuando(evento):
+        def envuelta(*a, **k):
+            if hecho["hilo"] is None:
                 hecho["hilo"] = threading.Thread(target=competidor)
                 hecho["hilo"].start()
                 hecho["hilo"].join(timeout=0.5)
-            return original(nombre, evento)
+            return original(*a, **k)
 
-        usuarios.registro.agregar = agregar
+        setattr(_usuarios_sql, funcion, envuelta)
         return original, hecho
 
     nora4 = usuario_4i("cuatro-i-nora@ejemplo.com", "Cuatro-I-Nora-123!")
     hash_nora = usuarios.para_login("cuatro-i-nora@ejemplo.com")["hash"]
-    original_agregar, hecho = con_competidor_antes_de_escribir(
-        lambda e: e.get("evento") == "sesion" and e.get("guid") == nora4["guid"],
-        lambda: usuarios.fijar_contrasena(nora4["guid"], auth.hash_de("Cuatro-I-Nora-Nueva-9!"), "RESET"),
+    original_fn, hecho = con_competidor_antes_de_escribir(
+        "_insertar_sesion", lambda: usuarios.fijar_contrasena(nora4["guid"], auth.hash_de("Cuatro-I-Nora-Nueva-9!"), "RESET"),
     )
     try:
         _, h_n, v_n = auth.nuevo_refresh()
         usuarios.crear_sesion(nora4["guid"], h_n, v_n, None, None, hash_verificado=hash_nora)
     finally:
-        usuarios.registro.agregar = original_agregar
+        _usuarios_sql._insertar_sesion = original_fn
     if hecho["hilo"]:
         hecho["hilo"].join(timeout=10)
     rev("un RESET que llega justo antes de escribir la sesión espera su turno y la revoca después: no sobrevive ninguna", not vivas_de(nora4["guid"]), str(len(vivas_de(nora4["guid"]))))
@@ -803,47 +779,19 @@ try:
     sid_o = usuarios.crear_sesion(omar4["guid"], h_o, v_o, None, None)
     hash_omar = usuarios.para_login("cuatro-i-omar@ejemplo.com")["hash"]
     hash_reset_omar = auth.hash_de("Cuatro-I-Omar-Reset-9!")
-    original_agregar, hecho = con_competidor_antes_de_escribir(
-        lambda e: e.get("evento") == "contrasena" and e.get("motivo") == "CHANGE" and e.get("guid") == omar4["guid"],
-        lambda: usuarios.fijar_contrasena(omar4["guid"], hash_reset_omar, "RESET"),
+    original_fn, hecho = con_competidor_antes_de_escribir(
+        "_cerrar_todas", lambda: usuarios.fijar_contrasena(omar4["guid"], hash_reset_omar, "RESET"),
     )
     try:
         usuarios.fijar_contrasena(omar4["guid"], auth.hash_de("Cuatro-I-Omar-Ladron-9!"), "CHANGE", sesion_guid=sid_o, hash_verificado=hash_omar)
     finally:
-        usuarios.registro.agregar = original_agregar
+        _usuarios_sql._cerrar_todas = original_fn
     if hecho["hilo"]:
         hecho["hilo"].join(timeout=10)
     rev("un RESET que llega justo antes de escribir el CAMBIO espera su turno: la contraseña final es la del restablecimiento",
         usuarios.para_login("cuatro-i-omar@ejemplo.com")["hash"] == hash_reset_omar)
 
-    titulo("4j · Lo que el README promete del índice: el aviso de las reconstrucciones lentas y lo que se devuelve no se comparte")
-    import logging as _logging
-
-    class Recogedor(_logging.Handler):
-        def __init__(self) -> None:
-            super().__init__(_logging.WARNING)
-            self.mensajes: list[str] = []
-
-        def emit(self, registro_log) -> None:
-            self.mensajes.append(registro_log.getMessage())
-
-    recogedor = Recogedor()
-    usuarios.logger.addHandler(recogedor)
-    umbral_original = usuarios.UMBRAL_RECONSTRUCCION_S
-    try:
-        usuarios.UMBRAL_RECONSTRUCCION_S = 3600.0
-        usuarios._cache_indice = None
-        usuarios._indice()
-        rev("una reconstrucción dentro del umbral NO avisa", not recogedor.mensajes, str(recogedor.mensajes))
-        usuarios.UMBRAL_RECONSTRUCCION_S = 0.0
-        usuarios._cache_indice = None
-        usuarios._indice()
-        rev("una que pasa del umbral avisa en el log (el registro provisional ya es grande)",
-            any("Reconstruir el índice de usuarios" in m for m in recogedor.mensajes), str(recogedor.mensajes))
-    finally:
-        usuarios.UMBRAL_RECONSTRUCCION_S = umbral_original
-        usuarios.logger.removeHandler(recogedor)
-
+    titulo("4j · Lo que se devuelve no se comparte: modificarlo no toca lo guardado")
     luna4 = usuario_4i("cuatro-i-luna@ejemplo.com", "Cuatro-I-Luna-123!")
     usuarios.agregar_membresia(luna4["guid"], "tenant-4i", "ADMIN")
     usuarios.actualizar_perfil(luna4["guid"], "Luna", "Prueba", "Cuatro", None, {"email": "luna.recupera@ejemplo.com"})
@@ -852,7 +800,7 @@ try:
     copia["membresias"][0]["rol"] = "VIEWER"
     copia["recuperacion"]["email"] = "intruso@ejemplo.com"
     limpia = usuarios.por_guid(luna4["guid"])
-    rev("lo que devuelve por_guid se puede modificar sin tocar el índice (membresías y recuperación son copias)",
+    rev("lo que devuelve por_guid se puede modificar sin tocar lo guardado (membresías y recuperación son copias)",
         limpia["membresias"] == [{"tenantGuid": "tenant-4i", "rol": "ADMIN"}] and limpia["recuperacion"] == {"email": "luna.recupera@ejemplo.com"},
         f"{limpia['membresias']} {limpia['recuperacion']}")
 
@@ -911,7 +859,7 @@ try:
     rev("quedó UN evento PASSWORD_CHANGED, con la persona, la sesión desde la que se cambió, cuántas cerró y la hora",
         len(cambiados) == cambios_antes + 1 and cambiados[-1]["usuarioGuid"] == hugo["guid"] and cambiados[-1]["sesionGuid"] == sid_actual_k
         and cambiados[-1]["otrasSesionesCerradas"] == 2 and bool(cambiados[-1]["en"]), str(cambiados[-1:]))
-    texto_auditoria = (RAIZ / ".registro" / "auditoria.jsonl").read_text(encoding="utf-8")
+    texto_auditoria = texto_bitacora()
     rev("el evento NO lleva ninguna contraseña ni hash", NUEVA_K not in texto_auditoria and "Cuatro-K-Hugo-123!" not in texto_auditoria and "$argon2id$" not in texto_auditoria)
 
     # Lo que NO debe cerrar nada ni dejar evento: un cambio rechazado.
@@ -943,29 +891,30 @@ try:
     rev("y el cambio también se registra (con 0 sesiones cerradas)",
         len(eventos_de_auditoria("PASSWORD_CHANGED")) == eventos_antes + 1 and eventos_de_auditoria("PASSWORD_CHANGED")[-1]["otrasSesionesCerradas"] == 0)
 
-    # Si el almacén falla a la mitad, no puede quedar la contraseña nueva con las sesiones viejas abiertas: las otras
-    # sesiones se cierran ANTES de escribir la contraseña.
+    # Si la base falla a la mitad, no cambia nada: cerrar las otras sesiones y escribir la contraseña van en UNA transacción.
     from servicios.almacen import ErrorAlmacen as _ErrorAlmacen
     otra_d = login(c, "cuatro-k-hugo@ejemplo.com", "Zeta-K-Otra-Ruta-789!").json()
     bearer_d = {**srv(), "Authorization": f"Bearer {otra_d['accessToken']}"}
     sid_d = auth.verificar_acceso(otra_d["accessToken"])["sid"]
     otras_d = [x["sesionGuid"] for x in vivas_de(hugo["guid"]) if x["sesionGuid"] != sid_d]
     hash_d_antes = usuarios.para_login("cuatro-k-hugo@ejemplo.com")["hash"]
-    agregar_original = usuarios.registro.agregar
+    import pyodbc as _pyodbc
+    from servicios import usuarios_sql as _usuarios_sql
 
-    def agregar_que_falla_con_la_contrasena(archivo, evento):
-        if evento.get("evento") == "contrasena":
-            raise _ErrorAlmacen("el NAS no contesta")
-        return agregar_original(archivo, evento)
+    cerrar_original = _usuarios_sql._cerrar_todas
 
-    usuarios.registro.agregar = agregar_que_falla_con_la_contrasena
+    def cerrar_y_fallar(*a, **k):
+        cerrar_original(*a, **k)
+        raise _pyodbc.OperationalError("08S01", "la base dejó de contestar (prueba 4k)")
+
+    _usuarios_sql._cerrar_todas = cerrar_y_fallar
     try:
         r = c.post("/auth/contrasena", json={"actual": "Zeta-K-Otra-Ruta-789!", "nueva": "Zeta-K-Falla-Pista-321!", "confirmacion": "Zeta-K-Falla-Pista-321!"}, headers=bearer_d)
     finally:
-        usuarios.registro.agregar = agregar_original
-    rev("si el almacén falla al escribir la contraseña: 503, la contraseña NO cambió y las otras sesiones YA se cerraron",
+        _usuarios_sql._cerrar_todas = cerrar_original
+    rev("si la base falla a la mitad del cambio: 503, la contraseña NO cambió y las otras sesiones SIGUEN abiertas (todo o nada)",
         r.status_code == 503 and usuarios.para_login("cuatro-k-hugo@ejemplo.com")["hash"] == hash_d_antes
-        and otras_d and all(x not in [v["sesionGuid"] for v in vivas_de(hugo["guid"])] for x in otras_d) and estado_de(otra_d) == "viva", f"{r.status_code} {r.text[:120]}")
+        and otras_d and all(x in [v["sesionGuid"] for v in vivas_de(hugo["guid"])] for x in otras_d) and estado_de(otra_d) == "viva", f"{r.status_code} {r.text[:120]}")
     rev("y no quedó evento PASSWORD_CHANGED de un cambio que no se hizo", len(eventos_de_auditoria("PASSWORD_CHANGED")) == eventos_antes + 1)
 
     # El primer acceso NO deja PASSWORD_CHANGED (es otra historia, HU04): el evento es del cambio desde una sesión.
@@ -987,7 +936,8 @@ try:
     _, cerradas_sin_sesion = usuarios.fijar_contrasena_y_cerrar(hugo["guid"], auth.hash_de("Cuatro-K-Hugo-Final-1!"), "CHANGE")
     rev("el servicio: un CHANGE sin sesión desde la que se cambia cierra todas (no hay una que conservar)",
         cerradas_sin_sesion == viva_antes_de_service and vivas_k() == 0, f"{cerradas_sin_sesion} / {viva_antes_de_service}")
-    usuarios.crear_sesion(hugo["guid"], h_a + "x", v_a, None, None)
+    _, h_c, _ = auth.nuevo_refresh()
+    usuarios.crear_sesion(hugo["guid"], h_c, v_a, None, None)
     _, cerradas_reset = usuarios.fijar_contrasena_y_cerrar(hugo["guid"], auth.hash_de("Cuatro-K-Hugo-Final-2!"), "RESET")
     rev("y RESET y FIRST_LOGIN siguen cerrando TODAS, la actual incluida", cerradas_reset == 1 and vivas_k() == 0)
 
@@ -1078,7 +1028,7 @@ try:
     rev("cambiar SOLO el teléfono de recuperación: solo ese campo", ultimo_perfil()["campos"] == ["telefonoRecuperacion"], str(ultimo_perfil()))
     r = guardar_perfil(nombre="Augusta Ada", apellidoPaterno="King", apellidoMaterno="Noel", telefono="+52 55 1020 3040")
     rev("vaciar la recuperación también es un cambio: los dos campos", ultimo_perfil()["campos"] == ["correoRecuperacion", "telefonoRecuperacion"], str(ultimo_perfil()))
-    texto_auditoria_perfil = (RAIZ / ".registro" / "auditoria.jsonl").read_text(encoding="utf-8")
+    texto_auditoria_perfil = texto_bitacora()
     rev("ningún evento lleva los datos de la persona (solo cuáles campos cambiaron)",
         not any(v in texto_auditoria_perfil for v in ("Augusta", "King", "Noel", "respaldo@ejemplo.com", "1020 3040", "1478 8523", "9999 0000")))
     guardar_perfil(nombre="Ada", apellidoPaterno="Lovelace")

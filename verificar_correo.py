@@ -22,8 +22,21 @@ os.environ["CORREO_MODO"] = "archivo"
 os.environ["FRONT_URL"] = "http://localhost:3400"
 os.environ.setdefault("AUTH_JWT_SECRET", "x" * 48)
 
+import pruebas_sql  # noqa: E402  (desde el 2026-11-11 los enlaces se guardan en SQL Server: esta prueba corre contra uno desechable)
+
+BASE_SQL = pruebas_sql.preparar()
+
 import config  # noqa: E402
-from servicios import correo, tokens  # noqa: E402
+from servicios import correo, tokens, usuarios  # noqa: E402
+
+
+def fila_del_enlace(token: str):
+    """La fila del enlace en la base, vista con el usuario de la API."""
+    con = BASE_SQL["conectar"]("usrNexus", BASE_SQL["app"], BASE_SQL["base"])
+    try:
+        return con.cursor().execute("SELECT * FROM nexus.accessTokens WHERE tokenHash = ?", tokens.hash_de(token)).fetchone()
+    finally:
+        con.close()
 
 fallos = 0
 
@@ -88,7 +101,9 @@ try:
     config.CORREO_MODO = "archivo"
 
     titulo("5 · Enlaces de un solo uso: se crean con su vigencia")
-    ana = "guid-ana"
+    # Desde la 0014 un enlace es de una cuenta que existe (llave foránea).
+    ana = usuarios.crear_usuario("ana@ejemplo.com", "Ana", "Prueba", "h")["guid"]
+    luis = usuarios.crear_usuario("luis@ejemplo.com", "Luis", "Prueba", "h")["guid"]
     token, expira = tokens.crear(ana, tokens.RECUPERACION)
     rev("devuelve un token largo y al azar", len(token) >= 32, f"{len(token)} caracteres")
     horas = (expira - tokens._ahora()).total_seconds() / 3600
@@ -96,9 +111,9 @@ try:
     t_act, expira_act = tokens.crear(ana, tokens.ACTIVACION)
     horas_act = (expira_act - tokens._ahora()).total_seconds() / 3600
     rev("activación vence en ~48 horas", 47.9 < horas_act <= 48.0, f"{horas_act:.2f} h")
-    registro_crudo = (RAIZ / ".registro" / "tokens.jsonl").read_text(encoding="utf-8")
-    rev("el token EN CLARO no queda en el registro: solo su hash",
-        token not in registro_crudo and tokens.hash_de(token) in registro_crudo)
+    fila = fila_del_enlace(token)
+    rev("el token EN CLARO no queda en la base: solo su hash",
+        fila is not None and all(token not in str(valor) for valor in fila) and tokens.hash_de(token) in [str(v) for v in fila])
 
     titulo("6 · Revisar no lo gasta; consumir sí")
     rev("revisar lo da por bueno", tokens.revisar(token, tokens.RECUPERACION)["usuarioGuid"] == ana)
@@ -134,16 +149,10 @@ try:
     rev("y el nuevo sí sirve", tokens.consumir(nuevo, tokens.ACTIVACION)["usuarioGuid"] == ana)
 
     titulo("9 · Un token vencido se rechaza")
-    import json as _json
     vencido, _ = tokens.crear(ana, tokens.RECUPERACION)
-    ruta_reg = RAIZ / ".registro" / "tokens.jsonl"
-    lineas = []
-    for linea in ruta_reg.read_text(encoding="utf-8").splitlines():
-        e = _json.loads(linea)
-        if e.get("evento") == "creado" and e.get("hash") == tokens.hash_de(vencido):
-            e["expira"] = "2020-01-01T00:00:00+00:00"
-        lineas.append(_json.dumps(e, ensure_ascii=False))
-    ruta_reg.write_text("\n".join(lineas) + "\n", encoding="utf-8")
+    con = BASE_SQL["conectar"]("usrNexus", BASE_SQL["app"], BASE_SQL["base"])
+    con.cursor().execute("UPDATE nexus.accessTokens SET expiresAt = '2020-01-01' WHERE tokenHash = ?", tokens.hash_de(vencido))
+    con.close()
     try:
         tokens.consumir(vencido, tokens.RECUPERACION)
         rev("el vencido se rechaza", False)
@@ -153,11 +162,11 @@ try:
     titulo("10 · Invalidar los pendientes de alguien")
     tokens.crear(ana, tokens.RECUPERACION)
     tokens.crear(ana, tokens.ACTIVACION)
-    otro, _ = tokens.crear("guid-luis", tokens.RECUPERACION)
+    otro, _ = tokens.crear(luis, tokens.RECUPERACION)
     rev("ana tiene dos pendientes", len(tokens.pendientes_de(ana)) == 2, str(len(tokens.pendientes_de(ana))))
     rev("invalidar los suyos apaga dos", tokens.invalidar_de(ana, motivo="CONTRASENA_CAMBIADA") == 2)
     rev("y ya no le queda ninguno", tokens.pendientes_de(ana) == [])
-    rev("el de otra persona no se tocó", len(tokens.pendientes_de("guid-luis")) == 1)
+    rev("el de otra persona no se tocó", len(tokens.pendientes_de(luis)) == 1)
     try:
         tokens.consumir("esto-me-lo-invente", tokens.RECUPERACION)
         rev("un token inventado se rechaza", False)

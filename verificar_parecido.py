@@ -28,7 +28,9 @@ SERVICIO = "llave-de-servicio-solo-local"
 os.environ["ALMACEN_RUTA"] = str(RAIZ)
 os.environ["NEXUS_API_KEY"] = SERVICIO
 os.environ["AUTH_JWT_SECRET"] = "secreto-de-prueba-de-al-menos-32-caracteres-xx"
-os.environ["SQLSERVER_HOST"] = ""
+import pruebas_sql  # noqa: E402  (desde el 2026-11-11 todo se guarda en SQL Server: esta prueba corre contra uno desechable)
+
+BASE_SQL = pruebas_sql.preparar()
 
 from cryptography.fernet import Fernet  # noqa: E402
 

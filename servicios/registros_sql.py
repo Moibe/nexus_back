@@ -1,9 +1,8 @@
 """Organizaciones, clasificadores, bandeja de entrada y auditoría guardados en SQL Server (migración `0006`).
 
-Hace lo mismo que el JSONL de `tenants_registro.py`, `clasificadores.py`, `bandeja.py` y `auditoria.py` —mismas firmas, mismos errores,
-misma forma de salida—, y son esos módulos los que eligen: SQL si el `.env` trae `SQLSERVER_HOST`, el almacén si no (la laptop y las
-pruebas offline). Antes de leer o escribir cada registro se asegura que su JSONL ya se haya importado una vez en esta base
-(`servicios/importacion_json.py`).
+Es el almacenamiento de `tenants_registro.py`, `clasificadores.py`, `bandeja.py` y `auditoria.py` (hasta el 2026-11-11 tenían además un JSONL
+para donde no había base; ya no). Antes de leer o escribir cada registro se asegura que su viejo JSONL ya se haya importado una vez en esta
+base (`servicios/importacion_json.py`).
 
 Las fechas se guardan en UTC sin zona y se devuelven con la forma que tenían en el almacén (`2026-10-29T18:04:05+00:00`).
 """

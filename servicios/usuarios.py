@@ -1,27 +1,17 @@
-"""Usuarios, credenciales, intentos de login y sesiones — registro PROVISIONAL.
+"""Usuarios, credenciales, intentos de login y sesiones.
 
-Lo definitivo son las tablas y los SPs pedidos al DBA en **NEX-319**
-(`docs/solicitudes-dba.md`, sección 6). Mientras llegan, todo vive en un
-registro de solo agregar en el NAS, `usuarios.jsonl` (ver `servicios/registro.py`),
-como las llaves y los webhooks. El día que existan los SPs, cambia ESTE módulo y
-nada más: cada función de aquí es el espejo de un SP, con el mismo contrato (salvo
-las tres que se listan debajo de esta tabla).
+## Dónde viven
 
-    bootstrap_admin            ↔ security.uspBootstrapPlatformAdmin
-    crear_usuario              ↔ (HU02/HU06: alta de usuario dentro de un tenant)
-    actualizar_perfil          ↔ (HU12: sus propios datos y los de recuperación)
-    agregar_membresia          ↔ (membresía con rol: security.tenantMemberships)
-    para_login                 ↔ security.uspGetUserForLogin
-    registrar_resultado_login  ↔ security.uspRecordLoginResult
-    fijar_contrasena           ↔ security.uspSetPassword
-    crear_sesion               ↔ security.uspCreateSession
-    sesion_por_hash            ↔ security.uspGetSession
-    revocar_sesiones           ↔ security.uspRevokeSessions
+En SQL Server (migración `0014`, 2026-11-11): `nexus.users`, `userMemberships`, `userSessions`, `loginAttempts`, `loginOrigins` y
+`userAdminEvents`, importados una vez desde el viejo `usuarios.jsonl` (`servicios/importacion_json.py`). Este módulo tiene las REGLAS
+—validaciones, la política de intentos, cómo se separa un nombre, por qué no se puede retirar a alguien— y `servicios/usuarios_sql.py`
+guarda y lee. Hasta el 2026-11-11, donde no había base, todo vivía en ese JSONL; ese camino ya no existe (su lectura, para la
+importación, está en `servicios/json_heredado.py`).
 
-Tres cosas de aquí NO son el espejo de un SP, porque garantizan algo que un SP suelto
-no da. Hoy lo dan con el candado del registro (`registro.candado`, que vale para UN solo
-proceso); con la base no bastará con llamar a los SPs de arriba uno tras otro: cada una
-tiene que ir en UNA transacción o ser un SP propio (`docs/solicitudes-dba.md`, 6.2):
+## Lo atómico
+
+Cuatro operaciones garantizan algo que no se lograría con pasos sueltos, y las hace UNA transacción con el candado de aplicación de la
+persona (ver `usuarios_sql.py`):
 
     rotar_sesion                    comprueba que el refresh siga vivo, lo revoca y crea la
                                     sucesora, en un paso (un refresh es de UN solo uso)
@@ -32,7 +22,7 @@ tiene que ir en UNA transacción o ser un SP propio (`docs/solicitudes-dba.md`, 
                                     sigue viva y la que se verificó sigue siendo la vigente
     fijar_contrasena(CHANGE, sesion_guid)
                                     cierra las sesiones de los OTROS dispositivos y conserva la
-                                    de este (HU13 CA-4): en el SP, un `@exceptSessionGuid`
+                                    de este (HU13 CA-4)
 
 ## Qué se guarda, y qué NUNCA
 
@@ -40,32 +30,23 @@ El hash argon2id de la contraseña (autocontenido: algoritmo, sal y parámetros
 van dentro del string), nunca la contraseña. El SHA-256 del refresh token,
 nunca el token. Los JWT de acceso no se guardan: se verifican por firma.
 
-## La política de intentos vive aquí (como vivirá en el SP)
+## La política de intentos vive aquí
 
 5 intentos fallidos seguidos bloquean la cuenta 15 minutos; el bloqueo se
 levanta solo. Un acierto, o cambiar la contraseña, pone el contador en cero. Un
 intento hecho DURANTE el bloqueo se anota (bitácora) pero no cuenta: si contara,
-cada intento alargaría el castigo y nunca se saldría.
-
-## El estado no se guarda, se calcula
-
-Igual que en las llaves: el registro trae hechos (`creado`, `contrasena`,
-`intento`, `sesion`, `sesion_revocada`, `estado`) y el índice los repasa en
-orden. `fallidos` y `bloqueadoHasta` salen de repasar los intentos.
+cada intento alargaría el castigo y nunca se saldría (`plegar_intento_cuenta`).
 """
 
 import logging
 import re
-import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import config
-from servicios import auditoria, registro, roles
+from servicios import auditoria, roles, usuarios_sql
 
 logger = logging.getLogger(__name__)
-
-ARCHIVO = "usuarios.jsonl"
 
 MOTIVOS_CONTRASENA = {"FIRST_LOGIN", "RESET", "CHANGE"}
 # Con estos motivos, cambiar la contraseña cierra TODAS las sesiones, la actual
@@ -184,227 +165,6 @@ def separar_nombre(nombre: str, apellidos: str = "") -> tuple[str, str, str]:
     return " ".join(unidades[:-2]), unidades[-2], unidades[-1]
 
 
-def _construir_indice(eventos: list[dict]) -> tuple[dict[str, dict], dict[str, str], dict[str, dict]]:
-    """(usuarios por guid, guid por correo, sesiones por guid de sesión), repasando
-    los eventos en el orden en que se escribieron. Es LINEAL en el número de
-    eventos: hasta el 2026-10-12 cada revocación recorría todas las sesiones, y con
-    miles de ellas el repaso tardaba segundos."""
-    usuarios: dict[str, dict] = {}
-    por_correo: dict[str, str] = {}
-    sesiones: dict[str, dict] = {}
-    de_usuario: dict[str, list[dict]] = {}  # las sesiones de cada persona, para "cerrar todas"
-    for e in eventos:
-        tipo = e.get("evento")
-        guid = e.get("guid")
-        if tipo == "creado" and isinstance(guid, str):
-            if guid in usuarios:
-                continue  # gana el primero, nadie "recrea" a otro
-            # El diseño del perfil (HU12) pide los apellidos por separado, igual que `security.users` (lastName, secondLastName).
-            # Los eventos nuevos ya los traen; los de antes se separan al leerlos (`separar_nombre`): unos traían `apellidos`
-            # y otros —los del formulario, hasta el 2026-10-14— el nombre completo entero en `nombre` y `apellidos` vacío.
-            if "apellidoPaterno" in e:
-                nombres, paterno, materno = e.get("nombre", ""), e.get("apellidoPaterno") or "", e.get("apellidoMaterno") or ""
-                apellidos = e.get("apellidos", "")
-            else:
-                nombres, paterno, materno = separar_nombre(e.get("nombre", ""), e.get("apellidos", ""))
-                apellidos = " ".join(x for x in (paterno, materno) if x)
-            usuarios[guid] = {
-                "guid": guid,
-                "email": e.get("email", ""),
-                "nombre": nombres,
-                "apellidos": apellidos,
-                "apellidoPaterno": paterno,
-                "apellidoMaterno": materno,
-                "recuperacion": e.get("recuperacion") or {},
-                "recuperacionPropia": "recuperacion" in e,
-                "esAdminPlataforma": bool(e.get("esAdminPlataforma")),
-                "telefono": e.get("telefono"),
-                "hash": e.get("hash"),
-                "debeCambiar": bool(e.get("debeCambiar", True)),
-                "contrasenaCambiadaEn": None,
-                "fallidos": 0,
-                "bloqueadoHasta": None,
-                "ultimoLoginEn": None,
-                "activo": True,
-                "creadoEn": e.get("en"),
-                # Cuándo se emitió la contraseña temporal vigente: el alta, o la última reemisión. De aquí
-                # cuenta la vigencia del primer acceso (`acceso_vencido`).
-                "temporalEmitidaEn": e.get("en"),
-                "membresias": [],
-            }
-            por_correo.setdefault(_normalizar_correo(usuarios[guid]["email"]), guid)
-            continue
-        u = usuarios.get(guid) if isinstance(guid, str) else None
-        if tipo == "contrasena" and u:
-            u["hash"] = e.get("hash")
-            u["debeCambiar"] = False
-            u["contrasenaCambiadaEn"] = e.get("en")
-            u["fallidos"] = 0
-            u["bloqueadoHasta"] = None
-        elif tipo == "eliminado" and u:
-            # Borrado LÓGICO: la cuenta deja de existir para todo (login, listados, sesiones) y su correo queda libre
-            # para darse de alta otra vez. Sus renglones se quedan en el registro, que es de solo agregar.
-            correo = _normalizar_correo(u["email"])
-            if por_correo.get(correo) == guid:
-                del por_correo[correo]
-            del usuarios[guid]
-        elif tipo == "invitacion" and u:
-            # Una contraseña temporal NUEVA para una cuenta que sigue en su primer acceso: la anterior deja de
-            # servir y la vigencia empieza otra vez (`emitir_temporal`).
-            u["hash"] = e.get("hash")
-            u["debeCambiar"] = True
-            u["temporalEmitidaEn"] = e.get("en")
-            u["fallidos"] = 0
-            u["bloqueadoHasta"] = None
-        elif tipo == "intento" and u:
-            if e.get("exitoso"):
-                u["fallidos"] = 0
-                u["bloqueadoHasta"] = None
-                u["ultimoLoginEn"] = e.get("en")
-            elif e.get("motivo") == "BAD_PASSWORD":
-                u["fallidos"] += 1
-                if u["fallidos"] >= config.AUTH_MAX_INTENTOS:
-                    hasta = _fecha(e.get("en")) or _ahora()
-                    u["bloqueadoHasta"] = (hasta + timedelta(minutes=config.AUTH_BLOQUEO_MIN)).isoformat()
-                    u["fallidos"] = 0
-            # LOCKED / INACTIVE / UNKNOWN_EMAIL / EXPIRED: bitácora, no cuentan.
-        elif tipo == "estado" and u:
-            u["activo"] = bool(e.get("activo"))
-        elif tipo == "datos" and u:
-            u["telefono"] = e.get("telefono", u.get("telefono"))
-            if "apellidoPaterno" in e:
-                u["nombre"] = e.get("nombre", u["nombre"])
-                u["apellidos"] = e.get("apellidos", u["apellidos"])
-                u["apellidoPaterno"] = e.get("apellidoPaterno") or ""
-                u["apellidoMaterno"] = e.get("apellidoMaterno") or ""
-            else:
-                # Un evento de antes del arreglo del 2026-10-14: la edición del formulario mandaba el nombre completo en `nombre`.
-                nombres, paterno, materno = separar_nombre(e.get("nombre", u["nombre"]), e.get("apellidos", u["apellidos"]))
-                u["nombre"], u["apellidoPaterno"], u["apellidoMaterno"] = nombres, paterno, materno
-                u["apellidos"] = " ".join(x for x in (paterno, materno) if x)
-            if "recuperacion" in e:
-                u["recuperacion"] = e.get("recuperacion") or {}
-                u["recuperacionPropia"] = True
-        elif tipo == "membresia" and u:
-            tenant = e.get("tenantGuid")
-            if isinstance(tenant, str):
-                u["membresias"] = [m for m in u["membresias"] if m["tenantGuid"] != tenant]
-                u["membresias"].append({"tenantGuid": tenant, "rol": e.get("rol", "ADMIN")})
-        elif tipo == "sesion" and u and isinstance(e.get("sesionGuid"), str):
-            if e["sesionGuid"] not in sesiones:  # gana la primera, como con los usuarios
-                nueva = {
-                    "sesionGuid": e["sesionGuid"],
-                    "guid": guid,
-                    "refreshHash": e.get("refreshHash"),
-                    "expira": e.get("expira"),
-                    "creadaEn": e.get("en"),
-                    "ip": e.get("ip"),
-                    "userAgent": e.get("userAgent"),
-                    "revocadaEn": None,
-                    "revocadaPor": None,
-                }
-                sesiones[e["sesionGuid"]] = nueva
-                de_usuario.setdefault(guid, []).append(nueva)
-        elif tipo == "sesion_revocada":
-            # Una sesión concreta (logout, rotación) o, sin `sesionGuid`, TODAS las
-            # que esa persona tenía hasta este punto del registro.
-            objetivo = e.get("sesionGuid")
-            if objetivo:
-                # `isinstance`: una línea a mano con una lista o un diccionario en vez del
-                # guid no es hashable y haría tronar TODO el repaso; antes simplemente no
-                # coincidía con ninguna sesión.
-                afectadas = [sesiones[objetivo]] if isinstance(objetivo, str) and objetivo in sesiones else []
-            else:
-                afectadas = de_usuario.get(guid, []) if isinstance(guid, str) else []
-            for s in afectadas:
-                if not s["revocadaEn"]:
-                    s["revocadaEn"] = e.get("en")
-                    s["revocadaPor"] = e.get("motivo")
-    return usuarios, por_correo, sesiones
-
-
-# ── Caché del índice ────────────────────────────────────────────────────────
-#
-# Hasta el 2026-10-12 `_indice()` repasaba el registro ENTERO en cada llamada, y
-# estaba bien: lo llamaban las acciones de una persona. Desde la 2ª etapa de HU05
-# lo llama también el guard del front (`GET /auth/sesion`, una vez cada pocos
-# segundos por sesión), y con un registro que solo crece eso ya no es aceptable.
-# Medido el 2026-10-13: repasar 20 mil eventos con 10 mil sesiones tardaba de 1.4 a
-# 2.2 s (ahora, de 12 a 60 ms), y a eso hay que sumarle leer y decodificar el archivo.
-#
-# El registro es de SOLO AGREGAR (`registro.agregar`; `bootstrap_admin.py` es otro
-# proceso que también agrega), así que cada escritura cambia su tamaño y, mientras
-# tamaño y fecha no cambien, el índice es el mismo: se guarda junto con la "firma"
-# del archivo de la que salió, y se vuelve a construir solo cuando cambia. La firma
-# y los eventos se toman bajo el mismo candado que las escrituras, para que nunca
-# queden de instantes distintos.
-#
-# Lo que NO se nota: una edición EN SITIO que deje el mismo tamaño y la misma
-# fecha (dos modificaciones dentro del mismo tick del reloj). Contradice el
-# contrato del registro ("nunca se reescribe una línea"); solo la hace a propósito
-# `verificar_auth.py`, que después pone `_cache_indice = None`.
-#
-# Lo que devuelve es COMPARTIDO: quien lo recibe no debe modificarlo. Ninguna
-# función de este módulo lo hace (el estado cambia agregando eventos, no editando
-# el índice), y `_publico` entrega copias de lo anidado.
-_cache_indice: tuple[tuple, tuple] | None = None
-
-#: Reconstruir el índice más lento que esto se avisa en el log (ver `_indice`).
-UMBRAL_RECONSTRUCCION_S = 0.5
-
-
-def _firma_del_registro() -> tuple | None:
-    """Lo que identifica el estado del archivo: cuál es, qué tan grande y desde
-    cuándo. `None` si no existe o no se puede leer (entonces no se usa la caché)."""
-    ruta = registro.ruta(ARCHIVO)
-    try:
-        st = ruta.stat()
-    except OSError:
-        return None
-    return str(ruta), st.st_ino, st.st_size, st.st_mtime_ns
-
-
-def _heredar_recuperacion(usuarios: dict[str, dict]) -> None:
-    """Un administrador de organización anterior al 2026-10-14 capturó sus datos de recuperación en el alta de la organización y
-    se guardaron SOLO en la organización: su perfil los mostraba vacíos. Mientras no haya guardado los suyos (`recuperacionPropia`),
-    se leen de los de su organización. Desde ese día el alta los guarda también en el usuario."""
-    pendientes = [u for u in usuarios.values() if not u["recuperacion"] and not u.get("recuperacionPropia")
-                  and any(m["rol"] == roles.ADMIN for m in u["membresias"])]
-    if not pendientes:
-        return
-    from servicios import tenants_registro
-
-    de_su_organizacion = {t["adminGuid"]: t["recuperacion"] for t in tenants_registro.listar() if t.get("adminGuid") and t.get("recuperacion")}
-    for u in pendientes:
-        u["recuperacion"] = dict(de_su_organizacion.get(u["guid"], {}))
-
-
-def _indice() -> tuple[dict[str, dict], dict[str, str], dict[str, dict]]:
-    """(usuarios por guid, guid por correo, sesiones por guid de sesión)."""
-    global _cache_indice
-    with registro.candado:
-        firma = _firma_del_registro()
-        guardado = _cache_indice
-        if firma is not None and guardado is not None and guardado[0] == firma:
-            return guardado[1]
-        inicio = time.perf_counter()
-        indice = _construir_indice(registro.eventos(ARCHIVO))
-        _heredar_recuperacion(indice[0])
-        duracion = time.perf_counter() - inicio
-        if duracion > UMBRAL_RECONSTRUCCION_S:
-            # El guard del front espera esto como mucho 2 s y, pasado ese tope, deja pasar
-            # sin comprobar la sesión. Es la señal de que el registro provisional ya creció
-            # más de lo que debe: hay que cambiarlo por la base.
-            logger.warning(
-                "Reconstruir el índice de usuarios tardó %.2f s (%s bytes): el registro provisional ya es grande",
-                duracion,
-                firma[2] if firma else "?",
-            )
-        if firma is not None:
-            _cache_indice = (firma, indice)
-        return indice
-
-
 def _bloqueo_vigente(usuario: dict) -> datetime | None:
     hasta = _fecha(usuario.get("bloqueadoHasta"))
     if hasta and hasta > _ahora():
@@ -446,25 +206,11 @@ def bootstrap_admin(email: str, nombre: str, apellidos: str, hash_contrasena: st
     nombre, apellidos = nombre.strip(), apellidos.strip()
     if not nombre or not apellidos:
         raise ValueError("Nombre y apellidos son obligatorios.")
-    with registro.candado:
-        usuarios, por_correo, _ = _indice()
-        if email in por_correo:
-            raise YaExiste("Ya existe un usuario con ese correo.")
-        guid = str(uuid.uuid4())
-        registro.agregar(
-            ARCHIVO,
-            {
-                "evento": "creado",
-                "guid": guid,
-                "email": email,
-                "nombre": nombre,
-                "apellidos": apellidos,
-                "esAdminPlataforma": True,
-                "hash": hash_contrasena,
-                "debeCambiar": True,
-                "en": _ahora().isoformat(timespec="seconds"),
-            },
-        )
+    guid = str(uuid.uuid4())
+    # El JSONL guarda nombre y apellidos juntos y los separa al leerlos; la base los guarda ya separados, con la misma regla.
+    nombres, paterno, materno = separar_nombre(nombre, apellidos)
+    if not usuarios_sql.crear(guid, email, nombres, paterno, materno, None, {}, True, hash_contrasena, _ahora()):
+        raise YaExiste("Ya existe un usuario con ese correo.")
     return por_guid(guid)
 
 
@@ -474,10 +220,7 @@ def administradores_de_plataforma() -> list[dict]:
     Es el control que `bootstrap_admin.py` no daba: saber quiénes son, si ya hicieron su primer acceso y si siguen activos.
     Los que se retiraron (`eliminar_usuario`) ya no están: el índice los quita de todos lados, y su rastro vive en la bitácora.
     Sin el hash de la contraseña (`_publico`)."""
-    indice, _, _ = _indice()
-    admins = [_publico(u) for u in indice.values() if u["esAdminPlataforma"]]
-    admins.sort(key=lambda u: u["creadoEn"] or "")
-    return admins
+    return [_publico(u) for u in usuarios_sql.administradores()]
 
 
 def crear_usuario(
@@ -512,53 +255,15 @@ def crear_usuario(
         nombres, paterno, materno = " ".join(nombre.split()), paterno_dado, materno_dado
     else:
         nombres, paterno, materno = separar_nombre(nombre, apellidos)
-    with registro.candado:
-        _, por_correo, _ = _indice()
-        if email in por_correo:
-            raise YaExiste("El correo electrónico ingresado ya se encuentra registrado, por favor intenta nuevamente")
-        guid = str(uuid.uuid4())
-        en = _ahora().isoformat(timespec="seconds")
-        registro.agregar(
-            ARCHIVO,
-            {
-                "evento": "creado",
-                "guid": guid,
-                "email": email,
-                "nombre": nombres,
-                "apellidos": " ".join(x for x in (paterno, materno) if x),
-                "apellidoPaterno": paterno,
-                "apellidoMaterno": materno,
-                "telefono": telefono,
-                **({"recuperacion": recuperacion} if recuperacion is not None else {}),
-                "esAdminPlataforma": False,
-                "hash": hash_contrasena,
-                "debeCambiar": True,
-                "en": en,
-            },
-        )
-        if tenant_guid:
-            registro.agregar(
-                ARCHIVO,
-                {"evento": "membresia", "guid": guid, "tenantGuid": tenant_guid, "rol": rol, "en": en},
-            )
+    guid = str(uuid.uuid4())
+    if not usuarios_sql.crear(guid, email, nombres, paterno, materno, telefono, recuperacion or {}, False, hash_contrasena, _ahora(), tenant_guid or None, rol):
+        raise YaExiste("El correo electrónico ingresado ya se encuentra registrado, por favor intenta nuevamente")
     return por_guid(guid)
 
 
 def agregar_membresia(guid: str, tenant_guid: str, rol: str = "ADMIN") -> dict:
-    with registro.candado:
-        usuarios, _, _ = _indice()
-        if guid not in usuarios:
-            raise NoEncontrado(guid)
-        registro.agregar(
-            ARCHIVO,
-            {
-                "evento": "membresia",
-                "guid": guid,
-                "tenantGuid": tenant_guid,
-                "rol": rol,
-                "en": _ahora().isoformat(timespec="seconds"),
-            },
-        )
+    if not usuarios_sql.agregar_membresia(guid, tenant_guid, rol, _ahora()):
+        raise NoEncontrado(guid)
     return por_guid(guid)
 
 
@@ -568,30 +273,16 @@ def actualizar_datos(guid: str, nombre: str, apellidos: str = "", telefono: str 
     nombre, apellidos = " ".join(nombre.split()), " ".join((apellidos or "").split())
     if not nombre:
         raise ValueError("El nombre es obligatorio.")
-    with registro.candado:
-        usuarios, _, _ = _indice()
-        if guid not in usuarios:
-            raise NoEncontrado(guid)
-        actual = usuarios[guid]
+
+    def decidir(actual: dict) -> tuple[str, str, str]:
         if not apellidos and nombre == " ".join(f"{actual['nombre']} {actual['apellidos']}".split()):
             # El formulario manda de vuelta el nombre completo tal como lo mostró el listado: si no lo tocaron, no se vuelve a
             # separar, o se desharía lo que la persona corrigió en su perfil.
-            nombres, paterno, materno = actual["nombre"], actual["apellidoPaterno"], actual["apellidoMaterno"]
-        else:
-            nombres, paterno, materno = separar_nombre(nombre, apellidos)
-        registro.agregar(
-            ARCHIVO,
-            {
-                "evento": "datos",
-                "guid": guid,
-                "nombre": nombres,
-                "apellidos": " ".join(x for x in (paterno, materno) if x),
-                "apellidoPaterno": paterno,
-                "apellidoMaterno": materno,
-                "telefono": telefono,
-                "en": _ahora().isoformat(timespec="seconds"),
-            },
-        )
+            return actual["nombre"], actual["apellidoPaterno"], actual["apellidoMaterno"]
+        return separar_nombre(nombre, apellidos)
+
+    if not usuarios_sql.actualizar_datos(guid, decidir, telefono):
+        raise NoEncontrado(guid)
     return por_guid(guid)
 
 
@@ -637,36 +328,14 @@ def actualizar_perfil(
     if not nombre:
         raise ValueError("El nombre es obligatorio.")
     paterno, materno = apellido_paterno.strip(), apellido_materno.strip()
-    with registro.candado:
-        usuarios, _, _ = _indice()
-        if guid not in usuarios:
-            raise NoEncontrado(guid)
-        registro.agregar(
-            ARCHIVO,
-            {
-                "evento": "datos",
-                "guid": guid,
-                "nombre": nombre,
-                "apellidos": " ".join(x for x in (paterno, materno) if x),
-                "apellidoPaterno": paterno,
-                "apellidoMaterno": materno,
-                "telefono": telefono,
-                "recuperacion": recuperacion or {},
-                "en": _ahora().isoformat(timespec="seconds"),
-            },
-        )
+    if not usuarios_sql.actualizar_perfil(guid, nombre, paterno, materno, telefono, recuperacion or {}):
+        raise NoEncontrado(guid)
     return por_guid(guid)
 
 
 def de_tenant(tenant_guid: str) -> list[dict]:
     """Los usuarios de una organización, para su listado."""
-    usuarios, _, _ = _indice()
-    de_la_organizacion = [
-        _publico(u)
-        for u in usuarios.values()
-        if any(m["tenantGuid"] == tenant_guid for m in u["membresias"])
-    ]
-    return sorted(de_la_organizacion, key=lambda u: u["creadoEn"] or "")
+    return [_publico(u) for u in usuarios_sql.de_tenant(tenant_guid)]
 
 
 # ── uspGetUserForLogin ──────────────────────────────────────────────────────
@@ -675,11 +344,9 @@ def de_tenant(tenant_guid: str) -> list[dict]:
 def para_login(email: str) -> dict | None:
     """Lo que el login necesita, CON el hash (no sale de este proceso). `None`
     si el correo no existe."""
-    usuarios, por_correo, _ = _indice()
-    guid = por_correo.get(_normalizar_correo(email))
-    if not guid:
+    u = usuarios_sql.por_correo(_normalizar_correo(email))
+    if u is None:
         return None
-    u = usuarios[guid]
     bloqueo = _bloqueo_vigente(u)
     return {
         **_publico(u),
@@ -690,8 +357,7 @@ def para_login(email: str) -> dict | None:
 
 
 def por_guid(guid: str) -> dict:
-    usuarios, _, _ = _indice()
-    u = usuarios.get(guid)
+    u = usuarios_sql.por_guid(guid)
     if not u:
         raise NoEncontrado(guid)
     return _publico(u)
@@ -700,11 +366,8 @@ def por_guid(guid: str) -> dict:
 def tiene_sesion(guid: str, ahora: datetime | None = None) -> bool:
     """¿Tiene alguna sesión sin revocar y sin vencer? Es decir, ¿hay un navegador que todavía puede renovar su acceso?
     Una sesión sin fecha de vencimiento legible se toma por vencida, igual que al canjear el refresh."""
-    _, _, sesiones = _indice()
     ahora = ahora or _ahora()
-    return any(
-        x["guid"] == guid and not x["revocadaEn"] and (_fecha(x["expira"]) or ahora) > ahora for x in sesiones.values()
-    )
+    return usuarios_sql.tiene_sesion(guid, ahora)
 
 
 def para_listado(u: dict, tenant_guid: str, posicion: int) -> dict:
@@ -758,12 +421,9 @@ def por_guid_y_sesion(guid: str, sesion_guid: str) -> tuple[dict, bool]:
 
     No levanta nada por una sesión muerta: quien llama decide el código. Sí
     levanta `NoEncontrado` si el usuario no existe."""
-    usuarios, _, sesiones = _indice()
-    u = usuarios.get(guid)
-    if not u:
+    u, viva = usuarios_sql.por_guid_y_sesion(guid, sesion_guid)
+    if u is None:
         raise NoEncontrado(guid)
-    s = sesiones.get(sesion_guid)
-    viva = s is not None and s["guid"] == guid and not s["revocadaEn"]
     return _publico(u), viva
 
 
@@ -782,30 +442,12 @@ def registrar_resultado_login(
     """Anota el intento y aplica la política de la CUENTA. Devuelve
     (fallidos, bloqueadoHasta) tal como quedan. `motivo`: BAD_PASSWORD | LOCKED
     | INACTIVE | UNKNOWN_EMAIL | EXPIRED (la contraseña temporal era la correcta pero ya caducó). `origen` identifica al navegador y es lo que
-    lee `estado_origen`; aquí solo se guarda."""
-    with registro.candado:
-        registro.agregar(
-            ARCHIVO,
-            {
-                "evento": "intento",
-                "guid": guid,
-                "email": _normalizar_correo(email),
-                "exitoso": exitoso,
-                "motivo": None if exitoso else motivo,
-                "ip": ip,
-                "userAgent": (user_agent or "")[:500] or None,
-                "origen": origen,
-                "en": _ahora().isoformat(timespec="seconds"),
-            },
-        )
-        if not guid:
-            return 0, None
-        usuarios, _, _ = _indice()
-        u = usuarios.get(guid)
-        if not u:
-            return 0, None
-        bloqueo = _bloqueo_vigente(u)
-        return u["fallidos"], bloqueo.isoformat() if bloqueo else None
+    lee `estado_origen`; su contador se lleva aquí mismo (`plegar_intento_origen`)."""
+    fallidos, hasta = usuarios_sql.registrar_intento(
+        guid, _normalizar_correo(email), exitoso, motivo, ip, (user_agent or "")[:500] or None, origen, _ahora()
+    )
+    hasta = hasta.replace(tzinfo=timezone.utc) if hasta else None
+    return fallidos, hasta.isoformat() if hasta and hasta > _ahora() else None
 
 
 # ── uspGetOriginLockout ─────────────────────────────────────────────────────
@@ -826,33 +468,40 @@ def registrar_resultado_login(
 MOTIVOS_QUE_CUENTAN = {"BAD_PASSWORD", "UNKNOWN_EMAIL"}
 
 
+def plegar_intento_cuenta(fallidos: int, hasta: datetime | None, exitoso: bool, motivo: str | None, en: datetime) -> tuple[int, datetime | None]:
+    """La política de la CUENTA aplicada a UN intento: `(fallidos, bloqueado hasta)` como quedan. Es la misma que aplica el repaso del JSONL
+    (`json_heredado.usuarios_indice`, al importar); aquí se aplica al anotar el intento y el resultado se guarda en la cuenta. Un acierto lo pone todo en cero; la
+    contraseña mala suma, y la quinta bloquea `AUTH_BLOQUEO_MIN` minutos contados desde ese intento (el contador vuelve a cero); lo demás
+    (bloqueada, desactivada, caducada) es bitácora y no cuenta."""
+    if exitoso:
+        return 0, None
+    if motivo == "BAD_PASSWORD":
+        fallidos += 1
+        if fallidos >= config.AUTH_MAX_INTENTOS:
+            return 0, en + timedelta(minutes=config.AUTH_BLOQUEO_MIN)
+    return fallidos, hasta
+
+
+def plegar_intento_origen(fallidos: int, hasta: datetime | None, exitoso: bool, motivo: str | None, en: datetime) -> tuple[int, datetime | None]:
+    """Lo mismo para el contador del NAVEGADOR (`estado_origen`): ahí cuentan la contraseña mala y el correo que no existe."""
+    if exitoso:
+        return 0, None
+    if motivo in MOTIVOS_QUE_CUENTAN:
+        fallidos += 1
+        if fallidos >= config.AUTH_MAX_INTENTOS:
+            return 0, en + timedelta(minutes=config.AUTH_BLOQUEO_MIN)
+    return fallidos, hasta
+
+
 def estado_origen(origen: str | None) -> tuple[int, str | None]:
     """(fallidos seguidos, bloqueadoHasta) de ese navegador. Sin `origen`
     —un cliente que no manda cookie— devuelve el estado vacío: el contador de
     la cuenta sigue aplicando igual."""
     if not origen:
         return 0, None
-    fallidos = 0
-    hasta: datetime | None = None
-    for e in registro.eventos(ARCHIVO):
-        if e.get("origen") != origen or e.get("evento") not in ("intento", "origen_reiniciado"):
-            continue
-        # Restablecer la contraseña desde este navegador levanta SU bloqueo
-        # (ver `reiniciar_intentos_de_origen`).
-        if e.get("evento") == "origen_reiniciado":
-            fallidos, hasta = 0, None
-            continue
-        if e.get("exitoso"):
-            fallidos, hasta = 0, None
-        elif e.get("motivo") in MOTIVOS_QUE_CUENTAN:
-            fallidos += 1
-            if fallidos >= config.AUTH_MAX_INTENTOS:
-                desde = _fecha(e.get("en")) or _ahora()
-                hasta = desde + timedelta(minutes=config.AUTH_BLOQUEO_MIN)
-                fallidos = 0
-    if hasta and hasta <= _ahora():
-        hasta = None
-    return fallidos, hasta.isoformat() if hasta else None
+    fallidos, guardado = usuarios_sql.estado_origen(origen)
+    vigente = guardado.replace(tzinfo=timezone.utc) if guardado else None
+    return fallidos, vigente.isoformat() if vigente and vigente > _ahora() else None
 
 
 def reiniciar_intentos_de_origen(origen: str | None) -> None:
@@ -870,10 +519,7 @@ def reiniciar_intentos_de_origen(origen: str | None) -> None:
     bloqueo ajeno no debería poder borrarse desde ahí."""
     if not origen:
         return
-    registro.agregar(
-        ARCHIVO,
-        {"evento": "origen_reiniciado", "origen": origen, "en": _ahora().isoformat(timespec="seconds")},
-    )
+    usuarios_sql.reiniciar_origen(origen, _ahora())
 
 
 # ── uspSetPassword ──────────────────────────────────────────────────────────
@@ -915,31 +561,7 @@ def fijar_contrasena_y_cerrar(
     cierran todas). Se revocan una por una, con su propio evento, para que el índice no necesite una regla nueva."""
     if motivo not in MOTIVOS_CONTRASENA:
         raise ValueError(f"Motivo inválido: {motivo}")
-    with registro.candado:
-        usuarios, _, sesiones = _indice()
-        if guid not in usuarios:
-            raise NoEncontrado(guid)
-        if sesion_guid is not None:
-            s = sesiones.get(sesion_guid)
-            if s is None or s["guid"] != guid or s["revocadaEn"]:
-                raise SesionNoCanjeable("cerrada")
-        if hash_verificado is not None and usuarios[guid]["hash"] != hash_verificado:
-            raise SesionNoCanjeable("contrasena")
-        en = _ahora().isoformat(timespec="seconds")
-        vivas = [x["sesionGuid"] for x in sesiones.values() if x["guid"] == guid and not x["revocadaEn"]]
-        evento_contrasena = {"evento": "contrasena", "guid": guid, "hash": hash_contrasena, "motivo": motivo, "en": en}
-        if motivo in MOTIVOS_QUE_CIERRAN_SESIONES:
-            registro.agregar(ARCHIVO, evento_contrasena)
-            registro.agregar(ARCHIVO, {"evento": "sesion_revocada", "guid": guid, "sesionGuid": None, "motivo": "PASSWORD_CHANGED", "en": en})
-            cerradas = len(vivas)
-        else:
-            # Primero las sesiones de los otros dispositivos y DESPUÉS la contraseña: si el almacén falla a la mitad,
-            # que no quede la contraseña nueva con las sesiones viejas todavía abiertas.
-            otras = [x for x in vivas if x != sesion_guid]
-            for otra in otras:
-                registro.agregar(ARCHIVO, {"evento": "sesion_revocada", "guid": guid, "sesionGuid": otra, "motivo": "PASSWORD_CHANGED", "en": en})
-            registro.agregar(ARCHIVO, evento_contrasena)
-            cerradas = len(otras)
+    cerradas = usuarios_sql.fijar_contrasena(guid, hash_contrasena, motivo in MOTIVOS_QUE_CIERRAN_SESIONES, sesion_guid, hash_verificado, _ahora())
     return por_guid(guid), cerradas
 
 
@@ -981,7 +603,7 @@ def _negativa_de_eliminar(usuarios: dict, guid: str, forzar: bool) -> NoSePuedeE
 def puede_eliminar(guid: str, forzar: bool = False) -> None:
     """Levanta `NoEncontrado` o `NoSePuedeEliminar` si `eliminar_usuario` se negaría; si no, no hace nada. Es la
     simulación de `retirar_cuenta.py`."""
-    usuarios, _, _ = _indice()
+    usuarios = usuarios_sql.para_retiro(guid)
     if guid not in usuarios:
         raise NoEncontrado(guid)
     negativa = _negativa_de_eliminar(usuarios, guid, forzar)
@@ -1001,18 +623,7 @@ def eliminar_usuario(guid: str, motivo: str, por: str | None = None, forzar: boo
     motivo = (motivo or "").strip()
     if not motivo:
         raise ValueError("El motivo es obligatorio.")
-    with registro.candado:
-        usuarios, _, _ = _indice()
-        if guid not in usuarios:
-            raise NoEncontrado(guid)
-        negativa = _negativa_de_eliminar(usuarios, guid, forzar)
-        if negativa is not None:
-            raise negativa
-        resumen = _publico(usuarios[guid])
-        en = _ahora().isoformat(timespec="seconds")
-        registro.agregar(ARCHIVO, {"evento": "sesion_revocada", "guid": guid, "sesionGuid": None, "motivo": "DELETED", "en": en})
-        registro.agregar(ARCHIVO, {"evento": "eliminado", "guid": guid, "motivo": motivo, "por": por, "en": en})
-    return resumen
+    return _publico(usuarios_sql.eliminar(guid, motivo, por, forzar, _ahora()))
 
 
 def emitir_temporal(guid: str, hash_contrasena: str) -> dict:
@@ -1020,15 +631,7 @@ def emitir_temporal(guid: str, hash_contrasena: str) -> dict:
     se perdió): la anterior deja de servir, las 48 horas empiezan otra vez, se levantan los bloqueos y se
     cierran las sesiones que se hubieran abierto con la anterior. Levanta `NoEncontrado` si la cuenta no existe
     y `NoPendiente` si ya hizo su primer acceso (para eso está "Olvidé mi contraseña")."""
-    with registro.candado:
-        usuarios, _, _ = _indice()
-        if guid not in usuarios:
-            raise NoEncontrado(guid)
-        if not usuarios[guid]["debeCambiar"]:
-            raise NoPendiente(guid)
-        en = _ahora().isoformat(timespec="seconds")
-        registro.agregar(ARCHIVO, {"evento": "invitacion", "guid": guid, "hash": hash_contrasena, "en": en})
-        registro.agregar(ARCHIVO, {"evento": "sesion_revocada", "guid": guid, "sesionGuid": None, "motivo": "REINVITED", "en": en})
+    usuarios_sql.emitir_temporal(guid, hash_contrasena, _ahora())
     return por_guid(guid)
 
 
@@ -1071,28 +674,7 @@ def crear_sesion(
     entra aquí: no cambia la contraseña ni desactiva la cuenta, y la persona puede volver
     a entrar —README, HU05—.)"""
     sesion_guid = str(uuid.uuid4())
-    with registro.candado:
-        usuarios, _, _ = _indice()
-        if guid not in usuarios:
-            raise NoEncontrado(guid)
-        if hash_verificado is not None:
-            if not usuarios[guid]["activo"]:
-                raise SesionNoCanjeable("desactivada")
-            if usuarios[guid]["hash"] != hash_verificado:
-                raise SesionNoCanjeable("invalida")
-        registro.agregar(
-            ARCHIVO,
-            {
-                "evento": "sesion",
-                "sesionGuid": sesion_guid,
-                "guid": guid,
-                "refreshHash": refresh_hash,
-                "expira": expira.isoformat(timespec="seconds"),
-                "ip": ip,
-                "userAgent": (user_agent or "")[:500] or None,
-                "en": _ahora().isoformat(timespec="seconds"),
-            },
-        )
+    usuarios_sql.crear_sesion(guid, sesion_guid, refresh_hash, expira, ip, (user_agent or "")[:500] or None, hash_verificado, _ahora())
     return sesion_guid
 
 
@@ -1113,64 +695,26 @@ def rotar_sesion(
       · un cierre forzado o un restablecimiento de contraseña que llegara a la mitad
         revocaba las sesiones que existían entonces, y la sucesora nacía después, viva.
     Es lo mismo que ya hace `tokens.consumir` con los enlaces de un solo uso."""
-    with registro.candado:
-        usuarios, _, sesiones = _indice()
-        s = next((x for x in sesiones.values() if x["refreshHash"] == refresh_hash), None)
-        u = usuarios.get(s["guid"]) if s else None
-        if s is None or s["revocadaEn"] or u is None or not u["activo"]:
-            raise SesionNoCanjeable("invalida")
-        if (_fecha(s["expira"]) or _ahora()) <= _ahora():
-            raise SesionNoCanjeable("vencida")
-        en = _ahora().isoformat(timespec="seconds")
-        registro.agregar(
-            ARCHIVO,
-            {"evento": "sesion_revocada", "guid": s["guid"], "sesionGuid": s["sesionGuid"], "motivo": "ROTATED", "en": en},
-        )
-        sesion_guid = str(uuid.uuid4())
-        registro.agregar(
-            ARCHIVO,
-            {
-                "evento": "sesion",
-                "sesionGuid": sesion_guid,
-                "guid": s["guid"],
-                "refreshHash": nuevo_refresh_hash,
-                "expira": expira.isoformat(timespec="seconds"),
-                "ip": ip,
-                "userAgent": (user_agent or "")[:500] or None,
-                "en": en,
-            },
-        )
-        return sesion_guid, _publico(u)
+    sesion_guid = str(uuid.uuid4())
+    u = usuarios_sql.rotar_sesion(refresh_hash, nuevo_refresh_hash, sesion_guid, expira, ip, (user_agent or "")[:500] or None, _ahora())
+    return sesion_guid, _publico(u)
 
 
 def sesion_por_hash(refresh_hash: str) -> dict | None:
     """La sesión y su usuario (sin hash de contraseña), o `None` si no existe.
     Quien llama decide qué hacer si está revocada o vencida: se devuelven tal
     cual para que el motivo del rechazo sea el correcto."""
-    usuarios, _, sesiones = _indice()
-    for s in sesiones.values():
-        if s["refreshHash"] == refresh_hash:
-            u = usuarios.get(s["guid"])
-            return {**s, "usuario": _publico(u) if u else None}
-    return None
+    encontrada = usuarios_sql.sesion_por_hash(refresh_hash)
+    if encontrada is None:
+        return None
+    s, u = encontrada
+    return {**s, "usuario": _publico(u) if u else None}
 
 
 def revocar_sesiones(guid: str, sesion_guid: str | None, motivo: str) -> int:
     """Una sesión (logout) o todas las del usuario (`sesion_guid=None`).
     Devuelve cuántas quedaron revocadas con esta llamada."""
-    with registro.candado:
-        _, _, sesiones = _indice()
-        vivas = [
-            s for s in sesiones.values()
-            if s["guid"] == guid and not s["revocadaEn"] and (sesion_guid is None or s["sesionGuid"] == sesion_guid)
-        ]
-        if not vivas:
-            return 0
-        registro.agregar(
-            ARCHIVO,
-            {"evento": "sesion_revocada", "guid": guid, "sesionGuid": sesion_guid, "motivo": motivo, "en": _ahora().isoformat(timespec="seconds")},
-        )
-        return len(vivas)
+    return usuarios_sql.revocar_sesiones(guid, sesion_guid, motivo, _ahora())
 
 
 # ── Estado (lo usará HU08/HU09; aquí para poder probar "cuenta desactivada") ─
@@ -1185,24 +729,8 @@ def cambiar_estado(guid: str, activo: bool, motivo: str | None = None, por: str 
     `GET /auth/sesion` (`desactivada`): ver README, "El JWT de acceso y la
     sesión cerrada". El `motivo` es
     obligatorio en la pantalla y queda en el registro, que es lo que lo vuelve
-    auditable."""
-    with registro.candado:
-        usuarios, _, _ = _indice()
-        if guid not in usuarios:
-            raise NoEncontrado(guid)
-        en = _ahora().isoformat(timespec="seconds")
-        # Primero se cierran las sesiones y DESPUÉS se marca la cuenta como desactivada (QA, HU08: «se tiene que cerrar
-        # primero la sesión y después desactivarlo»). Los dos renglones se escriben bajo el mismo candado, así que nadie
-        # ve la cuenta desactivada con una sesión viva, pero el registro ya cuenta la historia en ese orden.
-        if not activo:
-            registro.agregar(
-                ARCHIVO,
-                {"evento": "sesion_revocada", "guid": guid, "sesionGuid": None, "motivo": "DEACTIVATED", "en": en},
-            )
-        registro.agregar(
-            ARCHIVO,
-            {"evento": "estado", "guid": guid, "activo": activo, "motivo": motivo, "por": por, "en": en},
-        )
+    auditable (en SQL, en `nexus.userAdminEvents`)."""
+    usuarios_sql.cambiar_estado(guid, activo, motivo, por, _ahora())
     return por_guid(guid)
 
 
@@ -1242,19 +770,6 @@ def cerrar_sesiones(guid: str, motivo: str, por: str | None = None) -> int:
     segundos: pregunta por `GET /auth/sesion` (ver README).
 
     El rastro (`cierre_forzado`) se escribe ANTES de revocar, a propósito: si no
-    se puede escribir, no se cierra nada."""
-    with registro.candado:
-        usuarios, _, _ = _indice()
-        if guid not in usuarios:
-            raise NoEncontrado(guid)
-        registro.agregar(
-            ARCHIVO,
-            {
-                "evento": "cierre_forzado",
-                "guid": guid,
-                "motivo": motivo,
-                "por": por,
-                "en": _ahora().isoformat(timespec="seconds"),
-            },
-        )
-    return revocar_sesiones(guid, None, "FORCED_LOGOUT")
+    se puede escribir, no se cierra nada. (En SQL van los dos en la misma
+    transacción, en `nexus.userAdminEvents` y `userSessions`.)"""
+    return usuarios_sql.cerrar_sesiones(guid, motivo, por, _ahora())

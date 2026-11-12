@@ -1,16 +1,15 @@
-"""¿Los tipos documentales se comportan IGUAL guardados en SQL Server que guardados en el almacén?
+"""¿Los tipos documentales se comportan en SQL Server como se comportaban guardados en el almacén?
 
     .venv/Scripts/python verificar_tipos_documentales_sql.py
     .venv/Scripts/python verificar_tipos_documentales_sql.py --dejar   (deja el contenedor vivo para investigar)
 
 NO toca las bases de CSI. Levanta un SQL Server 2022 desechable en un contenedor (127.0.0.1:14332), le arma `IA_Nexus_Dev` con
-los permisos que dejó Charlie, le aplica las migraciones `0001` y `0002`, y corre LA MISMA batería de pruebas dos veces: una
-contra `tipos_documentales_archivo` (el JSONL de siempre, en una carpeta temporal) y otra contra `tipos_documentales_sql` (la
-tabla `nexus.documentTypes`). Al final compara los dos resultados.
+los permisos que dejó Charlie, le aplica las migraciones `0001` y `0002`, y corre la batería de pruebas contra `tipos_documentales_sql`
+(la tabla `nexus.documentTypes`).
 
-Esto es lo que protege de que los dos caminos se separen: desde el 2026-10-28 el producto usa SQL donde hay base y el archivo
-donde no (la laptop, las pruebas offline), así que un cambio de comportamiento en uno solo sería un error que únicamente
-aparecería en dev — o solo en la laptop.
+Hasta el 2026-11-11 la batería corría DOS veces —contra el JSONL de `tipos_documentales_archivo` y contra SQL— y comparaba: así se cuidaba
+que los dos caminos no se separaran. Ese día se quitó el camino JSONL (Moibe: «si házlo») y lo observado, que era idéntico en los dos, se
+CONGELÓ en `verificar_tipos_documentales_sql.congelado.json`: ahora se compara contra eso (ver `pruebas_sql.congelado`).
 
 De paso comprueba algo que no se puede comprobar de otro modo sin desplegar: que `usrNexus`, el usuario de la API, PUEDE leer y
 escribir en una tabla recién creada del esquema `nexus` (sus roles son de base entera, así que debería; aquí se ve de verdad).
@@ -317,29 +316,21 @@ try:
     rev("usrNexus (el usuario de la API) PUEDE leer la tabla nueva del esquema nexus", c.fetchone()[0] == 0)
     con.close()
 
-    titulo("2 · La batería contra el ALMACÉN (el JSONL de siempre)")
-    from servicios import tipos_documentales_archivo, tipos_documentales_comun  # noqa: E402
-
-    obs_archivo = bateria(tipos_documentales_archivo, tipos_documentales_comun)
-    rev(f"corrió entera ({len(obs_archivo)} observaciones)", True)
-
-    titulo("3 · La batería contra SQL SERVER (nexus.documentTypes)")
-    from servicios import tipos_documentales_sql  # noqa: E402
+    titulo("2 · La batería contra SQL SERVER (nexus.documentTypes)")
+    import pruebas_sql  # noqa: E402  (solo por `congelado`: esta prueba levanta su propio contenedor)
+    from servicios import tipos_documentales_comun, tipos_documentales_sql  # noqa: E402
 
     obs_sql = bateria(tipos_documentales_sql, tipos_documentales_comun)
     rev(f"corrió entera ({len(obs_sql)} observaciones)", True)
 
-    titulo("4 · ¿Se comportan IGUAL?")
-    distintas = [k for k in obs_archivo if obs_archivo[k] != obs_sql.get(k)]
-    for k in sorted(obs_archivo):
-        if k in distintas:
-            rev(f"{k}", False, f"almacén={obs_archivo[k]!r}  sql={obs_sql.get(k)!r}")
-    rev(f"las {len(obs_archivo)} observaciones coinciden entre los dos almacenamientos", not distintas)
+    titulo("3 · ¿Se comporta como lo congelado (lo que el JSONL y SQL observaban igual el 2026-11-11)?")
+    for k in sorted(obs_sql):
+        ok, detalle = pruebas_sql.congelado(__file__, k, obs_sql[k])
+        rev(k, ok, detalle)
 
-    titulo("4b · El nombre único hace lo que pide la regla (en los dos)")
+    titulo("4 · El nombre único hace lo que pide la regla")
     for clave, esperado in ESPERADO_NOMBRE.items():
-        for nombre_almacen, obs in (("almacén", obs_archivo), ("sql", obs_sql)):
-            rev(f"{clave} ({nombre_almacen})", obs.get(clave) == esperado, f"se observó {obs.get(clave)!r}, se esperaba {esperado!r}")
+        rev(clave, obs_sql.get(clave) == esperado, f"se observó {obs_sql.get(clave)!r}, se esperaba {esperado!r}")
 
     titulo("5 · Lo que SOLO la base puede cuidar")
     con = conectar("usrNexus", APP, BASE)

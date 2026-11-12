@@ -34,25 +34,14 @@ el id nombra cada categoría del clasificador y cada procesador en Google (y el 
 tipos con el mismo id, de organizaciones distintas, serían el mismo. Un id que ya existe en OTRA organización se contesta igual
 que uno repetido en la propia, sin nombrar de quién es.
 
-## Dónde se guarda (2026-10-28)
+## Dónde se guarda
 
-Este módulo es la PUERTA; el almacenamiento son dos, y se elige según haya base o no:
-
-- **`tipos_documentales_sql.py` — la tabla `nexus.documentTypes`** (migración `0002`). Es lo que corre en dev, staging y
-  producción. Primera entidad del producto en SQL: el piloto de la decisión del 2026-10-21 («Nexus sin stored procedures»).
-- **`tipos_documentales_archivo.py` — el JSONL del almacén**, lo de siempre. Es lo que corre donde NO hay base: la laptop de
-  Moibe (sus `SQLSERVER_*` están vacíos a propósito) y todas las pruebas offline.
-
-Se decide por `SQLSERVER_HOST`, el mismo interruptor con el que `app.py` publica o no el grupo `/documentos/*`, y se decide en
-cada llamada, no al importar. El módulo de SQL se importa tarde a propósito: sin base, `pyodbc` ni se carga (hay máquinas sin el
-runtime de ODBC, y ahí importarlo reventaría).
-
-⚠️ Los dos almacenamientos NO se sincronizan ni se migran entre sí: son el mismo producto sobre bases distintas. Lo que se dé de
-alta en la laptop no aparece en dev, y al revés. Las herramientas que reescriben registros del almacén (`renombrar_tenant.py`,
-`purgar_creado_por.py`) solo ven el JSONL: donde los tipos ya viven en SQL, no los tocan.
+En la tabla `nexus.documentTypes` (migración `0002`, `servicios/tipos_documentales_sql.py`): la primera entidad del producto en SQL, el
+piloto de la decisión del 2026-10-21 («Nexus sin stored procedures»). Este módulo es la puerta a la que llaman los routers. Hasta el
+2026-11-11 existía además un almacenamiento en JSONL para donde no había base (`tipos_documentales_archivo.py`); ya no existe.
 """
 
-from config import SQLSERVER_HOST
+from servicios import tipos_documentales_sql
 
 # Los errores del dominio viven en el módulo común, pero se re-exportan aquí porque es a esta puerta a la que llaman los
 # routers (`except registro_tipos.Conflicto`), y quien llama no tiene por qué saber dónde se guarda.
@@ -67,19 +56,8 @@ from servicios.tipos_documentales_comun import (  # noqa: F401
 
 
 def _almacenamiento():
-    """El módulo que guarda: SQL si el `.env` dice que hay base, el almacén si no."""
-    if SQLSERVER_HOST:
-        from servicios import tipos_documentales_sql
-
-        return tipos_documentales_sql
-    from servicios import tipos_documentales_archivo
-
-    return tipos_documentales_archivo
-
-
-def en_sql() -> bool:
-    """Si los tipos de esta instancia viven en la base. Para que un diagnóstico pueda decirlo sin adivinar."""
-    return bool(SQLSERVER_HOST)
+    """El módulo que guarda."""
+    return tipos_documentales_sql
 
 
 def listar(tenant: str) -> list[dict]:

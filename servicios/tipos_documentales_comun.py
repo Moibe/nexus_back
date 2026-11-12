@@ -1,8 +1,8 @@
-"""Lo que los DOS almacenamientos de tipos documentales comparten: qué es un tipo válido, cómo se ve hacia afuera y sus errores.
+"""Lo que define a un tipo documental, aparte de dónde se guarda: qué es un tipo válido, cómo se ve hacia afuera y sus errores.
 
-Aquí no hay nada que sepa dónde se guarda. Lo usan `tipos_documentales_archivo.py` (el JSONL del almacén) y
-`tipos_documentales_sql.py` (la tabla `nexus.documentTypes`), y a través de ellos la puerta pública,
-`servicios/tipos_documentales.py`, que es la que documenta el dominio.
+Lo usa `tipos_documentales_sql.py` (la tabla `nexus.documentTypes`), y a través de él la puerta pública,
+`servicios/tipos_documentales.py`, que es la que documenta el dominio. (Hasta el 2026-11-11 lo compartía con el almacenamiento en JSONL,
+`tipos_documentales_archivo.py`, que ya no existe.)
 """
 
 import json

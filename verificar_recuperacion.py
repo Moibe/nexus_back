@@ -41,7 +41,9 @@ os.environ["FRONT_URL"] = "http://localhost:3400"
 # Todo el script prueba el modo neutral del criterio CA-2; el modo que le dice a quien pregunta que ese correo no tiene
 # cuenta (el predeterminado desde el 2026-10-20, a pedido de QA) se prueba en el bloque 19 prendiendo la bandera.
 os.environ["RECUPERACION_DICE_SI_EXISTE"] = "0"
-os.environ.setdefault("SQLSERVER_HOST", "")
+import pruebas_sql  # noqa: E402  (desde el 2026-11-11 todo se guarda en SQL Server: esta prueba corre contra uno desechable)
+
+BASE_SQL = pruebas_sql.preparar()
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -137,10 +139,23 @@ def login(correo_: str, contrasena: str, origen: str | None = None):
     return c.post("/auth/login", json=cuerpo, headers=srv())
 
 
+def sql(consulta: str, *parametros) -> None:
+    """Una instrucción directa a la base de la prueba (con el usuario de la API)."""
+    con = BASE_SQL["conectar"]("usrNexus", BASE_SQL["app"], BASE_SQL["base"])
+    try:
+        con.cursor().execute(consulta, *parametros)
+    finally:
+        con.close()
+
+
 def vaciar_auditoria() -> None:
-    ruta = RAIZ / ".registro" / "auditoria.jsonl"
-    if ruta.exists():
-        ruta.write_text("", encoding="utf-8")
+    sql("DELETE FROM nexus.auditEvents")
+
+
+def bitacora() -> list[dict]:
+    from servicios import auditoria as _bitacora  # la bitácora vive en `nexus.auditEvents`
+
+    return _bitacora.eventos()
 
 
 def crear_activo(correo_: str, nombre: str) -> dict:
@@ -150,15 +165,8 @@ def crear_activo(correo_: str, nombre: str) -> dict:
 
 
 def forzar_vencimiento(token: str) -> None:
-    """Reescribe `expira` en el registro, como `verificar_correo.py`."""
-    ruta = RAIZ / ".registro" / "tokens.jsonl"
-    lineas = []
-    for linea in ruta.read_text(encoding="utf-8").splitlines():
-        e = json.loads(linea)
-        if e.get("evento") == "creado" and e.get("hash") == tokens.hash_de(token):
-            e["expira"] = "2020-01-01T00:00:00+00:00"
-        lineas.append(json.dumps(e, ensure_ascii=False))
-    ruta.write_text("\n".join(lineas) + "\n", encoding="utf-8")
+    """Lo deja vencido en la base, como `verificar_correo.py`."""
+    sql("UPDATE nexus.accessTokens SET expiresAt = '2020-01-01' WHERE tokenHash = ?", tokens.hash_de(token))
 
 
 try:
@@ -232,8 +240,7 @@ try:
     rev("sin correo y sin token", len(correos()) == 0 and tokens.pendientes_de(dora["guid"]) == [])
 
     titulo("6 · CA-10: cada solicitud queda anotada, exista la cuenta o no")
-    ruta_aud = RAIZ / ".registro" / "auditoria.jsonl"
-    eventos = [json.loads(x) for x in ruta_aud.read_text(encoding="utf-8").splitlines() if x.strip()]
+    eventos = bitacora()
     pedidos = [e for e in eventos if e["accion"] == "PASSWORD_RESET_REQUESTED"]
     rev("hay un PASSWORD_RESET_REQUESTED por solicitud válida", len(pedidos) >= 5, str(len(pedidos)))
     rev("todos con fecha y hora", all(e.get("en") for e in pedidos))
@@ -289,12 +296,12 @@ try:
     rev("la contraseña no cambió por el segundo intento", login("ana@ejemplo.com", CONTRASENA_NUEVA).status_code == 200)
 
     titulo("10 · CA-6: PASSWORD_RESET_COMPLETED queda anotado, sin secretos")
-    eventos = [json.loads(x) for x in ruta_aud.read_text(encoding="utf-8").splitlines() if x.strip()]
+    eventos = bitacora()
     hechos = [e for e in eventos if e["accion"] == "PASSWORD_RESET_COMPLETED"]
     rev("hay un COMPLETED", len(hechos) == 1, str(len(hechos)))
     rev("con la persona y la hora", hechos[0].get("usuarioGuid") == ana["guid"] and bool(hechos[0].get("en")))
-    crudo = "".join((RAIZ / ".registro" / f).read_text(encoding="utf-8") for f in sorted(os.listdir(RAIZ / ".registro")))
-    rev("el token en claro NO está en ningún registro", tok not in crudo)
+    crudo = pruebas_sql.volcado(BASE_SQL)
+    rev("el token en claro NO está en ninguna parte de la base", tok not in crudo)
     rev("ni la contraseña nueva", CONTRASENA_NUEVA not in crudo)
     registros_log = "\n".join(captura.mensajes)
     rev("ni el token ni la contraseña salieron en el log", tok not in registros_log and CONTRASENA_NUEVA not in registros_log)
@@ -415,11 +422,7 @@ try:
         r_si.status_code == 200 and r_si.json().get("mensaje") == MENSAJE_NEUTRO, r_si.text)
     r_pablo = solicitar("pablo@ejemplo.com", ip="203.0.113.79")
     rev("igual la que no ha hecho su primer acceso", r_pablo.status_code == 200, r_pablo.text)
-    eventos_sc = [
-        json.loads(l)
-        for l in (RAIZ / ".registro" / "auditoria.jsonl").read_text(encoding="utf-8").splitlines()
-        if l.strip()
-    ]
+    eventos_sc = bitacora()
     rev("la solicitud sin cuenta SE ANOTÓ igual (SIN_CUENTA)",
         any(e.get("accion") == "PASSWORD_RESET_REQUESTED" and e.get("resultado") == "SIN_CUENTA" for e in eventos_sc))
     config.RECUPERACION_DICE_SI_EXISTE = False

@@ -26,7 +26,9 @@ SERVICIO = "llave-de-servicio-solo-local"
 os.environ["ALMACEN_RUTA"] = str(RAIZ)
 os.environ["NEXUS_API_KEY"] = SERVICIO
 os.environ["AUTH_JWT_SECRET"] = "secreto-de-prueba-de-al-menos-32-caracteres-xx"
-os.environ.setdefault("SQLSERVER_HOST", "")
+import pruebas_sql  # noqa: E402  (desde el 2026-11-11 todo se guarda en SQL Server: esta prueba corre contra uno desechable)
+
+BASE_SQL = pruebas_sql.preparar()
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -68,15 +70,21 @@ def con_primer_acceso(correo: str, temporal: str, definitiva: str) -> str:
 
 
 def descartes() -> list[dict]:
-    ruta = RAIZ / ".registro" / "auditoria.jsonl"
-    if not ruta.exists():
-        return []
-    return [e for e in (json.loads(x) for x in ruta.read_text(encoding="utf-8").splitlines() if x.strip()) if e.get("accion") == "DOCUMENT_DISCARDED"]
+    from servicios import auditoria as _bitacora  # la bitácora vive en `nexus.auditEvents`
+
+    return _bitacora.eventos({"DOCUMENT_DISCARDED"})
 
 
 def retiros(tenant: str) -> list[dict]:
-    ruta = RAIZ / ".registro" / f"bandeja-{tenant}.jsonl"
-    return [e for e in (json.loads(x) for x in ruta.read_text(encoding="utf-8").splitlines() if x.strip()) if e.get("evento") == "retiro"]
+    """Las entradas de esa bandeja que ya salieron, en el orden en que salieron: `{"id", "motivo", "detalle"}` (de `nexus.inboxEntries`)."""
+    con = BASE_SQL["conectar"]("usrNexus", BASE_SQL["app"], BASE_SQL["base"])
+    try:
+        filas = con.cursor().execute(
+            "SELECT publicId, removalReason, removalDetail FROM nexus.inboxEntries WHERE tenant = ? AND removedAt IS NOT NULL ORDER BY removedAt, entryId", tenant
+        ).fetchall()
+    finally:
+        con.close()
+    return [{"id": f[0], "motivo": f[1], "detalle": f[2]} for f in filas]
 
 
 try:
