@@ -257,6 +257,10 @@ try:
     contestar({"campos": [{"campo": "Calle", "descripcion": "La primera línea del domicilio.", "valor": "CALLE LAURELES 12", "estructura": "CALLE LAURELES 99"}]})
     x = pedir_campos(a_admin, org_a, campos=[{"nombre": "Calle", "tipoDato": "texto", "descripcion": "", "pagina": 1, "caja": [100, 50, 130, 600]}]).json()["campos"][0]
     rev("…pero una palabra del valor que no es genérica («LAURELES») sí lo tira", x["valorEstructura"] == "", str(x))
+    contestar({"campos": [{"campo": "Calle", "descripcion": "Número del contrato de arrendamiento.", "valor": "ARRENDAMIENTO 2024-117", "estructura": "ARRENDAMIENTO 2023-045"}]})
+    x = pedir_campos(a_admin, org_a, campos=[{"nombre": "Calle", "tipoDato": "texto", "descripcion": "", "pagina": 1, "caja": [100, 50, 130, 600]}]).json()["campos"][0]
+    rev("…y una palabra genérica LARGA tampoco cuenta como pedazo de un código (en el navegador se tiraba «Ejemplo de Observaciones»)",
+        x["valorEstructura"] == "ARRENDAMIENTO 2023-045", str(x))
     rev(f"un ejemplo larguísimo se recorta a {ubicar.MAX_ESTRUCTURA} caracteres", len(ejemplo("A1", "B" * 500)) == ubicar.MAX_ESTRUCTURA)
 
     def tipo_de(crudo) -> object:

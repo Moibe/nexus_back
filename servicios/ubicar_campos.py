@@ -434,7 +434,9 @@ def _comparte_datos(ejemplo: str, valor: str, generico: str = "") -> bool:
     del_ejemplo = set(_palabras(ejemplo))
     genericas = set(_palabras(generico))
     for p in _palabras(valor):
-        if len(p) >= MIN_VALOR_A_QUITAR and p in del_ejemplo and p not in genericas:
+        if p in genericas:
+            continue
+        if len(p) >= MIN_VALOR_A_QUITAR and p in del_ejemplo:
             return True
         if len(p) >= 10 and any(p[i:i + 8] in e for i in range(len(p) - 7)):
             return True
