@@ -62,6 +62,10 @@ try:
         # desde el recuadro de un campo (97f16a3, ver verificar_describir_campo.py). Ninguna guarda nada.
         ("POST", "/procesadores/ubicar-campos"),
         ("POST", "/procesadores/describir-campo"),
+        # 2026-11-12: cada recuadro completa su campo (descripción, tipo y ejemplo de la forma) y un recuadro dibujado propone un campo nuevo
+        # (ver verificar_completar_campos.py). Tampoco guardan nada.
+        ("POST", "/procesadores/describir-campos"),
+        ("POST", "/procesadores/proponer-campo"),
         ("POST", "/procesadores/clasificador/sincronizar"),
         ("POST", "/procesadores/clasificador/asegurar"),
         ("GET", "/procesadores/clasificador"),

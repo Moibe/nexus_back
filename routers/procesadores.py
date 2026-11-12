@@ -310,16 +310,33 @@ async def ubicar_campos(
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
+async def _documento_para_gemini(archivo: UploadFile, para: str) -> tuple[bytes, str]:
+    """El documento de ejemplo para Gemini, revisado: solo PDF, JPG o PNG (el formato se revisa ANTES de leer nada) y no más de lo que admite.
+    `para` completa el mensaje: «Para {para} usa PDF, JPG o PNG.»"""
+    mime = normalizar_tipo(archivo.content_type)
+    if mime not in gemini.MIME_PARA_GEMINI:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Para {para} usa PDF, JPG o PNG.")
+    contenido = await _leer_subida(archivo)
+    if len(contenido) > gemini.MAX_BYTES_DOCUMENTOS:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"El documento pesa demasiado: a lo más {gemini.MAX_BYTES_DOCUMENTOS // (1024 * 1024)} MB.",
+        )
+    return contenido, mime
+
+
 @router.post(
     "/describir-campo",
     tags=["Procesadores"],
-    summary="Proponer la descripción de un campo a partir de su recuadro sobre un documento de ejemplo",
+    summary="Completar UN campo a partir de su recuadro sobre un documento de ejemplo",
     description=(
-        "Acompaña a `/ubicar-campos` (Moibe, 2026-11-11): mover o dibujar un recuadro no cambia el esquema, pero la DESCRIPCIÓN del campo sí es "
-        "lo que lee el extractor. Recibe el documento, `campo` (JSON: `{nombre, tipoDato, descripcion}`), la `pagina` y la `caja` (JSON: "
-        "`[ymin, xmin, ymax, xmax]` de 0 a 1000) que marcó la persona, y opcionalmente el nombre y la descripción del tipo. Gemini mira esa zona y "
-        "devuelve `{descripcion, valor, modelo}`: una descripción que sirva para cualquier documento del tipo (sin datos de este) y el texto que leyó "
-        "en la caja. No guarda nada. Solo PDF, JPG o PNG. Pide el rol que administra tipos documentales."
+        "Acompaña a `/ubicar-campos` (Moibe, 2026-11-11; desde el 2026-11-12 también el tipo y la estructura): el recuadro no viaja a Google, pero lo "
+        "que hay dentro sirve para escribir lo que el extractor sí lee. Recibe el documento, `campo` (JSON: `{nombre, tipoDato, descripcion}`), la "
+        "`pagina` y la `caja` (JSON: `[ymin, xmin, ymax, xmax]` de 0 a 1000) que marcó la persona, y opcionalmente el nombre y la descripción del tipo. "
+        "Gemini mira esa zona y devuelve `{descripcion, tipoDato, valorEstructura, valor, modelo}`: una descripción que sirva para cualquier documento "
+        "del tipo (sin datos de este), el tipo de dato que corresponde a lo que se lee (`null` en una lista o un grupo), un ejemplo inventado con la "
+        "misma forma y el texto que leyó en la caja. Es `/describir-campos` con un solo campo. No guarda nada. Solo PDF, JPG o PNG. Pide el rol que "
+        "administra tipos documentales."
     ),
 )
 async def describir_campo(
@@ -339,17 +356,81 @@ async def describir_campo(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El campo o el recuadro no son un JSON válido.") from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    mime = normalizar_tipo(archivo.content_type)
-    if mime not in gemini.MIME_PARA_GEMINI:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Para sugerir la descripción con el recuadro usa PDF, JPG o PNG.")
-    contenido = await _leer_subida(archivo)
-    if len(contenido) > gemini.MAX_BYTES_DOCUMENTOS:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"El documento pesa demasiado: a lo más {gemini.MAX_BYTES_DOCUMENTOS // (1024 * 1024)} MB.",
-        )
+    contenido, mime = await _documento_para_gemini(archivo, "sugerir la descripción con el recuadro")
     try:
         return await ubicar.describir(contenido, mime, pedido)
+    except ubicar.ErrorUbicar as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@router.post(
+    "/describir-campos",
+    tags=["Procesadores"],
+    summary="Completar varios campos a partir de sus recuadros sobre un documento de ejemplo",
+    description=(
+        "El recuadro completa el campo (Moibe, 2026-11-12: «quiero que ese etiquetado sí sirva para definir el schema»). Recibe el documento y "
+        "`campos` (JSON: `[{nombre, tipoDato, descripcion, pagina, caja}]`, hasta 60, cada uno con la caja `[ymin, xmin, ymax, xmax]` de 0 a 1000 "
+        "donde está su valor) y, si se tienen, el nombre y la descripción del tipo. Gemini mira lo que hay dentro de cada recuadro y devuelve "
+        "`{campos: [{nombre, descripcion, tipoDato, valorEstructura, valor}], modelo}`: por campo, una descripción que sirva para cualquier documento "
+        "del tipo (zona, rótulo y forma; sin datos de este), el tipo de dato que corresponde a lo que se lee (texto, numero, fecha, moneda o booleano; "
+        "`null` en una lista o un grupo), un ejemplo INVENTADO con la misma forma (vacío si traía datos del documento) y el texto leído. Un campo que no "
+        "se pudo leer no viene. No guarda nada. Solo PDF, JPG o PNG. Pide el rol que administra tipos documentales."
+    ),
+)
+async def describir_campos(
+    archivo: UploadFile = File(..., description="El documento de ejemplo (PDF, JPG o PNG)"),
+    tenant: str = Form(..., description="La organización"),
+    campos: str = Form(..., max_length=60000, description="JSON: `[{nombre, tipoDato, descripcion, pagina, caja}]`"),
+    nombreTipo: str = Form("", max_length=200),
+    descripcionTipo: str = Form("", max_length=2000),
+    authorization: str | None = Header(default=None),
+):
+    aislamiento.exigir_administrar(authorization, tenant, "tipo_documental")
+    try:
+        pedido = ubicar.limpiar_pedido_campos(json.loads(campos), nombreTipo, descripcionTipo)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Los campos no son un JSON válido.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    contenido, mime = await _documento_para_gemini(archivo, "completar los campos con sus recuadros")
+    try:
+        return await ubicar.completar(contenido, mime, pedido)
+    except ubicar.ErrorUbicar as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@router.post(
+    "/proponer-campo",
+    tags=["Procesadores"],
+    summary="Proponer un campo nuevo a partir de un recuadro dibujado sobre un documento de ejemplo",
+    description=(
+        "Dibujar crea el campo (Moibe, 2026-11-12). Recibe el documento, la `pagina` y la `caja` (JSON: `[ymin, xmin, ymax, xmax]` de 0 a 1000) que "
+        "dibujó la persona donde no había campo, `existentes` (JSON: los nombres que ya están en la lista o en el tipo, para no repetirlos) y, si se "
+        "tienen, el nombre y la descripción del tipo. Gemini mira lo que hay dentro y devuelve `{nombre, descripcion, tipoDato, valorEstructura, valor, "
+        "modelo}`: el campo que sería (de preferencia con el rótulo impreso junto al valor), como en `/describir-campos`. No guarda nada: la persona "
+        "lo revisa antes de agregarlo. Solo PDF, JPG o PNG. Pide el rol que administra tipos documentales."
+    ),
+)
+async def proponer_campo(
+    archivo: UploadFile = File(..., description="El documento de ejemplo (PDF, JPG o PNG)"),
+    tenant: str = Form(..., description="La organización"),
+    pagina: int = Form(1, description="La página del recuadro, desde 1"),
+    caja: str = Form(..., max_length=200, description="JSON: `[ymin, xmin, ymax, xmax]` de 0 a 1000"),
+    existentes: str = Form("[]", max_length=20000, description="JSON: los nombres de los campos que ya existen"),
+    nombreTipo: str = Form("", max_length=200),
+    descripcionTipo: str = Form("", max_length=2000),
+    authorization: str | None = Header(default=None),
+):
+    aislamiento.exigir_administrar(authorization, tenant, "tipo_documental")
+    try:
+        pedido = ubicar.limpiar_pedido_proponer(pagina, json.loads(caja), nombreTipo, descripcionTipo, json.loads(existentes))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El recuadro o los campos existentes no son un JSON válido.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    contenido, mime = await _documento_para_gemini(archivo, "proponer un campo con un recuadro")
+    try:
+        return await ubicar.proponer(contenido, mime, pedido)
     except ubicar.ErrorUbicar as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 

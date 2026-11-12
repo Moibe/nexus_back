@@ -10,13 +10,15 @@ Medido el 2026-11-11 con un pasaporte SINTÉTICO (datos inventados, 900×600 px)
 valor con error de unos pocos píxeles, el campo que no existía («Autoridad») devuelto como no encontrado; 6.4 s, ~2,400 tokens (~US$0.0005).
 
 Es una AYUDA VISUAL: no decide nada, no se guarda y no es lo que extraerá el procesador (eso lo hace Document AI al activar el tipo). Si falla, la
-propuesta de campos sigue sirviendo igual: el front enseña el documento sin marcas. Misma credencial, región y modelo que `servicios/gemini.py`.
+propuesta de campos sigue sirviendo igual: el front enseña el documento sin marcas. Lo que SÍ llega al esquema es lo que se escribe a partir de
+cada recuadro (descripción, tipo y un ejemplo de la forma: `completar` y `proponer`, al final, desde el 2026-11-12). Misma credencial, región y modelo que `servicios/gemini.py`.
 Los documentos salen a Google con esta llamada, como ya pasa con Document AI y con «Sugerir descripción con documentos».
 """
 
 import base64
 import json
 import logging
+import re
 import unicodedata
 
 import httpx
@@ -147,7 +149,9 @@ def leer_respuesta(texto: str, campos: list[dict]) -> list[dict]:
     return ubicaciones
 
 
-async def _preguntar(contenido: bytes, mime: str, prompt: str, esquema: dict, que: str, fallo: str, no_disponible: str) -> tuple[str, str]:
+async def _preguntar(
+    contenido: bytes, mime: str, prompt: str, esquema: dict, que: str, fallo: str, no_disponible: str, max_tokens: int = MAX_TOKENS_SALIDA
+) -> tuple[str, str]:
     """Le manda a Gemini el documento y el prompt, pidiendo JSON con `esquema`. Devuelve `(texto, motivo_de_fin)` o levanta `ErrorUbicar` con
     un mensaje que se puede mostrar (nunca el detalle de Google: va al log). `que` solo sirve para el log."""
     if not DOCAI_PROJECT_ID:
@@ -166,7 +170,7 @@ async def _preguntar(contenido: bytes, mime: str, prompt: str, esquema: dict, qu
             {"text": prompt},
         ]}],
         "generationConfig": {
-            "maxOutputTokens": MAX_TOKENS_SALIDA,
+            "maxOutputTokens": max_tokens,
             "temperature": 0,
             "responseMimeType": "application/json",
             "responseSchema": esquema,
@@ -209,69 +213,179 @@ async def ubicar(contenido: bytes, mime: str, campos: list[dict]) -> dict:
     return {"ubicaciones": ubicaciones, "modelo": GEMINI_MODELO}
 
 
-# ── Describir un campo a partir de su recuadro ───────────────────────────────────────────────────────────────────────────────────────────
-# Moibe, 2026-11-11 («sí, excelente, por favor la 1»): mover o dibujar un recuadro no cambia el esquema (no se guarda ni se le manda a Google);
-# lo que el extractor sí lee es la DESCRIPCIÓN de cada campo. Aquí Gemini mira la zona que la persona marcó y PROPONE una descripción que sirva para
-# encontrar ese dato en cualquier documento del tipo. La persona decide si la usa; nada se guarda aquí.
+# ── Completar los campos con su recuadro ─────────────────────────────────────────────────────────────────────────────────────────────────
+# 2026-11-11 (Moibe, «sí, excelente, por favor la 1»): mover o dibujar un recuadro no cambiaba el esquema, porque el recuadro no se guarda ni se le
+# manda a Google; lo que el extractor sí lee de cada campo es su nombre, su tipo, su DESCRIPCIÓN y su «valor de estructura» (un ejemplo de su forma,
+# que viaja dentro de la descripción: `esquema._descripcion_de`). Entonces el recuadro solo SUGERÍA la descripción del campo que se editaba.
+#
+# 2026-11-12 (Moibe: «quiero que ese etiquetado sí sirva para definir el schema»; eligió «El recuadro completa el campo» y «Dibujar crea el campo»):
+# ahora cada recuadro se convierte en esas cosas. Gemini mira lo que hay dentro de cada uno y escribe, por campo, la descripción (qué dato es, en qué
+# zona y junto a qué rótulo, y su forma), el tipo de dato que corresponde a lo que se lee y un ejemplo INVENTADO con la misma forma (`completar`). Y un
+# recuadro dibujado donde no había campo PROPONE uno nuevo, con su nombre (`proponer`). Nada se guarda aquí: el front lo pone en la lista, sin pisar
+# lo que la persona escribió, y ella decide qué agrega al tipo.
 
 #: Lo más largo que puede ser la descripción propuesta: lo mismo que admite el formulario del front.
 MAX_DESCRIPCION_PROPUESTA = 200
 MAX_TEXTO_TIPO = 600
 #: Un valor más corto que esto no se busca dentro de la descripción (una «F» o un «1» aparecen en cualquier frase).
 MIN_VALOR_A_QUITAR = 4
+#: Lo más largo de un ejemplo de estructura (una línea de MRZ mide 44 caracteres; un domicilio completo, más).
+MAX_ESTRUCTURA = 120
+#: Cuántos nombres de campos que ya existen viajan al proponer uno nuevo (para que no repita ninguno).
+MAX_EXISTENTES = 200
+#: ~100 tokens por campo más el razonamiento (ver «Lo que hay que respetar» en `servicios/gemini.py`): con 60 campos, 8192 se quedaría corto.
+MAX_TOKENS_COMPLETAR = 16384
+#: Los tipos que se pueden deducir de UN valor. «Lista» y «grupo» no: dependen de todos los valores posibles o de cómo está armado el documento.
+TIPOS_DEDUCIBLES = ("texto", "numero", "fecha", "moneda", "booleano")
+_SINONIMOS_TIPO = {
+    "texto": "texto", "text": "texto", "string": "texto", "cadena": "texto",
+    "numero": "numero", "número": "numero", "number": "numero", "entero": "numero", "integer": "numero",
+    "fecha": "fecha", "date": "fecha",
+    "moneda": "moneda", "currency": "moneda", "importe": "moneda", "dinero": "moneda",
+    "booleano": "booleano", "boolean": "booleano", "bool": "booleano", "si o no": "booleano", "sí o no": "booleano",
+}
 
 MENSAJE_DESCRIBIR_FALLO = "No se pudo sugerir una descripción con este recuadro."
 MENSAJE_DESCRIBIR_NO_DISPONIBLE = "Sugerir la descripción con el recuadro no está disponible en este servidor."
+MENSAJE_COMPLETAR_FALLO = "No se pudieron completar los campos con sus recuadros."
+MENSAJE_COMPLETAR_NO_DISPONIBLE = "Completar los campos con sus recuadros no está disponible en este servidor."
+MENSAJE_PROPONER_FALLO = "No se pudo proponer un campo con este recuadro."
+MENSAJE_PROPONER_NO_DISPONIBLE = "Proponer un campo con un recuadro no está disponible en este servidor."
 
-_ESQUEMA_DESCRIPCION = {
+_PROPIEDADES_COMPLETADO = {
+    "descripcion": {"type": "STRING"},
+    "tipoDato": {"type": "STRING"},
+    "estructura": {"type": "STRING"},
+    "valor": {"type": "STRING"},
+}
+# `propertyOrdering`: Gemini escribe las propiedades en ESTE orden (sin él, en orden alfabético: la descripción antes que el valor). Primero lee lo que
+# hay en la caja y después lo describe; al revés, con Gemini real (2026-11-12), un recuadro dibujado sobre el número de pasaporte salía como «Fecha de
+# expedición», el único campo que faltaba en la lista, con el valor de esa fecha.
+_ESQUEMA_COMPLETAR = {
     "type": "OBJECT",
-    "properties": {"descripcion": {"type": "STRING"}, "valor": {"type": "STRING"}},
-    "required": ["descripcion"],
+    "properties": {
+        "campos": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {"campo": {"type": "STRING"}, **_PROPIEDADES_COMPLETADO},
+                "required": ["campo", "descripcion"],
+                "propertyOrdering": ["campo", "valor", "descripcion", "tipoDato", "estructura"],
+            },
+        }
+    },
+    "required": ["campos"],
+}
+_ESQUEMA_PROPONER = {
+    "type": "OBJECT",
+    "properties": {"nombre": {"type": "STRING"}, **_PROPIEDADES_COMPLETADO},
+    "required": ["nombre", "descripcion"],
+    "propertyOrdering": ["valor", "nombre", "descripcion", "tipoDato", "estructura"],
 }
 
 _TIPOS_LEGIBLES = {"texto": "texto", "numero": "número", "fecha": "fecha", "moneda": "moneda", "booleano": "sí o no", "lista": "lista de valores", "grupo": "grupo de campos"}
 
+# Lo que se pide de cada campo: lo mismo al completar los que ya están en la lista que al proponer uno nuevo.
+_PIDE_DESCRIPCION = (
+    "- `descripcion`: una descripción NUEVA que ayude a encontrar ese campo en CUALQUIER documento de este tipo, no solo en este: qué dato es, en qué "
+    "zona de la página suele estar y junto a qué rótulo o encabezado impreso, y su forma (cuántos renglones, formato de la fecha o del número, "
+    f"caracteres típicos). En español, una o dos frases, a lo más {MAX_DESCRIPCION_PROPUESTA - 20} caracteres.\n"
+)
+_PIDE_TIPO = (
+    "- `tipoDato`: según lo que se lee en la caja, uno de: texto, numero, fecha, moneda, booleano. `fecha` si es una fecha; `numero` si es solo una "
+    "cantidad; `moneda` si es un importe de dinero; `booleano` si es sí o no, o una casilla marcada o vacía. Los códigos, folios, claves y números de "
+    "identificación (con letras, o con ceros a la izquierda) son `texto`.\n"
+)
+_PIDE_ESTRUCTURA = (
+    "- `estructura`: un ejemplo INVENTADO del valor, con exactamente la misma forma (largo, separadores y tipo de caracteres) pero con datos ficticios: "
+    "sirve para que el extractor sepa qué forma tiene. Nunca uses el valor de este documento ni partes de él.\n"
+)
+_PIDE_VALOR = "- `valor`: el texto que se lee dentro de la caja, tal cual.\n"
+_NO_COPIES = "NO copies el valor ni ningún dato de este documento en particular (nombres, números, fechas concretas)"
 
-def limpiar_pedido_descripcion(campo: object, pagina: int, caja: object, nombre_tipo: str, descripcion_tipo: str) -> dict:
-    """El pedido validado: `{nombre, tipoDato, descripcion, pagina, caja, tipo, descripcionTipo}`. `ValueError` con un texto mostrable si no sirve."""
-    if not isinstance(campo, dict) or not isinstance(campo.get("nombre"), str) or not " ".join(campo["nombre"].split()):
-        raise ValueError("El campo debe traer su nombre.")
-    caja_ok = _caja_valida(caja)
-    if caja_ok is None:
-        raise ValueError("El recuadro no es válido.")
-    if not 1 <= pagina <= 2000:
-        raise ValueError("La página no es válida.")
-    tipo_dato = campo.get("tipoDato") if isinstance(campo.get("tipoDato"), str) else "texto"
-    descripcion = campo.get("descripcion") if isinstance(campo.get("descripcion"), str) else ""
+
+def _del_tipo(p: dict) -> str:
+    if not p["tipo"]:
+        return ""
+    return f" del tipo «{p['tipo']}»" + (f" ({p['descripcionTipo']})" if p["descripcionTipo"] else "")
+
+
+def _contexto_tipo(nombre_tipo: str, descripcion_tipo: str) -> dict:
     return {
-        "nombre": " ".join(campo["nombre"].split())[:MAX_NOMBRE],
-        "tipoDato": tipo_dato if tipo_dato in _TIPOS_LEGIBLES else "texto",
-        "descripcion": " ".join(descripcion.split())[:MAX_DESCRIPCION],
-        "pagina": pagina,
-        "caja": caja_ok,
         "tipo": " ".join((nombre_tipo or "").split())[:MAX_NOMBRE],
         "descripcionTipo": " ".join((descripcion_tipo or "").split())[:MAX_TEXTO_TIPO],
     }
 
 
-def armar_prompt_descripcion(p: dict) -> str:
-    del_tipo = ""
-    if p["tipo"]:
-        del_tipo = f" del tipo «{p['tipo']}»" + (f" ({p['descripcionTipo']})" if p["descripcionTipo"] else "")
-    actual = f"«{p['descripcion']}»" if p["descripcion"] else "no tiene"
+def _pagina_valida(pagina: object) -> int:
+    if isinstance(pagina, bool) or not isinstance(pagina, int) or not 1 <= pagina <= 2000:
+        raise ValueError("La página no es válida.")
+    return pagina
+
+
+def _campo_con_caja(c: object) -> dict:
+    """Un campo con su recuadro, validado: `{nombre, tipoDato, descripcion, pagina, caja}`. `ValueError` con un texto mostrable si no sirve."""
+    if not isinstance(c, dict) or not isinstance(c.get("nombre"), str) or not " ".join(c["nombre"].split()):
+        raise ValueError("Cada campo debe traer su nombre.")
+    caja = _caja_valida(c.get("caja"))
+    if caja is None:
+        raise ValueError("El recuadro no es válido.")
+    tipo_dato = c.get("tipoDato") if isinstance(c.get("tipoDato"), str) else "texto"
+    descripcion = c.get("descripcion") if isinstance(c.get("descripcion"), str) else ""
+    return {
+        "nombre": " ".join(c["nombre"].split())[:MAX_NOMBRE],
+        "tipoDato": tipo_dato if tipo_dato in _TIPOS_LEGIBLES else "texto",
+        "descripcion": " ".join(descripcion.split())[:MAX_DESCRIPCION],
+        "pagina": _pagina_valida(c.get("pagina", 1)),
+        "caja": caja,
+    }
+
+
+def limpiar_pedido_campos(campos: object, nombre_tipo: str, descripcion_tipo: str) -> dict:
+    """Varios campos con su recuadro sobre UN documento: `{campos: [...], tipo, descripcionTipo}`, sin repetidos. `ValueError` si no sirven."""
+    if not isinstance(campos, list):
+        raise ValueError("Los campos deben ser una lista.")
+    limpios: list[dict] = []
+    vistos: set[str] = set()
+    for c in campos:
+        campo = _campo_con_caja(c)
+        if _clave(campo["nombre"]) in vistos:
+            raise ValueError(f"El campo «{campo['nombre']}» viene repetido.")
+        vistos.add(_clave(campo["nombre"]))
+        limpios.append(campo)
+    if not limpios:
+        raise ValueError("No hay campos que completar.")
+    if len(limpios) > MAX_CAMPOS:
+        raise ValueError(f"Son demasiados campos: a lo más {MAX_CAMPOS}.")
+    return {"campos": limpios, **_contexto_tipo(nombre_tipo, descripcion_tipo)}
+
+
+def limpiar_pedido_descripcion(campo: object, pagina: int, caja: object, nombre_tipo: str, descripcion_tipo: str) -> dict:
+    """UN campo con su recuadro (la ruta `/describir-campo`): el mismo pedido que arma `limpiar_pedido_campos`, con una sola entrada."""
+    if not isinstance(campo, dict):
+        raise ValueError("Cada campo debe traer su nombre.")
+    return {"campos": [_campo_con_caja({**campo, "pagina": pagina, "caja": caja})], **_contexto_tipo(nombre_tipo, descripcion_tipo)}
+
+
+def armar_prompt_completar(p: dict) -> str:
+    renglones = "\n".join(
+        f"- «{c['nombre']}» (tipo de dato actual: {_TIPOS_LEGIBLES[c['tipoDato']]}): página {c['pagina']}, "
+        f"caja [ymin, xmin, ymax, xmax] = {c['caja']}. Su descripción actual: " + (f"«{c['descripcion']}»." if c["descripcion"] else "no tiene.")
+        for c in p["campos"]
+    )
     return (
-        "Eres un redactor de descripciones de campos para un extractor de datos de documentos. El extractor lee documentos"
-        f"{del_tipo} y encuentra cada campo SOLO por su nombre y su descripción.\n"
-        f"En el documento adjunto, una persona marcó dónde está el valor del campo «{p['nombre']}» (tipo de dato: {_TIPOS_LEGIBLES[p['tipoDato']]}): "
-        f"página {p['pagina']}, caja [ymin, xmin, ymax, xmax] = {p['caja']}, normalizada de 0 a 1000 respecto a esa página.\n"
-        f"Su descripción actual: {actual}.\n\n"
-        "Escribe una descripción NUEVA de ese campo que ayude a encontrarlo en CUALQUIER documento de este tipo, no solo en este:\n"
-        "- Qué dato es, y dónde suele estar: zona de la página y junto a qué rótulo o encabezado.\n"
-        "- Su forma: cuántos renglones abarca la caja, formato de la fecha o del número, caracteres típicos.\n"
-        "- Lo que está DENTRO de la caja es el campo; lo de fuera no.\n"
-        "- NO copies el valor ni ningún dato de este documento en particular (nombres, números, fechas concretas).\n"
-        f"- En español, una o dos frases, a lo más {MAX_DESCRIPCION_PROPUESTA - 20} caracteres.\n"
-        "`valor` es el texto que se lee dentro de la caja, tal cual."
+        "Eres un redactor de esquemas para un extractor de datos de documentos. El extractor lee documentos"
+        f"{_del_tipo(p)} y encuentra cada campo SOLO por su nombre, su tipo de dato, su descripción y un ejemplo de su forma.\n"
+        "En el documento adjunto, una persona marcó con un recuadro dónde está el VALOR de cada campo de la lista: la página y una caja "
+        "[ymin, xmin, ymax, xmax] normalizada de 0 a 1000 respecto a esa página. Lo que está DENTRO de la caja es el campo; lo de fuera no.\n\n"
+        "Para CADA campo de la lista devuelve en `campo` su nombre, escrito exactamente igual, y:\n"
+        + _PIDE_VALOR
+        + _PIDE_DESCRIPCION
+        + "  Si la descripción actual dice algo útil sobre qué es el dato, consérvalo.\n"
+        + _PIDE_TIPO
+        + _PIDE_ESTRUCTURA
+        + f"{_NO_COPIES} en `descripcion` ni en `estructura`.\n\n"
+        f"Campos:\n{renglones}"
     )
 
 
@@ -295,28 +409,197 @@ def _recortar(texto: str, tope: int) -> str:
     return corte if corte.endswith(".") else corte + "…"
 
 
-def leer_descripcion(texto: str) -> dict:
-    """`{descripcion, valor}` de la respuesta. `ValueError` si no es el JSON pedido o la descripción viene vacía."""
-    datos = json.loads(texto)
-    if not isinstance(datos, dict) or not isinstance(datos.get("descripcion"), str):
-        raise ValueError("la respuesta no trae `descripcion`")
-    valor = datos.get("valor") if isinstance(datos.get("valor"), str) else ""
-    descripcion = _recortar(_sin_valor(" ".join(datos["descripcion"].split()), valor), MAX_DESCRIPCION_PROPUESTA)
+def _alfanumerico(texto: str) -> str:
+    """Solo letras y dígitos, sin acentos y en mayúsculas: `29/10/1996` y `29-10-1996` quedan iguales."""
+    return "".join(ch for ch in _clave(texto) if ch.isalnum()).upper()
+
+
+def _palabras(texto: str) -> list[str]:
+    return [p.upper() for p in re.findall(r"[0-9a-z]+", _clave(texto))]
+
+
+def _comparte_datos(ejemplo: str, valor: str, generico: str = "") -> bool:
+    """¿El ejemplo «inventado» trae datos del valor de ESTE documento? El ejemplo termina en el esquema que se sube a Google (viaja dentro de la
+    descripción) y es el mismo para todos los documentos, así que no debe llevar datos de uno: ni el valor entero (aunque cambien los separadores), ni
+    un pedazo de él, ni una palabra suya de 4 letras o más, ni 8 caracteres seguidos de un código largo (una CURP con la fecha de nacimiento real).
+
+    Una palabra que ya está en `generico` (la descripción y el nombre del campo, que de todos modos van al esquema) no cuenta: es parte de cómo se
+    llama o se describe el dato, no un dato. Así «24 meses» se queda aunque el valor sea «12 meses» (medido con Gemini real el 2026-11-12: sin esta
+    excepción se tiraba)."""
+    e, v = _alfanumerico(ejemplo), _alfanumerico(valor)
+    if not e or not v:
+        return False
+    if (len(v) >= MIN_VALOR_A_QUITAR and v in e) or (len(e) >= MIN_VALOR_A_QUITAR and e in v):
+        return True
+    del_ejemplo = set(_palabras(ejemplo))
+    genericas = set(_palabras(generico))
+    for p in _palabras(valor):
+        if len(p) >= MIN_VALOR_A_QUITAR and p in del_ejemplo and p not in genericas:
+            return True
+        if len(p) >= 10 and any(p[i:i + 8] in e for i in range(len(p) - 7)):
+            return True
+    return False
+
+
+def _tipo_deducido(crudo: object) -> str | None:
+    if not isinstance(crudo, str):
+        return None
+    tipo = _SINONIMOS_TIPO.get(" ".join(crudo.lower().split()))
+    return tipo if tipo in TIPOS_DEDUCIBLES else None
+
+
+def _completado(c: dict, pedido: dict) -> dict | None:
+    """Lo que Gemini contestó de UN campo, limpio: `{descripcion, tipoDato, valorEstructura, valor}`, o `None` si no trae una descripción usable.
+    El tipo solo se propone a un campo sencillo (una lista o un grupo se quedan como están) y un grupo no lleva ejemplo de estructura. Un ejemplo que
+    trae datos del documento se tira entero (`_comparte_datos`): es mejor no tener ejemplo que mandar a Google un dato de una persona."""
+    valor = c.get("valor") if isinstance(c.get("valor"), str) else ""
+    crudo = c.get("descripcion") if isinstance(c.get("descripcion"), str) else ""
+    descripcion = _recortar(_sin_valor(" ".join(crudo.split()), valor), MAX_DESCRIPCION_PROPUESTA)
     if not descripcion:
-        raise ValueError("la descripción vino vacía")
-    return {"descripcion": descripcion, "valor": valor[:MAX_VALOR]}
+        return None
+    tipo_actual = pedido.get("tipoDato", "texto")
+    estructura = c.get("estructura") if isinstance(c.get("estructura"), str) else ""
+    estructura = " ".join(estructura.split())[:MAX_ESTRUCTURA]
+    if estructura and _comparte_datos(estructura, valor, f"{descripcion} {pedido.get('nombre', '')}"):
+        logger.info("Completar campos: se descartó un ejemplo de estructura que traía datos del documento.")
+        estructura = ""
+    return {
+        "descripcion": descripcion,
+        "tipoDato": _tipo_deducido(c.get("tipoDato")) if tipo_actual not in ("lista", "grupo") else None,
+        "valorEstructura": "" if tipo_actual == "grupo" else estructura,
+        "valor": valor[:MAX_VALOR],
+    }
+
+
+def leer_completados(texto: str, pedidos: list[dict]) -> list[dict]:
+    """Por cada campo pedido (en su orden), lo que se pudo leer: `[{nombre, descripcion, tipoDato, valorEstructura, valor}]`, con el nombre TAL COMO SE
+    PIDIÓ (el modelo puede escribirlo distinto). Un campo que no vino o vino sin descripción se omite: el front lo deja como estaba. `ValueError` si
+    la respuesta no es el JSON pedido o no sirve ningún campo."""
+    datos = json.loads(texto)
+    if not isinstance(datos, dict) or not isinstance(datos.get("campos"), list):
+        raise ValueError("la respuesta no trae `campos`")
+    contestados = [c for c in datos["campos"] if isinstance(c, dict)]
+    por_clave: dict[str, dict] = {}
+    for c in contestados:
+        if isinstance(c.get("campo"), str):
+            por_clave.setdefault(_clave(c["campo"]), c)
+    salida: list[dict] = []
+    for pedido in pedidos:
+        c = por_clave.get(_clave(pedido["nombre"]))
+        if c is None and len(pedidos) == 1 and len(contestados) == 1:
+            c = contestados[0]  # con UN campo pedido no hay a cuál más pertenecer, aunque el modelo le cambie el nombre
+        hecho = _completado(c, pedido) if c is not None else None
+        if hecho is not None:
+            salida.append({"nombre": pedido["nombre"], **hecho})
+    if not salida:
+        raise ValueError("no vino ningún campo usable")
+    return salida
+
+
+async def completar(contenido: bytes, mime: str, pedido: dict) -> dict:
+    """La descripción, el tipo y un ejemplo de la forma de cada campo, a partir de su recuadro. Devuelve `{campos: [...], modelo}` o levanta
+    `ErrorUbicar`. `pedido` ya pasó por `limpiar_pedido_campos`; `mime` es uno de `gemini.MIME_PARA_GEMINI` (lo valida la ruta). Nada se guarda."""
+    texto, fin = await _preguntar(
+        contenido, mime, armar_prompt_completar(pedido), _ESQUEMA_COMPLETAR, "Completar campos",
+        MENSAJE_COMPLETAR_FALLO, MENSAJE_COMPLETAR_NO_DISPONIBLE, MAX_TOKENS_COMPLETAR,
+    )
+    try:
+        campos = leer_completados(texto, pedido["campos"])
+    except (ValueError, json.JSONDecodeError) as exc:
+        logger.warning("Completar campos: no se entendió la respuesta de Gemini (fin %s, modelo %s): %s", fin or "?", GEMINI_MODELO, exc)
+        raise ErrorUbicar(MENSAJE_COMPLETAR_FALLO, 502) from exc
+    return {"campos": campos, "modelo": GEMINI_MODELO}
 
 
 async def describir(contenido: bytes, mime: str, pedido: dict) -> dict:
-    """Una descripción propuesta para el campo, a partir de la zona marcada. Devuelve `{descripcion, valor, modelo}` o levanta `ErrorUbicar`.
-
-    `pedido` ya pasó por `limpiar_pedido_descripcion`. Nada se guarda: la persona decide si la usa."""
+    """UN campo, el que se está editando (la ruta `/describir-campo`): `{descripcion, tipoDato, valorEstructura, valor, modelo}` o `ErrorUbicar`. Es
+    `completar` con un solo campo y los mensajes de siempre. `pedido` ya pasó por `limpiar_pedido_descripcion`. Nada se guarda."""
     texto, fin = await _preguntar(
-        contenido, mime, armar_prompt_descripcion(pedido), _ESQUEMA_DESCRIPCION, "Describir campo", MENSAJE_DESCRIBIR_FALLO, MENSAJE_DESCRIBIR_NO_DISPONIBLE
+        contenido, mime, armar_prompt_completar(pedido), _ESQUEMA_COMPLETAR, "Describir campo", MENSAJE_DESCRIBIR_FALLO, MENSAJE_DESCRIBIR_NO_DISPONIBLE
     )
     try:
-        propuesta = leer_descripcion(texto)
+        campo = leer_completados(texto, pedido["campos"])[0]
     except (ValueError, json.JSONDecodeError) as exc:
         logger.warning("Describir campo: no se entendió la respuesta de Gemini (fin %s, modelo %s): %s", fin or "?", GEMINI_MODELO, exc)
         raise ErrorUbicar(MENSAJE_DESCRIBIR_FALLO, 502) from exc
+    return {
+        "descripcion": campo["descripcion"],
+        "tipoDato": campo["tipoDato"],
+        "valorEstructura": campo["valorEstructura"],
+        "valor": campo["valor"],
+        "modelo": GEMINI_MODELO,
+    }
+
+
+# ── Proponer un campo con un recuadro dibujado ──
+def limpiar_pedido_proponer(pagina: int, caja: object, nombre_tipo: str, descripcion_tipo: str, existentes: object) -> dict:
+    """El recuadro dibujado y los nombres que ya existen: `{pagina, caja, existentes, tipo, descripcionTipo}`. `ValueError` si no sirven."""
+    caja_ok = _caja_valida(caja)
+    if caja_ok is None:
+        raise ValueError("El recuadro no es válido.")
+    if not isinstance(existentes, list) or not all(isinstance(n, str) for n in existentes):
+        raise ValueError("Los campos que ya existen deben ser una lista de nombres.")
+    nombres: list[str] = []
+    vistos: set[str] = set()
+    for n in existentes:
+        limpio = " ".join(n.split())[:MAX_NOMBRE]
+        if limpio and _clave(limpio) not in vistos:
+            vistos.add(_clave(limpio))
+            nombres.append(limpio)
+    if len(nombres) > MAX_EXISTENTES:
+        raise ValueError(f"Son demasiados campos existentes: a lo más {MAX_EXISTENTES}.")
+    return {"pagina": _pagina_valida(pagina), "caja": caja_ok, "existentes": nombres, **_contexto_tipo(nombre_tipo, descripcion_tipo)}
+
+
+def armar_prompt_proponer(p: dict) -> str:
+    existentes = ", ".join(f"«{n}»" for n in p["existentes"])
+    return (
+        "Eres un diseñador de esquemas para un extractor de datos de documentos. El extractor lee documentos"
+        f"{_del_tipo(p)} y encuentra cada campo SOLO por su nombre, su tipo de dato, su descripción y un ejemplo de su forma.\n"
+        f"En el documento adjunto, una persona marcó un recuadro: página {p['pagina']}, caja [ymin, xmin, ymax, xmax] = {p['caja']}, normalizada de 0 "
+        "a 1000 respecto a esa página. Lo que está DENTRO de la caja es el valor de un campo que quiere extraer de todos los documentos de este tipo; "
+        "lo de fuera no.\n\n"
+        "Propón ese campo. Primero lee lo que está escrito DENTRO de la caja: ese dato, y no otro del documento, es el campo.\n"
+        + _PIDE_VALOR
+        + "- `nombre`: corto y claro, en español, como lo diría una persona (por ejemplo «Fecha de nacimiento» o «Número de folio»); si junto al valor hay "
+        "un rótulo impreso, úsalo. Describe SIEMPRE lo que está dentro de la caja, aunque ya exista."
+        + (
+            f" Estos campos ya existen: {existentes}. Si lo que está dentro de la caja es uno de ellos, devuelve ese nombre escrito igual; si no, uno "
+            "que no se confunda con ellos."
+            if existentes
+            else ""
+        )
+        + "\n"
+        + _PIDE_DESCRIPCION
+        + _PIDE_TIPO
+        + _PIDE_ESTRUCTURA
+        + f"{_NO_COPIES} en `nombre`, `descripcion` ni `estructura`."
+    )
+
+
+def leer_propuesta(texto: str) -> dict:
+    """`{nombre, descripcion, tipoDato, valorEstructura, valor}` de la respuesta. `ValueError` si no es el JSON pedido o el nombre o la descripción
+    vienen vacíos. Si el modelo metió el valor en el nombre, se quita (igual que en la descripción)."""
+    datos = json.loads(texto)
+    if not isinstance(datos, dict) or not isinstance(datos.get("nombre"), str):
+        raise ValueError("la respuesta no trae `nombre`")
+    valor = datos.get("valor") if isinstance(datos.get("valor"), str) else ""
+    nombre = _sin_valor(" ".join(datos["nombre"].replace("«", " ").replace("»", " ").split()), valor)[:MAX_NOMBRE].strip(" .,;:")
+    hecho = _completado(datos, {})
+    if not nombre or hecho is None:
+        raise ValueError("el nombre o la descripción vinieron vacíos")
+    return {"nombre": nombre, **hecho}
+
+
+async def proponer(contenido: bytes, mime: str, pedido: dict) -> dict:
+    """Un campo NUEVO a partir de un recuadro dibujado: `{nombre, descripcion, tipoDato, valorEstructura, valor, modelo}` o `ErrorUbicar`. `pedido` ya
+    pasó por `limpiar_pedido_proponer`. Nada se guarda: el front abre el formulario con esto y la persona decide."""
+    texto, fin = await _preguntar(
+        contenido, mime, armar_prompt_proponer(pedido), _ESQUEMA_PROPONER, "Proponer campo", MENSAJE_PROPONER_FALLO, MENSAJE_PROPONER_NO_DISPONIBLE
+    )
+    try:
+        propuesta = leer_propuesta(texto)
+    except (ValueError, json.JSONDecodeError) as exc:
+        logger.warning("Proponer campo: no se entendió la respuesta de Gemini (fin %s, modelo %s): %s", fin or "?", GEMINI_MODELO, exc)
+        raise ErrorUbicar(MENSAJE_PROPONER_FALLO, 502) from exc
     return {**propuesta, "modelo": GEMINI_MODELO}
