@@ -1201,3 +1201,66 @@ que uno inventado), sin decir que existe. El back ya lo hace; la segunda red es 
    cuando lo pida el diseño. ¿Algún problema con el nombre?
 3. ¿`OFFSET/FETCH` te parece suficiente para paginar, o prefieres paginación por llave (`receivedAt, fileId`) pensando en tenants con
    cientos de miles de archivos?
+
+## 8 · Datos · Usuario de solo lectura para consultas en lenguaje natural — BORRADOR 2026-11-11 (para Charlie, aún sin crear en Jira)
+
+**Título del ticket:** `Datos · Usuario de SOLO LECTURA sobre las vistas de datos extraídos (consultas en lenguaje natural)`
+
+Texto del ticket (en Jira va sin esta primera frase):
+
+### Por qué
+
+Queremos hacer preguntas en lenguaje natural sobre lo que Document AI ya extrajo de los documentos («¿cuántas INE de tal
+organización vencen este año?», «¿qué campos fallan más en las actas?»). Lo haremos con una herramienta de texto a SQL (Vanna AI):
+un modelo de lenguaje escribe la consulta y la ejecuta contra la base. Precisamente porque la escribe un modelo, **no puede
+correr con `usrNexus`** (lee y escribe todo y ejecuta cualquier SP): necesitamos un usuario que solo pueda **leer dos vistas**
+y nada más, de modo que aunque el modelo se equivoque o alguien intente engañarlo, la base no lo permita.
+
+### Lo que YA existe
+
+La migración `0015_vistas_datos_extraidos.sql` (nuestra, en el corredor de siempre) creó dos vistas en el esquema `[nexus]`, que
+leen las tablas de la `0007` (`documents`, `extractionRuns`, `entityFacts`, `fieldCorrections`, `documentTypes`, `tenants`) y no
+guardan nada:
+
+- `[nexus].[vDocumentoExtraido]`: un renglón por documento con su extracción vigente.
+- `[nexus].[vDatoExtraido]`: un renglón por campo vigente de cada documento.
+
+Hoy existen en **`IA_Nexus_Dev`**. En `IA_Nexus_Staging` e `IA_Nexus` aparecerán cuando se promueva esa versión del back.
+
+### Lo que se pide
+
+Un login y su usuario, **empezando solo por `IA_Nexus_Dev`**; staging y producción se pedirán después, en otro ticket, cuando
+estén probadas las consultas. El nombre es tuyo (proponemos `usrNexusLectura`):
+
+```sql
+CREATE LOGIN usrNexusLectura WITH PASSWORD = '<la que tú definas>', CHECK_POLICY = ON;
+GO
+USE IA_Nexus_Dev;
+GO
+CREATE USER usrNexusLectura FOR LOGIN usrNexusLectura;
+GRANT SELECT ON OBJECT::[nexus].[vDocumentoExtraido] TO usrNexusLectura;
+GRANT SELECT ON OBJECT::[nexus].[vDatoExtraido] TO usrNexusLectura;
+```
+
+Y **nada más**: sin `db_datareader`, sin `db_datawriter`, sin `EXECUTE`, sin `SELECT` sobre ninguna tabla. Las vistas y sus tablas
+son del mismo dueño (`nexusOwner`, dueño del esquema), así que por encadenamiento de propiedad el `SELECT` sobre la vista basta para
+que funcione sin dar acceso a las tablas. Si prefieres hacerlo con un esquema aparte (por ejemplo `[consulta]` con
+`GRANT SELECT ON SCHEMA`), también nos sirve: lo que importa es que el usuario solo vea esas vistas.
+
+La contraseña, por favor, directo a Moisés por un canal seguro, no en el ticket.
+
+### Cómo sabremos que quedó
+
+Conectado como ese usuario a `IA_Nexus_Dev`:
+
+1. `SELECT TOP (10) * FROM nexus.vDatoExtraido` y lo mismo con `vDocumentoExtraido` → **funcionan**.
+2. `SELECT TOP (1) * FROM nexus.entityFacts` (o cualquier otra tabla) → **falla** por permiso (error 229).
+3. Cualquier `INSERT`, `UPDATE`, `DELETE`, `CREATE` o `EXEC` → **falla**.
+4. No puede entrar a `IA_Nexus` ni a `IA_Nexus_Staging`.
+
+### Preguntas para ti
+
+1. ¿La política de CSI pide que sea un login de SQL (como `usrNexus`) o una cuenta de dominio?
+2. Las consultas las escribe un modelo y alguna puede salir pesada. ¿Te parece ponerle un límite del lado de la base (Resource
+   Governor o similar) a este usuario, o con el tiempo máximo que pondremos del lado de la aplicación basta?
+3. Cuando agreguemos más vistas para lo mismo, ¿prefieres un ticket por vista o el esquema aparte para darlas con un solo permiso?
