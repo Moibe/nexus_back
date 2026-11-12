@@ -1937,6 +1937,12 @@ que dev ya tiene, y el de producción lo que ya tiene staging. **Ojo al activarl
 (si no, un deploy de código viejo fallaría por «No module named migraciones»): primero se promueve el código y luego se agrega la línea. Además, `GET /health/db` dice si el esquema
 de la base está al día con el código: `esquema_desfasado` si le faltan migraciones (la base ADELANTE del código es normal).
 
+**Migraciones en espera (`migraciones/en_espera/`, 2026-11-12).** Una migración ya escrita y probada que depende de algo que hace el DBA (un esquema, un usuario) espera
+en esa subcarpeta: el corredor solo lee los `.sql` de `migraciones/`, así que ningún deploy la intenta (si la intentara, su guarda la detendría y el back de dev no
+reiniciaría hasta que el DBA cumpliera). Cuando el DBA entrega, se mueve a `migraciones/` (renumerándola si su número ya se ocupó) y entra con el siguiente deploy. Hoy
+espera la `0016_consulta_por_organizacion.sql` (las vistas de `[consulta]` separadas por organización para el usuario de solo lectura; `docs/solicitudes-dba.md` §8),
+probada con `verificar_consulta_por_organizacion.py`. El `README.md` de la carpeta dice qué espera cada una.
+
 ### El piloto: los tipos documentales en SQL (migración `0002`, 2026-10-28)
 
 La primera entidad del producto que deja el almacén y pasa a una tabla es el catálogo de tipos documentales: `nexus.documentTypes`.

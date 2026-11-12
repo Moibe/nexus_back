@@ -1282,3 +1282,13 @@ Conectado como `usrNexusLectura` a `IA_Nexus_Dev`, después de que creemos la `0
 - La conexión de Vanna no usa pool (o lo reinicia en cada pregunta): el valor de sesión de solo lectura vive lo que vive la conexión.
 - Las salidas que se nos ocurren (`OPENROWSET`/consultas ad hoc, `EXECUTE AS`) las probamos nosotros con ese usuario al recibirlo,
   junto con las seis comprobaciones.
+- **La `0016` ya está escrita (2026-11-12) y espera en `migraciones/en_espera/0016_consulta_por_organizacion.sql`**: si estuviera en
+  `migraciones/`, el deploy de dev la intentaría, su guarda la detendría y el back no reiniciaría hasta que Charlie entregue. Tiene tres
+  guardas con mensaje propio: falta el esquema (51016), falta el `GRANT ALTER` a `usrNexusDDL` (51018; medido: sin él, SQL Server sí deja
+  VER el esquema y fallaría con un 2760 genérico) y el esquema no es de `nexusOwner` (51017: la cadena de propiedad no funcionaría).
+  `verificar_consulta_por_organizacion.py` hace en Docker lo mismo que este ticket, con sus mismas sentencias, aplica la 0016 con el
+  corredor y corre las seis comprobaciones y las salidas de arriba (62 OK; quitando el filtro de una vista, 6 se ponen en rojo).
+  Hallazgos: el usuario SÍ puede cambiar su propio esquema por omisión (lo permite SQL Server a cualquiera) pero no le abre nada; y
+  `GRANT … TO usrNexusLectura` hecho por él mismo no da error, solo el aviso 4624, y no cambia sus permisos.
+- **Cuando Charlie entregue:** mover la 0016 a `migraciones/` (renumerar si la 16 ya se ocupó), simular contra `IA_Nexus_Dev`, deploy
+  de dev, y las seis comprobaciones con el usuario real. No promoverla a staging/prod sin el mismo ticket en esas bases.
