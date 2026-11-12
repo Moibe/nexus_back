@@ -31,7 +31,9 @@ os.environ["NEXUS_API_KEY"] = SERVICIO
 os.environ["AUTH_JWT_SECRET"] = "secreto-de-prueba-de-al-menos-32-caracteres-xx"
 os.environ["CORREO_MODO"] = "archivo"
 os.environ["FRONT_URL"] = "http://localhost:3400"
-os.environ.setdefault("SQLSERVER_HOST", "")
+import pruebas_sql  # noqa: E402  (desde el 2026-11-11 todo se guarda en SQL Server: esta prueba corre contra uno desechable)
+
+BASE_SQL = pruebas_sql.preparar()
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -83,10 +85,9 @@ def sin_canal() -> None:
 
 
 def eventos(accion: str) -> list[dict]:
-    ruta = RAIZ / ".registro" / "auditoria.jsonl"
-    if not ruta.exists():
-        return []
-    return [e for e in (json.loads(x) for x in ruta.read_text(encoding="utf-8").splitlines() if x.strip()) if e.get("accion") == accion]
+    from servicios import auditoria as _bitacora  # la bitácora vive en `nexus.auditEvents`
+
+    return _bitacora.eventos({accion})
 
 
 #: Todas las contraseñas temporales que las rutas devolvieron: al final se comprueba que ninguna quedó escrita en la bitácora.
@@ -270,7 +271,7 @@ try:
     rev("regenerar deja INVITATION_REISSUED con actor «monitor»", any(e.get("usuarioGuid") == guid_beto and e.get("actor") == "monitor" for e in eventos("INVITATION_REISSUED")))
     borrados = eventos("USER_DELETED")
     rev("retirar deja USER_DELETED con actor, motivo y correo", any(e.get("email") == "beto@ejemplo.com" and e.get("motivo") == "Ya no trabaja aquí" and e.get("actor") == "monitor" and e.get("esAdminPlataforma") is True for e in borrados), str(borrados[:1]))
-    todo = (RAIZ / ".registro" / "auditoria.jsonl").read_text(encoding="utf-8")
+    todo = pruebas_sql.volcado(BASE_SQL)
     rev("ningún renglón de la bitácora lleva una contraseña temporal (se revisaron todas las que las rutas devolvieron)", len(temporales_devueltas) >= 8 and not any(t in todo for t in temporales_devueltas) and "contrasenaTemporal" not in todo, str(len(temporales_devueltas)))
     rev("los intentos rechazados no dejan alta ni retiro", sum(1 for e in borrados if e.get("motivo") == "intento de dejar sin administrador") == 0)
 

@@ -1,0 +1,103 @@
+{
+ "activos.org": [
+  "INE 2",
+  "Pasaporte"
+ ],
+ "activos.otra": [
+  "De la otra"
+ ],
+ "borrar.devuelve": "Acta",
+ "borrar.listar": [
+  "tipo-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "tipo-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+ ],
+ "borrar.otra_vez": "NoEncontrado",
+ "borrar.ya_no_esta": null,
+ "choque.borrar_ajeno": "NoEncontrado",
+ "choque.crear_repetido_ajeno": "Conflicto(None)",
+ "choque.crear_repetido_propio": "Conflicto(2)",
+ "choque.editar_ajeno": "NoEncontrado",
+ "choque.revision_vieja": "Conflicto(2)",
+ "crear.creadoPor": "guid-de-moi",
+ "crear.id_en_datos": "tipo-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+ "crear.listar": [
+  "tipo-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ ],
+ "crear.modificado_igual_a_creado": [
+  true,
+  true
+ ],
+ "crear.no_lo_ve_otra_org": null,
+ "crear.previo": null,
+ "crear.revision": 1,
+ "editar.creado_se_conserva": [
+  true,
+  true
+ ],
+ "editar.modificado_por": "guid-de-cris",
+ "editar.previo_nombre": "INE",
+ "editar.revision": 2,
+ "malo.enorme": "TipoInvalido",
+ "malo.estado": "TipoInvalido",
+ "malo.id": "TipoInvalido",
+ "malo.reservadas_fuera": [
+  1,
+  "guid-de-moi",
+  []
+ ],
+ "malo.revision_negativa": "TipoInvalido",
+ "malo.sin_nombre": "TipoInvalido",
+ "nombre.archivado_libera": 2,
+ "nombre.archivado_se_guarda": 4,
+ "nombre.crear_repetido": "NombreRepetido",
+ "nombre.crear_ya_archivado": 1,
+ "nombre.desarchivar_choca": "NombreRepetido",
+ "nombre.desarchivar_libre": 2,
+ "nombre.duplicado_viejo_a_otro_ocupado": "NombreRepetido",
+ "nombre.duplicado_viejo_a_uno_libre": "Cédula Profesional (federal)",
+ "nombre.duplicado_viejo_existe": [
+  "tipo-22222222222222222222222222222222",
+  "tipo-55555555555555555555555555555555"
+ ],
+ "nombre.duplicado_viejo_mayusculas": 4,
+ "nombre.duplicado_viejo_otra_descripcion": 3,
+ "nombre.duplicado_viejo_se_activa": 2,
+ "nombre.el_repetido_no_quedo": null,
+ "nombre.otra_org_puede": 1,
+ "nombre.renombrar_a_repetido": "NombreRepetido",
+ "nombre.sigue_con_el_suyo": [
+  "Cedula Profesional",
+  1
+ ],
+ "nombre.sigue_ocupado_por_el_otro": "NombreRepetido",
+ "nombre.sin_acento_es_otro": 1,
+ "nombre.sus_propias_mayusculas": "cédula  profesional",
+ "orden.no_cambia_modificado": true,
+ "orden.respetado": [
+  "tipo-cccccccccccccccccccccccccccccccc",
+  "tipo-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "tipo-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+ ],
+ "orden.vaciado": [
+  "tipo-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "tipo-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "tipo-cccccccccccccccccccccccccccccccc"
+ ],
+ "procesadores": {
+  "proc-edicion": [
+   "pruebas-org",
+   "tipo-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   4
+  ],
+  "proc-viejo": [
+   "pruebas-org",
+   "tipo-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   1
+  ],
+  "proc-vigente": [
+   "pruebas-org",
+   "tipo-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   3
+  ]
+ }
+}

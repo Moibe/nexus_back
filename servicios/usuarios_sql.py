@@ -1,8 +1,7 @@
 """Usuarios, credenciales, intentos de inicio de sesión y sesiones, guardados en SQL Server (migración `0014`).
 
-Hacen lo mismo que el JSONL de `usuarios.py` —mismas reglas, misma forma de salida—, y es ese módulo el que elige: SQL si el `.env` trae
-`SQLSERVER_HOST`, el almacén si no (las pruebas sin base). Antes de leer o escribir se asegura que `usuarios.jsonl` ya se haya importado una
-vez en esta base (`servicios/importacion_json.py`).
+Es el único almacenamiento de `usuarios.py` (hasta el 2026-11-11 había además un JSONL para donde no había base). Antes de leer o escribir se
+asegura que el viejo `usuarios.jsonl` ya se haya importado una vez en esta base (`servicios/importacion_json.py`).
 
 La validación de negocio se queda en `usuarios.py` (que el correo sea válido, el motivo de una contraseña, cómo se separa un nombre, por qué
 no se puede retirar a alguien, la política de intentos); aquí se guarda y se lee. Lo que sí vive aquí son las garantías que el candado del
@@ -39,7 +38,7 @@ _COLUMNAS_SESION = "guid, userGuid, refreshHash, expiresAt, createdAt, ip, userA
 
 
 def _a_usuario(f: dict, membresias: list[dict]) -> dict:
-    """La cuenta con la MISMA forma que el índice del JSONL (`usuarios._construir_indice`): así `usuarios._publico` y las reglas de
+    """La cuenta con la MISMA forma que el índice del JSONL (`json_heredado.usuarios_indice`): así `usuarios._publico` y las reglas de
     `usuarios.py` sirven igual para los dos almacenamientos."""
     paterno, materno = f["lastName"], f["secondLastName"]
     try:

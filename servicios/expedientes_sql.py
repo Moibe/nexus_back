@@ -11,9 +11,8 @@ proceso corre sobre el expediente completo (`servicios/ejecuciones.py`).
 agruparán en Grupos y no se requiere el menú»). La migración `0013` borra `nexus.caseGroups` y `nexus.cases.caseGroupId`; este módulo ya no
 los lee ni los escribe.
 
-Hace exactamente lo mismo que el JSONL de `documentos.py` y `expedientes.py` —mismas firmas, mismos errores, misma forma de salida—, y son esos
-dos módulos los que eligen: SQL si el `.env` trae `SQLSERVER_HOST`, el almacén si no (la laptop y las pruebas offline). Ellos validan lo que llega
-(nombre limpio…) ANTES de llamar aquí; aquí solo se guarda y se lee.
+Es el almacenamiento de `documentos.py` y `expedientes.py` (hasta el 2026-11-11 tenían además un JSONL para donde no había base; ya no).
+Ellos validan lo que llega (nombre limpio…) ANTES de llamar aquí; aquí solo se guarda y se lee.
 
 ## Qué gana al estar en la base
 

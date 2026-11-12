@@ -32,12 +32,11 @@ import uuid
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
-SQL = "--sql" in sys.argv
-if SQL:
-    # ANTES de importar la app: `config.py` lee el entorno una sola vez.
-    import pruebas_sql
+# Desde el 2026-11-11 todo se guarda en SQL Server (ya no hay camino JSONL): esta prueba corre SIEMPRE contra uno desechable, y `--sql` ya
+# no hace falta (se acepta y no cambia nada). ANTES de importar la app: `config.py` lee el entorno una sola vez.
+import pruebas_sql  # noqa: E402
 
-    BASE_SQL = pruebas_sql.preparar("nexus-procesos-prueba", 14337, dejar="--dejar" in sys.argv)
+BASE_SQL = pruebas_sql.preparar()
 
 RAIZ = Path(tempfile.mkdtemp(prefix="verificar-procesos-"))
 (RAIZ / ".nexus-almacen").touch()
@@ -45,7 +44,6 @@ SERVICIO = "llave-de-servicio-solo-local"
 os.environ["ALMACEN_RUTA"] = str(RAIZ)
 os.environ["NEXUS_API_KEY"] = SERVICIO
 os.environ["AUTH_JWT_SECRET"] = "secreto-de-prueba-de-al-menos-32-caracteres-xx"
-os.environ.setdefault("SQLSERVER_HOST", "")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -497,16 +495,6 @@ try:
     rev("guardar a secas NO deja rastro (el proceso 1 se guardó dos veces y se anotó una sola vez)", sum(1 for e in creados if e.get("procesoId") == p1) == 1 and not any(e.get("procesoId") == p1 for e in borrados))
     rev("el rastro no lleva el dibujo ni los valores de ejemplo", not any("nodos" in e or "aristas" in e or "datos" in e for e in creados + borrados))
 
-    if not SQL:  # en SQL no hay archivo que cortar
-        titulo("12 · Resiste un corte a media escritura")
-        ruta = RAIZ / ".registro" / "procesos.jsonl"
-        with open(ruta, "ab") as f:
-            f.write(b'{"op": "guardar", "id": "proceso-roto')
-        antes = ids(a_admin, org_a)
-        rev("una última línea rota se ignora al leer", ids(a_admin, org_a) == antes and len(antes) >= 3)
-        n = nuevo_id()
-        r = guardar(a_admin, org_a, n, proceso("Después del corte"), 0)
-        rev("y el guardado siguiente no queda pegado a ella", r.status_code == 200 and n in ids(a_admin, org_a))
 
     titulo("13 · Un proceso ya no se liga a ningún tipo (Moibe, 2026-11-05: se quitaron los expedientes virtuales)")
     from servicios import procesos as servicio_procesos  # noqa: E402
@@ -533,39 +521,23 @@ try:
         r.status_code == 200 and r.json()["revision"] == 2 and "tipoExpedienteVirtualId" not in r.json()["datos"] and r.json()["datos"]["nodos"] == proceso("Validar crédito")["nodos"], r.text[:200])
     rev("abrir ese proceso por la lista lo devuelve sin el campo", "tipoExpedienteVirtualId" not in next(x for x in listar(a_admin, org_a).json()["procesos"] if x["id"] == pl)["datos"])
     # Lo que quedó GUARDADO (no solo lo que se devuelve): el campo no viaja al JSON del proceso.
-    if SQL:
-        con = BASE_SQL["conectar"]("usrNexus", BASE_SQL["app"], BASE_SQL["base"])
-        con_campo = con.cursor().execute("SELECT count(*) FROM nexus.processes WHERE dataJson LIKE '%tipoExpedienteVirtualId%'").fetchone()[0]
-        rev("en la base, ningún `dataJson` guarda el campo", con_campo == 0, f"{con_campo} procesos lo guardaron")
-        # Una fila con la liga DENTRO de su JSON: solo se puede por SQL directo (desde la 0005 la liga iba en su propia columna y la 0012 la borró), pero el
-        # contrato dice que el campo NUNCA se devuelve, y eso no puede depender de cómo llegó la fila.
-        legado = nuevo_id()
-        antiguo = {"nombre": "Con la liga dentro de su JSON", "descripcion": "", "nodos": [], "aristas": [], "activo": False, "tipoExpedienteVirtualId": "tipo-expediente-" + "c" * 32}
-        con.cursor().execute("INSERT INTO nexus.processes (publicId, tenant, revision, dataJson, createdBy) VALUES (?, ?, 1, ?, 'x')", legado, org_a, json.dumps(antiguo))
-        visto = next(x for x in listar(a_admin, org_a).json()["procesos"] if x["id"] == legado)
-        rev("una fila con la liga dentro de su JSON (solo por SQL directo) se lee sin ella y con lo demás intacto",
-            "tipoExpedienteVirtualId" not in visto["datos"] and visto["datos"]["nombre"] == "Con la liga dentro de su JSON" and visto["datos"]["activo"] is False, str(visto["datos"]))
-        r = guardar(a_admin, org_a, legado, {**visto["datos"], "nombre": "Con la liga dentro de su JSON (editado)"}, 1)
-        rev("y al editarla se vuelve a guardar sin ella", r.status_code == 200 and "tipoExpedienteVirtualId" not in r.json()["datos"], r.text[:200])
-        quedan = con.cursor().execute("SELECT count(*) FROM nexus.processes WHERE publicId = ? AND dataJson LIKE '%tipoExpedienteVirtualId%'", legado).fetchone()[0]
-        rev("y en la base ya no la guarda", quedan == 0, f"{quedan}")
-        con.close()
-        c.delete(f"/procesos/{legado}", params={"tenant": org_a}, headers=cab(a_admin))
-    else:
-        eventos = [json.loads(x) for x in (RAIZ / ".registro" / "procesos.jsonl").read_text(encoding="utf-8").splitlines() if x.strip().endswith("}")]
-        rev("en el registro, ningún evento `guardar` de lo anterior lleva el campo dentro de `datos`",
-            not any("tipoExpedienteVirtualId" in e.get("datos", {}) for e in eventos if e.get("op") == "guardar"), str([e["datos"].get("nombre") for e in eventos if "tipoExpedienteVirtualId" in e.get("datos", {})]))
-        # Un proceso que el almacén guardó ANTES del 2026-11-05, con la liga dentro de sus datos: se lee sin ella (y con lo demás intacto).
-        legado = nuevo_id()
-        antiguo = {"nombre": "Guardado antes del cambio", "descripcion": "", "nodos": [], "aristas": [], "activo": False, "tipoExpedienteVirtualId": "tipo-expediente-" + "c" * 32}
-        with open(RAIZ / ".registro" / "procesos.jsonl", "ab") as f:
-            f.write((json.dumps({"op": "guardar", "id": legado, "tenant": org_a, "revision": 1, "datos": antiguo, "por": "x", "en": "2026-10-30T00:00:00Z"}) + "\n").encode("utf-8"))
-        visto = next(x for x in listar(a_admin, org_a).json()["procesos"] if x["id"] == legado)
-        rev("un proceso que el almacén guardó ANTES del cambio (con la liga en sus datos) se lee sin ella y con lo demás intacto",
-            "tipoExpedienteVirtualId" not in visto["datos"] and visto["datos"]["nombre"] == "Guardado antes del cambio" and visto["datos"]["activo"] is False, str(visto["datos"]))
-        r = guardar(a_admin, org_a, legado, {**visto["datos"], "nombre": "Guardado antes del cambio (editado)"}, 1)
-        rev("y al editarlo se vuelve a guardar sin ella", r.status_code == 200 and "tipoExpedienteVirtualId" not in r.json()["datos"], r.text[:200])
-        c.delete(f"/procesos/{legado}", params={"tenant": org_a}, headers=cab(a_admin))
+    con = BASE_SQL["conectar"]("usrNexus", BASE_SQL["app"], BASE_SQL["base"])
+    con_campo = con.cursor().execute("SELECT count(*) FROM nexus.processes WHERE dataJson LIKE '%tipoExpedienteVirtualId%'").fetchone()[0]
+    rev("en la base, ningún `dataJson` guarda el campo", con_campo == 0, f"{con_campo} procesos lo guardaron")
+    # Una fila con la liga DENTRO de su JSON: solo se puede por SQL directo (desde la 0005 la liga iba en su propia columna y la 0012 la borró), pero el
+    # contrato dice que el campo NUNCA se devuelve, y eso no puede depender de cómo llegó la fila.
+    legado = nuevo_id()
+    antiguo = {"nombre": "Con la liga dentro de su JSON", "descripcion": "", "nodos": [], "aristas": [], "activo": False, "tipoExpedienteVirtualId": "tipo-expediente-" + "c" * 32}
+    con.cursor().execute("INSERT INTO nexus.processes (publicId, tenant, revision, dataJson, createdBy) VALUES (?, ?, 1, ?, 'x')", legado, org_a, json.dumps(antiguo))
+    visto = next(x for x in listar(a_admin, org_a).json()["procesos"] if x["id"] == legado)
+    rev("una fila con la liga dentro de su JSON (solo por SQL directo) se lee sin ella y con lo demás intacto",
+        "tipoExpedienteVirtualId" not in visto["datos"] and visto["datos"]["nombre"] == "Con la liga dentro de su JSON" and visto["datos"]["activo"] is False, str(visto["datos"]))
+    r = guardar(a_admin, org_a, legado, {**visto["datos"], "nombre": "Con la liga dentro de su JSON (editado)"}, 1)
+    rev("y al editarla se vuelve a guardar sin ella", r.status_code == 200 and "tipoExpedienteVirtualId" not in r.json()["datos"], r.text[:200])
+    quedan = con.cursor().execute("SELECT count(*) FROM nexus.processes WHERE publicId = ? AND dataJson LIKE '%tipoExpedienteVirtualId%'", legado).fetchone()[0]
+    rev("y en la base ya no la guarda", quedan == 0, f"{quedan}")
+    con.close()
+    c.delete(f"/procesos/{legado}", params={"tenant": org_a}, headers=cab(a_admin))
     # `resultado_conectado` es lo que hace EJECUTABLE a un proceso (lo usan `/ejecuciones/procesos` y `/ejecuciones/preparar`).
     con_resultado = proceso("Con resultado")
     con_resultado["nodos"].append({"id": "resultado-final", "type": "resultado-final", "position": {"x": 1000, "y": 0}, "data": {"si": "Sí", "no": "No", "sin": "Sin datos"}})

@@ -10,8 +10,9 @@ una membresía de una organización que no existe, una sesión sin refresh legib
 
 1. la 0014: versión, tablas y la llave foránea nueva de los enlaces (sin revisar lo de antes);
 2. importa una sola vez y revisa qué entró, qué se saltó y que importar otra vez no duplica;
-3. compara cada lectura contra el MISMO módulo leyendo el JSONL (se cambia `SQLSERVER_HOST` del módulo para elegir);
-4. hace las mismas escrituras en los dos y compara lo que devuelven (altas, membresías, intentos, sesiones, contraseñas, administración, retiro);
+3. compara cada lectura con lo CONGELADO (`verificar_usuarios_sql.congelado.json`): hasta el 2026-11-11 se comparaba contra el mismo módulo
+   leyendo el JSONL, y en el commit 61aea2b las dos salidas eran idénticas; al quitar ese camino se congelaron (ver `pruebas_sql.congelado`);
+4. hace las escrituras (altas, membresías, intentos, sesiones, contraseñas, administración, retiro) y compara lo que devuelven con lo congelado;
 5. lo que solo la base cuida: correo único, llaves foráneas, restricciones, y la bitácora de lo que un administrador hizo;
 6. hilos a la vez: un refresh se canjea UNA vez, un correo se da de alta UNA vez, los intentos se cuentan bien, un restablecimiento o un cierre
    forzado no dejan viva una sesión que nació a la mitad, dos retiros no dejan a la plataforma sin administradores;
@@ -254,14 +255,8 @@ try:
     rev("los enlaces tienen su llave foránea a la cuenta, activa y sin revisar lo de antes (WITH NOCHECK)", fk is not None and tuple(fk) == (True, False), str(fk))
     con.close()
 
-    from servicios import importacion_json, tokens, usuarios  # noqa: E402
+    from servicios import importacion_json, json_heredado, tokens, usuarios  # noqa: E402
     from servicios.almacen import ErrorAlmacen  # noqa: E402
-
-    REAL = usuarios.SQLSERVER_HOST
-
-    def modo(sql: bool) -> None:
-        usuarios.SQLSERVER_HOST = REAL if sql else ""
-        usuarios._cache_indice = None
 
     def probar(fn, *args, **kwargs):
         try:
@@ -269,20 +264,12 @@ try:
         except Exception as e:  # noqa: BLE001
             return ("error", type(e).__name__, getattr(e, "motivo", None) or (str(e) if isinstance(e, (usuarios.YaExiste, ValueError)) else None))
 
-    def ambos(fn):
-        modo(False)
-        a = fn()
-        modo(True)
-        s = fn()
-        return a, s
-
-    def igual(que: str, fn, ajustar=lambda x: x) -> None:
-        a, s = ambos(fn)
-        a = ajustar(a)
-        rev(que, a == s, f"almacén={str(a)[:400]!r}\n          sql={str(s)[:400]!r}")
+    def igual(que: str, fn, ajustar=None) -> None:
+        """Lo que contesta SQL, contra lo congelado (lo que el JSONL y SQL contestaban igual el 2026-11-11)."""
+        ok, detalle = pruebas_sql.congelado(__file__, que, fn())
+        rev(que, ok, detalle)
 
     titulo("2 · La importación")
-    modo(True)
     importacion_json.asegurar_todo()
     con = BASE["conectar"]("usrNexus", BASE["app"], BASE["base"])
     k = con.cursor()
@@ -332,13 +319,11 @@ try:
         igual(f"para_login de {CORREO[guid]} (con el hash, los intentos, el bloqueo, la recuperación y las membresías)", lambda guid=guid: usuarios.para_login(CORREO[guid]))
     igual("por_guid de todas", lambda: [usuarios.por_guid(x) for x in COMPARABLES])
     igual("la retirada no existe para nadie", lambda: probar(usuarios.por_guid, DANI)[:2])
-    modo(False)
-    eva2_archivo, juan_archivo = probar(usuarios.por_guid, EVA2)[0], usuarios.por_guid(JUAN)["membresias"]
-    modo(True)
+    vivos_jsonl, _, sesiones_jsonl = json_heredado.usuarios_indice(json_heredado.eventos("usuarios.jsonl"))
     rev("diferencia esperada: la segunda Eva sí existía en el JSONL (sin poder entrar) y en SQL quedó retirada",
-        eva2_archivo == "ok" and probar(usuarios.por_guid, EVA2)[:2] == ("error", "NoEncontrado"))
+        EVA2 in vivos_jsonl and probar(usuarios.por_guid, EVA2)[:2] == ("error", "NoEncontrado"))
     rev("diferencia esperada: Juan pierde la membresía de la organización que no existe",
-        [m["tenantGuid"] for m in juan_archivo] == [ORG_A, ORG_X] and [m["tenantGuid"] for m in usuarios.por_guid(JUAN)["membresias"]] == [ORG_A])
+        [m["tenantGuid"] for m in vivos_jsonl[JUAN]["membresias"]] == [ORG_A, ORG_X] and [m["tenantGuid"] for m in usuarios.por_guid(JUAN)["membresias"]] == [ORG_A])
 
     def sin_lo_que_no_entro(lista):
         return [{**u, "membresias": [m for m in u["membresias"] if m["tenantGuid"] != ORG_X]} for u in lista if u["guid"] not in (EVA2, RARO)]
@@ -359,10 +344,8 @@ try:
           lambda: [usuarios.acceso_vencido(usuarios.para_login(CORREO[x])) for x in (KARLA, IVAN, SUPER2, ANA)])
     igual("puede_eliminar: superadmin (hay otro), administrador de organización, una analista",
           lambda: [probar(usuarios.puede_eliminar, x)[:3] for x in (SUPER, ADMV, ANA)])
-    modo(False)
-    rara = usuarios.sesion_por_hash(R_BAD)
-    modo(True)
-    rev("diferencia esperada: la sesión con un refresh ilegible ya no existe en SQL", rara is not None and usuarios.sesion_por_hash(R_BAD) is None)
+    rev("diferencia esperada: la sesión con un refresh ilegible ya no existe en SQL",
+        any(s.get("refreshHash") == R_BAD for s in sesiones_jsonl.values()) and usuarios.sesion_por_hash(R_BAD) is None)
 
     titulo("4 · Las escrituras, iguales en los dos")
     DINAMICOS = {"guid", "sesionGuid", "creadoEn", "ultimoLoginEn", "temporalEmitidaEn", "expira", "creadaEn", "revocadaEn", "bloqueadoHasta", "refreshHash"}
@@ -404,8 +387,8 @@ try:
         s.append([x["email"] for x in usuarios.de_tenant(ORG_A) if x["guid"] != RARO])
         return s
 
-    a, s = ambos(escenario_altas)
-    rev("altas, correo repetido, bootstrap, membresías (la reasignada se va al final), datos del administrador y perfil", a == s, f"{a}\n          {s}")
+    ok, detalle = pruebas_sql.congelado(__file__, "altas, correo repetido, bootstrap, membresías (la reasignada se va al final), datos del administrador y perfil", escenario_altas())
+    rev("altas, correo repetido, bootstrap, membresías (la reasignada se va al final), datos del administrador y perfil", ok, detalle)
 
     def escenario_intentos():
         s = []
@@ -434,9 +417,8 @@ try:
         s.append(usuarios.registrar_resultado_login(g(999), "fantasma@alfa.mx", False, "BAD_PASSWORD", None, None, None))
         return s
 
-    a, s = ambos(escenario_intentos)
-    rev("intentos: la quinta bloquea, lo bloqueado no cuenta, el navegador cuenta correos que no existen, restablecer y acertar ponen en cero",
-        a == s, f"{a}\n          {s}")
+    ok, detalle = pruebas_sql.congelado(__file__, "intentos: la quinta bloquea, lo bloqueado no cuenta, el navegador cuenta correos que no existen, restablecer y acertar ponen en cero", escenario_intentos())
+    rev("intentos: la quinta bloquea, lo bloqueado no cuenta, el navegador cuenta correos que no existen, restablecer y acertar ponen en cero", ok, detalle)
 
     def escenario_sesiones():
         s = []
@@ -465,9 +447,8 @@ try:
         s.append(usuarios.tiene_sesion(ANA))
         return s
 
-    a, s = ambos(escenario_sesiones)
-    rev("sesiones: abrir, renovar una vez, cerrar, vencida, contraseña que cambió, desactivada; las importadas se renuevan o no como antes",
-        a == s, f"{a}\n          {s}")
+    ok, detalle = pruebas_sql.congelado(__file__, "sesiones: abrir, renovar una vez, cerrar, vencida, contraseña que cambió, desactivada; las importadas se renuevan o no como antes", escenario_sesiones())
+    rev("sesiones: abrir, renovar una vez, cerrar, vencida, contraseña que cambió, desactivada; las importadas se renuevan o no como antes", ok, detalle)
 
     def escenario_contrasenas():
         s = []
@@ -497,9 +478,8 @@ try:
         s.append(normal(usuarios.emitir_temporal(IVAN, "t-ivan")))
         return s
 
-    a, s = ambos(escenario_contrasenas)
-    rev("contraseñas: primer acceso y restablecer cierran todas, cambiar cierra las otras, sesión cerrada o contraseña vieja se rechazan, temporal nueva",
-        a == s, f"{a}\n          {s}")
+    ok, detalle = pruebas_sql.congelado(__file__, "contraseñas: primer acceso y restablecer cierran todas, cambiar cierra las otras, sesión cerrada o contraseña vieja se rechazan, temporal nueva", escenario_contrasenas())
+    rev("contraseñas: primer acceso y restablecer cierran todas, cambiar cierra las otras, sesión cerrada o contraseña vieja se rechazan, temporal nueva", ok, detalle)
 
     def escenario_administracion():
         s = []
@@ -533,12 +513,10 @@ try:
         s.append([normal(usuarios.para_listado(x, ORG_A, i + 1)) for i, x in enumerate([y for y in usuarios.de_tenant(ORG_A) if y["guid"] != RARO])])
         return s
 
-    a, s = ambos(escenario_administracion)
-    rev("administración: desactivar cierra sesiones, cierre forzado, retiro (con sus negativas), el correo queda libre, el último superadmin no se va",
-        a == s, f"{a}\n          {s}")
+    ok, detalle = pruebas_sql.congelado(__file__, "administración: desactivar cierra sesiones, cierre forzado, retiro (con sus negativas), el correo queda libre, el último superadmin no se va", escenario_administracion())
+    rev("administración: desactivar cierra sesiones, cierre forzado, retiro (con sus negativas), el correo queda libre, el último superadmin no se va", ok, detalle)
 
     titulo("5 · Lo que solo la base cuida")
-    modo(True)
     con = BASE["conectar"]("usrNexus", BASE["app"], BASE["base"])
     k = con.cursor()
 
@@ -568,7 +546,6 @@ try:
     rev("y para una que sí, se emite", probar(tokens.crear, ANA, tokens.RECUPERACION)[0] == "ok")
 
     titulo("6 · A la vez")
-    modo(True)
 
     def a_la_vez(n: int, fn):
         barrera = threading.Barrier(n)

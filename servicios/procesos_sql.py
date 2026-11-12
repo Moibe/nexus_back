@@ -1,7 +1,7 @@
 """Procesos del motor de reglas guardados en SQL Server, en `nexus.processes` (migración `0005`).
 
-Hace exactamente lo mismo que el JSONL de `servicios/procesos.py` —mismas firmas, mismos errores, misma forma de salida—, y es ese módulo
-el que elige (SQL si hay `SQLSERVER_HOST`) y el que valida lo que llega antes de llamar aquí.
+Es el almacenamiento de `servicios/procesos.py` (hasta el 2026-11-11 había además un JSONL para donde no había base; ya no), que es el que
+valida lo que llega antes de llamar aquí.
 
 Moibe, 2026-11-05: se quitaron los expedientes virtuales y un proceso ya no se liga a ningún tipo. Este módulo dejó de leer y de escribir la
 columna `virtualCaseTypePublicId` (la `0005` la creó; la borra la migración `0012`): el proceso es su `dataJson`, sin nada más que dependa de otra

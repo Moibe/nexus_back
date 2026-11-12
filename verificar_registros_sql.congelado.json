@@ -1,0 +1,231 @@
+{
+ "auditoría: anotar y leer de vuelta": [
+  {
+   "accion": "PROCESS_CREATED",
+   "evento": "auditoria",
+   "nombre": "Validar",
+   "procesoId": "proceso-x",
+   "tenant": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa",
+   "usuarioGuid": "u-9"
+  },
+  1
+ ],
+ "auditoría: el conteo de la última hora (el de hace 5 h no cuenta)": 1,
+ "auditoría: los eventos de una acción, en orden": [
+  {
+   "accion": "PASSWORD_RESET_REQUESTED",
+   "email": "a@x.com",
+   "en": "<fecha>",
+   "evento": "auditoria",
+   "usuarioGuid": null
+  },
+  {
+   "accion": "PASSWORD_RESET_REQUESTED",
+   "email": "a@x.com",
+   "en": "<fecha>",
+   "evento": "auditoria",
+   "usuarioGuid": null
+  }
+ ],
+ "auditoría: todos": [
+  {
+   "accion": "PASSWORD_RESET_REQUESTED",
+   "email": "a@x.com",
+   "en": "<fecha>",
+   "evento": "auditoria",
+   "usuarioGuid": null
+  },
+  {
+   "accion": "PASSWORD_RESET_REQUESTED",
+   "email": "a@x.com",
+   "en": "<fecha>",
+   "evento": "auditoria",
+   "usuarioGuid": null
+  },
+  {
+   "accion": "USER_CREATED",
+   "actor": "admin-a",
+   "en": "<fecha>",
+   "evento": "auditoria",
+   "tenant": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa",
+   "usuarioGuid": "u-1"
+  },
+  {
+   "accion": "CROSS_TENANT_ACCESS",
+   "en": "<fecha>",
+   "evento": "auditoria",
+   "tenantPedido": "dddddddd-4444-4444-8444-dddddddddddd",
+   "usuarioGuid": "u-2"
+  }
+ ],
+ "bandeja: datos de una entrada, y de una ajena": [
+  {
+   "canal": "API",
+   "documentoId": "documento-00000000000000000000000000000003",
+   "id": "cccccccccccccccccccccccccccccccc",
+   "llaveId": null,
+   "mime": "application/pdf",
+   "nombreOriginal": "archivo-3.pdf",
+   "recibidoEn": "<fecha>",
+   "rutaRelativa": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa/ab/3",
+   "sha256": "0000000000000000000000000000000000000000000000000000000000000003",
+   "tamanoBytes": 103,
+   "tenant": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+  },
+  null
+ ],
+ "bandeja: descartadas, la más reciente primero, con su detalle": [
+  {
+   "canal": "API",
+   "descartadaEn": "<fecha>",
+   "documentoId": "documento-00000000000000000000000000000004",
+   "id": "dddddddddddddddddddddddddddddddd",
+   "llaveId": null,
+   "mime": "application/pdf",
+   "nombreOriginal": "archivo-4.pdf",
+   "recibidoEn": "<fecha>",
+   "rutaRelativa": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa/ab/4",
+   "sha256": "0000000000000000000000000000000000000000000000000000000000000004",
+   "tamanoBytes": 104,
+   "tenant": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+  },
+  {
+   "canal": "API",
+   "descartadaEn": "<fecha>",
+   "detalle": "borroso",
+   "documentoId": "documento-00000000000000000000000000000003",
+   "id": "cccccccccccccccccccccccccccccccc",
+   "llaveId": null,
+   "mime": "application/pdf",
+   "nombreOriginal": "archivo-3.pdf",
+   "recibidoEn": "<fecha>",
+   "rutaRelativa": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa/ab/3",
+   "sha256": "0000000000000000000000000000000000000000000000000000000000000003",
+   "tamanoBytes": 103,
+   "tenant": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+  }
+ ],
+ "bandeja: entrar, descartar, no volver a retirar": [
+  {
+   "canal": "MANUAL",
+   "llaveId": null,
+   "mime": "application/pdf",
+   "nombreOriginal": "nuevo.pdf",
+   "rutaRelativa": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa/ff/1",
+   "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+   "tamanoBytes": 42,
+   "tenant": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+  },
+  true,
+  false,
+  false,
+  "nuevo.pdf",
+  "no sirve"
+ ],
+ "bandeja: existe en otro tenant": [
+  true,
+  false,
+  false
+ ],
+ "bandeja: la que pasó al pipeline sí, la descartada y la pendiente no": [
+  true,
+  false,
+  false
+ ],
+ "bandeja: pendientes de la organización": [
+  {
+   "canal": "API",
+   "documentoId": "documento-00000000000000000000000000000001",
+   "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "llaveId": null,
+   "mime": "application/pdf",
+   "nombreOriginal": "archivo-1.pdf",
+   "recibidoEn": "<fecha>",
+   "rutaRelativa": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa/ab/1",
+   "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+   "tamanoBytes": 101,
+   "tenant": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+  }
+ ],
+ "bandeja: pendientes de plataforma": [
+  {
+   "canal": "API",
+   "documentoId": "documento-00000000000000000000000000000005",
+   "id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+   "llaveId": null,
+   "mime": "application/pdf",
+   "nombreOriginal": "archivo-5.pdf",
+   "recibidoEn": "<fecha>",
+   "rutaRelativa": "plataforma/ab/5",
+   "sha256": "0000000000000000000000000000000000000000000000000000000000000005",
+   "tamanoBytes": 105,
+   "tenant": "plataforma"
+  }
+ ],
+ "clasificadores: el de plataforma sale del .env": "clasificador-de-plataforma",
+ "clasificadores: el de una organización (el último asignado)": "proc-actual",
+ "clasificadores: el de una organización sin clasificador": null,
+ "crear una organización con nombre repetido": {
+  "adminGuid": "admin-c",
+  "codigo": "NEX-00004",
+  "estado": "ACTIVE",
+  "nombre": "Alfa Seguros",
+  "recuperacion": {
+   "correo": "c@x.com"
+  },
+  "slug": "alfa-seguros-3"
+ },
+ "organizaciones: coincidencias por nombre": [
+  "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa",
+  "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb",
+  "cccccccc-3333-4333-8333-cccccccccccc"
+ ],
+ "organizaciones: la lista": [
+  {
+   "adminGuid": null,
+   "codigo": "NEX-00003",
+   "creadaEn": "<fecha>",
+   "estado": "ACTIVE",
+   "guid": "cccccccc-3333-4333-8333-cccccccccccc",
+   "nombre": "Repetida",
+   "recuperacion": {},
+   "slug": null
+  },
+  {
+   "adminGuid": "admin-b",
+   "codigo": "NEX-00002",
+   "creadaEn": "<fecha>",
+   "estado": "SUSPENDED",
+   "guid": "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb",
+   "nombre": "Alfa Seguros",
+   "recuperacion": {},
+   "slug": "alfa-seguros-1"
+  },
+  {
+   "adminGuid": "admin-a",
+   "codigo": "NEX-00001",
+   "creadaEn": "<fecha>",
+   "estado": "ACTIVE",
+   "guid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa",
+   "nombre": "Alfa Seguros",
+   "recuperacion": {
+    "correo": "a@x.com"
+   },
+   "slug": "alfa-seguros"
+  }
+ ],
+ "organizaciones: una por su guid, con su estado y su recuperación": {
+  "adminGuid": "admin-b",
+  "codigo": "NEX-00002",
+  "creadaEn": "<fecha>",
+  "estado": "SUSPENDED",
+  "guid": "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb",
+  "nombre": "Alfa Seguros",
+  "recuperacion": {},
+  "slug": "alfa-seguros-1"
+ },
+ "organizaciones: una que no existe da NoEncontrado": [
+  "error",
+  "NoEncontrado"
+ ]
+}

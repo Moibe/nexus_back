@@ -25,7 +25,9 @@ RAIZ = Path(tempfile.mkdtemp(prefix="verificar-llaves-"))
 SERVICIO = "llave-de-servicio-solo-local"
 os.environ["ALMACEN_RUTA"] = str(RAIZ)
 os.environ["NEXUS_API_KEY"] = SERVICIO
-os.environ.setdefault("SQLSERVER_HOST", "")
+import pruebas_sql  # noqa: E402  (desde el 2026-11-11 todo se guarda en SQL Server: esta prueba corre contra uno desechable)
+
+BASE_SQL = pruebas_sql.preparar()
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -97,8 +99,8 @@ def main() -> int:
     rev("vence a los 30 días",
         abs((datetime.fromisoformat(llave["expiraEn"]) - datetime.fromisoformat(llave["creadaEn"])) - timedelta(days=30)) < timedelta(seconds=2))
     rev("la respuesta pide no guardarse (no-store)", r.headers.get("cache-control") == "no-store", str(r.headers.get("cache-control")))
-    contenido = (RAIZ / ".registro" / "llaves.jsonl").read_text(encoding="utf-8")
-    rev("en el registro NO está el secret", secret not in contenido)
+    contenido = pruebas_sql.volcado(BASE_SQL)
+    rev("en la base NO está el secret", secret not in contenido)
     rev("sí está su hash", seguridad_llaves.hash_de(secret) in contenido)
 
     titulo("2 · Emitir rechaza lo inválido")
@@ -185,12 +187,12 @@ def main() -> int:
     titulo("9 · Vencida deja de servir sola")
     ident, vencida = seguridad_llaves.generar()
     hace_un_rato = datetime.now(timezone.utc) - timedelta(minutes=1)
-    with open(RAIZ / ".registro" / "llaves.jsonl", "a", encoding="utf-8") as f:
-        f.write(json.dumps({
-            "evento": "emitida", "id": ident, "tenant": "demo",
-            "secret_hash": seguridad_llaves.hash_de(vencida), "nombre": "vieja", "descripcion": "x",
-            "creadaEn": (hace_un_rato - timedelta(days=1)).isoformat(), "expiraEn": hace_un_rato.isoformat(),
-        }) + "\n")
+    con = BASE_SQL["conectar"]("usrNexus", BASE_SQL["app"], BASE_SQL["base"])
+    con.cursor().execute(
+        "INSERT INTO nexus.apiKeys (publicId, tenant, secretHash, name, description, createdAt, expiresAt) VALUES (?, 'demo', ?, 'vieja', 'x', ?, ?)",
+        ident, seguridad_llaves.hash_de(vencida), (hace_un_rato - timedelta(days=1)).replace(tzinfo=None), hace_un_rato.replace(tzinfo=None),
+    )
+    con.close()
     rev("una llave que venció hace un minuto: 401", subir(c, vencida).status_code == 401)
 
     titulo("10 · La llave de servicio sigue igual")
@@ -213,11 +215,11 @@ def main() -> int:
     rev("las 20 respondieron 201", len(ids) == 20, str(errores))
     rev("con 20 ids distintos", len(set(ids)) == 20)
 
-    titulo("12 · Si el registro no está, 503 y no se deja pasar a nadie")
+    titulo("12 · Con el NAS caído: las llaves viven en la base (emitir sigue), pero no entra ningún archivo (503)")
     (RAIZ / almacen.CENTINELA).unlink()
     try:
-        rev("una llave de cliente: 503 (no se pudo verificar), no 201", subir(c, secret_acme, contenido=PNG + b"caido").status_code == 503)
-        rev("emitir: 503", emitir(c).status_code == 503)
+        rev("subir con una llave de cliente: 503, no 201", subir(c, secret_acme, contenido=PNG + b"caido").status_code == 503)
+        rev("emitir una llave: 201 (no depende del NAS)", emitir(c).status_code == 201)
     finally:
         (RAIZ / almacen.CENTINELA).touch()
 
@@ -226,14 +228,6 @@ def main() -> int:
         rr = c.get(f"/archivos/{ruta}", params={"mime": "application/pdf"}, headers=srv())
         rev(f"GET /archivos/{ruta} con la llave de servicio: no lo sirve ({rr.status_code})",
             rr.status_code in (400, 404) and "secret_hash" not in rr.text, rr.text[:120])
-
-    titulo("12c · Un acento cortado a media escritura no tumba el registro")
-    registro_llaves = RAIZ / ".registro" / "llaves.jsonl"
-    with open(registro_llaves, "ab") as f:
-        f.write('{"evento": "emitida", "id": "Zz9z", "nombre": "Juá'.encode("utf-8")[:-1])  # la "á" a la mitad
-    rev("la llave de acme sigue sirviendo", subir(c, secret_acme, contenido=PNG + b"utf8").status_code == 201)
-    rev("se sigue pudiendo listar", c.get("/llaves/", params={"tenant": "demo"}, headers=srv()).status_code == 200)
-    rev("y emitir", emitir(c, nombre="después del corte").status_code == 201)
 
     titulo("12d · Uso y métricas por llave")
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
@@ -259,8 +253,7 @@ def main() -> int:
     rev("métricas de otro tenant: 404", c.get(f"/llaves/{id_m}/metricas", params={"tenant": "cli-acme", **p_hoy}, headers=srv()).status_code == 404)
     rev("con una llave de cliente: 401", c.get(f"/llaves/{id_m}/metricas", params={"tenant": "demo", **p_hoy}, headers={"X-API-Key": sec_m}).status_code == 401)
     rev("periodo al revés: 400", c.get(f"/llaves/{id_m}/metricas", params={"tenant": "demo", "desde": "2026-09-30T00:00:00Z", "hasta": "2026-09-01T00:00:00Z"}, headers=srv()).status_code == 400)
-    contenido_uso = (RAIZ / ".registro" / "uso-llaves.jsonl").read_text(encoding="utf-8")
-    rev("el registro de uso NO guarda el secret", sec_m not in contenido_uso)
+    rev("el uso guardado en la base NO trae el secret", sec_m not in pruebas_sql.volcado(BASE_SQL))
     # Una llave INVENTADA ya no deja rastro: ver 12g.
     rev("una llave falsa se rechaza sin abrir nada", subir(c, "nxdoc_live_QqQq_sk_" + "b" * 32).status_code == 401)
 
@@ -313,20 +306,25 @@ def main() -> int:
     # dejaron de importar poco cuando la API se publicó en internet
     # (2026-10-01): el cuerpo se leía entero antes del 401, y CUALQUIER id con
     # forma de llave se anotaba en el registro de uso y en el índice en memoria.
-    archivo_uso = RAIZ / ".registro" / "uso-llaves.jsonl"
+    def filas_de_uso() -> int:
+        con = BASE_SQL["conectar"]("usrNexus", BASE_SQL["app"], BASE_SQL["base"])
+        try:
+            return con.cursor().execute("SELECT count(*) FROM nexus.apiKeyUsage").fetchone()[0]
+        finally:
+            con.close()
+
     falsa = "nxdoc_live_Ff9f_sk_" + "c" * 26 + seguridad_llaves.checksum_de("nxdoc_live_Ff9f_sk_" + "c" * 26)
     rev("la llave inventada tiene formato válido (el checksum no es seguridad)", seguridad_llaves.validar_formato(falsa))
 
-    antes_texto = archivo_uso.read_text(encoding="utf-8") if archivo_uso.exists() else ""
+    antes_texto = filas_de_uso()
     antes_indice = set(uso_llaves._indice)
     rr = subir(c, falsa, contenido=PNG + b"inventada")
     rev("una llave inventada: 401", rr.status_code == 401, f"{rr.status_code} {rr.text[:90]}")
-    despues_texto = archivo_uso.read_text(encoding="utf-8") if archivo_uso.exists() else ""
-    rev("NO deja renglón en el registro de uso del NAS", despues_texto == antes_texto)
+    rev("NO deja fila en el uso de la base", filas_de_uso() == antes_texto)
     rev("NI entra al índice en memoria", set(uso_llaves._indice) == antes_indice, str(set(uso_llaves._indice) - antes_indice))
     rev("y no se puede inflar: 25 intentos con ids distintos no agregan nada",
         all(subir(c, seguridad_llaves.generar()[1], contenido=PNG + bytes([i])).status_code == 401 for i in range(25))
-        and archivo_uso.read_text(encoding="utf-8") == antes_texto and set(uso_llaves._indice) == antes_indice)
+        and filas_de_uso() == antes_texto and set(uso_llaves._indice) == antes_indice)
 
     # Una llave que SÍ existe pero fue revocada: su uso sí se cuenta, porque es
     # un cliente de verdad y su dueño tiene que poder verlo en Métricas.
@@ -346,11 +344,11 @@ def main() -> int:
     grande = PNG + b"x" * (3 * 1024 * 1024)
     antes_pend = len(pendientes(c))
     # Foto nueva: la revocada de arriba sí anotó, y con razón.
-    antes_texto = archivo_uso.read_text(encoding="utf-8")
+    antes_texto = filas_de_uso()
     rev("un archivo de 3 MB sin llave: 401", subir(c, "", contenido=grande).status_code == 401)
     rev("con llave inventada: 401", subir(c, falsa, contenido=grande).status_code == 401)
     rev("y nada entró a la bandeja", len(pendientes(c)) == antes_pend)
-    rev("el registro de uso sigue igual", archivo_uso.read_text(encoding="utf-8") == antes_texto)
+    rev("el uso guardado sigue igual", filas_de_uso() == antes_texto)
 
     titulo("12h · Ninguna ruta ABIERTA recibe cuerpo")
     # De esto depende la regla del middleware: corta solo cuando hay cuerpo,

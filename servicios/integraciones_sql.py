@@ -1,11 +1,10 @@
 """Enlaces de un solo uso, API keys de cliente, su uso, webhooks y sus entregas, guardados en SQL Server (migración `0008`).
 
-Hacen lo mismo que el JSONL de `tokens.py`, `llaves_cliente.py`, `uso_llaves.py`, `webhooks_cliente.py` y `entregas_webhooks.py` —mismas
-reglas, misma forma de salida—, y son esos módulos los que eligen: SQL si el `.env` trae `SQLSERVER_HOST`, el almacén si no (la laptop y las
-pruebas sin base). Antes de leer o escribir cada registro se asegura que su JSONL ya se haya importado una vez en esta base
-(`servicios/importacion_json.py`).
+Es el almacenamiento de `tokens.py`, `llaves_cliente.py`, `uso_llaves.py`, `webhooks_cliente.py` y `entregas_webhooks.py` (hasta el 2026-11-11
+tenían además un JSONL para donde no había base; ya no). Antes de leer o escribir cada registro se asegura que su viejo JSONL ya se haya
+importado una vez en esta base (`servicios/importacion_json.py`).
 
-Aquí NO hay validación de negocio: eso se queda en los módulos de arriba, que la hacen igual con cualquiera de los dos almacenamientos.
+Aquí NO hay validación de negocio: eso se queda en los módulos de arriba.
 Lo que sí hay son las garantías que el candado del archivo daba a un solo proceso y que ahora da la base a todos: leer y escribir
 bajo `UPDLOCK, HOLDLOCK` (un enlace se gasta una vez; dos altas con la misma URL no se cuelan; un aviso se programa una vez), con las
 llaves únicas como último recurso.

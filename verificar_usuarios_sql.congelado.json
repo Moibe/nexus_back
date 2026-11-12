@@ -1,0 +1,2219 @@
+{
+ "acceso vencido: Karla sí, Iván (reemitido) no, el superadmin pendiente nunca": [
+  true,
+  false,
+  false,
+  false
+ ],
+ "administración: desactivar cierra sesiones, cierre forzado, retiro (con sus negativas), el correo queda libre, el último superadmin no se va": [
+  {
+   "activo": false,
+   "apellidoMaterno": "",
+   "apellidoPaterno": "Prueba",
+   "apellidos": "Prueba",
+   "creadoEn": "<dinámico>",
+   "debeCambiarContrasena": true,
+   "email": "admin.prueba@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "<dinámico>",
+   "membresias": [
+    {
+     "rol": "SUPERVISOR",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Alma",
+   "recuperacion": {},
+   "telefono": null,
+   "temporalEmitidaEn": "<dinámico>",
+   "ultimoLoginEn": null
+  },
+  false,
+  true,
+  2,
+  0,
+  [
+   "error",
+   "NoEncontrado"
+  ],
+  [
+   "error",
+   "NoEncontrado"
+  ],
+  [
+   "error",
+   "NoSePuedeEliminar",
+   "admin_de_organizacion"
+  ],
+  [
+   "error",
+   "ValueError",
+   "El motivo es obligatorio."
+  ],
+  [
+   "error",
+   "NoEncontrado"
+  ],
+  {
+   "activo": true,
+   "apellidoMaterno": "",
+   "apellidoPaterno": "Prueba",
+   "apellidos": "Prueba",
+   "creadoEn": "<dinámico>",
+   "debeCambiarContrasena": true,
+   "email": "admin.prueba@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "<dinámico>",
+   "membresias": [
+    {
+     "rol": "SUPERVISOR",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Alma",
+   "recuperacion": {},
+   "telefono": null,
+   "temporalEmitidaEn": "<dinámico>",
+   "ultimoLoginEn": null
+  },
+  [
+   [
+    "error",
+    "NoEncontrado"
+   ],
+   null
+  ],
+  "admin.prueba@alfa.mx",
+  "rodrigo@alfa.mx",
+  "ok",
+  "ok",
+  [
+   "error",
+   "NoSePuedeEliminar",
+   "ultimo_superadmin"
+  ],
+  [
+   "error",
+   "NoSePuedeEliminar",
+   "ultimo_superadmin"
+  ],
+  [
+   "super@plataforma.mx"
+  ],
+  [
+   {
+    "accesoVencido": false,
+    "activo": true,
+    "creadoEn": "<dinámico>",
+    "debeCambiarContrasena": false,
+    "email": "ana@alfa.mx",
+    "guid": "<dinámico>",
+    "nombre": "Ana López Ruiz",
+    "numero": "001",
+    "rol": "ANALISTA",
+    "rolNombre": "Analista",
+    "sesionActiva": true,
+    "telefono": "+52 55 1234 5678"
+   },
+   {
+    "accesoVencido": false,
+    "activo": true,
+    "creadoEn": "<dinámico>",
+    "debeCambiarContrasena": false,
+    "email": "beto@alfa.mx",
+    "guid": "<dinámico>",
+    "nombre": "Beto Gómez",
+    "numero": "002",
+    "rol": "OPERADOR",
+    "rolNombre": "Operador",
+    "sesionActiva": false,
+    "telefono": "+52 55 1234 5678"
+   },
+   {
+    "accesoVencido": false,
+    "activo": false,
+    "creadoEn": "<dinámico>",
+    "debeCambiarContrasena": false,
+    "email": "carla@alfa.mx",
+    "guid": "<dinámico>",
+    "nombre": "Carla Mena Ortiz",
+    "numero": "003",
+    "rol": "VIEWER",
+    "rolNombre": "Viewer",
+    "sesionActiva": false,
+    "telefono": "+52 55 1234 5678"
+   },
+   {
+    "accesoVencido": false,
+    "activo": true,
+    "creadoEn": "<dinámico>",
+    "debeCambiarContrasena": true,
+    "email": "ivan@alfa.mx",
+    "guid": "<dinámico>",
+    "nombre": "Iván Cruz",
+    "numero": "004",
+    "rol": "ANALISTA",
+    "rolNombre": "Analista",
+    "sesionActiva": false,
+    "telefono": "+52 55 1234 5678"
+   },
+   {
+    "accesoVencido": true,
+    "activo": true,
+    "creadoEn": "<dinámico>",
+    "debeCambiarContrasena": true,
+    "email": "karla@alfa.mx",
+    "guid": "<dinámico>",
+    "nombre": "Karla Vega",
+    "numero": "005",
+    "rol": "ANALISTA",
+    "rolNombre": "Analista",
+    "sesionActiva": false,
+    "telefono": "+52 55 1234 5678"
+   },
+   {
+    "accesoVencido": false,
+    "activo": true,
+    "creadoEn": "<dinámico>",
+    "debeCambiarContrasena": false,
+    "email": "gaby@alfa.mx",
+    "guid": "<dinámico>",
+    "nombre": "Gaby Solís",
+    "numero": "006",
+    "rol": "ANALISTA",
+    "rolNombre": "Analista",
+    "sesionActiva": false,
+    "telefono": "+52 55 1234 5678"
+   },
+   {
+    "accesoVencido": false,
+    "activo": true,
+    "creadoEn": "<dinámico>",
+    "debeCambiarContrasena": true,
+    "email": "hugo@alfa.mx",
+    "guid": "<dinámico>",
+    "nombre": "Hugo Alberto Sánchez Márquez",
+    "numero": "007",
+    "rol": "OPERADOR",
+    "rolNombre": "Operador",
+    "sesionActiva": true,
+    "telefono": "5500001111"
+   },
+   {
+    "accesoVencido": false,
+    "activo": true,
+    "creadoEn": "<dinámico>",
+    "debeCambiarContrasena": true,
+    "email": "juan@alfa.mx",
+    "guid": "<dinámico>",
+    "nombre": "Juan Pérez",
+    "numero": "008",
+    "rol": "ANALISTA",
+    "rolNombre": "Analista",
+    "sesionActiva": false,
+    "telefono": "+52 55 1234 5678"
+   },
+   {
+    "accesoVencido": false,
+    "activo": true,
+    "creadoEn": "<dinámico>",
+    "debeCambiarContrasena": true,
+    "email": "nora@alfa.mx",
+    "guid": "<dinámico>",
+    "nombre": "Nora Elena Núñez",
+    "numero": "009",
+    "rol": "AUDITOR",
+    "rolNombre": "Auditor",
+    "sesionActiva": false,
+    "telefono": "+52 55 1111 0000"
+   },
+   {
+    "accesoVencido": false,
+    "activo": true,
+    "creadoEn": "<dinámico>",
+    "debeCambiarContrasena": true,
+    "email": "vale@alfa.mx",
+    "guid": "<dinámico>",
+    "nombre": "Ana Lucía Gómez Soto",
+    "numero": "010",
+    "rol": "VIEWER",
+    "rolNombre": "Viewer",
+    "sesionActiva": false,
+    "telefono": null
+   },
+   {
+    "accesoVencido": false,
+    "activo": true,
+    "creadoEn": "<dinámico>",
+    "debeCambiarContrasena": true,
+    "email": "intentos@alfa.mx",
+    "guid": "<dinámico>",
+    "nombre": "Iñaki Torres",
+    "numero": "011",
+    "rol": "ANALISTA",
+    "rolNombre": "Analista",
+    "sesionActiva": false,
+    "telefono": null
+   },
+   {
+    "accesoVencido": false,
+    "activo": true,
+    "creadoEn": "<dinámico>",
+    "debeCambiarContrasena": true,
+    "email": "sesiones@alfa.mx",
+    "guid": "<dinámico>",
+    "nombre": "Sergio Ramos",
+    "numero": "012",
+    "rol": "ANALISTA",
+    "rolNombre": "Analista",
+    "sesionActiva": true,
+    "telefono": null
+   },
+   {
+    "accesoVencido": false,
+    "activo": true,
+    "creadoEn": "<dinámico>",
+    "debeCambiarContrasena": false,
+    "email": "claves@alfa.mx",
+    "guid": "<dinámico>",
+    "nombre": "Clara Llaves",
+    "numero": "013",
+    "rol": "ANALISTA",
+    "rolNombre": "Analista",
+    "sesionActiva": false,
+    "telefono": null
+   },
+   {
+    "accesoVencido": false,
+    "activo": true,
+    "creadoEn": "<dinámico>",
+    "debeCambiarContrasena": true,
+    "email": "pendiente@alfa.mx",
+    "guid": "<dinámico>",
+    "nombre": "Pedro Espera",
+    "numero": "014",
+    "rol": "ANALISTA",
+    "rolNombre": "Analista",
+    "sesionActiva": false,
+    "telefono": null
+   },
+   {
+    "accesoVencido": false,
+    "activo": true,
+    "creadoEn": "<dinámico>",
+    "debeCambiarContrasena": true,
+    "email": "admin.prueba@alfa.mx",
+    "guid": "<dinámico>",
+    "nombre": "Nuevo Dueño",
+    "numero": "015",
+    "rol": "VIEWER",
+    "rolNombre": "Viewer",
+    "sesionActiva": false,
+    "telefono": null
+   }
+  ]
+ ],
+ "administradores_de_plataforma": [
+  {
+   "activo": true,
+   "apellidoMaterno": "Byron",
+   "apellidoPaterno": "Lovelace",
+   "apellidos": "Lovelace Byron",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": false,
+   "email": "super@plataforma.mx",
+   "esAdminPlataforma": true,
+   "guid": "a0000000-0000-4000-8000-000000000001",
+   "membresias": [],
+   "nombre": "Ada",
+   "recuperacion": {},
+   "telefono": null,
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": "<fecha>"
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "",
+   "apellidoPaterno": "Hopper",
+   "apellidos": "Hopper",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": true,
+   "email": "super2@plataforma.mx",
+   "esAdminPlataforma": true,
+   "guid": "a0000000-0000-4000-8000-000000000002",
+   "membresias": [],
+   "nombre": "Grace",
+   "recuperacion": {},
+   "telefono": null,
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  }
+ ],
+ "altas, correo repetido, bootstrap, membresías (la reasignada se va al final), datos del administrador y perfil": [
+  {
+   "activo": true,
+   "apellidoMaterno": "Ortiz",
+   "apellidoPaterno": "Núñez",
+   "apellidos": "Núñez Ortiz",
+   "creadoEn": "<dinámico>",
+   "debeCambiarContrasena": true,
+   "email": "nora@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "<dinámico>",
+   "membresias": [
+    {
+     "rol": "ANALISTA",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Nora",
+   "recuperacion": {
+    "email": "nora@correo.mx",
+    "telefono": null
+   },
+   "telefono": "+52 55 9999 0000",
+   "temporalEmitidaEn": "<dinámico>",
+   "ultimoLoginEn": null
+  },
+  [
+   "error",
+   "YaExiste",
+   "El correo electrónico ingresado ya se encuentra registrado, por favor intenta nuevamente"
+  ],
+  {
+   "activo": true,
+   "apellidoMaterno": "Pérez",
+   "apellidoPaterno": "De la Cruz",
+   "apellidos": "De la Cruz Pérez",
+   "creadoEn": "<dinámico>",
+   "debeCambiarContrasena": true,
+   "email": "vale@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "<dinámico>",
+   "membresias": [
+    {
+     "rol": "VIEWER",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "María de los Ángeles",
+   "recuperacion": {},
+   "telefono": null,
+   "temporalEmitidaEn": "<dinámico>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "Murray",
+   "apellidoPaterno": "Hopper",
+   "apellidos": "Hopper Murray",
+   "creadoEn": "<dinámico>",
+   "debeCambiarContrasena": true,
+   "email": "plataforma3@x.mx",
+   "esAdminPlataforma": true,
+   "guid": "<dinámico>",
+   "membresias": [],
+   "nombre": "Grace",
+   "recuperacion": {},
+   "telefono": null,
+   "temporalEmitidaEn": "<dinámico>",
+   "ultimoLoginEn": null
+  },
+  [
+   "error",
+   "YaExiste",
+   "Ya existe un usuario con ese correo."
+  ],
+  [
+   "error",
+   "ValueError",
+   "El correo no es válido."
+  ],
+  [
+   "error",
+   "YaExiste",
+   "El correo electrónico ingresado ya se encuentra registrado, por favor intenta nuevamente"
+  ],
+  [
+   {
+    "rol": "ANALISTA",
+    "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+   },
+   {
+    "rol": "SUPERVISOR",
+    "tenantGuid": "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
+   }
+  ],
+  [
+   {
+    "rol": "SUPERVISOR",
+    "tenantGuid": "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
+   },
+   {
+    "rol": "AUDITOR",
+    "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+   }
+  ],
+  [
+   "error",
+   "NoEncontrado"
+  ],
+  {
+   "activo": true,
+   "apellidoMaterno": "Pérez",
+   "apellidoPaterno": "De la Cruz",
+   "apellidos": "De la Cruz Pérez",
+   "creadoEn": "<dinámico>",
+   "debeCambiarContrasena": true,
+   "email": "vale@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "<dinámico>",
+   "membresias": [
+    {
+     "rol": "VIEWER",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "María de los Ángeles",
+   "recuperacion": {},
+   "telefono": "5511223344",
+   "temporalEmitidaEn": "<dinámico>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "Soto",
+   "apellidoPaterno": "Gómez",
+   "apellidos": "Gómez Soto",
+   "creadoEn": "<dinámico>",
+   "debeCambiarContrasena": true,
+   "email": "vale@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "<dinámico>",
+   "membresias": [
+    {
+     "rol": "VIEWER",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Ana Lucía",
+   "recuperacion": {},
+   "telefono": null,
+   "temporalEmitidaEn": "<dinámico>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "Márquez",
+   "apellidoPaterno": "Sánchez",
+   "apellidos": "Sánchez Márquez",
+   "creadoEn": "<dinámico>",
+   "debeCambiarContrasena": true,
+   "email": "hugo@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "<dinámico>",
+   "membresias": [
+    {
+     "rol": "OPERADOR",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Hugo Alberto",
+   "recuperacion": {},
+   "telefono": "5500001111",
+   "temporalEmitidaEn": "<dinámico>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "",
+   "apellidoPaterno": "Núñez",
+   "apellidos": "Núñez",
+   "creadoEn": "<dinámico>",
+   "debeCambiarContrasena": true,
+   "email": "nora@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "<dinámico>",
+   "membresias": [
+    {
+     "rol": "SUPERVISOR",
+     "tenantGuid": "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
+    },
+    {
+     "rol": "AUDITOR",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Nora Elena",
+   "recuperacion": {
+    "email": "otro@correo.mx",
+    "telefono": "5500000000"
+   },
+   "telefono": "+52 55 1111 0000",
+   "temporalEmitidaEn": "<dinámico>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "Treviño",
+   "apellidoPaterno": "De la Garza",
+   "apellidos": "De la Garza Treviño",
+   "creadoEn": "<dinámico>",
+   "debeCambiarContrasena": false,
+   "email": "rodrigo@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "<dinámico>",
+   "membresias": [
+    {
+     "rol": "ADMIN",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Rodrigo",
+   "recuperacion": {},
+   "telefono": null,
+   "temporalEmitidaEn": "<dinámico>",
+   "ultimoLoginEn": null
+  },
+  [
+   "error",
+   "NoEncontrado"
+  ],
+  [
+   "error",
+   "NoEncontrado"
+  ],
+  [
+   "rodrigo@alfa.mx",
+   "ana@alfa.mx",
+   "beto@alfa.mx",
+   "carla@alfa.mx",
+   "ivan@alfa.mx",
+   "karla@alfa.mx",
+   "gaby@alfa.mx",
+   "hugo@alfa.mx",
+   "juan@alfa.mx",
+   "nora@alfa.mx",
+   "vale@alfa.mx"
+  ]
+ ],
+ "contraseñas: primer acceso y restablecer cierran todas, cambiar cierra las otras, sesión cerrada o contraseña vieja se rechazan, temporal nueva": [
+  [
+   {
+    "activo": true,
+    "apellidoMaterno": "",
+    "apellidoPaterno": "Llaves",
+    "apellidos": "Llaves",
+    "creadoEn": "<dinámico>",
+    "debeCambiarContrasena": false,
+    "email": "claves@alfa.mx",
+    "esAdminPlataforma": false,
+    "guid": "<dinámico>",
+    "membresias": [
+     {
+      "rol": "ANALISTA",
+      "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+     }
+    ],
+    "nombre": "Clara",
+    "recuperacion": {},
+    "telefono": null,
+    "temporalEmitidaEn": "<dinámico>",
+    "ultimoLoginEn": null
+   },
+   3
+  ],
+  1,
+  [
+   true,
+   false
+  ],
+  [
+   "error",
+   "SesionNoCanjeable",
+   "cerrada"
+  ],
+  [
+   "error",
+   "SesionNoCanjeable",
+   "contrasena"
+  ],
+  1,
+  [
+   "error",
+   "ValueError",
+   "Motivo inválido: OTRO"
+  ],
+  [
+   "error",
+   "NoEncontrado"
+  ],
+  "h-4",
+  {
+   "activo": true,
+   "apellidoMaterno": "",
+   "apellidoPaterno": "Espera",
+   "apellidos": "Espera",
+   "creadoEn": "<dinámico>",
+   "debeCambiarContrasena": true,
+   "email": "pendiente@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "<dinámico>",
+   "membresias": [
+    {
+     "rol": "ANALISTA",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Pedro",
+   "recuperacion": {},
+   "telefono": null,
+   "temporalEmitidaEn": "<dinámico>",
+   "ultimoLoginEn": null
+  },
+  [
+   false,
+   0,
+   "t-2"
+  ],
+  [
+   "error",
+   "NoPendiente"
+  ],
+  [
+   "error",
+   "NoEncontrado"
+  ],
+  {
+   "activo": true,
+   "apellidoMaterno": "",
+   "apellidoPaterno": "Cruz",
+   "apellidos": "Cruz",
+   "creadoEn": "<dinámico>",
+   "debeCambiarContrasena": true,
+   "email": "ivan@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "<dinámico>",
+   "membresias": [
+    {
+     "rol": "ANALISTA",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Iván",
+   "recuperacion": {},
+   "telefono": "+52 55 1234 5678",
+   "temporalEmitidaEn": "<dinámico>",
+   "ultimoLoginEn": null
+  }
+ ],
+ "de_tenant(aaaaaaaa…): mismas personas, mismo orden": [
+  {
+   "activo": true,
+   "apellidoMaterno": "Treviño",
+   "apellidoPaterno": "De la Garza",
+   "apellidos": "De la Garza Treviño",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": false,
+   "email": "rodrigo@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-000000000003",
+   "membresias": [
+    {
+     "rol": "ADMIN",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Rodrigo Alberto",
+   "recuperacion": {
+    "email": "recupera@alfa.mx",
+    "telefono": "5511112222"
+   },
+   "telefono": "+52 55 0000 0000",
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "Ruiz",
+   "apellidoPaterno": "López",
+   "apellidos": "López Ruiz",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": false,
+   "email": "ana@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-000000000004",
+   "membresias": [
+    {
+     "rol": "ANALISTA",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Ana",
+   "recuperacion": {
+    "email": "ana.personal@correo.mx",
+    "telefono": null
+   },
+   "telefono": "+52 55 1234 5678",
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "",
+   "apellidoPaterno": "Gómez",
+   "apellidos": "Gómez",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": false,
+   "email": "beto@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-000000000005",
+   "membresias": [
+    {
+     "rol": "OPERADOR",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Beto",
+   "recuperacion": {},
+   "telefono": "+52 55 1234 5678",
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": false,
+   "apellidoMaterno": "Ortiz",
+   "apellidoPaterno": "Mena",
+   "apellidos": "Mena Ortiz",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": false,
+   "email": "carla@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-000000000006",
+   "membresias": [
+    {
+     "rol": "VIEWER",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Carla",
+   "recuperacion": {},
+   "telefono": "+52 55 1234 5678",
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "",
+   "apellidoPaterno": "Cruz",
+   "apellidos": "Cruz",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": true,
+   "email": "ivan@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-00000000000e",
+   "membresias": [
+    {
+     "rol": "ANALISTA",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Iván",
+   "recuperacion": {},
+   "telefono": "+52 55 1234 5678",
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "",
+   "apellidoPaterno": "Vega",
+   "apellidos": "Vega",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": true,
+   "email": "karla@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-00000000000f",
+   "membresias": [
+    {
+     "rol": "ANALISTA",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Karla",
+   "recuperacion": {},
+   "telefono": "+52 55 1234 5678",
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "",
+   "apellidoPaterno": "Solís",
+   "apellidos": "Solís",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": false,
+   "email": "gaby@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-00000000000c",
+   "membresias": [
+    {
+     "rol": "ANALISTA",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Gaby",
+   "recuperacion": {},
+   "telefono": "+52 55 1234 5678",
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "Márquez",
+   "apellidoPaterno": "Sánchez",
+   "apellidos": "Sánchez Márquez",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": true,
+   "email": "hugo@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-00000000000d",
+   "membresias": [
+    {
+     "rol": "OPERADOR",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Hugo Alberto",
+   "recuperacion": {},
+   "telefono": null,
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "",
+   "apellidoPaterno": "Pérez",
+   "apellidos": "Pérez",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": true,
+   "email": "juan@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-000000000010",
+   "membresias": [
+    {
+     "rol": "ANALISTA",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Juan",
+   "recuperacion": {},
+   "telefono": "+52 55 1234 5678",
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  }
+ ],
+ "de_tenant(bbbbbbbb…): mismas personas, mismo orden": [
+  {
+   "activo": true,
+   "apellidoMaterno": "Luna",
+   "apellidoPaterno": "Paz",
+   "apellidos": "Paz Luna",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": true,
+   "email": "dani@beta.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-000000000008",
+   "membresias": [
+    {
+     "rol": "ADMIN",
+     "tenantGuid": "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
+    }
+   ],
+   "nombre": "Daniela",
+   "recuperacion": {},
+   "telefono": "+52 55 1234 5678",
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "",
+   "apellidoPaterno": "Rocha",
+   "apellidos": "Rocha",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": true,
+   "email": "eva@beta.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-000000000009",
+   "membresias": [
+    {
+     "rol": "AUDITOR",
+     "tenantGuid": "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
+    }
+   ],
+   "nombre": "Eva",
+   "recuperacion": {},
+   "telefono": "+52 55 1234 5678",
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  }
+ ],
+ "de_tenant(demo…): mismas personas, mismo orden": [
+  {
+   "activo": true,
+   "apellidoMaterno": "",
+   "apellidoPaterno": "Díaz",
+   "apellidos": "Díaz",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": true,
+   "email": "fer@demo.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-00000000000b",
+   "membresias": [
+    {
+     "rol": "SUPERVISOR",
+     "tenantGuid": "demo"
+    }
+   ],
+   "nombre": "Fer🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵",
+   "recuperacion": {},
+   "telefono": "+52 55 1234 5678",
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  }
+ ],
+ "estado_origen de cada navegador": [
+  [
+   3,
+   null
+  ],
+  [
+   0,
+   "<fecha>"
+  ],
+  [
+   0,
+   null
+  ],
+  [
+   0,
+   null
+  ],
+  [
+   1,
+   null
+  ],
+  [
+   0,
+   null
+  ],
+  [
+   0,
+   null
+  ],
+  [
+   0,
+   null
+  ]
+ ],
+ "intentos: la quinta bloquea, lo bloqueado no cuenta, el navegador cuenta correos que no existen, restablecer y acertar ponen en cero": [
+  [
+   1,
+   false
+  ],
+  [
+   2,
+   false
+  ],
+  [
+   3,
+   false
+  ],
+  [
+   4,
+   false
+  ],
+  [
+   0,
+   true
+  ],
+  [
+   0,
+   true
+  ],
+  [
+   0,
+   true
+  ],
+  [
+   0,
+   true
+  ],
+  [
+   0,
+   true
+  ],
+  [
+   0,
+   null
+  ],
+  [
+   0,
+   null
+  ],
+  [
+   0,
+   null,
+   true
+  ],
+  [
+   0,
+   null
+  ],
+  [
+   4,
+   false
+  ],
+  [
+   0,
+   true
+  ],
+  [
+   0,
+   true
+  ],
+  [
+   0,
+   false
+  ],
+  [
+   0,
+   null
+  ]
+ ],
+ "la retirada no existe para nadie": [
+  "error",
+  "NoEncontrado"
+ ],
+ "para_listado de Alfa (rol, número, sesión activa, acceso vencido)": [
+  {
+   "accesoVencido": false,
+   "activo": true,
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": false,
+   "email": "rodrigo@alfa.mx",
+   "guid": "a0000000-0000-4000-8000-000000000003",
+   "nombre": "Rodrigo Alberto De la Garza Treviño",
+   "numero": "001",
+   "rol": "ADMIN",
+   "rolNombre": "Administrador",
+   "sesionActiva": false,
+   "telefono": "+52 55 0000 0000"
+  },
+  {
+   "accesoVencido": false,
+   "activo": true,
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": false,
+   "email": "ana@alfa.mx",
+   "guid": "a0000000-0000-4000-8000-000000000004",
+   "nombre": "Ana López Ruiz",
+   "numero": "002",
+   "rol": "ANALISTA",
+   "rolNombre": "Analista",
+   "sesionActiva": true,
+   "telefono": "+52 55 1234 5678"
+  },
+  {
+   "accesoVencido": false,
+   "activo": true,
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": false,
+   "email": "beto@alfa.mx",
+   "guid": "a0000000-0000-4000-8000-000000000005",
+   "nombre": "Beto Gómez",
+   "numero": "003",
+   "rol": "OPERADOR",
+   "rolNombre": "Operador",
+   "sesionActiva": false,
+   "telefono": "+52 55 1234 5678"
+  },
+  {
+   "accesoVencido": false,
+   "activo": false,
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": false,
+   "email": "carla@alfa.mx",
+   "guid": "a0000000-0000-4000-8000-000000000006",
+   "nombre": "Carla Mena Ortiz",
+   "numero": "004",
+   "rol": "VIEWER",
+   "rolNombre": "Viewer",
+   "sesionActiva": false,
+   "telefono": "+52 55 1234 5678"
+  },
+  {
+   "accesoVencido": false,
+   "activo": true,
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": true,
+   "email": "ivan@alfa.mx",
+   "guid": "a0000000-0000-4000-8000-00000000000e",
+   "nombre": "Iván Cruz",
+   "numero": "005",
+   "rol": "ANALISTA",
+   "rolNombre": "Analista",
+   "sesionActiva": false,
+   "telefono": "+52 55 1234 5678"
+  },
+  {
+   "accesoVencido": true,
+   "activo": true,
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": true,
+   "email": "karla@alfa.mx",
+   "guid": "a0000000-0000-4000-8000-00000000000f",
+   "nombre": "Karla Vega",
+   "numero": "006",
+   "rol": "ANALISTA",
+   "rolNombre": "Analista",
+   "sesionActiva": false,
+   "telefono": "+52 55 1234 5678"
+  },
+  {
+   "accesoVencido": false,
+   "activo": true,
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": false,
+   "email": "gaby@alfa.mx",
+   "guid": "a0000000-0000-4000-8000-00000000000c",
+   "nombre": "Gaby Solís",
+   "numero": "007",
+   "rol": "ANALISTA",
+   "rolNombre": "Analista",
+   "sesionActiva": false,
+   "telefono": "+52 55 1234 5678"
+  },
+  {
+   "accesoVencido": false,
+   "activo": true,
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": true,
+   "email": "hugo@alfa.mx",
+   "guid": "a0000000-0000-4000-8000-00000000000d",
+   "nombre": "Hugo Alberto Sánchez Márquez",
+   "numero": "008",
+   "rol": "OPERADOR",
+   "rolNombre": "Operador",
+   "sesionActiva": true,
+   "telefono": null
+  },
+  {
+   "accesoVencido": false,
+   "activo": true,
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": true,
+   "email": "juan@alfa.mx",
+   "guid": "a0000000-0000-4000-8000-000000000010",
+   "nombre": "Juan Pérez",
+   "numero": "009",
+   "rol": "ANALISTA",
+   "rolNombre": "Analista",
+   "sesionActiva": false,
+   "telefono": "+52 55 1234 5678"
+  }
+ ],
+ "para_login de ana@alfa.mx (con el hash, los intentos, el bloqueo, la recuperación y las membresías)": {
+  "activo": true,
+  "apellidoMaterno": "Ruiz",
+  "apellidoPaterno": "López",
+  "apellidos": "López Ruiz",
+  "bloqueadoHasta": null,
+  "creadoEn": "<fecha>",
+  "debeCambiarContrasena": false,
+  "email": "ana@alfa.mx",
+  "esAdminPlataforma": false,
+  "fallidos": 3,
+  "guid": "a0000000-0000-4000-8000-000000000004",
+  "hash": "<hash>",
+  "membresias": [
+   {
+    "rol": "ANALISTA",
+    "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+   }
+  ],
+  "nombre": "Ana",
+  "recuperacion": {
+   "email": "ana.personal@correo.mx",
+   "telefono": null
+  },
+  "telefono": "+52 55 1234 5678",
+  "temporalEmitidaEn": "<fecha>",
+  "ultimoLoginEn": null
+ },
+ "para_login de beto@alfa.mx (con el hash, los intentos, el bloqueo, la recuperación y las membresías)": {
+  "activo": true,
+  "apellidoMaterno": "",
+  "apellidoPaterno": "Gómez",
+  "apellidos": "Gómez",
+  "bloqueadoHasta": "<fecha>",
+  "creadoEn": "<fecha>",
+  "debeCambiarContrasena": false,
+  "email": "beto@alfa.mx",
+  "esAdminPlataforma": false,
+  "fallidos": 0,
+  "guid": "a0000000-0000-4000-8000-000000000005",
+  "hash": "<hash>",
+  "membresias": [
+   {
+    "rol": "OPERADOR",
+    "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+   }
+  ],
+  "nombre": "Beto",
+  "recuperacion": {},
+  "telefono": "+52 55 1234 5678",
+  "temporalEmitidaEn": "<fecha>",
+  "ultimoLoginEn": null
+ },
+ "para_login de carla@alfa.mx (con el hash, los intentos, el bloqueo, la recuperación y las membresías)": {
+  "activo": false,
+  "apellidoMaterno": "Ortiz",
+  "apellidoPaterno": "Mena",
+  "apellidos": "Mena Ortiz",
+  "bloqueadoHasta": null,
+  "creadoEn": "<fecha>",
+  "debeCambiarContrasena": false,
+  "email": "carla@alfa.mx",
+  "esAdminPlataforma": false,
+  "fallidos": 0,
+  "guid": "a0000000-0000-4000-8000-000000000006",
+  "hash": "<hash>",
+  "membresias": [
+   {
+    "rol": "VIEWER",
+    "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+   }
+  ],
+  "nombre": "Carla",
+  "recuperacion": {},
+  "telefono": "+52 55 1234 5678",
+  "temporalEmitidaEn": "<fecha>",
+  "ultimoLoginEn": null
+ },
+ "para_login de dani@beta.mx (con el hash, los intentos, el bloqueo, la recuperación y las membresías)": {
+  "activo": true,
+  "apellidoMaterno": "Luna",
+  "apellidoPaterno": "Paz",
+  "apellidos": "Paz Luna",
+  "bloqueadoHasta": null,
+  "creadoEn": "<fecha>",
+  "debeCambiarContrasena": true,
+  "email": "dani@beta.mx",
+  "esAdminPlataforma": false,
+  "fallidos": 0,
+  "guid": "a0000000-0000-4000-8000-000000000008",
+  "hash": "<hash>",
+  "membresias": [
+   {
+    "rol": "ADMIN",
+    "tenantGuid": "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
+   }
+  ],
+  "nombre": "Daniela",
+  "recuperacion": {},
+  "telefono": "+52 55 1234 5678",
+  "temporalEmitidaEn": "<fecha>",
+  "ultimoLoginEn": null
+ },
+ "para_login de eva@beta.mx (con el hash, los intentos, el bloqueo, la recuperación y las membresías)": {
+  "activo": true,
+  "apellidoMaterno": "",
+  "apellidoPaterno": "Rocha",
+  "apellidos": "Rocha",
+  "bloqueadoHasta": null,
+  "creadoEn": "<fecha>",
+  "debeCambiarContrasena": true,
+  "email": "eva@beta.mx",
+  "esAdminPlataforma": false,
+  "fallidos": 0,
+  "guid": "a0000000-0000-4000-8000-000000000009",
+  "hash": "<hash>",
+  "membresias": [
+   {
+    "rol": "AUDITOR",
+    "tenantGuid": "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
+   }
+  ],
+  "nombre": "Eva",
+  "recuperacion": {},
+  "telefono": "+52 55 1234 5678",
+  "temporalEmitidaEn": "<fecha>",
+  "ultimoLoginEn": null
+ },
+ "para_login de fer@demo.mx (con el hash, los intentos, el bloqueo, la recuperación y las membresías)": {
+  "activo": true,
+  "apellidoMaterno": "",
+  "apellidoPaterno": "Díaz",
+  "apellidos": "Díaz",
+  "bloqueadoHasta": null,
+  "creadoEn": "<fecha>",
+  "debeCambiarContrasena": true,
+  "email": "fer@demo.mx",
+  "esAdminPlataforma": false,
+  "fallidos": 0,
+  "guid": "a0000000-0000-4000-8000-00000000000b",
+  "hash": "<hash>",
+  "membresias": [
+   {
+    "rol": "SUPERVISOR",
+    "tenantGuid": "demo"
+   }
+  ],
+  "nombre": "Fer🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵",
+  "recuperacion": {},
+  "telefono": "+52 55 1234 5678",
+  "temporalEmitidaEn": "<fecha>",
+  "ultimoLoginEn": null
+ },
+ "para_login de gaby@alfa.mx (con el hash, los intentos, el bloqueo, la recuperación y las membresías)": {
+  "activo": true,
+  "apellidoMaterno": "",
+  "apellidoPaterno": "Solís",
+  "apellidos": "Solís",
+  "bloqueadoHasta": null,
+  "creadoEn": "<fecha>",
+  "debeCambiarContrasena": false,
+  "email": "gaby@alfa.mx",
+  "esAdminPlataforma": false,
+  "fallidos": 0,
+  "guid": "a0000000-0000-4000-8000-00000000000c",
+  "hash": "<hash>",
+  "membresias": [
+   {
+    "rol": "ANALISTA",
+    "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+   }
+  ],
+  "nombre": "Gaby",
+  "recuperacion": {},
+  "telefono": "+52 55 1234 5678",
+  "temporalEmitidaEn": "<fecha>",
+  "ultimoLoginEn": null
+ },
+ "para_login de hugo@alfa.mx (con el hash, los intentos, el bloqueo, la recuperación y las membresías)": {
+  "activo": true,
+  "apellidoMaterno": "Márquez",
+  "apellidoPaterno": "Sánchez",
+  "apellidos": "Sánchez Márquez",
+  "bloqueadoHasta": null,
+  "creadoEn": "<fecha>",
+  "debeCambiarContrasena": true,
+  "email": "hugo@alfa.mx",
+  "esAdminPlataforma": false,
+  "fallidos": 0,
+  "guid": "a0000000-0000-4000-8000-00000000000d",
+  "hash": "<hash>",
+  "membresias": [
+   {
+    "rol": "OPERADOR",
+    "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+   }
+  ],
+  "nombre": "Hugo Alberto",
+  "recuperacion": {},
+  "telefono": null,
+  "temporalEmitidaEn": "<fecha>",
+  "ultimoLoginEn": null
+ },
+ "para_login de ivan@alfa.mx (con el hash, los intentos, el bloqueo, la recuperación y las membresías)": {
+  "activo": true,
+  "apellidoMaterno": "",
+  "apellidoPaterno": "Cruz",
+  "apellidos": "Cruz",
+  "bloqueadoHasta": null,
+  "creadoEn": "<fecha>",
+  "debeCambiarContrasena": true,
+  "email": "ivan@alfa.mx",
+  "esAdminPlataforma": false,
+  "fallidos": 0,
+  "guid": "a0000000-0000-4000-8000-00000000000e",
+  "hash": "<hash>",
+  "membresias": [
+   {
+    "rol": "ANALISTA",
+    "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+   }
+  ],
+  "nombre": "Iván",
+  "recuperacion": {},
+  "telefono": "+52 55 1234 5678",
+  "temporalEmitidaEn": "<fecha>",
+  "ultimoLoginEn": null
+ },
+ "para_login de karla@alfa.mx (con el hash, los intentos, el bloqueo, la recuperación y las membresías)": {
+  "activo": true,
+  "apellidoMaterno": "",
+  "apellidoPaterno": "Vega",
+  "apellidos": "Vega",
+  "bloqueadoHasta": null,
+  "creadoEn": "<fecha>",
+  "debeCambiarContrasena": true,
+  "email": "karla@alfa.mx",
+  "esAdminPlataforma": false,
+  "fallidos": 0,
+  "guid": "a0000000-0000-4000-8000-00000000000f",
+  "hash": "<hash>",
+  "membresias": [
+   {
+    "rol": "ANALISTA",
+    "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+   }
+  ],
+  "nombre": "Karla",
+  "recuperacion": {},
+  "telefono": "+52 55 1234 5678",
+  "temporalEmitidaEn": "<fecha>",
+  "ultimoLoginEn": null
+ },
+ "para_login de rodrigo@alfa.mx (con el hash, los intentos, el bloqueo, la recuperación y las membresías)": {
+  "activo": true,
+  "apellidoMaterno": "Treviño",
+  "apellidoPaterno": "De la Garza",
+  "apellidos": "De la Garza Treviño",
+  "bloqueadoHasta": null,
+  "creadoEn": "<fecha>",
+  "debeCambiarContrasena": false,
+  "email": "rodrigo@alfa.mx",
+  "esAdminPlataforma": false,
+  "fallidos": 0,
+  "guid": "a0000000-0000-4000-8000-000000000003",
+  "hash": "<hash>",
+  "membresias": [
+   {
+    "rol": "ADMIN",
+    "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+   }
+  ],
+  "nombre": "Rodrigo Alberto",
+  "recuperacion": {
+   "email": "recupera@alfa.mx",
+   "telefono": "5511112222"
+  },
+  "telefono": "+52 55 0000 0000",
+  "temporalEmitidaEn": "<fecha>",
+  "ultimoLoginEn": null
+ },
+ "para_login de super2@plataforma.mx (con el hash, los intentos, el bloqueo, la recuperación y las membresías)": {
+  "activo": true,
+  "apellidoMaterno": "",
+  "apellidoPaterno": "Hopper",
+  "apellidos": "Hopper",
+  "bloqueadoHasta": null,
+  "creadoEn": "<fecha>",
+  "debeCambiarContrasena": true,
+  "email": "super2@plataforma.mx",
+  "esAdminPlataforma": true,
+  "fallidos": 0,
+  "guid": "a0000000-0000-4000-8000-000000000002",
+  "hash": "<hash>",
+  "membresias": [],
+  "nombre": "Grace",
+  "recuperacion": {},
+  "telefono": null,
+  "temporalEmitidaEn": "<fecha>",
+  "ultimoLoginEn": null
+ },
+ "para_login de super@plataforma.mx (con el hash, los intentos, el bloqueo, la recuperación y las membresías)": {
+  "activo": true,
+  "apellidoMaterno": "Byron",
+  "apellidoPaterno": "Lovelace",
+  "apellidos": "Lovelace Byron",
+  "bloqueadoHasta": null,
+  "creadoEn": "<fecha>",
+  "debeCambiarContrasena": false,
+  "email": "super@plataforma.mx",
+  "esAdminPlataforma": true,
+  "fallidos": 0,
+  "guid": "a0000000-0000-4000-8000-000000000001",
+  "hash": "<hash>",
+  "membresias": [],
+  "nombre": "Ada",
+  "recuperacion": {},
+  "telefono": null,
+  "temporalEmitidaEn": "<fecha>",
+  "ultimoLoginEn": "<fecha>"
+ },
+ "por_guid de todas": [
+  {
+   "activo": true,
+   "apellidoMaterno": "Byron",
+   "apellidoPaterno": "Lovelace",
+   "apellidos": "Lovelace Byron",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": false,
+   "email": "super@plataforma.mx",
+   "esAdminPlataforma": true,
+   "guid": "a0000000-0000-4000-8000-000000000001",
+   "membresias": [],
+   "nombre": "Ada",
+   "recuperacion": {},
+   "telefono": null,
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": "<fecha>"
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "",
+   "apellidoPaterno": "Hopper",
+   "apellidos": "Hopper",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": true,
+   "email": "super2@plataforma.mx",
+   "esAdminPlataforma": true,
+   "guid": "a0000000-0000-4000-8000-000000000002",
+   "membresias": [],
+   "nombre": "Grace",
+   "recuperacion": {},
+   "telefono": null,
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "Treviño",
+   "apellidoPaterno": "De la Garza",
+   "apellidos": "De la Garza Treviño",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": false,
+   "email": "rodrigo@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-000000000003",
+   "membresias": [
+    {
+     "rol": "ADMIN",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Rodrigo Alberto",
+   "recuperacion": {
+    "email": "recupera@alfa.mx",
+    "telefono": "5511112222"
+   },
+   "telefono": "+52 55 0000 0000",
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "Ruiz",
+   "apellidoPaterno": "López",
+   "apellidos": "López Ruiz",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": false,
+   "email": "ana@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-000000000004",
+   "membresias": [
+    {
+     "rol": "ANALISTA",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Ana",
+   "recuperacion": {
+    "email": "ana.personal@correo.mx",
+    "telefono": null
+   },
+   "telefono": "+52 55 1234 5678",
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "",
+   "apellidoPaterno": "Gómez",
+   "apellidos": "Gómez",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": false,
+   "email": "beto@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-000000000005",
+   "membresias": [
+    {
+     "rol": "OPERADOR",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Beto",
+   "recuperacion": {},
+   "telefono": "+52 55 1234 5678",
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": false,
+   "apellidoMaterno": "Ortiz",
+   "apellidoPaterno": "Mena",
+   "apellidos": "Mena Ortiz",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": false,
+   "email": "carla@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-000000000006",
+   "membresias": [
+    {
+     "rol": "VIEWER",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Carla",
+   "recuperacion": {},
+   "telefono": "+52 55 1234 5678",
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "Luna",
+   "apellidoPaterno": "Paz",
+   "apellidos": "Paz Luna",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": true,
+   "email": "dani@beta.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-000000000008",
+   "membresias": [
+    {
+     "rol": "ADMIN",
+     "tenantGuid": "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
+    }
+   ],
+   "nombre": "Daniela",
+   "recuperacion": {},
+   "telefono": "+52 55 1234 5678",
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "",
+   "apellidoPaterno": "Rocha",
+   "apellidos": "Rocha",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": true,
+   "email": "eva@beta.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-000000000009",
+   "membresias": [
+    {
+     "rol": "AUDITOR",
+     "tenantGuid": "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
+    }
+   ],
+   "nombre": "Eva",
+   "recuperacion": {},
+   "telefono": "+52 55 1234 5678",
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "",
+   "apellidoPaterno": "Díaz",
+   "apellidos": "Díaz",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": true,
+   "email": "fer@demo.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-00000000000b",
+   "membresias": [
+    {
+     "rol": "SUPERVISOR",
+     "tenantGuid": "demo"
+    }
+   ],
+   "nombre": "Fer🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵🌵",
+   "recuperacion": {},
+   "telefono": "+52 55 1234 5678",
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "",
+   "apellidoPaterno": "Solís",
+   "apellidos": "Solís",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": false,
+   "email": "gaby@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-00000000000c",
+   "membresias": [
+    {
+     "rol": "ANALISTA",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Gaby",
+   "recuperacion": {},
+   "telefono": "+52 55 1234 5678",
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "Márquez",
+   "apellidoPaterno": "Sánchez",
+   "apellidos": "Sánchez Márquez",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": true,
+   "email": "hugo@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-00000000000d",
+   "membresias": [
+    {
+     "rol": "OPERADOR",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Hugo Alberto",
+   "recuperacion": {},
+   "telefono": null,
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "",
+   "apellidoPaterno": "Cruz",
+   "apellidos": "Cruz",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": true,
+   "email": "ivan@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-00000000000e",
+   "membresias": [
+    {
+     "rol": "ANALISTA",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Iván",
+   "recuperacion": {},
+   "telefono": "+52 55 1234 5678",
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  },
+  {
+   "activo": true,
+   "apellidoMaterno": "",
+   "apellidoPaterno": "Vega",
+   "apellidos": "Vega",
+   "creadoEn": "<fecha>",
+   "debeCambiarContrasena": true,
+   "email": "karla@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "a0000000-0000-4000-8000-00000000000f",
+   "membresias": [
+    {
+     "rol": "ANALISTA",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Karla",
+   "recuperacion": {},
+   "telefono": "+52 55 1234 5678",
+   "temporalEmitidaEn": "<fecha>",
+   "ultimoLoginEn": null
+  }
+ ],
+ "por_guid_y_sesion de una retirada: no existe": [
+  "error",
+  "NoEncontrado"
+ ],
+ "por_guid_y_sesion: viva, renovada, vencida sin cerrar, ajena, cerrada a la fuerza, desactivada, inexistente": [
+  true,
+  false,
+  true,
+  false,
+  false,
+  false,
+  false
+ ],
+ "puede_eliminar: superadmin (hay otro), administrador de organización, una analista": [
+  [
+   "ok",
+   null
+  ],
+  [
+   "error",
+   "NoSePuedeEliminar",
+   "admin_de_organizacion"
+  ],
+  [
+   "ok",
+   null
+  ]
+ ],
+ "sesion_por_hash: viva, renovada, vencida, desactivada, de una retirada (sin cuenta), cerrada a la fuerza, inexistente": [
+  {
+   "creadaEn": "<fecha>",
+   "expira": "<fecha>",
+   "guid": "a0000000-0000-4000-8000-000000000004",
+   "ip": "10.0.0.5",
+   "refreshHash": "0000000000000000000000000000000000000000000000000000000000000002",
+   "revocadaEn": null,
+   "revocadaPor": null,
+   "sesionGuid": "5e510000-0000-4000-8000-000000000002",
+   "userAgent": "Firefox",
+   "usuario": {
+    "activo": true,
+    "apellidoMaterno": "Ruiz",
+    "apellidoPaterno": "López",
+    "apellidos": "López Ruiz",
+    "creadoEn": "<fecha>",
+    "debeCambiarContrasena": false,
+    "email": "ana@alfa.mx",
+    "esAdminPlataforma": false,
+    "guid": "a0000000-0000-4000-8000-000000000004",
+    "membresias": [
+     {
+      "rol": "ANALISTA",
+      "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+     }
+    ],
+    "nombre": "Ana",
+    "recuperacion": {
+     "email": "ana.personal@correo.mx",
+     "telefono": null
+    },
+    "telefono": "+52 55 1234 5678",
+    "temporalEmitidaEn": "<fecha>",
+    "ultimoLoginEn": null
+   }
+  },
+  {
+   "creadaEn": "<fecha>",
+   "expira": "<fecha>",
+   "guid": "a0000000-0000-4000-8000-000000000004",
+   "ip": "10.0.0.5",
+   "refreshHash": "0000000000000000000000000000000000000000000000000000000000000001",
+   "revocadaEn": "<fecha>",
+   "revocadaPor": "ROTATED",
+   "sesionGuid": "5e510000-0000-4000-8000-000000000001",
+   "userAgent": "Firefox",
+   "usuario": {
+    "activo": true,
+    "apellidoMaterno": "Ruiz",
+    "apellidoPaterno": "López",
+    "apellidos": "López Ruiz",
+    "creadoEn": "<fecha>",
+    "debeCambiarContrasena": false,
+    "email": "ana@alfa.mx",
+    "esAdminPlataforma": false,
+    "guid": "a0000000-0000-4000-8000-000000000004",
+    "membresias": [
+     {
+      "rol": "ANALISTA",
+      "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+     }
+    ],
+    "nombre": "Ana",
+    "recuperacion": {
+     "email": "ana.personal@correo.mx",
+     "telefono": null
+    },
+    "telefono": "+52 55 1234 5678",
+    "temporalEmitidaEn": "<fecha>",
+    "ultimoLoginEn": null
+   }
+  },
+  {
+   "creadaEn": "<fecha>",
+   "expira": "<fecha>",
+   "guid": "a0000000-0000-4000-8000-000000000004",
+   "ip": "10.0.0.5",
+   "refreshHash": "0000000000000000000000000000000000000000000000000000000000000003",
+   "revocadaEn": null,
+   "revocadaPor": null,
+   "sesionGuid": "5e510000-0000-4000-8000-000000000003",
+   "userAgent": "Firefox",
+   "usuario": {
+    "activo": true,
+    "apellidoMaterno": "Ruiz",
+    "apellidoPaterno": "López",
+    "apellidos": "López Ruiz",
+    "creadoEn": "<fecha>",
+    "debeCambiarContrasena": false,
+    "email": "ana@alfa.mx",
+    "esAdminPlataforma": false,
+    "guid": "a0000000-0000-4000-8000-000000000004",
+    "membresias": [
+     {
+      "rol": "ANALISTA",
+      "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+     }
+    ],
+    "nombre": "Ana",
+    "recuperacion": {
+     "email": "ana.personal@correo.mx",
+     "telefono": null
+    },
+    "telefono": "+52 55 1234 5678",
+    "temporalEmitidaEn": "<fecha>",
+    "ultimoLoginEn": null
+   }
+  },
+  {
+   "creadaEn": "<fecha>",
+   "expira": "<fecha>",
+   "guid": "a0000000-0000-4000-8000-000000000006",
+   "ip": "10.0.0.5",
+   "refreshHash": "0000000000000000000000000000000000000000000000000000000000000006",
+   "revocadaEn": "<fecha>",
+   "revocadaPor": "DEACTIVATED",
+   "sesionGuid": "5e510000-0000-4000-8000-000000000006",
+   "userAgent": "Firefox",
+   "usuario": {
+    "activo": false,
+    "apellidoMaterno": "Ortiz",
+    "apellidoPaterno": "Mena",
+    "apellidos": "Mena Ortiz",
+    "creadoEn": "<fecha>",
+    "debeCambiarContrasena": false,
+    "email": "carla@alfa.mx",
+    "esAdminPlataforma": false,
+    "guid": "a0000000-0000-4000-8000-000000000006",
+    "membresias": [
+     {
+      "rol": "VIEWER",
+      "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+     }
+    ],
+    "nombre": "Carla",
+    "recuperacion": {},
+    "telefono": "+52 55 1234 5678",
+    "temporalEmitidaEn": "<fecha>",
+    "ultimoLoginEn": null
+   }
+  },
+  {
+   "creadaEn": "<fecha>",
+   "expira": "<fecha>",
+   "guid": "a0000000-0000-4000-8000-000000000007",
+   "ip": "10.0.0.5",
+   "refreshHash": "0000000000000000000000000000000000000000000000000000000000000007",
+   "revocadaEn": "<fecha>",
+   "revocadaPor": "DELETED",
+   "sesionGuid": "5e510000-0000-4000-8000-000000000007",
+   "userAgent": "Firefox",
+   "usuario": null
+  },
+  {
+   "creadaEn": "<fecha>",
+   "expira": "<fecha>",
+   "guid": "a0000000-0000-4000-8000-00000000000c",
+   "ip": "10.0.0.5",
+   "refreshHash": "0000000000000000000000000000000000000000000000000000000000000008",
+   "revocadaEn": "<fecha>",
+   "revocadaPor": "FORCED_LOGOUT",
+   "sesionGuid": "5e510000-0000-4000-8000-000000000008",
+   "userAgent": "Firefox",
+   "usuario": {
+    "activo": true,
+    "apellidoMaterno": "",
+    "apellidoPaterno": "Solís",
+    "apellidos": "Solís",
+    "creadoEn": "<fecha>",
+    "debeCambiarContrasena": false,
+    "email": "gaby@alfa.mx",
+    "esAdminPlataforma": false,
+    "guid": "a0000000-0000-4000-8000-00000000000c",
+    "membresias": [
+     {
+      "rol": "ANALISTA",
+      "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+     }
+    ],
+    "nombre": "Gaby",
+    "recuperacion": {},
+    "telefono": "+52 55 1234 5678",
+    "temporalEmitidaEn": "<fecha>",
+    "ultimoLoginEn": null
+   }
+  },
+  null
+ ],
+ "sesiones: abrir, renovar una vez, cerrar, vencida, contraseña que cambió, desactivada; las importadas se renuevan o no como antes": [
+  [
+   true,
+   true
+  ],
+  {
+   "activo": true,
+   "apellidoMaterno": "",
+   "apellidoPaterno": "Ramos",
+   "apellidos": "Ramos",
+   "creadoEn": "<dinámico>",
+   "debeCambiarContrasena": true,
+   "email": "sesiones@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "<dinámico>",
+   "membresias": [
+    {
+     "rol": "ANALISTA",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Sergio",
+   "recuperacion": {},
+   "telefono": null,
+   "temporalEmitidaEn": "<dinámico>",
+   "ultimoLoginEn": null
+  },
+  [
+   "error",
+   "SesionNoCanjeable",
+   "invalida"
+  ],
+  [
+   false,
+   true
+  ],
+  {
+   "creadaEn": "<dinámico>",
+   "expira": "<dinámico>",
+   "guid": "<dinámico>",
+   "ip": "1.1.1.1",
+   "refreshHash": "<dinámico>",
+   "revocadaEn": "<dinámico>",
+   "revocadaPor": "ROTATED",
+   "sesionGuid": "<dinámico>",
+   "userAgent": "UA",
+   "usuario": {
+    "activo": true,
+    "apellidoMaterno": "",
+    "apellidoPaterno": "Ramos",
+    "apellidos": "Ramos",
+    "creadoEn": "<dinámico>",
+    "debeCambiarContrasena": true,
+    "email": "sesiones@alfa.mx",
+    "esAdminPlataforma": false,
+    "guid": "<dinámico>",
+    "membresias": [
+     {
+      "rol": "ANALISTA",
+      "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+     }
+    ],
+    "nombre": "Sergio",
+    "recuperacion": {},
+    "telefono": null,
+    "temporalEmitidaEn": "<dinámico>",
+    "ultimoLoginEn": null
+   }
+  },
+  [
+   1,
+   0,
+   false
+  ],
+  false,
+  [
+   "error",
+   "SesionNoCanjeable",
+   "vencida"
+  ],
+  [
+   "error",
+   "SesionNoCanjeable",
+   "invalida"
+  ],
+  [
+   "error",
+   "SesionNoCanjeable",
+   "desactivada"
+  ],
+  "ok",
+  [
+   "error",
+   "NoEncontrado"
+  ],
+  {
+   "activo": true,
+   "apellidoMaterno": "Ruiz",
+   "apellidoPaterno": "López",
+   "apellidos": "López Ruiz",
+   "creadoEn": "<dinámico>",
+   "debeCambiarContrasena": false,
+   "email": "ana@alfa.mx",
+   "esAdminPlataforma": false,
+   "guid": "<dinámico>",
+   "membresias": [
+    {
+     "rol": "ANALISTA",
+     "tenantGuid": "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+    }
+   ],
+   "nombre": "Ana",
+   "recuperacion": {
+    "email": "ana.personal@correo.mx",
+    "telefono": null
+   },
+   "telefono": "+52 55 1234 5678",
+   "temporalEmitidaEn": "<dinámico>",
+   "ultimoLoginEn": null
+  },
+  [
+   [
+    "error",
+    "SesionNoCanjeable",
+    "vencida"
+   ],
+   [
+    "error",
+    "SesionNoCanjeable",
+    "invalida"
+   ],
+   [
+    "error",
+    "SesionNoCanjeable",
+    "vencida"
+   ],
+   [
+    "error",
+    "SesionNoCanjeable",
+    "invalida"
+   ],
+   [
+    "error",
+    "SesionNoCanjeable",
+    "invalida"
+   ],
+   [
+    "error",
+    "SesionNoCanjeable",
+    "invalida"
+   ]
+  ],
+  true
+ ],
+ "tiene_sesion de cada una": [
+  false,
+  false,
+  false,
+  true,
+  false,
+  false,
+  false,
+  false,
+  false,
+  false,
+  true,
+  false,
+  false,
+  false
+ ]
+}

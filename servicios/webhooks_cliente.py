@@ -1,16 +1,8 @@
-"""Registro PROVISIONAL de los webhooks de cliente.
+"""Los webhooks de cliente (`nexus.webhooks` y `nexus.webhookSubscriptions`, migración `0008`).
 
-Lo definitivo son las tablas que se le van a pedir al DBA (el webhook de cada
-endpoint de cliente, y sus entregas). Mientras tanto viven en un registro de
-solo agregar en el NAS, `webhooks.jsonl` (ver `servicios/registro.py`), igual
-que las API Keys: un evento `registrado` por webhook, uno `estado` cada vez que
-se activa o desactiva, uno `validado` cuando su endpoint respondió al aviso de
-prueba, uno `validacion_fallida` cuando no respondió en ninguno de sus intentos
-(es lo que el front muestra como "Con fallos"), uno `editado` cuando se le
-cambian la URL o los eventos —si cambió la URL vuelve a quedar SIN validar: el
-endpoint es otro; si solo cambiaron los eventos, sigue como estaba—, y uno
-`eliminado`. El día que existan las tablas cambia ESTE módulo y
-nada más.
+Un webhook se registra, se activa o desactiva, se valida (su endpoint respondió al aviso de prueba), puede quedar «Con fallos» (no respondió en
+ninguno de sus intentos), se edita —si cambió la URL vuelve a quedar SIN validar: el endpoint es otro; si solo cambiaron los eventos, sigue
+como estaba— y se elimina.
 
 ## Validado antes de usarse
 
@@ -36,7 +28,7 @@ la presenta el cliente y el servidor solo tiene que comprobarla; el secret de
 un webhook lo usa el SERVIDOR para firmar, así que tiene que poder recuperarlo.
 Se guarda cifrado con Fernet (AES-128-CBC con HMAC-SHA256) y una llave que vive
 en el `.env` del servidor, `WEBHOOKS_CLAVE_CIFRADO`, nunca en el almacén: quien
-lea el registro no puede firmar avisos falsos.
+lea la base no puede firmar avisos falsos.
 
 Sin esa llave el alta se rechaza (`SinCifrado`, que el router contesta con
 503): un secret que no se sabe cifrar no se guarda, ni en claro ni a medias.
@@ -44,18 +36,12 @@ Y la llave NO se puede cambiar a la ligera: los secrets cifrados con la
 anterior dejan de poder descifrarse, y esos webhooks habría que volver a
 crearlos.
 
-## Desde el 2026-10-30: en SQL donde hay base
+## Dónde viven
 
-Migración `0008`: donde hay base, los webhooks viven en `nexus.webhooks` (una fila por webhook, con sus eventos en
-`nexus.webhookSubscriptions`), importados una vez desde `webhooks.jsonl` (`servicios/importacion_json.py`). Este módulo elige por
-`SQLSERVER_HOST` en cada llamada; el JSONL es lo que corre donde no hay base. Cada ambiente tiene SUS webhooks. Eliminar uno BORRA su secret
-cifrado (la fila se queda, sin él, porque su historial de entregas la referencia); la base además impide dos vigentes con la misma URL.
-
-## Lo que el registro de solo agregar no puede hacer
-
-Eliminar un webhook agrega un evento `eliminado`; la línea con su secret
-cifrado se queda en el archivo, sin usarse. Con las tablas, borrar la fila lo
-destruye de verdad.
+Una fila por webhook en `nexus.webhooks`, con sus eventos en `nexus.webhookSubscriptions`, importados una vez desde el viejo
+`webhooks.jsonl` (`servicios/importacion_json.py`); desde el 2026-11-11 no hay otro almacenamiento. Cada ambiente tiene SUS webhooks.
+Eliminar uno BORRA su secret cifrado (la fila se queda, sin él, porque su historial de entregas la referencia); la base además impide dos
+vigentes con la misma URL.
 """
 
 import base64
@@ -66,19 +52,7 @@ from urllib.parse import urlsplit
 from cryptography.fernet import Fernet, InvalidToken
 
 import config
-from config import SQLSERVER_HOST
-from servicios import almacen, registro
-
-ARCHIVO = "webhooks.jsonl"
-
-
-def _sql():
-    """El módulo de SQL si el `.env` dice que hay base; `None` si no. Se importa tarde: sin base, `pyodbc` ni se carga."""
-    if not SQLSERVER_HOST:
-        return None
-    from servicios import integraciones_sql
-
-    return integraciones_sql
+from servicios import almacen, integraciones_sql
 
 # Los eventos a los que se puede suscribir un webhook, en el orden del diseño.
 # Son los mismos `valor` de `EVENTOS_WEBHOOK` en el front
@@ -167,52 +141,6 @@ def validar_url(texto: str) -> str:
     return f"{esquema}://{nombre}{partes.path or '/'}{consulta}"
 
 
-def _indice() -> tuple[dict[str, dict], dict[str, str], set[str], dict[str, str], dict[str, dict]]:
-    """Los webhooks registrados por id, el estado vigente de cada uno, los
-    eliminados, cuándo se validó cada uno, y su última validación fallida."""
-    registrados: dict[str, dict] = {}
-    estados: dict[str, str] = {}
-    eliminados: set[str] = set()
-    validados: dict[str, str] = {}
-    fallidas: dict[str, dict] = {}
-    for e in registro.eventos(ARCHIVO):
-        identificador = e.get("id")
-        if not isinstance(identificador, str):
-            continue
-        tipo = e.get("evento")
-        if tipo == "registrado":
-            # Si un id apareciera dos veces (no debería: se sortea contra los
-            # existentes), gana el PRIMERO, como en las llaves.
-            registrados.setdefault(identificador, e)
-        elif tipo == "estado":
-            # El último gana: es el vigente. Un estado ilegible se lee como
-            # INACTIVO, nunca como activo: un webhook mal leído no debe amanecer
-            # mandando avisos a un endpoint que alguien había pausado. Misma
-            # regla que tenía el front cuando vivían en el navegador.
-            estados[identificador] = e["estado"] if e.get("estado") in ESTADOS else "inactivo"
-        elif tipo == "eliminado":
-            eliminados.add(identificador)
-        elif tipo == "validado" and isinstance(e.get("en"), str):
-            # El último gana: es la validación vigente.
-            validados[identificador] = e["en"]
-        elif tipo == "validacion_fallida" and isinstance(e.get("en"), str):
-            fallidas[identificador] = e
-        elif tipo == "editado" and identificador in registrados:
-            # Nueva URL y eventos; el secret es el mismo. Si cambió la URL, la
-            # validación anterior (buena o fallida) era de otro endpoint y ya no
-            # vale. Un `editado` sin la marca se lee como cambio de URL: ante la
-            # duda, que se vuelva a validar.
-            registrados[identificador] = {
-                **registrados[identificador],
-                "url": e.get("url", registrados[identificador].get("url")),
-                "eventos": e.get("eventos", registrados[identificador].get("eventos")),
-            }
-            if e.get("urlCambio", True):
-                validados.pop(identificador, None)
-                fallidas.pop(identificador, None)
-    return registrados, estados, eliminados, validados, fallidas
-
-
 def _publico(webhook: dict, estado: str, validado_en: str | None, fallida_en: str | None = None) -> dict:
     """El webhook como lo ve el listado: SIN el secret ni su cifrado.
     `fallidaEn` es su última validación fallida; sin validar y con ella, el
@@ -231,18 +159,7 @@ def _publico(webhook: dict, estado: str, validado_en: str | None, fallida_en: st
 def existe_en_otro_tenant(tenant: str, identificador: str) -> bool:
     """¿Ese webhook existe y es de OTRO tenant? Solo para anotar un intento cruzado (HU11 CA-6): a quien pidió se le
     contesta igual que si no existiera."""
-    if sql := _sql():
-        return sql.wh_existe_en_otro_tenant(tenant, identificador)
-    registrados, _, eliminados, _, _ = _indice()
-    webhook = registrados.get(identificador)
-    return webhook is not None and webhook.get("tenant") != tenant and identificador not in eliminados
-
-
-def _vigente(registrados: dict, eliminados: set, tenant: str, identificador: str) -> dict | None:
-    webhook = registrados.get(identificador)
-    if webhook is None or webhook.get("tenant") != tenant or identificador in eliminados:
-        return None
-    return webhook
+    return integraciones_sql.wh_existe_en_otro_tenant(tenant, identificador)
 
 
 def registrar(tenant: str, url: str, eventos: list[str]) -> tuple[str, dict]:
@@ -264,42 +181,14 @@ def registrar(tenant: str, url: str, eventos: list[str]) -> tuple[str, dict]:
     # ANTES de generar nada: sin llave de cifrado no hay alta.
     cifrador = _fernet()
 
-    if sql := _sql():
-        creado = _ahora()
-        secret = PREFIJO_SECRET + base64.b64encode(secrets.token_bytes(_BYTES_SECRET)).decode()
-        identificador = sql.wh_registrar(tenant, url, elegidos, cifrador.encrypt(secret.encode()).decode(), creado)
-        if identificador is None:
-            raise Duplicado(
-                "Ya tienes un webhook con esa URL. Si quieres otros eventos, elimínalo y vuelve a crearlo."
-            )
-        evento = {"id": identificador, "url": url, "eventos": elegidos, "creadoEn": creado.isoformat(timespec="seconds")}
-        return secret, _publico(evento, "activo", None)
-
-    # Buscar repetidos, sortear el id y escribir bajo el MISMO candado: si no,
-    # dos altas simultáneas podrían colarse con la misma URL o el mismo id.
-    with registro.candado:
-        registrados, _, eliminados, _, _ = _indice()
-        if any(
-            w.get("tenant") == tenant and w.get("url") == url and i not in eliminados
-            for i, w in registrados.items()
-        ):
-            raise Duplicado(
-                "Ya tienes un webhook con esa URL. Si quieres otros eventos, elimínalo y vuelve a crearlo."
-            )
-        identificador = "wh_" + secrets.token_hex(6)
-        while identificador in registrados:
-            identificador = "wh_" + secrets.token_hex(6)
-        secret = PREFIJO_SECRET + base64.b64encode(secrets.token_bytes(_BYTES_SECRET)).decode()
-        evento = {
-            "evento": "registrado",
-            "id": identificador,
-            "tenant": tenant,
-            "url": url,
-            "eventos": elegidos,
-            "secret_cifrado": cifrador.encrypt(secret.encode()).decode(),
-            "creadoEn": _ahora().isoformat(timespec="seconds"),
-        }
-        registro.agregar(ARCHIVO, evento)
+    creado = _ahora()
+    secret = PREFIJO_SECRET + base64.b64encode(secrets.token_bytes(_BYTES_SECRET)).decode()
+    identificador = integraciones_sql.wh_registrar(tenant, url, elegidos, cifrador.encrypt(secret.encode()).decode(), creado)
+    if identificador is None:
+        raise Duplicado(
+            "Ya tienes un webhook con esa URL. Si quieres otros eventos, elimínalo y vuelve a crearlo."
+        )
+    evento = {"id": identificador, "url": url, "eventos": elegidos, "creadoEn": creado.isoformat(timespec="seconds")}
     return secret, _publico(evento, "activo", None)
 
 
@@ -307,21 +196,7 @@ def listar(tenant: str) -> list[dict]:
     """Los webhooks vigentes del tenant, del más nuevo al más viejo, sin
     secrets."""
     tenant = almacen._validar_tenant(tenant)
-    if sql := _sql():
-        return [_publico(*vista) for vista in sql.wh_listar(tenant)]
-    registrados, estados, eliminados, validados, fallidas = _indice()
-    propios = [
-        (posicion, w)
-        for posicion, (i, w) in enumerate(registrados.items())
-        if w.get("tenant") == tenant and i not in eliminados
-    ]
-    # Dos altas en el mismo segundo empatan en `creadoEn`: desempata el orden
-    # del registro, para que el más nuevo siga saliendo primero.
-    propios.sort(key=lambda par: (par[1].get("creadoEn") or "", par[0]), reverse=True)
-    return [
-        _publico(w, estados.get(w["id"], "activo"), validados.get(w["id"]), fallidas.get(w["id"], {}).get("en"))
-        for _, w in propios
-    ]
+    return [_publico(*vista) for vista in integraciones_sql.wh_listar(tenant)]
 
 
 def cambiar_estado(tenant: str, identificador: str, estado: str) -> dict | None:
@@ -333,20 +208,8 @@ def cambiar_estado(tenant: str, identificador: str, estado: str) -> dict | None:
     tenant = almacen._validar_tenant(tenant)
     if estado not in ESTADOS:
         raise ValueError("El estado tiene que ser activo o inactivo.")
-    if sql := _sql():
-        vista = sql.wh_cambiar_estado(tenant, identificador, estado)
-        return _publico(*vista) if vista else None
-    with registro.candado:
-        registrados, estados, eliminados, validados, fallidas = _indice()
-        webhook = _vigente(registrados, eliminados, tenant, identificador)
-        if webhook is None:
-            return None
-        if estados.get(identificador, "activo") != estado:
-            registro.agregar(
-                ARCHIVO,
-                {"evento": "estado", "id": identificador, "estado": estado, "en": _ahora().isoformat(timespec="seconds")},
-            )
-    return _publico(webhook, estado, validados.get(identificador), fallidas.get(identificador, {}).get("en"))
+    vista = integraciones_sql.wh_cambiar_estado(tenant, identificador, estado)
+    return _publico(*vista) if vista else None
 
 
 def eliminar(tenant: str, identificador: str) -> bool:
@@ -355,18 +218,7 @@ def eliminar(tenant: str, identificador: str) -> bool:
     un segundo clic desde otra pestaña no vea un error de algo que ya ocurrió.
     `False` si no existe o es de otro tenant."""
     tenant = almacen._validar_tenant(tenant)
-    if sql := _sql():
-        return sql.wh_eliminar(tenant, identificador, _ahora())
-    with registro.candado:
-        registrados, _, eliminados, _, _ = _indice()
-        webhook = registrados.get(identificador)
-        if webhook is None or webhook.get("tenant") != tenant:
-            return False
-        if identificador not in eliminados:
-            registro.agregar(
-                ARCHIVO, {"evento": "eliminado", "id": identificador, "en": _ahora().isoformat(timespec="seconds")}
-            )
-    return True
+    return integraciones_sql.wh_eliminar(tenant, identificador, _ahora())
 
 
 def secret_para_firmar(identificador: str) -> str | None:
@@ -377,14 +229,8 @@ def secret_para_firmar(identificador: str) -> str | None:
     se pruebe de ida y vuelta (`verificar_webhooks.py`): un secret que se
     guarda pero no se puede recuperar no firmaría nada. Levanta `SinCifrado` si
     la llave actual no lo abre, que es lo que pasa si alguien la cambió."""
-    if sql := _sql():
-        cifrado = sql.wh_cifrado(identificador)
-        return None if cifrado is None else _descifrar(cifrado)
-    registrados, _, eliminados, _, _ = _indice()
-    webhook = registrados.get(identificador)
-    if webhook is None or identificador in eliminados:
-        return None
-    return _descifrar(webhook.get("secret_cifrado", ""))
+    cifrado = integraciones_sql.wh_cifrado(identificador)
+    return None if cifrado is None else _descifrar(cifrado)
 
 
 def _descifrar(cifrado: str) -> str:
@@ -402,13 +248,8 @@ def para_validar(tenant: str, identificador: str) -> tuple[str, str] | None:
     prueba; `None` si no existe, es de otro tenant o se eliminó. Levanta
     `SinCifrado` si su secret no se puede descifrar."""
     tenant = almacen._validar_tenant(tenant)
-    if sql := _sql():
-        destino = sql.wh_para_validar(tenant, identificador)
-        return None if destino is None else (destino[0], _descifrar(destino[1]))
-    registrados, _, eliminados, _, _ = _indice()
-    if _vigente(registrados, eliminados, tenant, identificador) is None:
-        return None
-    return registrados[identificador]["url"], secret_para_firmar(identificador)
+    destino = integraciones_sql.wh_para_validar(tenant, identificador)
+    return None if destino is None else (destino[0], _descifrar(destino[1]))
 
 
 def marcar_validado(tenant: str, identificador: str, codigo: int, ms: int) -> dict | None:
@@ -416,17 +257,8 @@ def marcar_validado(tenant: str, identificador: str, codigo: int, ms: int) -> di
     o `None` si se eliminó mientras se validaba: el aviso ya salió, pero no se
     valida algo que ya no existe."""
     tenant = almacen._validar_tenant(tenant)
-    if sql := _sql():
-        vista = sql.wh_marcar_validado(tenant, identificador, _ahora())
-        return _publico(*vista) if vista else None
-    en = _ahora().isoformat(timespec="seconds")
-    with registro.candado:
-        registrados, estados, eliminados, _, fallidas = _indice()
-        webhook = _vigente(registrados, eliminados, tenant, identificador)
-        if webhook is None:
-            return None
-        registro.agregar(ARCHIVO, {"evento": "validado", "id": identificador, "en": en, "codigo": codigo, "ms": ms})
-    return _publico(webhook, estados.get(identificador, "activo"), en, fallidas.get(identificador, {}).get("en"))
+    vista = integraciones_sql.wh_marcar_validado(tenant, identificador, _ahora())
+    return _publico(*vista) if vista else None
 
 
 def marcar_fallida(tenant: str, identificador: str, intentos: int, codigo: int | None, motivo: str) -> dict | None:
@@ -434,57 +266,23 @@ def marcar_fallida(tenant: str, identificador: str, intentos: int, codigo: int |
     sus intentos: el webhook queda "Con fallos" hasta que se valide. Devuelve el
     webhook, o `None` si se eliminó mientras se validaba."""
     tenant = almacen._validar_tenant(tenant)
-    if sql := _sql():
-        vista = sql.wh_marcar_fallida(tenant, identificador, _ahora())
-        return _publico(*vista) if vista else None
-    en = _ahora().isoformat(timespec="seconds")
-    with registro.candado:
-        registrados, estados, eliminados, validados, _ = _indice()
-        webhook = _vigente(registrados, eliminados, tenant, identificador)
-        if webhook is None:
-            return None
-        registro.agregar(
-            ARCHIVO,
-            {"evento": "validacion_fallida", "id": identificador, "en": en, "intentos": intentos, "codigo": codigo, "motivo": motivo},
-        )
-    return _publico(webhook, estados.get(identificador, "activo"), validados.get(identificador), en)
+    vista = integraciones_sql.wh_marcar_fallida(tenant, identificador, _ahora())
+    return _publico(*vista) if vista else None
 
 
 def suscritos(tenant: str, tipo: str) -> list[str]:
     """Los webhooks del tenant que deben recibir un aviso de `tipo`: vigentes,
     VALIDADOS, activos y suscritos a ese tipo."""
     tenant = almacen._validar_tenant(tenant)
-    if sql := _sql():
-        return sql.wh_suscritos(tenant, tipo)
-    registrados, estados, eliminados, validados, _ = _indice()
-    return [
-        i
-        for i, w in registrados.items()
-        if w.get("tenant") == tenant
-        and i not in eliminados
-        and i in validados
-        and estados.get(i, "activo") == "activo"
-        and tipo in (w.get("eventos") or [])
-    ]
+    return integraciones_sql.wh_suscritos(tenant, tipo)
 
 
 def para_entregar(identificador: str) -> tuple[str, str] | None:
     """`(url, secret)` si el webhook sigue en condiciones de recibir —vigente,
     validado y activo—; si no, `None`, y sus entregas pendientes se cancelan.
     Levanta `SinCifrado` si su secret no se puede descifrar."""
-    if sql := _sql():
-        destino = sql.wh_para_entregar(identificador)
-        return None if destino is None else (destino[0], _descifrar(destino[1]))
-    registrados, estados, eliminados, validados, _ = _indice()
-    webhook = registrados.get(identificador)
-    if (
-        webhook is None
-        or identificador in eliminados
-        or identificador not in validados
-        or estados.get(identificador, "activo") != "activo"
-    ):
-        return None
-    return webhook["url"], secret_para_firmar(identificador)
+    destino = integraciones_sql.wh_para_entregar(identificador)
+    return None if destino is None else (destino[0], _descifrar(destino[1]))
 
 
 def editar(tenant: str, identificador: str, url: str, eventos: list[str]) -> dict | None:
@@ -502,32 +300,7 @@ def editar(tenant: str, identificador: str, url: str, eventos: list[str]) -> dic
     elegidos = [e for e in EVENTOS if e in pedidos]
     if not elegidos:
         raise ValueError("Elige al menos un evento de suscripción.")
-    if sql := _sql():
-        resultado = sql.wh_editar(tenant, identificador, url, elegidos)
-        if resultado == "duplicado":
-            raise Duplicado("Ya tienes otro webhook con esa URL.")
-        return _publico(*resultado) if resultado else None
-    with registro.candado:
-        registrados, estados, eliminados, validados, fallidas = _indice()
-        webhook = _vigente(registrados, eliminados, tenant, identificador)
-        if webhook is None:
-            return None
-        cambio_url = url != webhook.get("url")
-        if any(
-            i != identificador and w.get("tenant") == tenant and w.get("url") == url and i not in eliminados
-            for i, w in registrados.items()
-        ):
-            raise Duplicado("Ya tienes otro webhook con esa URL.")
-        registro.agregar(
-            ARCHIVO,
-            {"evento": "editado", "id": identificador, "url": url, "eventos": elegidos, "urlCambio": cambio_url,
-             "en": _ahora().isoformat(timespec="seconds")},
-        )
-    if cambio_url:
-        return _publico({**webhook, "url": url, "eventos": elegidos}, estados.get(identificador, "activo"), None, None)
-    return _publico(
-        {**webhook, "eventos": elegidos},
-        estados.get(identificador, "activo"),
-        validados.get(identificador),
-        fallidas.get(identificador, {}).get("en"),
-    )
+    resultado = integraciones_sql.wh_editar(tenant, identificador, url, elegidos)
+    if resultado == "duplicado":
+        raise Duplicado("Ya tienes otro webhook con esa URL.")
+    return _publico(*resultado) if resultado else None

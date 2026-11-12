@@ -402,11 +402,9 @@ nada que pedirle a Soporte sobre el tamaño.
 
 ### Provisional
 
-**Dónde viven las cosas.** Lo pendiente de la bandeja, las llaves y su uso
-están en registros de solo agregar dentro del NAS (`{ALMACEN_RUTA}/.registro/`, ver
-`servicios/registro.py`), no en SQL Server. Pasan a la base cuando existan los
-SPs del DBA; solo cambian `servicios/bandeja.py` y
-`servicios/llaves_cliente.py`.
+**Dónde viven las cosas.** Hasta el 2026-10-30 lo pendiente de la bandeja, las llaves y su uso estaban en registros de solo agregar dentro
+del NAS (`{ALMACEN_RUTA}/.registro/`). Hoy viven en SQL Server (migraciones `0006` y `0008`); desde el 2026-11-11 no queda ningún registro
+en archivos (ver «Las pruebas: todas contra SQL Server» y «Usuarios en SQL»).
 
 **Un tenant por organización** (desde el 2026-10-09, HU11). El front saca el tenant de la organización de la
 sesión (`tenantDe`); el administrador de plataforma, que no tiene organización, opera en el espacio de plataforma:
@@ -997,10 +995,10 @@ tail -2 /home/mbriseno/webhook-central/logs/deploys.jsonl
 
 HU01 (alta de administradores), HU03 (login), HU04 (cambio de contraseña en el
 primer acceso) y HU10 (recuperar la contraseña, más abajo). Código: `routers/auth.py`, `servicios/auth.py`
-(argon2id, reglas, JWT, refresh) y `servicios/usuarios.py` (las reglas de cuentas, intentos y sesiones). Donde hay base, todo esto vive
-en SQL desde el 2026-11-11 (`servicios/usuarios_sql.py`, migración `0014`: ver «Usuarios en SQL» más abajo); sin base, en el registro
-`usuarios.jsonl` del almacén, que es lo que describe esta sección. Verificación: `verificar_auth.py` (sin base) y
-`verificar_usuarios_sql.py` (con SQL Server en Docker).
+(argon2id, reglas, JWT, refresh) y `servicios/usuarios.py` (las reglas de cuentas, intentos y sesiones). Desde el 2026-11-11 todo esto
+vive en SQL (`servicios/usuarios_sql.py`, migración `0014`: ver «Usuarios en SQL» más abajo); lo que esta sección cuenta del registro
+`usuarios.jsonl` es la historia de cómo nació. Verificación: `verificar_auth.py` y `verificar_usuarios_sql.py` (las dos contra SQL Server
+en Docker).
 
 **Configurar** (los dos procesos, back y front):
 
@@ -1860,6 +1858,31 @@ los activos de CADA organización, `asegurar`, y qué procesadores quedarían hu
 y comprueba el registro, crear/reutilizar/adoptar/recrear el clasificador de cada organización, el candado, que clasificar use el de quien
 pide y que las rutas pidan organización y sesión.
 
+## Las pruebas: todas contra SQL Server (2026-11-11)
+
+Hasta el 2026-11-11 cada módulo que guarda algo tenía DOS almacenamientos: SQL donde el `.env` trae `SQLSERVER_HOST` (dev, staging,
+producción) y un registro JSONL de solo agregar en el almacén donde no (la laptop y las pruebas «offline»). Ese día, con usuarios ya en SQL
+(migración `0014`) y nada más en JSONL, Moibe aprobó quitar el segundo camino («si házlo»). Desde entonces:
+
+- **El back solo guarda en SQL Server.** Sin `SQLSERVER_*` en el `.env`, todo lo que guarda o lee datos contesta 503 (`ConfiguracionIncompleta`).
+  Lo que vive en el NAS son los ARCHIVOS (los bytes de cada documento y los ejemplos), no los registros.
+- **Se borraron** `servicios/registro.py` (escribir y leer JSONL), `servicios/tipos_documentales_archivo.py`, y las dos herramientas que
+  reescribían esos archivos, `renombrar_tenant.py` y `purgar_creado_por.py` (ya habían cumplido: el renombre de `demo` y la purga del 2026-10-26),
+  con sus pruebas.
+- **Lo único que todavía LEE los JSONL** es la importación única (`servicios/importacion_json.py`, con los lectores en
+  `servicios/json_heredado.py`): dev ya importó todo; staging y producción importan lo suyo la primera vez que arrancan con este código. Cuando
+  los tres lo hayan hecho, `json_heredado.py` y los importadores se pueden borrar.
+- **Toda prueba que toca datos corre contra SQL Server de verdad**, con `pruebas_sql.preparar()` antes de importar la app. Es UN contenedor de
+  Docker para todas (`nexus-pruebas-sql`, puerto 14399), que se queda encendido entre corridas; cada corrida borra y vuelve a crear la base y le
+  aplica TODAS las migraciones con el corredor. Un candado de archivo hace que dos corridas (de esta terminal o de otra) se turnen en vez de
+  pisarse. Para apagarlo: `python pruebas_sql.py --apagar`. Sin Docker, la prueba se SALTA y lo dice (no cuenta como pasada).
+- **Lo que se comparaba «almacén contra SQL»** en la misma corrida (`verificar_usuarios_sql.py`, `verificar_integraciones_sql.py`,
+  `verificar_registros_sql.py`, `verificar_tipos_documentales_sql.py`) se compara ahora contra lo CONGELADO en `<prueba>.congelado.json`: las
+  salidas que los dos caminos daban idénticas ese día (`pruebas_sql.congelado`; las fechas y los hashes de contraseña se enmascaran). Si un
+  cambio de comportamiento es a propósito, se corre la prueba con `--congelar` y se revisa el diff del archivo.
+- Las pruebas de lógica pura (`verificar_bloques.py`, `verificar_esquema.py`, `verificar_corredor.py`, `verificar_almacen.py`…) siguen sin
+  necesitar nada.
+
 ## Migraciones de la base (2026-10-28)
 
 Nexus **no usa stored procedures** (decisión del 2026-10-21): el esquema de SQL Server se versiona aquí, en `migraciones/NNNN_nombre.sql`, y lo aplica el
@@ -1919,16 +1942,10 @@ de la base está al día con el código: `esquema_desfasado` si le faltan migrac
 La primera entidad del producto que deja el almacén y pasa a una tabla es el catálogo de tipos documentales: `nexus.documentTypes`.
 ⚠️ No confundirla con `reference.documentTypes`, que es un catálogo global del diccionario viejo, congelado como especificación.
 
-**Son DOS almacenamientos tras la misma puerta.** `servicios/tipos_documentales.py` no guarda nada: elige, en cada llamada, entre
-
-- `tipos_documentales_sql.py` — la tabla. Es lo que corre donde el `.env` trae `SQLSERVER_HOST`: dev, staging y producción.
-- `tipos_documentales_archivo.py` — el JSONL de siempre. Es lo que corre donde no hay base: la laptop (sus `SQLSERVER_*` están
-  vacíos a propósito) y todas las pruebas offline, que seguirían siendo imposibles de correr si los tipos exigieran SQL.
-
-Lo que los dos comparten —qué es un tipo válido, cómo se ve hacia afuera, sus errores— vive en `tipos_documentales_comun.py`, así
-que la validación es una sola. **No se sincronizan ni se migran entre sí**: lo que se da de alta en la laptop no aparece en dev.
-Y las herramientas que reescriben registros del almacén (`renombrar_tenant.py`, `purgar_creado_por.py`) solo ven el JSONL: donde
-los tipos ya viven en SQL, no los tocan.
+**La puerta y la tabla.** `servicios/tipos_documentales.py` es la puerta a la que llaman los routers y `tipos_documentales_sql.py`
+guarda en la tabla; qué es un tipo válido, cómo se ve hacia afuera y sus errores viven en `tipos_documentales_comun.py`. Hasta el
+2026-11-11 había además un segundo almacenamiento en JSONL (`tipos_documentales_archivo.py`) para donde no había base: la laptop y
+las pruebas sin SQL. Ese día se quitó (ver «Las pruebas: todas contra SQL Server»).
 
 **Qué gana al estar en la base:** la regla de que un id no se repite en NINGUNA organización ya no depende de Python
 (`UQ_documentTypes_publicId`); nombre, estado y procesador se calculan del JSON y se guardan solos (columnas `PERSISTED`: no
@@ -1982,23 +1999,16 @@ no abre sesión si mientras tanto se restableció o se desactivó la cuenta; cam
 plataforma sin administradores— ahora lo da una transacción con un candado de aplicación por persona (`nexus-usuario-<guid>`), para todos los procesos y
 ambientes. `verificar_usuarios_sql.py` lo prueba con hilos a la vez, además de comparar cada lectura y cada escritura contra el JSONL.
 
-**Lo que sigue en archivos, y por qué.** `usuarios.py` conserva el camino del JSONL para lo que corre SIN base: las pruebas offline (`verificar_auth.py` y
-compañía). Las herramientas que reescriben registros del almacén (`renombrar_tenant.py`, `purgar_creado_por.py`) solo ven el JSONL, así que donde hay base ya no
-tocan las cuentas. Retirar esos caminos (los `*_archivo.py`, `registro.py` y los JSONL) es el paso siguiente si se quiere: exige mover las pruebas offline a un
-SQL Server desechable.
+**Ya no queda nada en archivos.** El mismo día, Moibe aprobó quitar también los caminos JSONL del código («si házlo»): ver «Las pruebas: todas contra SQL
+Server». Los JSONL viejos solo se LEEN, una vez, para importarlos (`servicios/json_heredado.py`).
 
 ## El espacio de plataforma se llama `plataforma` (2026-10-26)
 
 El espacio donde opera el administrador de plataforma (el que no es de ninguna organización) se llamaba `demo`, un nombre que parecía el de una
 empresa de mentira. Ahora es `plataforma`: lo fija el front (`NEXUS_TENANT`, `src/lib/server/nexus.ts`), y el back no sabe de ese nombre (para él
 es «cualquier tenant que no es una organización»). Cambiar el nombre en el front NO alcanza: lo que el espacio ya tenía está guardado bajo el
-nombre viejo. `renombrar_tenant.py` lo pasa CONSERVÁNDOLO:
-
-```
-.venv/Scripts/python renombrar_tenant.py                 # simulación de demo → plataforma
-.venv/Scripts/python renombrar_tenant.py --confirmar
-.venv/Scripts/python renombrar_tenant.py --de plataforma --a demo --confirmar     # lo deshace
-```
+nombre viejo. `renombrar_tenant.py` lo pasó CONSERVÁNDOLO el 2026-10-26 (⚠ el script ya no existe: reescribía los registros JSONL del almacén, y desde
+el 2026-11-11 no hay ninguno; lo que sigue es lo que hizo). Lo que hacía:
 
 Respalda `.registro/`, cambia el tenant de los renglones de ese espacio en los registros compartidos (tipos documentales, procesos, llaves,
 webhooks, entregas), reescribe las rutas de archivo que llevan su nombre (`demo/ab/cd/<sha256>` → `plataforma/…`: bandeja, documentos y los
@@ -2006,7 +2016,7 @@ ejemplos de cada tipo documental), renombra sus registros propios (`bandeja-`, `
 del almacén, y deja `PLATFORM_TENANT_RENAMED` en la bitácora. La bitácora NO se reescribe (es evidencia de solo agregar). Se niega si el origen o el
 destino es el guid de una organización o si el destino ya tiene datos. Los procesadores de Google no dependen del nombre del tenant, así que siguen
 siendo los mismos. Orden al desplegar: primero el front con el default nuevo, después correr el script; entre una cosa y otra el administrador de
-plataforma ve el espacio vacío. Verificación offline: `verificar_renombre_tenant.py`.
+plataforma ve el espacio vacío.
 
 ## Administradores de plataforma desde Nexus Monitor (2026-10-20)
 
@@ -2104,8 +2114,8 @@ Los roles de solo consulta (Compliance, Auditor y Viewer) reciben 403 `sin_permi
 `.registro/documentos-{tenant}.jsonl` y los expedientes en `.registro/expedientes-{tenant}.jsonl`. La ruta de documentos cuelga de
 `/expedientes` y no de `/documentos` porque ese prefijo ya es del grupo que habla con SQL Server.
 
-Verificarlo, offline: `venv/bin/python verificar_expedientes.py`; con `--sql` (Docker) corre lo mismo contra SQL Server y suma lo que solo la base puede probar: los
-duplicados (un documento solo tiene tipo donde hay base) y la clasificación al subir, con Document AI falseado.
+Verificarlo: `venv/bin/python verificar_expedientes.py`, contra SQL Server en Docker (desde el 2026-11-11 ya no hay modo sin base; `--sql` se acepta y no
+cambia nada), con los duplicados y la clasificación al subir, con Document AI falseado.
 
 ## «Parecido a»: qué tanto se parecen dos textos, según IA (2026-11-10)
 

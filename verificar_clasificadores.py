@@ -28,7 +28,9 @@ SERVICIO = "llave-de-servicio-solo-local"
 os.environ["ALMACEN_RUTA"] = str(RAIZ)
 os.environ["NEXUS_API_KEY"] = SERVICIO
 os.environ["AUTH_JWT_SECRET"] = "secreto-de-prueba-de-al-menos-32-caracteres-xx"
-os.environ.setdefault("SQLSERVER_HOST", "")
+import pruebas_sql  # noqa: E402  (desde el 2026-11-11 todo se guarda en SQL Server: esta prueba corre contra uno desechable)
+
+BASE_SQL = pruebas_sql.preparar()
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -141,6 +143,14 @@ try:
     org_b, b_admin = crear_organizacion(bearer_super, "Beta", "beto@ejemplo.com", "Rumbo-Sereno-Rojo-48!")
     rev("hay dos organizaciones distintas", org_a != org_b)
 
+    def filas_de_clasificador() -> list:
+        """`(tenant, processorId)` de cada fila de `nexus.tenantClassifiers`."""
+        con = BASE_SQL["conectar"]("usrNexus", BASE_SQL["app"], BASE_SQL["base"])
+        try:
+            return [tuple(f) for f in con.cursor().execute("SELECT tenant, processorId FROM nexus.tenantClassifiers").fetchall()]
+        finally:
+            con.close()
+
     titulo("1 · El registro: quién usa qué clasificador")
     rev("el nombre de una organización lleva su guid detrás de `--`", clasificadores.nombre_visible(org_a) == f"nexusdoc-clasificador--{org_a}")
     rev("el del espacio de plataforma conserva el nombre de siempre", clasificadores.nombre_visible("demo") == "nexusdoc-clasificador")
@@ -153,7 +163,7 @@ try:
     except ValueError:
         rev("un tenant con caracteres inválidos se rechaza", True)
     clasificadores.asignar("demo", "otro-id")
-    rev("asignarle uno al espacio de plataforma no hace nada (su id es el del `.env`)", clasificadores.id_de("demo") == "clas-legado" and not (RAIZ / ".registro" / "clasificadores.jsonl").exists())
+    rev("asignarle uno al espacio de plataforma no hace nada (su id es el del `.env`)", clasificadores.id_de("demo") == "clas-legado" and filas_de_clasificador() == [])
 
     titulo("2 · Sincronizar crea el procesador de la organización la primera vez")
     tipos_a = [tipo("tipo-aaa", "Póliza"), tipo("tipo-bbb", "INE")]
@@ -169,8 +179,8 @@ try:
     r2 = asyncio.run(svc.sincronizar_clasificador([tipo("tipo-aaa", "Póliza")], org_a))
     rev("mismo procesador, `creado` falso", r2["procesadorId"] == r1["procesadorId"] and r2["creado"] is False, str(r2))
     rev("el esquema se REEMPLAZA: ya solo trae el tipo que quedó", categorias(r2["procesadorId"]) == ["tipo-aaa"])
-    rev("y el registro no repite el evento: un solo `asignado` para esa organización tras dos sincronizaciones",
-        sum(1 for e in clasificadores.registro.eventos(clasificadores.ARCHIVO) if e.get("tenant") == org_a) == 1)
+    rev("y la base no la repite: una sola fila para esa organización tras dos sincronizaciones",
+        [f[0] for f in filas_de_clasificador()].count(org_a) == 1)
     rev("sin un `list` de todos los procesadores ni un POST",("GET", f"{PADRE}/processors") not in llamadas_a_google and not any(m == "POST" for m, _ in llamadas_a_google), str(llamadas_a_google))
 
     titulo("4 · Cada organización, el suyo: lo de una no toca lo de la otra")
@@ -184,7 +194,7 @@ try:
     r_p = asyncio.run(svc.sincronizar_clasificador([tipo("tipo-ddd", "Demo")], "demo"))
     rev("reutiliza el del `.env` sin crear nada", r_p["procesadorId"] == "clas-legado" and r_p["creado"] is False and not any(m == "POST" for m, _ in llamadas_a_google), str(r_p))
     rev("y su esquema es solo el suyo", categorias("clas-legado") == ["tipo-ddd"])
-    rev("no deja nada anotado en el registro para plataforma", clasificadores._asignados().get("demo") is None)
+    rev("no deja nada anotado en la base para plataforma", "demo" not in [f[0] for f in filas_de_clasificador()])
 
     titulo("6 · Adopta el que un intento anterior dejó creado a medias")
     org_c, _ = crear_organizacion(bearer_super, "Gamma", "gabi@ejemplo.com", "Rumbo-Sereno-Verde-49!")

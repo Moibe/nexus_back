@@ -32,7 +32,9 @@ SERVICIO = "llave-de-servicio-solo-local"
 os.environ["ALMACEN_RUTA"] = str(RAIZ)
 os.environ["NEXUS_API_KEY"] = SERVICIO
 os.environ["AUTH_JWT_SECRET"] = "secreto-de-prueba-de-al-menos-32-caracteres-xx"
-os.environ.setdefault("SQLSERVER_HOST", "")
+import pruebas_sql  # noqa: E402  (desde el 2026-11-11 todo se guarda en SQL Server: esta prueba corre contra uno desechable)
+
+BASE_SQL = pruebas_sql.preparar()
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -97,10 +99,9 @@ def ids(bearer: str, tenant: str) -> list[str]:
 
 
 def auditoria(accion: str) -> list[dict]:
-    ruta = RAIZ / ".registro" / "auditoria.jsonl"
-    if not ruta.exists():
-        return []
-    return [e for e in (json.loads(x) for x in ruta.read_text(encoding="utf-8").splitlines() if x.strip()) if e.get("accion") == accion]
+    from servicios import auditoria as _bitacora  # la bitácora vive en `nexus.auditEvents`
+
+    return _bitacora.eventos({accion})
 
 
 def crear_organizacion(bearer_super: str, nombre: str, correo: str, contrasena: str) -> tuple[str, str]:
@@ -418,16 +419,6 @@ try:
     rev("la fecha de corte exige AAAA-MM-DD real",
         procesadores_huerfanos.fecha_de_corte("2026-10-15") == "2026-10-15"
         and all(rechaza(t) for t in ("", "15/10/2026", "2026-10-1", "20261015", "2026-13-45", "2026-02-30", "ayer")))
-
-    titulo("13 · Resiste un corte a media escritura")
-    ruta = RAIZ / ".registro" / "tipos-documentales.jsonl"
-    with open(ruta, "ab") as f:
-        f.write(b'{"op": "guardar", "id": "tipo-roto')
-    antes = ids(a_admin, org_a)
-    rev("una última línea rota se ignora al leer", ids(a_admin, org_a) == antes and len(antes) >= 3)
-    n = nuevo_id()
-    r = guardar(a_admin, org_a, n, tipo("Después del corte"), 0)
-    rev("y el guardado siguiente no queda pegado a ella", r.status_code == 200 and n in ids(a_admin, org_a))
 
     titulo("14 · El nombre es único en la organización: 409 `ya_existe` (2026-11-04)")
 

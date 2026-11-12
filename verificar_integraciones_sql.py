@@ -8,8 +8,9 @@ SQL, otro con una que sí existirá), siembra los JSONL como los tiene dev (con 
 existe, un webhook repetido, una entrega pendiente, miles de líneas de uso), aplica la 0008 con el corredor real (y después las que siguen, para que
 el código de hoy corra sobre el esquema de hoy; desde la 0014 los dueños de los enlaces son cuentas sembradas en `usuarios.jsonl`), y luego:
 
-1. importa una sola vez y compara cada lectura contra el MISMO módulo leyendo el JSONL (se cambia `SQLSERVER_HOST` del módulo para elegir);
-2. hace las mismas escrituras en los dos y compara lo que devuelven, incluido el trabajador de entregas con su reloj y su reinicio;
+1. importa una sola vez y compara cada lectura con lo CONGELADO (`verificar_integraciones_sql.congelado.json`): hasta el 2026-11-11 se comparaba
+   contra el mismo módulo leyendo el JSONL, y las dos salidas eran idénticas; al quitar ese camino se congelaron (ver `pruebas_sql.congelado`);
+2. hace las escrituras y compara lo que devuelven con lo congelado, incluido el trabajador de entregas con su reloj y su reinicio;
 3. comprueba lo que solo la base cuida: llaves foráneas, que `a7K9` y `A7k9` sean dos llaves, una URL vigente por organización, el secreto que
    desaparece al eliminar;
 4. lanza hilos a la vez: un enlace se gasta UNA vez, una URL se registra UNA vez, un aviso se programa UNA vez, los ids de llave no se repiten;
@@ -187,21 +188,22 @@ try:
 
     from servicios import bandeja, entrega_webhooks, entregas_webhooks, importacion_json, llaves_cliente, tokens, uso_llaves, webhooks_cliente  # noqa: E402
 
-    MODULOS = (tokens, llaves_cliente, uso_llaves, webhooks_cliente, entregas_webhooks)
-    REAL = tokens.SQLSERVER_HOST
+    def congelado(que: str, valor) -> None:
+        """Lo que contesta SQL, contra lo congelado (lo que el JSONL y SQL contestaban igual el 2026-11-11)."""
+        ok, detalle = pruebas_sql.congelado(__file__, que, valor)
+        rev(que, ok, detalle)
 
-    def modo(sql: bool) -> None:
-        for m in MODULOS:
-            m.SQLSERVER_HOST = REAL if sql else ""
-        uso_llaves._indice.clear()
-        uso_llaves._indice_listo = False
-
-    def ambos(fn):
-        modo(False)
-        a = fn()
-        modo(True)
-        s = fn()
-        return a, s
+    def sin_dias(metricas: dict) -> dict:
+        """Las métricas sin lo que depende de CUÁNDO corre la prueba: el desglose por día (cambia si las semillas, que caen en las últimas
+        horas, cruzan la medianoche UTC; lo prueba `verificar_llaves_cliente.py` con fechas fijas) se congela como su total, y del tope
+        semanal se congelan solo el límite y desde cuánto avisa (la semana y su consumo cambian si la corrida cruza el lunes UTC; el consumo
+        se prueba aparte, contado de las semillas)."""
+        m = dict(metricas)
+        if isinstance(m.get("porDia"), list):
+            m["porDia"] = sum(d.get("solicitudes", 0) for d in m["porDia"])
+        if isinstance(m.get("limiteSemanal"), dict):
+            m["limiteSemanal"] = {k: v for k, v in m["limiteSemanal"].items() if k in ("limite", "avisoDesde")}
+        return m
 
     def probar(fn, *args, **kwargs):
         try:
@@ -210,7 +212,6 @@ try:
             return ("error", type(e).__name__, getattr(e, "codigo", None))
 
     titulo("2 · La importación")
-    modo(True)
     importacion_json.asegurar_todo()
     con = BASE["conectar"]("usrNexus", BASE["app"], BASE["base"])
     k = con.cursor()
@@ -237,11 +238,10 @@ try:
     rev("importar otra vez no duplica nada", k.execute("SELECT (SELECT count(*) FROM nexus.accessTokens) * 1000000 + (SELECT count(*) FROM nexus.apiKeys) * 100000 + (SELECT count(*) FROM nexus.webhooks)").fetchone()[0] == 4 * 1000000 + 4 * 100000 + 4)
     con.close()
 
-    titulo("3 · Las lecturas, iguales en los dos")
+    titulo("3 · Las lecturas de lo importado, iguales a lo congelado")
 
     def igual(que: str, fn) -> None:
-        a, s = ambos(fn)
-        rev(que, a == s, f"almacén={str(a)[:300]!r}\n          sql={str(s)[:300]!r}")
+        congelado(que, fn())
 
     for etiqueta, token, tipo in (
         ("vigente", "tok-uno", "ACTIVACION"), ("ya usado", "tok-dos", "RECUPERACION"), ("apagado", "tok-tres", "ACTIVACION"),
@@ -249,11 +249,9 @@ try:
     ):
         igual(f"tokens.revisar, {etiqueta}", lambda token=token, tipo=tipo: probar(tokens.revisar, token, tipo))
     igual("tokens.pendientes_de (la de u1 es la activación vigente; u2 no tiene)", lambda: ([t["guid"] for t in tokens.pendientes_de(U1)], tokens.pendientes_de(U2)))
-    modo(False)
-    archivo_llaves = [l for l in llaves_cliente.listar(ORG_A) if l["id"] != "zz_9"]
-    modo(True)
-    rev("llaves.listar: del más nuevo al más viejo, con las del mismo instante en el orden en que se emitieron (la de id raro no está en SQL)",
-        archivo_llaves == llaves_cliente.listar(ORG_A) and [l["id"] for l in archivo_llaves] == ["aB12", "AB12"], f"{archivo_llaves}\n          {llaves_cliente.listar(ORG_A)}")
+    rev("llaves.listar: del más nuevo al más viejo, con las del mismo instante en el orden en que se emitieron (la de id raro no entró)",
+        [l["id"] for l in llaves_cliente.listar(ORG_A)] == ["aB12", "AB12"], str(llaves_cliente.listar(ORG_A)))
+    igual("llaves.listar de la organización", lambda: llaves_cliente.listar(ORG_A))
     igual("llaves.listar de plataforma", lambda: llaves_cliente.listar("plataforma"))
     igual("llaves.buscar_por_id", lambda: [llaves_cliente.buscar_por_id(i) for i in ("aB12", "AB12", "pl01", "nada")])
     igual("llaves.existe_en_otro_tenant", lambda: (llaves_cliente.existe_en_otro_tenant(ORG_B, "aB12"), llaves_cliente.existe_en_otro_tenant(ORG_A, "aB12"), llaves_cliente.existe_en_otro_tenant(ORG_A, "nada")))
@@ -262,18 +260,21 @@ try:
         fila = llaves_cliente.buscar_por_id(ident)
         return fila is not None and seguridad_llaves.verificar(secreto, lambda _i: fila)
 
-    a, s = ambos(lambda: [verifica(SECRETOS[i], i) for i in ("aB12", "AB12", "pl01", "ex01")])
-    rev("verificar una llave de verdad: la vigente pasa; la revocada y la de expiración ilegible NO (igual en el almacén y en SQL)", a == s == [True, False, True, False], f"{a} | {s}")
+    s = [verifica(SECRETOS[i], i) for i in ("aB12", "AB12", "pl01", "ex01")]
+    rev("verificar una llave de verdad: la vigente pasa; la revocada y la de expiración ilegible NO", s == [True, False, True, False], str(s))
     desde, hasta = AHORA - timedelta(hours=4), AHORA + timedelta(hours=1)
-    igual("uso.metricas: solicitudes, exitosas, p50, bytes, por día, tope semanal y último uso", lambda: uso_llaves.metricas("aB12", desde, hasta))
-    igual("uso.metricas de una llave con otro estado", lambda: uso_llaves.metricas("AB12", desde, hasta))
-    igual("uso.ultimos_usos y consumo semanal", lambda: (uso_llaves.ultimos_usos(["aB12", "AB12", "pl01", "nada"]), uso_llaves.consumo_semanal("aB12")))
+    igual("uso.metricas: solicitudes, exitosas, p50, bytes, total por día, tope semanal y último uso", lambda: sin_dias(uso_llaves.metricas("aB12", desde, hasta)))
+    igual("uso.metricas de una llave con otro estado", lambda: sin_dias(uso_llaves.metricas("AB12", desde, hasta)))
+    igual("uso.ultimos_usos", lambda: uso_llaves.ultimos_usos(["aB12", "AB12", "pl01", "nada"]))
+    # Las 1500 líneas de aB12 caen en las últimas ~3 horas: las que son de ESTA semana (lunes a domingo, UTC) se cuentan de las semillas mismas.
+    lunes = uso_llaves.inicio_de_semana(datetime.now(timezone.utc))
+    esperado_semana = sum(1 for i in range(1500) if AHORA - timedelta(minutes=1 + (i % 170) + i / 10000) >= lunes)
+    rev("uso.consumo_semanal: las de esta semana, contadas de lo importado", uso_llaves.consumo_semanal("aB12") == esperado_semana,
+        f"{uso_llaves.consumo_semanal('aB12')} vs {esperado_semana}")
     igual("uso.excede_limite", lambda: uso_llaves.excede_limite("aB12"))
-    modo(False)
-    archivo_wh = {w["id"]: w for w in webhooks_cliente.listar(ORG_A) if w["id"] != "wh_a4"}
-    modo(True)
     sql_wh = {w["id"]: w for w in webhooks_cliente.listar(ORG_A)}
-    rev("webhooks.listar: lo mismo (el repetido no está en SQL, el eliminado tampoco), con su estado, su validación y su fallo", archivo_wh == sql_wh and sorted(sql_wh) == ["wh_a1", "wh_a2"], f"{archivo_wh}\n          {sql_wh}")
+    rev("webhooks.listar: el repetido y el eliminado no están", sorted(sql_wh) == ["wh_a1", "wh_a2"], str(sorted(sql_wh)))
+    igual("webhooks.listar de la organización, con su estado, su validación y su fallo", lambda: webhooks_cliente.listar(ORG_A))
     igual("webhooks.listar de la otra organización", lambda: webhooks_cliente.listar(ORG_B))
     igual("webhooks.suscritos (vigentes, validados, activos y suscritos)", lambda: [webhooks_cliente.suscritos(ORG_A, t) for t in webhooks_cliente.EVENTOS])
     igual("webhooks.para_entregar: el validado sí; el no validado, el eliminado y el que no existe, no", lambda: [webhooks_cliente.para_entregar(i) for i in ("wh_a1", "wh_a2", "wh_a3", "wh_nope")])
@@ -281,15 +282,10 @@ try:
     igual("webhooks.existe_en_otro_tenant", lambda: (webhooks_cliente.existe_en_otro_tenant(ORG_B, "wh_a1"), webhooks_cliente.existe_en_otro_tenant(ORG_A, "wh_a1"), webhooks_cliente.existe_en_otro_tenant(ORG_B, "wh_a3")))
     igual("entregas.historial: los 50 más recientes, con el documento de cada entrega", lambda: entregas_webhooks.historial(ORG_A, "wh_a1"))
     igual("entregas.historial de otra organización: vacío", lambda: entregas_webhooks.historial(ORG_B, "wh_a1"))
-    igual("entregas.metricas: intentos, errores y percentiles (los de validar no cuentan)", lambda: entregas_webhooks.metricas(ORG_A, "wh_a1", desde, hasta))
-    rev("el secret que sale de SQL es el que se cifró", (modo(True), webhooks_cliente.secret_para_firmar("wh_a1"))[1] == secreto_a1)
+    igual("entregas.metricas: intentos, errores y percentiles (los de validar no cuentan)", lambda: sin_dias(entregas_webhooks.metricas(ORG_A, "wh_a1", desde, hasta)))
+    rev("el secret que sale de SQL es el que se cifró", webhooks_cliente.secret_para_firmar("wh_a1") == secreto_a1)
 
-    # Para que el almacén no reintente lo que SQL ya cerró, se cierra también ahí (así los dos arrancan igual los escenarios de abajo).
-    with open(RAIZ / ".registro" / "entregas-webhooks.jsonl", "a", encoding="utf-8") as f:
-        for mensaje in ("msg_pend", "msg_huerfana"):
-            f.write(json.dumps({"evento": "cancelada", "id": mensaje, "webhook": "wh_a1", "en": hace(1), "motivo": "migración"}) + "\n")
-
-    titulo("4 · Las escrituras, iguales en los dos")
+    titulo("4 · Las escrituras, iguales a lo congelado")
 
     def escenario_tokens():
         salida = []
@@ -310,8 +306,8 @@ try:
         salida.append(probar(tokens.crear, UW1, "NOPE")[:2])
         return salida
 
-    a, s = ambos(escenario_tokens)
-    rev("tokens: crear apaga el anterior, consumir gasta una vez, invalidar_de cuenta, un tipo desconocido se rechaza", a == s, f"{a}\n          {s}")
+    s = escenario_tokens()
+    congelado("tokens: crear apaga el anterior, consumir gasta una vez, invalidar_de cuenta, un tipo desconocido se rechaza", s)
 
     def escenario_llaves():
         secreto, llave = llaves_cliente.emitir(ORG_A, "  Mi llave ", "para pruebas", 7)
@@ -328,8 +324,8 @@ try:
         salida.append([l["id"] for l in llaves_cliente.listar(ORG_A)][:1] == [ident] or "orden")
         return salida
 
-    a, s = ambos(escenario_llaves)
-    rev("llaves: emitir, verificar, revocar (idempotente y solo en su organización), validaciones y el listado", a == s, f"{a}\n          {s}")
+    s = escenario_llaves()
+    congelado("llaves: emitir, verificar, revocar (idempotente y solo en su organización), validaciones y el listado", s)
 
     def escenario_webhooks():
         url = "https://w.example/Hook?x=1"
@@ -364,8 +360,8 @@ try:
         salida.append(webhooks_cliente.registrar(ORG_A, "https://w.example/otra", ["documento.completado"])[1]["url"])  # su URL quedó libre
         return salida
 
-    a, s = ambos(escenario_webhooks)
-    rev("webhooks: registrar, duplicado, validar, activar, editar (la URL nueva pide validar de nuevo), eliminar (el secreto se va, la URL queda libre)", a == s, f"{a}\n          {s}")
+    s = escenario_webhooks()
+    congelado("webhooks: registrar, duplicado, validar, activar, editar (la URL nueva pide validar de nuevo), eliminar (el secreto se va, la URL queda libre)", s)
 
     # Las entregas, con reloj propio y un endpoint de mentiras.
     reloj = {"t": datetime(2030, 1, 1, tzinfo=timezone.utc)}
@@ -427,8 +423,8 @@ try:
         salida.append(len(entregas_webhooks.historial(ORG_A, wid, 100)))
         return salida
 
-    a, s = ambos(escenario_entregas)
-    rev("entregas: avisar (duplicado, resultado final repetido, entrada ajena, tipo que no existe), reintentos con el calendario, reinicio, agotada, historial, métricas y cancelar", a == s, f"{a}\n          {s}")
+    s = escenario_entregas()
+    congelado("entregas: avisar (duplicado, resultado final repetido, entrada ajena, tipo que no existe), reintentos con el calendario, reinicio, agotada, historial, métricas y cancelar", s)
     # Cada aviso va a DOS webhooks: el que crea el escenario y wh_a1, que ya estaba validado, activo y suscrito.
     rev("…y lo que pasó fue lo esperado: 4 entregas programadas, 4 tras el primer intento, 2 tras el reinicio (las de «fallido» siguen), 0 al agotarse; al desactivar, 1 cancelada y 1 (la de wh_a1) sigue",
         s[7:11] == [4, 4, 2, 0] and s[-3:] == [1, 1, 8], str(s[7:11] + s[-3:]))
@@ -476,7 +472,6 @@ try:
     con.close()
 
     titulo("6 · Hilos a la vez: lo que el candado del archivo daba a un solo proceso, la base lo da a todos")
-    modo(True)
     entregas_webhooks._ahora = lambda: datetime.now(timezone.utc)
     entrega_webhooks.enviar = enviar_de_mentiras
 
@@ -508,7 +503,6 @@ try:
     bandeja.entrada_en_pipeline = bandeja_real
 
     titulo("7 · La API de punta a punta con SQL: emitir una llave, subir con ella, ver su uso, revocarla; y un webhook que recibe su aviso")
-    modo(True)
     entregas_webhooks._pendientes.clear()
     entregas_webhooks._cargado = True
     from fastapi.testclient import TestClient  # noqa: E402

@@ -49,7 +49,9 @@ CLAVE = Fernet.generate_key().decode()
 os.environ["ALMACEN_RUTA"] = str(RAIZ)
 os.environ["NEXUS_API_KEY"] = SERVICIO
 os.environ["WEBHOOKS_CLAVE_CIFRADO"] = CLAVE
-os.environ.setdefault("SQLSERVER_HOST", "")
+import pruebas_sql  # noqa: E402  (desde el 2026-11-11 todo se guarda en SQL Server: esta prueba corre contra uno desechable)
+
+BASE_SQL = pruebas_sql.preparar()
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -62,7 +64,6 @@ from servicios import almacen, entrega_webhooks, entregas_webhooks, webhooks_cli
 # Validar reintenta con esperas de 1, 2, 4 y 8 s: aquí sin esperar, o cada
 # validación fallida tardaría 15 s.
 entregas_webhooks.ESPERAS_VALIDACION_S = (0, 0, 0, 0)
-REGISTRO = RAIZ / ".registro" / "webhooks.jsonl"
 FRONT = Path(r"C:\Moibe\code\nexus_poc_svelte")
 URL = "https://api.empresa.com/webhooks/nexusdoc"
 
@@ -96,15 +97,27 @@ def listado(c, tenant="demo"):
     return c.get("/webhooks/", params={"tenant": tenant}, headers=srv()).json()["webhooks"]
 
 
-def lineas() -> int:
-    return len(REGISTRO.read_text(encoding="utf-8").splitlines()) if REGISTRO.exists() else 0
+def sql(consulta: str, *parametros):
+    """Una consulta directa a la base de la prueba, con el usuario de la API."""
+    con = BASE_SQL["conectar"]("usrNexus", BASE_SQL["app"], BASE_SQL["base"])
+    try:
+        cur = con.cursor()
+        cur.execute(consulta, *parametros)
+        return cur.fetchall() if cur.description else None
+    finally:
+        con.close()
+
+
+def lineas() -> str:
+    """Una foto de los webhooks guardados: si no cambia, no se escribió nada."""
+    return repr(sql("SELECT * FROM nexus.webhooks ORDER BY webhookId")) + repr(sql("SELECT * FROM nexus.webhookSubscriptions ORDER BY webhookId, eventType"))
 
 
 def main() -> int:
     # Con la sesión de un administrador de plataforma en cada llamada con la llave de servicio, como hace el BFF (HU11).
     c = verificacion_comun.cliente_con_sesion_de_plataforma(app, SERVICIO)
 
-    titulo("1 · Registrar: el secret sale UNA vez, cifrado en el registro")
+    titulo("1 · Registrar: el secret sale UNA vez, cifrado en la base")
     r = alta(c, eventos=["documento.fallido", "documento.completado"])
     rev("responde 201", r.status_code == 201, f"{r.status_code} {r.text[:200]}")
     cuerpo = r.json()
@@ -117,14 +130,11 @@ def main() -> int:
     rev("nace activo", webhook["estado"] == "activo")
     rev("los eventos salen en el orden del diseño, no en el pedido",
         webhook["eventos"] == ["documento.completado", "documento.fallido"], str(webhook["eventos"]))
-    contenido = REGISTRO.read_text(encoding="utf-8")
-    rev("en el registro NO está el secret en claro", secret not in contenido)
+    contenido = pruebas_sql.volcado(BASE_SQL)
+    rev("en la base NO está el secret en claro", secret not in contenido)
     rev("ni su parte aleatoria", secret.removeprefix("whsec_") not in contenido)
-    cifrado = next(
-        (l for l in contenido.splitlines() if webhook["id"] in l and '"registrado"' in l), ""
-    )
-    token = re.search(r'"secret_cifrado": "([^"]+)"', cifrado)
-    rev("está cifrado, y la llave lo abre", bool(token) and Fernet(CLAVE).decrypt(token.group(1).encode()).decode() == secret)
+    cifrado = sql("SELECT encryptedSecret FROM nexus.webhooks WHERE publicId = ?", webhook["id"])
+    rev("está cifrado, y la llave lo abre", bool(cifrado) and Fernet(CLAVE).decrypt(cifrado[0][0].encode()).decode() == secret)
     rev("el servidor lo recupera para firmar", webhooks_cliente.secret_para_firmar(webhook["id"]) == secret)
     otro = alta(c, url="https://api.empresa.com/webhooks/otro").json()
     rev("cada webhook tiene su propio secret", otro["secret"] != secret)
@@ -189,7 +199,7 @@ def main() -> int:
     rev("uno que no existe da 404",
         c.post("/webhooks/wh_noexiste/estado", json={"tenant": "demo", "estado": "activo"}, headers=srv()).status_code == 404)
     rev("un estado inventado da 422", c.post(ruta, json={"tenant": "demo", "estado": "pausado"}, headers=srv()).status_code == 422)
-    rev("un estado ilegible en el registro se lee INACTIVO, nunca activo", _estado_ilegible_es_inactivo(c))
+    rev("un estado que no es activo ni inactivo: la base no lo acepta", _estado_raro_rechazado(c))
 
     titulo("6 · Eliminar")
     baja = f"/webhooks/{webhook['id']}/eliminar"
@@ -441,7 +451,7 @@ def main() -> int:
         rev("agotada: ya no queda pendiente", entregas_webhooks.pendientes() == 0)
         reloj[0] += timedelta(days=1)
         rev("y no se vuelve a intentar", entregas_webhooks.procesar_vencidas() == 0 and len(rx.recibidos) == 6)
-        rev("quedó anotada como agotada", '"evento": "agotada"' in (RAIZ / ".registro" / "entregas-webhooks.jsonl").read_text(encoding="utf-8"))
+        rev("quedó anotada como agotada", bool(sql("SELECT 1 FROM nexus.webhookDeliveries WHERE status = 'agotada'")))
 
         rx.recibidos.clear()
         rx.responder(500)
@@ -469,11 +479,11 @@ def main() -> int:
         rx.responder(200)
         e6 = entrada_al_pipeline(c)
         avisar_evento(c, "documento.completado", e6)
-        # Un reinicio: lo pendiente se va de la memoria y se recupera del registro.
+        # Un reinicio: lo pendiente se va de la memoria y se recupera de la base.
         entregas_webhooks._pendientes.clear()
         entregas_webhooks._cargado = False
         entregas_webhooks.procesar_vencidas()
-        rev("tras un reinicio, lo pendiente se recupera del registro y se entrega",
+        rev("tras un reinicio, lo pendiente se recupera de la base y se entrega",
             len(rx.recibidos) == 1 and json.loads(rx.recibidos[0]["cuerpo"])["data"]["entradaId"] == e6)
 
         rx.recibidos.clear()
@@ -789,11 +799,13 @@ def _firma_valida(secret: str, cab: dict, cuerpo: bytes) -> bool:
     return any(hmac.compare_digest(f, esperada) for f in cab["webhook-signature"].split(" "))
 
 
-def _estado_ilegible_es_inactivo(c) -> bool:
+def _estado_raro_rechazado(c) -> bool:
     nuevo = alta(c, url="https://ilegible.empresa.com/hook").json()["webhook"]["id"]
-    with open(REGISTRO, "a", encoding="utf-8") as f:
-        f.write('{"evento": "estado", "id": "%s", "estado": "quien-sabe"}\n' % nuevo)
-    return next(w for w in listado(c) if w["id"] == nuevo)["estado"] == "inactivo"
+    try:
+        sql("UPDATE nexus.webhooks SET status = 'quien-sabe' WHERE publicId = ?", nuevo)
+    except Exception:  # noqa: BLE001
+        return next(w for w in listado(c) if w["id"] == nuevo)["estado"] == "activo"
+    return False
 
 
 if __name__ == "__main__":

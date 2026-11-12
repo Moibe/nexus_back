@@ -25,12 +25,25 @@ SERVICIO = "llave-de-servicio-solo-local"
 os.environ["ALMACEN_RUTA"] = str(RAIZ)
 os.environ["NEXUS_API_KEY"] = SERVICIO
 os.environ["AUTH_JWT_SECRET"] = "secreto-de-prueba-de-al-menos-32-caracteres-xx"
-os.environ.setdefault("SQLSERVER_HOST", "")
+import pruebas_sql  # noqa: E402  (desde el 2026-11-11 todo se guarda en SQL Server: esta prueba corre contra uno desechable)
+
+BASE_SQL = pruebas_sql.preparar()
 
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app import app  # noqa: E402
-from servicios import auth, registro, roles, usuarios  # noqa: E402
+from servicios import auditoria, auth, roles, usuarios  # noqa: E402
+
+
+def sql(consulta: str, *parametros):
+    """Una consulta directa a la base de la prueba, con el usuario de la API."""
+    con = BASE_SQL["conectar"]("usrNexus", BASE_SQL["app"], BASE_SQL["base"])
+    try:
+        cur = con.cursor()
+        cur.execute(consulta, *parametros)
+        return cur.fetchall() if cur.description else None
+    finally:
+        con.close()
 
 fallos = 0
 
@@ -111,7 +124,7 @@ try:
     rev("numerado 002 y con su rol", camila["usuario"]["numero"] == "002" and camila["usuario"]["rolNombre"] == "Analista")
     rev("no-store (trae la contraseña)", r.headers.get("cache-control") == "no-store")
     rev("la contraseña NO queda escrita",
-        camila["contrasenaTemporal"] not in (RAIZ / ".registro" / "usuarios.jsonl").read_text(encoding="utf-8"))
+        camila["contrasenaTemporal"] not in pruebas_sql.volcado(BASE_SQL))
     r = c.post("/usuarios/", json={"nombre": "X", "email": "camila.cg@ejemplo.com", "rol": "VIEWER"}, headers=bearer_sm)
     rev("correo repetido: 409 con el texto del diseño",
         r.status_code == 409 and "ya se encuentra registrado" in r.json()["detail"]["mensaje"], r.text[:160])
@@ -202,18 +215,7 @@ try:
     rev("y editar con OTRO nombre lo separa de nuevo",
         r.status_code == 200 and (u4["nombre"], u4["apellidoPaterno"], u4["apellidoMaterno"]) == ("Juan Carlos", "Ramirez", "Soto") and r.json()["usuario"]["nombre"] == "Juan Carlos Ramirez Soto", str(u4))
 
-    # Lo ya guardado: una cuenta creada ANTES de este arreglo, con todo en `nombre` y sin apellidos, se lee separada.
-    viejo = "11111111-2222-4333-8444-555555555555"
-    registro.agregar(usuarios.ARCHIVO, {"evento": "creado", "guid": viejo, "email": "vieja.cuenta@ejemplo.com", "nombre": "Maria Elena Torres Rivas",
-                                        "apellidos": "", "telefono": None, "esAdminPlataforma": False, "hash": "x", "debeCambiar": True, "en": "2026-10-01T10:00:00+00:00"})
-    leida = usuarios.por_guid(viejo)
-    rev("una cuenta vieja (todo en `nombre`, `apellidos` vacío) se lee ya separada, sin migrar nada",
-        (leida["nombre"], leida["apellidoPaterno"], leida["apellidoMaterno"]) == ("Maria Elena", "Torres", "Rivas") and leida["apellidos"] == "Torres Rivas", str(leida))
-    # Y una edición del formulario de antes del arreglo (evento `datos` con el nombre completo en `nombre` y `apellidos` vacío).
-    registro.agregar(usuarios.ARCHIVO, {"evento": "datos", "guid": viejo, "nombre": "Ana Lucia Gomez Soto", "apellidos": "", "telefono": None, "en": "2026-10-02T10:00:00+00:00"})
-    editada = usuarios.por_guid(viejo)
-    rev("y una edición vieja del formulario (nombre completo, `apellidos` vacío) también se lee separada",
-        (editada["nombre"], editada["apellidoPaterno"], editada["apellidoMaterno"]) == ("Ana Lucia", "Gomez", "Soto"), str(editada))
+    viejo = usuarios.crear_usuario("vieja.cuenta@ejemplo.com", "Maria Elena Torres Rivas", "", "x")["guid"]
     rev("pero una persona que ya guardó sus apellidos VACÍOS en Mi perfil no se vuelve a separar",
         (usuarios.actualizar_perfil(viejo, "Maria Elena Torres Rivas", "", "", None, None)["nombre"],
          usuarios.por_guid(viejo)["apellidoPaterno"]) == ("Maria Elena Torres Rivas", ""))
@@ -280,8 +282,9 @@ try:
     rev("reactivar: 200 y vuelve a estar activo", r.status_code == 200 and r.json()["usuario"]["activo"] is True, r.text[:160])
     sesion_camila = entrar(c, "camila.cg@ejemplo.com", nueva_contrasena)
     rev("y vuelve a entrar con su misma contraseña", bool(sesion_camila["accessToken"]))
-    rev("el motivo quedó registrado",
-        "Cambios operativos." in (RAIZ / ".registro" / "usuarios.jsonl").read_text(encoding="utf-8"))
+    rev("el motivo quedó registrado (con quién y qué hizo)",
+        [tuple(f) for f in sql("SELECT kind, reason FROM nexus.userAdminEvents WHERE userGuid = ? ORDER BY eventId", guid)][-2:]
+        == [("DEACTIVATED", "Cambios operativos."), ("REACTIVATED", "Regresó al equipo.")])
 
     titulo("8 · Cerrar la sesión de alguien (HU05)")
     r = c.post(f"/usuarios/{guid}/cerrar-sesion", json={"motivo": ""}, headers=bearer_sm)
@@ -307,23 +310,20 @@ try:
     r = c.post("/usuarios/", json={"nombre": "Sin Fecha", "email": "sin.fecha@ejemplo.com", "rol": "VIEWER"}, headers=bearer_sm)
     guid_sin_fecha = r.json()["usuario"]["guid"]
     rev("quien nunca entró no tiene sesión", usuarios.tiene_sesion(guid_sin_fecha) is False)
-    registro.agregar(usuarios.ARCHIVO, {"evento": "sesion", "guid": guid_sin_fecha, "sesionGuid": "sesion-sin-fecha", "refreshHash": "h" * 64,
-                                        "expira": "esto-no-es-una-fecha", "en": datetime.now(timezone.utc).isoformat(timespec="seconds")})
-    rev("una sesión sin fecha de vencimiento legible se toma por vencida (igual que al canjear el refresh)", usuarios.tiene_sesion(guid_sin_fecha) is False)
+    sql("INSERT INTO nexus.userSessions (guid, userGuid, refreshHash, expiresAt, createdAt) VALUES ('sesion-vencida', ?, ?, '2020-01-01', '2019-12-25')",
+        guid_sin_fecha, "a" * 64)
+    rev("una sesión abierta pero ya vencida no cuenta", usuarios.tiene_sesion(guid_sin_fecha) is False)
 
     titulo("8b · El cierre forzado deja su evento, y no cualquiera puede hacerlo (HU05 CA-4, CA-5)")
-    registro_usuarios = RAIZ / ".registro" / "usuarios.jsonl"
-    ruta_auditoria = RAIZ / ".registro" / "auditoria.jsonl"
-    forzados = [json.loads(x) for x in ruta_auditoria.read_text(encoding="utf-8").splitlines() if '"FORCED_LOGOUT"' in x]
+    forzados = auditoria.eventos({"FORCED_LOGOUT"})
     rev("quedó UN evento FORCED_LOGOUT (los intentos rechazados —sin motivo, a sí mismo— no dejan nada)", len(forzados) == 1, str(len(forzados)))
     f = forzados[0]
     rev("con el usuario afectado, quien lo ordenó (y en qué calidad), el motivo, la organización y la hora",
         f["usuarioGuid"] == guid and f["por"] == yo_guid and f["motivo"] == "Medida preventiva de seguridad."
         and f["actor"] == "ADMIN_ORGANIZACION" and bool(f.get("tenantGuid")) and bool(f["en"]), str(f))
-    cierre_forzado = [json.loads(x) for x in registro_usuarios.read_text(encoding="utf-8").splitlines() if '"cierre_forzado"' in x]
-    rev("y `cierre_forzado` guarda lo mismo en el registro de usuarios",
-        len(cierre_forzado) == 1 and cierre_forzado[0]["guid"] == guid and cierre_forzado[0]["por"] == yo_guid
-        and cierre_forzado[0]["motivo"] == "Medida preventiva de seguridad.", str(cierre_forzado))
+    cierre_forzado = sql("SELECT byWhom, reason FROM nexus.userAdminEvents WHERE userGuid = ? AND kind = 'SESSIONS_CLOSED'", guid)
+    rev("y la bitácora de la cuenta guarda lo mismo (`SESSIONS_CLOSED`, quién y por qué)",
+        [tuple(f) for f in cierre_forzado] == [(yo_guid, "Medida preventiva de seguridad.")], str(cierre_forzado))
     bearer_camila = {**srv(), "Authorization": f"Bearer {entrar(c, 'camila.cg@ejemplo.com', nueva_contrasena)['accessToken']}"}
     r = c.post(f"/usuarios/{yo_guid}/cerrar-sesion", json={"motivo": "Intento sin ser administradora."}, headers=bearer_camila)
     rev("un usuario sin rol de administrador no puede: 403", r.status_code == 403, r.text[:140])
@@ -333,7 +333,7 @@ try:
     rev("el Super Admin no usa ESTA ruta (opera sobre 'mi organización' y él no tiene una): 403 sin_organizacion; la suya "
         "cuelga de /organizaciones y se prueba en verificar_organizaciones.py (6c)",
         r.status_code == 403 and r.json()["detail"]["codigo"] == "sin_organizacion", r.text[:140])
-    forzados = [x for x in ruta_auditoria.read_text(encoding="utf-8").splitlines() if '"FORCED_LOGOUT"' in x]
+    forzados = auditoria.eventos({"FORCED_LOGOUT"})
     rev("ninguno de los tres intentos rechazados dejó evento", len(forzados) == 1, str(len(forzados)))
 
     titulo("8c · Al administrador al que se le fuerza el cierre, su JWT ya no le sirve para administrar (HU05 CA-4)")

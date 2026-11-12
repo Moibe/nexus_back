@@ -4,8 +4,8 @@ Es el PILOTO de la decisión del 2026-10-21 («Nexus sin stored procedures»): l
 y pasa a una tabla cuyo esquema se versiona en `migraciones/` y se aplica dentro del deploy. Se escribe SQL directo, no SPs,
 porque el esquema y este código viajan en el mismo commit; ver `db/tablas.py`.
 
-Hace exactamente lo mismo que `tipos_documentales_archivo.py` —mismas firmas, mismos errores, misma forma de salida—, así que
-`servicios/tipos_documentales.py` puede elegir uno u otro sin que el router se entere.
+Desde el 2026-11-11 es el único almacenamiento de los tipos (el JSONL de `tipos_documentales_archivo.py` ya no existe); la puerta pública
+es `servicios/tipos_documentales.py`.
 
 ## Qué gana al estar en la base
 

@@ -24,7 +24,9 @@ os.environ["ALMACEN_RUTA"] = str(RAIZ)
 os.environ["NEXUS_API_KEY"] = SERVICIO
 os.environ["AUTH_JWT_SECRET"] = "secreto-de-prueba-de-al-menos-32-caracteres-xx"
 os.environ["CORREO_MODO"] = "archivo"
-os.environ.setdefault("SQLSERVER_HOST", "")
+import pruebas_sql  # noqa: E402  (desde el 2026-11-11 todo se guarda en SQL Server: esta prueba corre contra uno desechable)
+
+BASE_SQL = pruebas_sql.preparar()
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -53,12 +55,21 @@ def entrar(c: TestClient, email: str, password: str):
     return c.post("/auth/login", json={"email": email, "password": password}, headers=srv())
 
 
+def sql(consulta: str, *parametros):
+    """Una consulta directa a la base de la prueba, con el usuario de la API."""
+    con = BASE_SQL["conectar"]("usrNexus", BASE_SQL["app"], BASE_SQL["base"])
+    try:
+        cur = con.cursor()
+        cur.execute(consulta, *parametros)
+        return cur.fetchall() if cur.description else None
+    finally:
+        con.close()
+
+
 def eventos_de_auditoria(accion: str) -> list[dict]:
-    ruta = RAIZ / ".registro" / "auditoria.jsonl"
-    if not ruta.exists():
-        return []
-    lineas = (json.loads(x) for x in ruta.read_text(encoding="utf-8").splitlines() if x.strip())
-    return [e for e in lineas if e.get("accion") == accion]
+    from servicios import auditoria as _bitacora  # la bitácora vive en `nexus.auditEvents`
+
+    return _bitacora.eventos({accion})
 
 
 c = TestClient(app)
@@ -105,7 +116,8 @@ try:
     r = c.get("/auth/yo", headers=bearer_cam)
     rev("y /auth/yo lo rechaza (401)", r.status_code == 401, r.text[:120])
     rev("su refresh ya no se puede canjear", c.post("/auth/refresh", json={"refreshToken": cam["refreshToken"]}, headers=srv()).status_code == 401)
-    rev("su alta y todo lo demás siguen en el registro (solo agregar)", "camila@ejemplo.com" in (RAIZ / ".registro" / "usuarios.jsonl").read_text(encoding="utf-8"))
+    rev("su cuenta sigue en la base, marcada como retirada (borrado lógico)",
+        sql("SELECT count(*) FROM nexus.users WHERE email = 'camila@ejemplo.com' AND deletedAt IS NOT NULL")[0][0] == 1)
 
     titulo("2 · Su correo queda libre")
     r = c.post("/usuarios/", json={"nombre": "Camila Dos", "email": "camila@ejemplo.com", "rol": "SUPERVISOR"}, headers=bearer_o)
@@ -185,7 +197,7 @@ try:
     auditoria_diego = [e for e in eventos_de_auditoria("USER_DELETED") if e.get("usuarioGuid") == diego_guid]
     rev("quedó USER_DELETED con el correo, el motivo y quién lo hizo, sin contraseña",
         len(auditoria_diego) == 1 and auditoria_diego[0]["email"] == "diego@ejemplo.com" and auditoria_diego[0]["motivo"] == "Cuenta de prueba"
-        and auditoria_diego[0]["actor"] == "CLI" and pwd_diego not in (RAIZ / ".registro" / "auditoria.jsonl").read_text(encoding="utf-8"), str(auditoria_diego))
+        and auditoria_diego[0]["actor"] == "CLI" and pwd_diego not in pruebas_sql.volcado(BASE_SQL), str(auditoria_diego))
     r = c.post("/organizaciones/", json={"nombre": "Otra SA", "adminNombre": "Pedro", "adminApellidos": "P", "adminEmail": "pedro@ejemplo.com"}, headers=bearer_a)
     rc, out = correr("--email", "pedro@ejemplo.com", "--motivo", "prueba", "--confirmar")
     rev("el script se niega con el administrador de una organización y sugiere --forzar",

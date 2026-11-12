@@ -8,7 +8,8 @@ plataforma), siembra los JSONL como los tiene dev (organizaciones con un cambio 
 organización que no existe, entradas pendientes, pasadas al pipeline y descartadas, eventos de auditoría), aplica la 0006 con el corredor real,
 y luego:
 
-1. importa una sola vez y compara cada lectura contra el MISMO módulo leyendo el JSONL (se cambia `SQLSERVER_HOST` del módulo para elegir);
+1. importa una sola vez y compara cada lectura con lo CONGELADO (`verificar_registros_sql.congelado.json`): hasta el 2026-11-11 se comparaba contra
+   el mismo módulo leyendo el JSONL, y las dos salidas eran idénticas; al quitar ese camino se congelaron (ver `pruebas_sql.congelado`);
 2. hace las mismas escrituras en los dos y compara lo que devuelven (salvo ids y horas);
 3. comprueba lo que solo la base cuida: la llave foránea de organización (la plataforma, fuera), y que importar dos veces no duplica.
 
@@ -115,22 +116,14 @@ try:
 
     from servicios import auditoria, bandeja, clasificadores, importacion_json, tenants_registro  # noqa: E402
 
-    MODULOS = (tenants_registro, clasificadores, bandeja, auditoria)
-    REAL = tenants_registro.SQLSERVER_HOST
-
-    def modo(sql: bool) -> None:
-        for m in MODULOS:
-            m.SQLSERVER_HOST = REAL if sql else ""
-
-    def ambos(fn):
-        modo(False)
-        a = fn()
-        modo(True)
-        s = fn()
-        return a, s
+    def congelado(que: str, valor) -> bool:
+        """Lo que contesta SQL, contra lo congelado (lo que el JSONL y SQL contestaban igual el 2026-11-11)."""
+        ok, detalle = pruebas_sql.congelado(__file__, que, valor)
+        if not ok:
+            print(f"          {detalle}")
+        return ok
 
     titulo("2 · La importación")
-    modo(True)
     [importacion_json.asegurar(n) for n in DE_LA_0006]
     con = BASE["conectar"]("usrNexus", BASE["app"], BASE["base"])
     k = con.cursor()
@@ -144,11 +137,10 @@ try:
     rev("importar otra vez no duplica nada", k.execute("SELECT (SELECT count(*) FROM nexus.tenants) * 1000 + (SELECT count(*) FROM nexus.inboxEntries)").fetchone()[0] == 3005)
     con.close()
 
-    titulo("3 · Las lecturas, iguales en los dos")
+    titulo("3 · Las lecturas de lo importado, iguales a lo congelado")
 
     def igual(que: str, fn) -> None:
-        a, s = ambos(fn)
-        rev(que, a == s, f"almacén={a!r}\n          sql={s!r}")
+        rev(que, congelado(que, fn()))
 
     # La repetida entró con otro slug: se compara sin él (todo lo demás, igual).
     igual("organizaciones: la lista", lambda: [{**t, "slug": None} if t["guid"] == ORG_REPETIDA else t for t in tenants_registro.listar()])
@@ -174,19 +166,19 @@ try:
     igual("auditoría: todos", lambda: auditoria.eventos())
     igual("auditoría: el conteo de la última hora (el de hace 5 h no cuenta)", lambda: auditoria.conteo_reciente("PASSWORD_RESET_REQUESTED", "email", "a@x.com", 3600))
 
-    titulo("4 · Las escrituras, iguales en los dos")
+    titulo("4 · Las escrituras")
 
     def sin_ids(t: dict) -> dict:
         return {k: v for k, v in t.items() if k not in ("guid", "creadaEn")}
 
-    a, s = ambos(lambda: sin_ids(tenants_registro.crear("  Alfa   Seguros ", "admin-c", {"correo": "c@x.com"})))
-    # El slug libre difiere a propósito (en SQL la repetida ya ocupa «-2»); lo demás, igual.
+    s = sin_ids(tenants_registro.crear("  Alfa   Seguros ", "admin-c", {"correo": "c@x.com"}))
+    # La repetida ya ocupa «-2» (entró así al importar): a esta le toca «-3».
     rev("crear una organización con nombre repetido: un slug libre y el código siguiente",
-        {**a, "slug": None} == {**s, "slug": None} and s["codigo"] == "NEX-00004" and s["slug"] == "alfa-seguros-3" and a["slug"] == "alfa-seguros-2", f"{a} | {s}")
-    a, s = ambos(lambda: tenants_registro.cambiar_estado(ORG_A, "CLOSED")["estado"])
-    rev("cambiar el estado", a == s == "CLOSED")
-    a, s = ambos(lambda: _probar(tenants_registro.cambiar_estado, NO_EXISTE, "CLOSED"))
-    rev("cambiar el estado de una que no existe: NoEncontrado", a == s == ("error", "NoEncontrado"), f"{a} {s}")
+        congelado("crear una organización con nombre repetido", s) and s["codigo"] == "NEX-00004" and s["slug"] == "alfa-seguros-3", str(s))
+    s = tenants_registro.cambiar_estado(ORG_A, "CLOSED")["estado"]
+    rev("cambiar el estado", s == "CLOSED")
+    s = _probar(tenants_registro.cambiar_estado, NO_EXISTE, "CLOSED")
+    rev("cambiar el estado de una que no existe: NoEncontrado", s == ("error", "NoEncontrado"), str(s))
 
     def asignar_y_leer():
         clasificadores.asignar(ORG_B, "proc-b")
@@ -194,8 +186,8 @@ try:
         clasificadores.asignar("plataforma", "no-se-guarda")
         return clasificadores.id_de(ORG_B), clasificadores.id_de("plataforma")
 
-    a, s = ambos(asignar_y_leer)
-    rev("asignar un clasificador (dos veces el mismo no hace nada; a plataforma, nada)", a == s == ("proc-b", "clasificador-de-plataforma"), f"{a} {s}")
+    s = asignar_y_leer()
+    rev("asignar un clasificador (dos veces el mismo no hace nada; a plataforma, nada)", s == ("proc-b", "clasificador-de-plataforma"), str(s))
 
     def ciclo_bandeja():
         guardado = {"hash": "f" * 64, "rutaRelativa": f"{ORG_A}/ff/1", "bytes": 42}
@@ -206,18 +198,17 @@ try:
         d = bandeja.listar_descartadas(ORG_A)[0]
         return ({k: v for k, v in e.items() if k not in ("id", "documentoId", "recibidoEn")}, primero, segundo, ajeno, d["nombreOriginal"], d["detalle"])
 
-    a, s = ambos(ciclo_bandeja)
-    rev("bandeja: entrar, descartar, no volver a retirar, y el descarte nuevo va primero", a == s and s[1] is True and s[2] is False, f"{a}\n          {s}")
+    s = ciclo_bandeja()
+    rev("bandeja: entrar, descartar, no volver a retirar, y el descarte nuevo va primero",
+        congelado("bandeja: entrar, descartar, no volver a retirar", s) and s[1] is True and s[2] is False, str(s))
 
     def auditar():
         auditoria.registrar("PROCESS_CREATED", "u-9", tenant=ORG_A, procesoId="proceso-x", nombre="Validar")
         e = auditoria.eventos({"PROCESS_CREATED"})[-1]
         return {k: v for k, v in e.items() if k != "en"}, auditoria.conteo_reciente("PROCESS_CREATED", segundos=60)
 
-    a, s = ambos(auditar)
-    rev("auditoría: anotar y leer de vuelta, igual", a == s, f"{a} | {s}")
-    a, s = ambos(lambda: _probar(auditoria.registrar, "NO_EXISTE_ESTA_ACCION"))
-    rev("auditoría: una acción desconocida se rechaza igual", a == s == ("error", "ValueError"))
+    rev("auditoría: anotar y leer de vuelta", congelado("auditoría: anotar y leer de vuelta", auditar()))
+    rev("auditoría: una acción desconocida se rechaza", _probar(auditoria.registrar, "NO_EXISTE_ESTA_ACCION") == ("error", "ValueError"))
 
     titulo("5 · Lo que solo la base cuida")
     con = BASE["conectar"]("usrNexus", BASE["app"], BASE["base"])

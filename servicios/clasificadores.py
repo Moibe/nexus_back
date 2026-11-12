@@ -8,7 +8,7 @@ cliente a la vista de todos en el esquema. Ahora cada organización tiene el suy
 ## Dónde vive cada uno
 
 - **Una organización** (el tenant es el guid de una de `tenants_registro`): su clasificador se llama `nexusdoc-clasificador--{guid}`
-  en Google y su id queda en `clasificadores.jsonl`, un registro de solo agregar como los demás. Se crea la PRIMERA vez que se
+  en Google y su id queda en la base (abajo). Se crea la PRIMERA vez que se
   sincroniza (al activar su primer tipo documental), no al darla de alta: una organización sin tipos no gasta un procesador.
 - **El espacio de plataforma** (cualquier tenant que no es una organización: `demo`, lo que opera el administrador de plataforma):
   sigue usando el clasificador de siempre, el del `.env` (`DOCAI_CLASIFICADOR_ID`, `nexusdoc-clasificador`). Así no hubo que migrar
@@ -18,35 +18,18 @@ El id se guarda aquí y no se busca por nombre en cada llamada porque Document A
 nombre es paginar TODOS los procesadores del proyecto. Por nombre solo se busca la primera vez (o si el procesador se borró a mano),
 para adoptar el que un intento anterior dejó creado a medias en vez de duplicarlo.
 
-**Desde el 2026-10-29 (migración `0006`), donde hay base, el id vive en `nexus.tenantClassifiers`** (una fila por organización, con llave
-foránea a `nexus.tenants`), importado una vez desde `clasificadores.jsonl` (`servicios/importacion_json.py`). Este módulo elige por
-`SQLSERVER_HOST` en cada llamada; el JSONL es lo que corre donde no hay base.
+**Desde el 2026-10-29 (migración `0006`) el id vive en `nexus.tenantClassifiers`** (una fila por organización, con llave foránea
+a `nexus.tenants`), importado una vez desde el viejo `clasificadores.jsonl` (`servicios/importacion_json.py`). Desde el 2026-11-11 no hay
+otro almacenamiento: el JSONL ya solo se LEE para esa importación (`servicios/json_heredado.py`).
 """
 
-from datetime import datetime, timezone
-
-from config import DOCAI_CLASIFICADOR_ID, SQLSERVER_HOST
-from servicios import almacen, registro
-
-
-def _sql():
-    """El módulo de SQL si el `.env` dice que hay base; `None` si no. Se importa tarde: sin base, `pyodbc` ni se carga."""
-    if not SQLSERVER_HOST:
-        return None
-    from servicios import registros_sql
-
-    return registros_sql
+from config import DOCAI_CLASIFICADOR_ID
+from servicios import almacen, registros_sql
 from servicios.aislamiento import es_organizacion
-
-ARCHIVO = "clasificadores.jsonl"
 
 # El del espacio de plataforma conserva el nombre de siempre; los de las organizaciones llevan su guid detrás de `--`.
 NOMBRE_PLATAFORMA = "nexusdoc-clasificador"
 PREFIJO_ORGANIZACION = f"{NOMBRE_PLATAFORMA}--"
-
-
-def _ahora() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def nombre_visible(tenant: str) -> str:
@@ -55,30 +38,13 @@ def nombre_visible(tenant: str) -> str:
     return f"{PREFIJO_ORGANIZACION}{tenant}" if es_organizacion(tenant) else NOMBRE_PLATAFORMA
 
 
-def _asignados() -> dict[str, str]:
-    """`{tenant: procesadorId}` del registro. Si una organización tiene varios eventos gana el último (se reasigna cuando el
-    procesador se borró a mano y hubo que crear otro)."""
-    asignados: dict[str, str] = {}
-    for e in registro.eventos(ARCHIVO):
-        if e.get("evento") == "asignado" and isinstance(e.get("tenant"), str) and isinstance(e.get("procesadorId"), str):
-            asignados[e["tenant"]] = e["procesadorId"]
-    return asignados
-
-
-def asignados_archivo() -> dict[str, str]:
-    """Lo que dice el JSONL, aunque haya base: es lo que importa `servicios/importacion_json.py`."""
-    return _asignados()
-
-
 def id_de(tenant: str) -> str | None:
     """El id del clasificador de este tenant, o `None` si todavía no tiene (aún no se sincroniza, o el espacio de plataforma
     sin `DOCAI_CLASIFICADOR_ID` en el `.env`)."""
     tenant = almacen._validar_tenant(tenant)
     if not es_organizacion(tenant):
         return DOCAI_CLASIFICADOR_ID or None
-    if sql := _sql():
-        return sql.clasificador_de(tenant)
-    return _asignados().get(tenant)
+    return registros_sql.clasificador_de(tenant)
 
 
 def asignar(tenant: str, procesador_id: str) -> None:
@@ -87,9 +53,4 @@ def asignar(tenant: str, procesador_id: str) -> None:
     tenant = almacen._validar_tenant(tenant)
     if not es_organizacion(tenant):
         return
-    if sql := _sql():
-        return sql.clasificador_asignar(tenant, procesador_id)
-    with registro.candado:
-        if _asignados().get(tenant) == procesador_id:
-            return
-        registro.agregar(ARCHIVO, {"evento": "asignado", "tenant": tenant, "procesadorId": procesador_id, "en": _ahora()})
+    registros_sql.clasificador_asignar(tenant, procesador_id)

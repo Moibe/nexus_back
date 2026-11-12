@@ -25,7 +25,7 @@ import threading
 import uuid
 from datetime import datetime, timezone
 
-from servicios import registro
+from servicios import json_heredado as heredado
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +100,7 @@ def olvidar() -> None:
 def _organizaciones(cur) -> tuple[int, int]:
     from servicios import tenants_registro
 
-    vistas = list(tenants_registro.indice_archivo().values())
+    vistas = list(heredado.tenants().values())
     guids, slugs, codigos = set(), set(), set()
     filas, saltados = [], 0
     # Una organización NUNCA se pierde por un slug o un código repetido (tres ambientes escribiendo el mismo JSONL pudieron empatar): sus
@@ -135,12 +135,10 @@ def _organizaciones(cur) -> tuple[int, int]:
 
 
 def _clasificadores(cur) -> tuple[int, int]:
-    from servicios import clasificadores
-
     cur.execute("SELECT guid FROM nexus.tenants")
     existentes = {f[0] for f in cur.fetchall()}
     filas, saltados = [], 0
-    for tenant, procesador in clasificadores.asignados_archivo().items():
+    for tenant, procesador in heredado.clasificadores().items():
         if tenant not in existentes:
             saltados += 1
             continue
@@ -154,8 +152,8 @@ def _bandeja(cur) -> tuple[int, int]:
     cur.execute("SELECT guid FROM nexus.tenants")
     existentes = {f[0] for f in cur.fetchall()}
     filas, saltados, vistos = [], 0, set()
-    for archivo in sorted(registro.ruta("bandeja-x.jsonl").parent.glob("bandeja-*.jsonl")):
-        eventos = registro.eventos(archivo.name)
+    for archivo in sorted(heredado.ruta("bandeja-x.jsonl").parent.glob("bandeja-*.jsonl")):
+        eventos = heredado.eventos(archivo.name)
         retiros = {e.get("id"): e for e in eventos if e.get("evento") == "retiro"}
         for e in eventos:
             if e.get("evento") != "entrada":
@@ -186,10 +184,8 @@ def _bandeja(cur) -> tuple[int, int]:
 
 
 def _auditoria(cur) -> tuple[int, int]:
-    from servicios import auditoria
-
     filas, saltados = [], 0
-    for e in registro.eventos(auditoria.ARCHIVO):
+    for e in heredado.eventos(heredado.AUDITORIA):
         accion = e.get("accion")
         if not isinstance(accion, str) or not accion:
             saltados += 1
@@ -247,11 +243,11 @@ def _tokens(cur) -> tuple[int, int]:
     cur.execute("SELECT guid FROM nexus.users")
     cuentas = {f[0] for f in cur.fetchall()}
     filas, saltados, vistos, guids = [], 0, set(), set()
-    for t in tokens._indice().values():
+    for t in heredado.tokens().values():
         clave, usuario = t.get("hash"), t.get("usuarioGuid")
         if (
             not isinstance(clave, str) or not _RE_HEX64.match(clave) or clave in vistos or t.get("tipo") not in tokens.TIPOS
-            or not isinstance(usuario, str) or usuario not in cuentas or tokens._fecha(t.get("expira")) is None
+            or not isinstance(usuario, str) or usuario not in cuentas or heredado.fecha(t.get("expira")) is None
         ):
             saltados += 1
             continue
@@ -272,10 +268,8 @@ def _tokens(cur) -> tuple[int, int]:
 
 
 def _llaves(cur) -> tuple[int, int]:
-    from servicios import llaves_cliente
-
     existentes = _organizaciones_existentes(cur)
-    emitidas, revocadas = llaves_cliente._indice()
+    emitidas, revocadas = heredado.llaves()
     filas, saltados = [], 0
     for ident, e in emitidas.items():
         tenant, secreto = e.get("tenant"), e.get("secret_hash")
@@ -288,7 +282,7 @@ def _llaves(cur) -> tuple[int, int]:
             continue
         creada = _fecha(e.get("creadaEn"))
         # Una expiración ilegible se importa como YA VENCIDA: ante la duda, la llave no pasa (igual que `verificar`).
-        expira = _fecha(e["expiraEn"]) if llaves_cliente._fecha(e.get("expiraEn")) else creada
+        expira = _fecha(e["expiraEn"]) if heredado.fecha(e.get("expiraEn")) else creada
         revocada = _fecha(revocadas[ident]) if ident in revocadas else None
         filas.append((ident, tenant, secreto, str(e.get("nombre") or "")[:100], str(e.get("descripcion") or "")[:500], creada, expira, revocada))
     _insertar_lote(
@@ -300,13 +294,11 @@ def _llaves(cur) -> tuple[int, int]:
 
 
 def _uso_llaves(cur) -> tuple[int, int]:
-    from servicios import uso_llaves
-
     cur.execute("SELECT publicId, keyId FROM nexus.apiKeys")
     llaves = {f[0]: f[1] for f in cur.fetchall()}
     filas, saltados = [], 0
-    for e in registro.eventos(uso_llaves.ARCHIVO):
-        llave, cuando = e.get("llave"), uso_llaves._fecha(e)
+    for e in heredado.eventos(heredado.USO_LLAVES):
+        llave, cuando = e.get("llave"), heredado.fecha_de_uso(e)
         try:
             status, ms, bytes_ = int(e.get("status", 0)), int(e.get("ms", 0)), int(e.get("bytes", 0))
         except (TypeError, ValueError):
@@ -326,8 +318,8 @@ def _webhooks(cur) -> tuple[int, int]:
     from servicios import webhooks_cliente
 
     existentes = _organizaciones_existentes(cur)
-    registrados, estados, eliminados, validados, fallidas = webhooks_cliente._indice()
-    eliminado_en = {e.get("id"): e.get("en") for e in registro.eventos(webhooks_cliente.ARCHIVO) if e.get("evento") == "eliminado"}
+    registrados, estados, eliminados, validados, fallidas = heredado.webhooks()
+    eliminado_en = {e.get("id"): e.get("en") for e in heredado.eventos(heredado.WEBHOOKS) if e.get("evento") == "eliminado"}
     importados, saltados, urls = 0, 0, set()
     for ident, w in registrados.items():
         tenant, url, cifrado = w.get("tenant"), w.get("url"), w.get("secret_cifrado")
@@ -372,7 +364,7 @@ def _entregas_webhooks(cur) -> tuple[int, int]:
     webhooks = {f[0]: (f[1], f[2]) for f in cur.fetchall()}
     ahora = _fecha(None)
     avisos, programadas, intentos, cerradas, en_orden = [], {}, {}, {}, []
-    for e in registro.eventos(ent.ARCHIVO):
+    for e in heredado.eventos(heredado.ENTREGAS_WEBHOOKS):
         tipo, ident = e.get("evento"), e.get("id")
         if tipo == "aviso":
             avisos.append(e)
@@ -492,7 +484,7 @@ def _usuarios(cur) -> tuple[int, int]:
     """Cuentas, membresías, sesiones, intentos de inicio de sesión, el contador de cada navegador y lo que un administrador le hizo a cada
     cuenta (migración 0014).
 
-    Las cuentas salen del MISMO repaso que usa el JSONL (`usuarios._construir_indice`), así que entran como el producto las veía, con su
+    Las cuentas salen del MISMO repaso que usa el JSONL (`json_heredado.usuarios_indice`), así que entran como el producto las veía, con su
     contraseña, sus intentos fallidos, su bloqueo, si están activas y su orden. Las retiradas también entran (con `deletedAt`), porque su rastro
     las sigue apuntando. Las sesiones entran todas, abiertas y cerradas: nadie tiene que volver a iniciar sesión por la mudanza.
 
@@ -505,9 +497,9 @@ def _usuarios(cur) -> tuple[int, int]:
     import config
     from servicios import roles, usuarios
 
-    eventos = registro.eventos(usuarios.ARCHIVO)
+    eventos = heredado.eventos(heredado.USUARIOS)
     retirados: dict[str, dict] = {}
-    vivos, _, sesiones = usuarios._construir_indice(eventos, retirados=retirados)
+    vivos, _, sesiones = heredado.usuarios_indice(eventos, retirados=retirados)
     importados = saltados = 0
     ahora = _fecha(None)
 
@@ -521,7 +513,7 @@ def _usuarios(cur) -> tuple[int, int]:
         elif isinstance(guid, str) and e.get("evento") == "membresia" and isinstance(e.get("tenantGuid"), str):
             asignada[(guid, e["tenantGuid"])] = e.get("en")
 
-    # La recuperación que un administrador de antes del 2026-10-14 heredaba de su organización (`usuarios._heredar_recuperacion`) entra ya
+    # La recuperación que un administrador de antes del 2026-10-14 heredaba de su organización (lo hacía el viejo índice de `usuarios.py` al leerlo) entra ya
     # resuelta: la de una organización no se edita después de crearla, así que leerla una vez o en cada lectura da lo mismo.
     cur.execute("SELECT adminGuid, recoveryJson FROM nexus.tenants WHERE adminGuid IS NOT NULL ORDER BY tenantId")
     de_su_organizacion: dict[str, dict] = {}
