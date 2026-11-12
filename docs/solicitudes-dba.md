@@ -1211,7 +1211,7 @@ Texto del ticket (en Jira va sin esta primera frase):
 ### Por qué
 
 Queremos que cada organización pueda hacer preguntas en lenguaje natural sobre lo que ya se extrajo de sus documentos («¿cuántas
-INE vencen este año?», «¿qué campos fallan más en las actas?»). Lo haremos con una herramienta de texto a SQL (Vanna AI): un modelo
+INE vencen este año?», «¿qué campos fallan más en las actas?»). Lo haremos con una herramienta de texto a SQL: un modelo
 de lenguaje escribe la consulta y la ejecuta contra la base.
 
 Como la consulta la escribe un modelo, la base tiene que garantizar dos cosas por sí sola, sin depender de que el modelo acierte:
