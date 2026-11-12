@@ -10,6 +10,8 @@ Lee lo mismo que `servicios/datos_extraidos.py` (la vista `vEntityFactCurrent` y
   (cuántas veces salió, cuántas faltó, cuántas se corrigió a mano y su confianza);
 - `documento(id)`: la ficha de un documento (sus campos vigentes, `datos_extraidos.de_documento`) y todas sus corridas.
 
+Cada tipo documental trae `existe`: falso si se borró después de extraer (la corrida conserva su id y nombre de entonces).
+
 Sin base, todo viene vacío con `sinBase: true`.
 """
 
@@ -53,6 +55,7 @@ def panorama() -> dict:
         cur.execute(
             f"SELECT TOP ({LIMITE_DOCUMENTOS}) d.publicId, d.tenant, d.originalName, d.mime, d.sizeBytes, d.receivedAt, "
             "r.publicId AS corridaId, r.documentTypePublicId AS tipoId, COALESCE(t.name, r.documentTypeName) AS tipoNombre, "
+            "CASE WHEN t.documentTypeId IS NULL THEN 0 ELSE 1 END AS tipoExiste, "
             "r.documentTypeRevision, r.status, r.errorDetail, r.confidenceAverage, r.confidenceMinimum, r.pageCount, r.finishedAt, "
             "(SELECT count(*) FROM nexus.extractionRuns x WHERE x.documentId = d.documentId) AS corridas, "
             "v.campos, v.conValor, v.ausentes, v.corregidos "
@@ -69,6 +72,7 @@ def panorama() -> dict:
         documentos = tablas.filas(cur)
         cur.execute(
             "SELECT d.tenant, f.documentId, f.documentTypePublicId AS tipoId, COALESCE(t.name, r.documentTypeName) AS tipoNombre, "
+            "CASE WHEN t.documentTypeId IS NULL THEN 0 ELSE 1 END AS tipoExiste, "
             "f.fieldPath, f.fieldName, CASE WHEN f.valueNormalized IS NULL THEN 0 ELSE 1 END AS conValor, f.nullReason, f.confidence, "
             "CAST(f.isCorrected AS int) AS corregido "
             "FROM nexus.vEntityFactCurrent f JOIN nexus.documents d ON d.documentId = f.documentId "
@@ -85,7 +89,8 @@ def panorama() -> dict:
     for h in hechos:
         clave = (h["tenant"], h["tipoId"])
         tipo = tipos.setdefault(
-            clave, {"id": h["tipoId"], "nombre": h["tipoNombre"], "organizacion": org(h["tenant"]), "_docs": set(), "_campos": {}}
+            clave,
+            {"id": h["tipoId"], "nombre": h["tipoNombre"], "existe": bool(h["tipoExiste"]), "organizacion": org(h["tenant"]), "_docs": set(), "_campos": {}},
         )
         tipo["_docs"].add(h["documentId"])
         ruta = _RE_INDICE.sub("[]", h["fieldPath"])
@@ -128,7 +133,7 @@ def panorama() -> dict:
                 "mime": d["mime"],
                 "bytes": d["sizeBytes"],
                 "recibidoEn": momento(d["receivedAt"]),
-                "tipoDocumental": {"id": d["tipoId"], "nombre": d["tipoNombre"], "revision": d["documentTypeRevision"]},
+                "tipoDocumental": {"id": d["tipoId"], "nombre": d["tipoNombre"], "revision": d["documentTypeRevision"], "existe": bool(d["tipoExiste"])},
                 "estado": d["status"],
                 "error": d["errorDetail"],
                 "confianzaPromedio": _numero(d["confidenceAverage"]),
@@ -164,7 +169,8 @@ def documento(documento_id: str) -> dict:
         cur.execute(
             "SELECT r.publicId, r.documentTypePublicId, COALESCE(t.name, r.documentTypeName) AS tipoNombre, r.documentTypeRevision, r.processorId, "
             "r.processorVersion, r.status, r.errorDetail, r.confidenceAverage, r.confidenceMinimum, r.pageCount, r.finishedAt, r.createdBy, "
-            "(SELECT count(*) FROM nexus.entityFacts f WHERE f.runId = r.runId) AS campos "
+            "(SELECT count(*) FROM nexus.entityFacts f WHERE f.runId = r.runId) AS campos, "
+            "CASE WHEN t.documentTypeId IS NULL THEN 0 ELSE 1 END AS tipoExiste "
             "FROM nexus.extractionRuns r LEFT JOIN nexus.documentTypes t ON t.documentTypeId = r.documentTypeId "
             "WHERE r.documentId = ? ORDER BY r.runId DESC",
             doc["documentId"],
@@ -184,7 +190,7 @@ def documento(documento_id: str) -> dict:
         "corridas": [
             {
                 "id": c["publicId"],
-                "tipoDocumental": {"id": c["documentTypePublicId"], "nombre": c["tipoNombre"], "revision": c["documentTypeRevision"]},
+                "tipoDocumental": {"id": c["documentTypePublicId"], "nombre": c["tipoNombre"], "revision": c["documentTypeRevision"], "existe": bool(c["tipoExiste"])},
                 "procesador": {"id": c["processorId"], "version": c["processorVersion"]},
                 "estado": c["status"],
                 "error": c["errorDetail"],

@@ -145,6 +145,7 @@ ok(len(f["corridas"]) == 2 and f["corridas"][0]["estado"] == "error" and f["corr
 ok(f["archivo"] == "ine juan.pdf" and f["organizacion"]["guid"] == ORG_A, "con su archivo y su organización")
 ok(cliente.get(f"/monitor-datos/documento-{'0' * 32}", headers=llave).status_code == 404, "un documento que no existe: 404")
 ok(cliente.get("/monitor-datos/cualquier-cosa", headers=llave).status_code == 404, "un id mal formado: 404")
+ok(all(d["tipoDocumental"]["existe"] is False for d in p["documentos"]) and all(t["existe"] is False for t in p["tipos"]) and f["corridas"][0]["tipoDocumental"]["existe"] is False, "un tipo que ya no está en documentTypes sale con existe: false (aquí se sembraron sin tipo)")
 ok(docs[ine_id]["organizacion"]["nombre"] == "Dorama Prueba" and docs[ine_b_id]["organizacion"]["nombre"] == "Otra Prueba", "cada documento trae el nombre de su organización")
 
 # ── Migración 0015: las vistas para consultar en lenguaje natural, leídas con el usuario de la API ──────────────────────────
