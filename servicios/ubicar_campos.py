@@ -225,7 +225,8 @@ async def ubicar(contenido: bytes, mime: str, campos: list[dict]) -> dict:
 # lo que la persona escribió, y ella decide qué agrega al tipo.
 
 #: Lo más largo que puede ser la descripción propuesta: lo mismo que admite el formulario del front.
-MAX_DESCRIPCION_PROPUESTA = 200
+#: Corta a propósito (2026-11-12, Moibe: «que no sean tan largas esas descripciones»): se le pide una frase de ~120 y lo que pase de 140 se recorta.
+MAX_DESCRIPCION_PROPUESTA = 140
 MAX_TEXTO_TIPO = 600
 #: Un valor más corto que esto no se busca dentro de la descripción (una «F» o un «1» aparecen en cualquier frase).
 MIN_VALOR_A_QUITAR = 4
@@ -287,9 +288,9 @@ _TIPOS_LEGIBLES = {"texto": "texto", "numero": "número", "fecha": "fecha", "mon
 
 # Lo que se pide de cada campo: lo mismo al completar los que ya están en la lista que al proponer uno nuevo.
 _PIDE_DESCRIPCION = (
-    "- `descripcion`: una descripción NUEVA que ayude a encontrar ese campo en CUALQUIER documento de este tipo, no solo en este: qué dato es, en qué "
-    "zona de la página suele estar y junto a qué rótulo o encabezado impreso, y su forma (cuántos renglones, formato de la fecha o del número, "
-    f"caracteres típicos). En español, una o dos frases, a lo más {MAX_DESCRIPCION_PROPUESTA - 20} caracteres.\n"
+    "- `descripcion`: una descripción NUEVA y CORTA que ayude a encontrar ese campo en CUALQUIER documento de este tipo, no solo en este: qué dato es, "
+    "dónde está (zona o rótulo impreso junto al valor) y, si ayuda, su forma (formato de la fecha o del número). Sin rodeos ni repetir el nombre del "
+    f"campo. En español, UNA sola frase de a lo más {MAX_DESCRIPCION_PROPUESTA - 20} caracteres.\n"
 )
 _PIDE_TIPO = (
     "- `tipoDato`: según lo que se lee en la caja, uno de: texto, numero, fecha, moneda, booleano. `fecha` si es una fecha; `numero` si es solo una "
