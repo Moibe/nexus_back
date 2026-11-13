@@ -12,9 +12,14 @@ Lee lo mismo que `servicios/datos_extraidos.py` (la vista `vEntityFactCurrent` y
 
 Cada tipo documental trae `existe`: falso si se borró después de extraer (la corrida conserva su id y nombre de entonces).
 
+Cada corrida de la ficha trae `filasUnidas`: las filas de un grupo repetible que Document AI partió y la extracción volvió a unir
+(`servicios.filas_partidas`; viene de `_metadata.filas_unidas`, guardado en `metadataJson`). Solo nombres de campo y números de fila:
+ningún valor.
+
 Sin base, todo viene vacío con `sinBase: true`.
 """
 
+import json
 import re
 
 from config import SQLSERVER_HOST
@@ -33,6 +38,19 @@ class DocumentoNoEncontrado(LookupError):
 
 def _numero(valor) -> float | None:
     return round(float(valor), 2) if valor is not None else None
+
+
+def _filas_unidas(metadata_json: str | None) -> list[dict]:
+    """`_metadata.filas_unidas` de una corrida, solo con lo esperado (grupo, fila, de, por). Un metadataJson ilegible da `[]`."""
+    try:
+        unidas = (json.loads(metadata_json) if metadata_json else {}).get("filas_unidas") or []
+    except (ValueError, AttributeError):
+        return []
+    return [
+        {"grupo": u["grupo"], "fila": u["fila"], "de": list(u.get("de") or []), "por": list(u.get("por") or [])}
+        for u in unidas
+        if isinstance(u, dict) and isinstance(u.get("grupo"), str) and isinstance(u.get("fila"), int)
+    ]
 
 
 def _organizaciones() -> dict[str, str]:
@@ -168,7 +186,7 @@ def documento(documento_id: str) -> dict:
             raise DocumentoNoEncontrado(documento_id)
         cur.execute(
             "SELECT r.publicId, r.documentTypePublicId, COALESCE(t.name, r.documentTypeName) AS tipoNombre, r.documentTypeRevision, r.processorId, "
-            "r.processorVersion, r.status, r.errorDetail, r.confidenceAverage, r.confidenceMinimum, r.pageCount, r.finishedAt, r.createdBy, "
+            "r.processorVersion, r.status, r.errorDetail, r.confidenceAverage, r.confidenceMinimum, r.pageCount, r.finishedAt, r.createdBy, r.metadataJson, "
             "(SELECT count(*) FROM nexus.entityFacts f WHERE f.runId = r.runId) AS campos, "
             "CASE WHEN t.documentTypeId IS NULL THEN 0 ELSE 1 END AS tipoExiste "
             "FROM nexus.extractionRuns r LEFT JOIN nexus.documentTypes t ON t.documentTypeId = r.documentTypeId "
@@ -200,6 +218,7 @@ def documento(documento_id: str) -> dict:
                 "terminadaEn": momento(c["finishedAt"]),
                 "extraidoPor": c["createdBy"],
                 "campos": c["campos"],
+                "filasUnidas": _filas_unidas(c["metadataJson"]),
             }
             for c in corridas
         ],

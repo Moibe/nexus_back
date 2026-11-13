@@ -35,6 +35,7 @@ from config import (
 from errores import ErrorDocumentAI, SinClasificador
 from servicios import clasificadores
 from servicios.bloques import Parcial, combinar_datos, es_campo, planear_bloques, remapear_bloques, unir_capas_ocr
+from servicios.filas_partidas import unir_filas_partidas
 from servicios.ocr import bloque_de, extraer_capa_ocr
 
 logger = logging.getLogger(__name__)
@@ -434,7 +435,8 @@ def _campos_ausentes(estructura: dict[str, dict], datos: dict[str, Any]) -> list
     Antes un campo que Document AI no devolvía simplemente no aparecía, y nada lo distinguía de un campo que nadie pidió. Es
     una lista de rutas: `capital_social` (un campo que faltó), `accionistas` (un grupo obligatorio sin ninguna fila) o
     `accionistas[2].nombre` (la fila 2 del grupo salió sin un subcampo obligatorio: casi siempre una instancia espuria que el
-    modelo sacó de otra parte del documento, y por eso se señala en vez de esconderla)."""
+    modelo sacó de otra parte del documento, y por eso se señala en vez de esconderla). Las que eran el pedazo de otra fila ya
+    llegan unidas a ella (`servicios.filas_partidas`)."""
     ausentes: list[str] = []
     for nombre, definicion in estructura.items():
         valor = datos.get(nombre)
@@ -677,8 +679,13 @@ def _cerrar_resultado(
     metadata: dict[str, Any],
     transformar: Callable[[dict[str, Any]], dict[str, Any]] | None,
 ) -> dict[str, Any]:
-    """Lo que es igual para un documento procesado entero y para uno procesado por bloques: los campos ausentes, la
-    transformación propia del tipo, las dos confianzas resumen, la capa de OCR y `_metadata`."""
+    """Lo que es igual para un documento procesado entero y para uno procesado por bloques: unir las filas que Document AI partió,
+    los campos ausentes, la transformación propia del tipo, las dos confianzas resumen, la capa de OCR y `_metadata`."""
+    # Primero se unen las filas partidas (un accionista que salió en dos filas, ver `servicios.filas_partidas`): los ausentes se
+    # calculan sobre la fila completa, no sobre cada mitad.
+    datos, filas_unidas = unir_filas_partidas(datos, estructura)
+    if filas_unidas:
+        metadata["filas_unidas"] = filas_unidas
     if estructura:
         # Solo cuando se pudo leer el esquema: sin él no se sabe qué era obligatorio, y una lista vacía diría «no faltó nada».
         metadata["campos_ausentes"] = _campos_ausentes(estructura, datos)

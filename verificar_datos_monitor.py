@@ -60,13 +60,15 @@ def documento(cur, tenant: str, nombre: str) -> tuple[int, str]:
     return cur.fetchone()[0], publico
 
 
-def corrida(cur, doc: int, tipo: str, nombre: str, estado: str = "ok", promedio: float | None = 90, minima: float | None = 80) -> int:
+def corrida(
+    cur, doc: int, tipo: str, nombre: str, estado: str = "ok", promedio: float | None = 90, minima: float | None = 80, metadata: str | None = None
+) -> int:
     cur.execute(
         "INSERT INTO nexus.extractionRuns (publicId, documentId, documentTypeId, documentTypePublicId, documentTypeName, documentTypeRevision, "
         "engine, processorId, processorVersion, status, errorDetail, confidenceAverage, confidenceMinimum, pageCount, metadataJson, startedAt, createdBy) "
-        "OUTPUT INSERTED.runId VALUES (?, ?, NULL, ?, ?, 1, 'document_ai_extractor', 'proc123', NULL, ?, ?, ?, ?, 1, NULL, ?, 'prueba')",
+        "OUTPUT INSERTED.runId VALUES (?, ?, NULL, ?, ?, 1, 'document_ai_extractor', 'proc123', NULL, ?, ?, ?, ?, 1, ?, ?, 'prueba')",
         f"extraccion-{uuid.uuid4().hex}", doc, tipo, nombre, estado, "falló" if estado == "error" else None,
-        promedio if estado != "error" else None, minima if estado != "error" else None, datetime.utcnow(),
+        promedio if estado != "error" else None, minima if estado != "error" else None, metadata, datetime.utcnow(),
     )
     return cur.fetchone()[0]
 
@@ -96,7 +98,11 @@ with tablas.transaccion() as cur:
     corrida(cur, ine, "tipo-ine", "INE", estado="error")
 
     acta, acta_id = documento(cur, ORG_A, "acta.pdf")
-    r2 = corrida(cur, acta, "tipo-acta", "Acta constitutiva", promedio=70, minima=40)
+    # Su extracción unió dos filas partidas de un socio (servicios/filas_partidas.py): lo dice su metadataJson.
+    r2 = corrida(
+        cur, acta, "tipo-acta", "Acta constitutiva", promedio=70, minima=40,
+        metadata='{"engine": "document_ai_extractor", "filas_unidas": [{"grupo": "socios", "fila": 1, "de": [1, 3], "por": ["nombre"]}]}',
+    )
     dato(cur, r2, "razon_social", "razon_social", "ACME SA", 95)
     dato(cur, r2, "socios[1].nombre", "nombre", "ANA", 60, 1)
     dato(cur, r2, "socios[2].nombre", "nombre", "LUIS", 40, 2)
@@ -147,6 +153,9 @@ ok(cliente.get(f"/monitor-datos/documento-{'0' * 32}", headers=llave).status_cod
 ok(cliente.get("/monitor-datos/cualquier-cosa", headers=llave).status_code == 404, "un id mal formado: 404")
 ok(all(d["tipoDocumental"]["existe"] is False for d in p["documentos"]) and all(t["existe"] is False for t in p["tipos"]) and f["corridas"][0]["tipoDocumental"]["existe"] is False, "un tipo que ya no está en documentTypes sale con existe: false (aquí se sembraron sin tipo)")
 ok(docs[ine_id]["organizacion"]["nombre"] == "Dorama Prueba" and docs[ine_b_id]["organizacion"]["nombre"] == "Otra Prueba", "cada documento trae el nombre de su organización")
+fa = cliente.get(f"/monitor-datos/{acta_id}", headers=llave).json()
+ok(fa["corridas"][0]["filasUnidas"] == [{"grupo": "socios", "fila": 1, "de": [1, 3], "por": ["nombre"]}], f"la corrida dice qué filas partidas unió: {fa['corridas'][0].get('filasUnidas')}")
+ok(all(c["filasUnidas"] == [] for c in f["corridas"]), "y una corrida sin metadataJson (o que no unió nada) trae la lista vacía")
 
 # ── Migración 0015: las vistas para consultar en lenguaje natural, leídas con el usuario de la API ──────────────────────────
 with tablas.lectura() as cur:
