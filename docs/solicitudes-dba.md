@@ -1202,7 +1202,7 @@ que uno inventado), sin decir que existe. El back ya lo hace; la segunda red es 
 3. ¿`OFFSET/FETCH` te parece suficiente para paginar, o prefieres paginación por llave (`receivedAt, fileId`) pensando en tenants con
    cientos de miles de archivos?
 
-## 8 · Datos · Usuario de solo lectura, separado por organización, para consultas en lenguaje natural — BORRADOR 2026-11-11 (para Charlie, aún sin crear en Jira)
+## 8 · Datos · Usuario de solo lectura, separado por organización, para consultas en lenguaje natural — CREADO como NEX-604 el 2026-11-17 (asignado a Charlie, NEX Sprint 7, épica NEX-597; bloquea a NEX-605)
 
 **Título del ticket:** `Datos · Usuario de SOLO LECTURA, separado por organización, para consultas en lenguaje natural`
 

@@ -15,4 +15,4 @@ Cuando llegue lo que falta:
 
 | Archivo | Espera a | Prueba |
 |---|---|---|
-| `0016_consulta_por_organizacion.sql` | Que el DBA cree el esquema `[consulta]` (dueño `nexusOwner`), el usuario `usrNexusLectura` y le dé a `usrNexusDDL` `ALTER` sobre `[consulta]`, en `IA_Nexus_Dev` (`docs/solicitudes-dba.md` §8) | `verificar_consulta_por_organizacion.py` |
+| `0016_consulta_por_organizacion.sql` | Que el DBA cree el esquema `[consulta]` (dueño `nexusOwner`), el usuario `usrNexusLectura` y le dé a `usrNexusDDL` `ALTER` sobre `[consulta]`, en `IA_Nexus_Dev` (`docs/solicitudes-dba.md` §8; ticket NEX-604 para Charlie, creado el 2026-11-17) | `verificar_consulta_por_organizacion.py` |

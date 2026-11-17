@@ -1,18 +1,18 @@
-# Búsqueda Semántica · historias para Jira (PREPARADAS, sin publicar)
+# Búsqueda Semántica · historias en Jira
 
-Preparadas el 2026-11-12; siete historias desde el 13 de noviembre de 2026. Este archivo y el Excel para el PM (`Busqueda-Semantica-historias.xlsx`, en esta misma carpeta) salen del mismo texto.
+Preparadas el 2026-11-12; siete historias desde el 13 de noviembre de 2026. **Publicadas en Jira el 2026-11-17 como NEX-605 a NEX-611**, bajo la épica NEX-597 («EPICA 14: BUSQUEDA SEMANTICA»), en NEX Sprint 7, «Por hacer» y con Moisés de responsable. El ticket del DBA es **NEX-604** (Tarea, asignada a Charlie, en el mismo sprint y la misma épica). Los enlaces «bloquea» siguen el «Depende de» de cada una. Este archivo y el Excel para el PM (`Busqueda-Semantica-historias.xlsx`, en esta misma carpeta) salen del mismo texto.
 
 Biblioratum contestará preguntas en lenguaje natural sobre los datos ya extraídos de los documentos de cada organización («¿cuántas INE vencen este año?»). Un modelo de lenguaje escribe la consulta y la base la ejecuta con un usuario de solo lectura que solo ve la organización de quien pregunta. Los datos de los documentos no se mandan al modelo.
 
-Antes de la historia 1 va el ticket del DBA «Datos · Usuario de SOLO LECTURA, separado por organización, para consultas en lenguaje natural», preparado aparte. Está en `docs/solicitudes-dba.md` §8.
+Antes de la historia 1 va el ticket del DBA «Datos · Usuario de SOLO LECTURA, separado por organización, para consultas en lenguaje natural», preparado aparte. Está en `docs/solicitudes-dba.md` §8 y en Jira es NEX-604.
 
 Orden sugerido: la 2 puede empezar ya; la 1, cuando el DBA entregue su ticket; la 3, con la 1 y la 2 terminadas; la 4, la 5, la 6 y la 7, después de la 3 (la 7 también necesita la 4). Todas son de tipo Historia.
 
-Al publicarlas: decidir épica y sprint; todas «Por hacer», responsable Moisés; enlaces «bloquea» según el «Depende de» de cada una. Antes de publicar, el texto que se manda no debe nombrar la herramienta ni usar palabras de la planeación interna.
+En la épica conviven con las HU-094 a HU-099 de César (NEX-598 a NEX-603), que son otra cosa: buscar fragmentos de los documentos con embeddings. No se fusionaron. El informador quedó Moisés porque el token no puede fijar otro; César lo cambia a mano. El texto que va a Jira no nombra la herramienta ni usa palabras de la planeación interna.
 
 ---
 
-## 1 · Historia · Búsqueda Semántica · Conexión de solo lectura que solo ve la organización de quien pregunta
+## 1 · NEX-605 · Historia · Búsqueda Semántica · Conexión de solo lectura que solo ve la organización de quien pregunta
 
 **Historia de usuario:** Como Administrador de una organización, quiero que la búsqueda solo pueda leer los datos de mi organización, sin poder modificarlos ni ver los de otras, para que mi equipo pregunte con la seguridad de que la información está aislada.
 
@@ -41,7 +41,7 @@ Biblioratum va a contestar preguntas en lenguaje natural sobre lo que ya se extr
 
 ---
 
-## 2 · Historia · Búsqueda Semántica · Lo que sabe de los datos de cada organización
+## 2 · NEX-606 · Historia · Búsqueda Semántica · Lo que sabe de los datos de cada organización
 
 **Historia de usuario:** Como persona que pregunta, quiero que la búsqueda conozca los tipos documentales y los campos de mi organización, para preguntar con mis propias palabras y recibir la respuesta correcta.
 
@@ -69,7 +69,7 @@ Para escribir una consulta correcta, el modelo necesita saber qué datos hay y c
 
 ---
 
-## 3 · Historia · Búsqueda Semántica · Preguntar en lenguaje natural y ver la respuesta en una tabla
+## 3 · NEX-607 · Historia · Búsqueda Semántica · Preguntar en lenguaje natural y ver la respuesta en una tabla
 
 **Historia de usuario:** Como persona de una organización, quiero escribir una pregunta sobre los datos extraídos de mis documentos y ver la respuesta en una tabla, para obtener información sin saber SQL ni pedírsela a nadie.
 
@@ -99,7 +99,7 @@ La primera versión que se puede usar: una persona escribe una pregunta sobre lo
 
 ---
 
-## 4 · Historia · Búsqueda Semántica · Entender la respuesta y llevársela
+## 4 · NEX-608 · Historia · Búsqueda Semántica · Entender la respuesta y llevársela
 
 **Historia de usuario:** Como persona que pregunta, quiero ver cómo se obtuvo la respuesta, ordenarla y descargarla, para confiar en ella y usarla en mi trabajo.
 
@@ -126,7 +126,7 @@ Que la persona pueda confiar en la respuesta y usarla: saber cómo se obtuvo, or
 
 ---
 
-## 5 · Historia · Búsqueda Semántica · Bitácora de preguntas, límites de uso y respuestas que mejoran los ejemplos
+## 5 · NEX-609 · Historia · Búsqueda Semántica · Bitácora de preguntas, límites de uso y respuestas que mejoran los ejemplos
 
 **Historia de usuario:** Como Administrador de una organización, quiero que las buenas respuestas se vuelvan ejemplos y que el uso tenga límites, para que la búsqueda mejore con el uso y sin sorpresas de costo.
 
@@ -156,7 +156,7 @@ Saber qué se pregunta y cuánto cuesta, evitar abusos, y que la búsqueda mejor
 
 ---
 
-## 6 · Historia · Búsqueda Semántica · Ver la respuesta como gráfica
+## 6 · NEX-610 · Historia · Búsqueda Semántica · Ver la respuesta como gráfica
 
 **Historia de usuario:** Como persona que pregunta, quiero ver la respuesta como gráfica cuando se presta (conteos por tipo, por mes), para entender de un vistazo comparaciones y tendencias.
 
@@ -185,7 +185,7 @@ Muchas preguntas se responden con conteos o montos por categoría o por fecha, y
 
 ---
 
-## 7 · Historia · Búsqueda Semántica · Seguir preguntando sobre la respuesta
+## 7 · NEX-611 · Historia · Búsqueda Semántica · Seguir preguntando sobre la respuesta
 
 **Historia de usuario:** Como persona que pregunta, quiero hacer preguntas de seguimiento sobre la respuesta anterior («¿y solo las de octubre?»), para afinar lo que busco sin repetir toda la pregunta.
 
