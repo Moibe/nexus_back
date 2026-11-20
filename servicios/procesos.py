@@ -5,7 +5,7 @@
 Un proceso es un conjunto de reglas y corre sobre un EXPEDIENTE (un conjunto de documentos). Se arma en un lienzo: los tipos
 documentales de la organización son sus entradas (nodos de tipo `tipo-documental`: lo que se dibuja ahí es la declaración de qué documentos
 necesita el proceso del expediente), las reglas son operadores (nodos de tipo
-`operador`: igual, distinto, contiene, parecido (con su `minimo`, en %), mayor, mayor_igual, menor, menor_igual, entre (el único con TRES entradas:
+`operador`: igual (con su casilla `ignorarEscritura`, NEX-579, que solo se guarda si está activada), distinto, contiene, parecido (con su `minimo`, en %), mayor, mayor_igual, menor, menor_igual, entre (el único con TRES entradas:
 valor, desde y hasta; su tercera muestra va en `c`); antiguedad (una fecha contra hoy, con su `maximo` y su `unidad`: dias, meses o anios); cantidad, suma, alguno, todos y unicos, que trabajan con LISTAS; existe, que
 pregunta si el expediente trae un documento; y, o, no, implica),
 un `constante` es un valor fijo que se escribe en el lienzo (por ejemplo el «2» de «más de 2 socios») y los cables llevan un campo,
@@ -196,6 +196,14 @@ def _nodo(n: object) -> dict:
         limpio_datos["b"] = _texto(datos.get("b", ""), "Un valor de ejemplo", MAX_MUESTRA, obligatorio=False)
         if limpio_datos["operador"] in OPERADORES_CON_TERCERA_ENTRADA:
             limpio_datos["c"] = _texto(datos.get("c", ""), "Un valor de ejemplo", MAX_MUESTRA, obligatorio=False)
+        if limpio_datos["operador"] == "igual":
+            # «Igual a» (NEX-579, 2026-11-20): la casilla «Ignorar mayúsculas, acentos, guiones y espacios». Sí o no; se guarda SOLO activada, como la
+            # manda el lienzo (`serializarDibujo`), para que un «Igual a» de antes se guarde exactamente igual que antes.
+            ignorar = datos.get("ignorarEscritura", False)
+            if not isinstance(ignorar, bool):
+                raise ProcesoInvalido("La casilla «Ignorar mayúsculas, acentos, guiones y espacios» de «Igual a» debe ser sí o no.")
+            if ignorar:
+                limpio_datos["ignorarEscritura"] = True
         if limpio_datos["operador"] == "parecido":
             # «Parecido a» (2026-11-10): el porcentaje mínimo de parecido para que pase. Sin él, el de siempre.
             minimo = datos.get("minimo", MINIMO_PARECIDO)

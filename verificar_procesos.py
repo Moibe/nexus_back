@@ -337,6 +337,10 @@ try:
         {"id": "operador-7", "type": "operador", "position": {"x": 2200, "y": 10}, "data": {"operador": "antiguedad", "a": "2026-09-10", "b": "", "maximo": 90, "unidad": "dias", "hoy": "2026-11-04"}},
         {"id": "operador-8", "type": "operador", "position": {"x": 2500, "y": 10}, "data": {"operador": "antiguedad"}},
         {"id": "operador-9", "type": "operador", "position": {"x": 2800, "y": 10}, "data": {"operador": "mayor", "a": "1", "b": "2", "maximo": 5, "unidad": "dias"}},
+        # «Igual a» (NEX-579, 2026-11-20): su casilla «Ignorar mayúsculas, acentos, guiones y espacios» se guarda SOLO activada; otro operador no la guarda.
+        {"id": "operador-10", "type": "operador", "position": {"x": 3100, "y": 10}, "data": {"operador": "igual", "a": "ABC-123-D", "b": "abc123d", "ignorarEscritura": True}},
+        {"id": "operador-11", "type": "operador", "position": {"x": 3400, "y": 10}, "data": {"operador": "igual", "a": "x", "b": "y", "ignorarEscritura": False}},
+        {"id": "operador-12", "type": "operador", "position": {"x": 3700, "y": 10}, "data": {"operador": "distinto", "a": "x", "b": "y", "ignorarEscritura": True}},
     ]
     listas["aristas"] += [cable("operador-2", "resultado", "operador-3", "a"), cable("constante-1", "valor", "operador-3", "b")]
     p5 = nuevo_id()
@@ -361,6 +365,14 @@ try:
         mal["nodos"] = mal["nodos"] + [{"id": "operador-7", "type": "operador", "position": {"x": 2200, "y": 10}, "data": {"operador": "antiguedad", **malo}}]
         r = guardar(a_admin, org_a, nuevo_id(), mal, 0)
         rev(f"«Antigüedad contra hoy» con {que}: 400", r.status_code == 400 and "Antigüedad contra hoy" in r.text, f"{r.status_code} {r.text[:160]}")
+    rev("«Igual a» con la casilla activada la guarda", datos_de("operador-10") == {"operador": "igual", "a": "ABC-123-D", "b": "abc123d", "ignorarEscritura": True}, str(datos_de("operador-10")))
+    rev("«Igual a» con la casilla apagada se guarda como siempre (sin la llave)", datos_de("operador-11") == {"operador": "igual", "a": "x", "b": "y"}, str(datos_de("operador-11")))
+    rev("otro operador que mande la casilla no la guarda", datos_de("operador-12") == {"operador": "distinto", "a": "x", "b": "y"}, str(datos_de("operador-12")))
+    for que, malo in (("«sí» como texto", "sí"), ("1", 1), ("null", None)):
+        mal = proceso("Igual malo")
+        mal["nodos"] = mal["nodos"] + [{"id": "operador-10", "type": "operador", "position": {"x": 3100, "y": 10}, "data": {"operador": "igual", "ignorarEscritura": malo}}]
+        r = guardar(a_admin, org_a, nuevo_id(), mal, 0)
+        rev(f"«Igual a» con la casilla en {que}: 400", r.status_code == 400 and "Igual a" in r.text, f"{r.status_code} {r.text[:160]}")
     rev("los cables del valor fijo y del resultado se guardan", {(a["source"], a["sourceHandle"]) for a in d["aristas"]} >= {("operador-2", "resultado"), ("constante-1", "valor")})
     n = proceso("x")
     n["nodos"][2]["data"]["a"] = "x" * 5000
