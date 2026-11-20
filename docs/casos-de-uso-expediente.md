@@ -30,6 +30,15 @@ Una corrección cuelga del dato de UNA corrida (`fieldCorrections.factId`). `vEn
 
 La corrección no se borra, porque es historia, pero deja de aplicarse sin que nadie lo note. Ningún código la pasa a la corrida nueva. Esto contesta en parte el segundo punto de Alexis y hay que decidirlo antes de prometer el caso 6. Propuesta: al reprocesar, si un campo con corrección vigente sale otra vez, la corrección pasa a la corrida nueva y queda registro de que se arrastró.
 
+**Resuelto (NEX-614, 2026-11-20; Moibe: «que la corrección se arrastre al reprocesar»).** Al guardar una corrida nueva, cada corrección vigente pasa a ella, con la misma persona, fecha y motivo. El valor que extrajo la máquina queda aparte (`valorExtraido`), y la corrida guarda en `metadataJson.correcciones` qué se trasladó y de qué extracción. Por campo, la API dice `correccionTrasladadaDe`.
+
+No se trasladan, y se avisa en `correccionesSinTrasladar` con su motivo:
+- `campo_ausente`: la extracción nueva ya no trae el campo;
+- `fila_distinta`: en lo que se repite, la fila nueva trae otra cosa que la vieja, porque las filas pueden cambiar de lugar;
+- `otro_tipo`: se extrajo como otro tipo documental.
+
+Sin migración: `vEntityFactCurrent` y las vistas de la 0015 ya leen la corrección de la corrida vigente.
+
 ## Los principios
 
 - **Sale solo del expediente; si no hay información, lo dice.** Ya está en el diseño: la respuesta son los renglones que devuelve la base y ningún dato va al modelo (NEX-607). Cero renglones se contesta con «no hay información».

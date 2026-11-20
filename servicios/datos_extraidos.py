@@ -237,6 +237,18 @@ def registrar_extraccion(
         tipo = tablas.una(cur)
         if tipo is None or (tipo["processorId"] or "") != procesador_id:
             raise TipoNoEncontrado(tipo_id)
+        trasladar: list[dict[str, Any]] = []
+        if estado != "error":
+            # NEX-614: las correcciones a mano de la corrida vigente se trasladan a la nueva. Se leen ANTES de insertarla.
+            trasladar, sin_trasladar = _que_trasladar(_correcciones_vigentes(tablas, cur, documento), renglones, tipo["documentTypeId"])
+            if trasladar or sin_trasladar:
+                metadata = {
+                    **metadata,
+                    "correcciones": {
+                        "trasladadas": [{"ruta": p["fieldPath"], "deExtraccion": p["corridaId"]} for p in trasladar],
+                        "sinTrasladar": sin_trasladar,
+                    },
+                }
         cur.execute(
             "INSERT INTO nexus.extractionRuns (publicId, documentId, documentTypeId, documentTypePublicId, documentTypeName, documentTypeRevision, engine, "
             "processorId, processorVersion, status, errorDetail, confidenceAverage, confidenceMinimum, pageCount, metadataJson, startedAt, finishedAt, createdBy) "
@@ -255,7 +267,72 @@ def registrar_extraccion(
                 f"INSERT INTO nexus.entityFacts (runId, {', '.join(columnas)}) VALUES (?, {', '.join('?' * len(columnas))})",
                 [(corrida, *[r[c] for c in columnas]) for r in renglones],
             )
+        if trasladar:
+            cur.execute("SELECT fieldPath, factId FROM nexus.entityFacts WHERE runId = ?", corrida)
+            hechos = {ruta: fact for ruta, fact in cur.fetchall()}
+            # La misma persona, la misma fecha y el mismo motivo: la corrección es la de antes, ahora sobre el dato nuevo.
+            cur.executemany(
+                "INSERT INTO nexus.fieldCorrections (factId, valueNormalized, reason, correctedAt, correctedBy) VALUES (?, ?, ?, ?, ?)",
+                [(hechos[p["fieldPath"]], p["corregido"], p["reason"], p["correctedAt"], p["correctedBy"]) for p in trasladar],
+            )
     return publico
+
+
+def _correcciones_vigentes(tablas, cur, documento: int) -> list[dict[str, Any]]:
+    """Los campos de la corrida vigente del documento que tienen corrección a mano, cada uno con la última."""
+    cur.execute(
+        "SELECT r.publicId AS corridaId, r.documentTypeId, f.fieldPath, f.valueNormalized AS extraido, c.valueNormalized AS corregido, c.reason, "
+        "c.correctedAt, c.correctedBy "
+        "FROM nexus.extractionRuns r JOIN nexus.entityFacts f ON f.runId = r.runId "
+        "CROSS APPLY (SELECT TOP (1) fc.valueNormalized, fc.reason, fc.correctedAt, fc.correctedBy FROM nexus.fieldCorrections fc "
+        "WHERE fc.factId = f.factId ORDER BY fc.correctionId DESC) c "
+        "WHERE r.runId = (SELECT MAX(r2.runId) FROM nexus.extractionRuns r2 WHERE r2.documentId = ? AND r2.status <> 'error') "
+        "ORDER BY f.factId",
+        documento,
+    )
+    return tablas.filas(cur)
+
+
+def _que_trasladar(previas: list[dict[str, Any]], renglones: list[dict[str, Any]], tipo_id: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Qué correcciones pasan a la corrida nueva y cuáles no (con su motivo). Una persona leyó el documento, que no cambió: su valor manda
+    sobre lo que diga la extracción nueva. No se trasladan:
+
+    - `otro_tipo`: la corrida nueva es de otro tipo documental; sus campos son otros aunque se llamen igual;
+    - `campo_ausente`: la extracción nueva ya no trae ese campo;
+    - `fila_distinta`: en lo que se repite (`socios[2].nombre`) las filas pueden cambiar de lugar entre extracciones (p. ej. al unir filas
+      partidas); la corrección solo pasa si la fila nueva trae lo mismo que extrajo la vieja, o ya el valor corregido.
+    """
+    nuevos = {r["fieldPath"]: r["valueNormalized"] for r in renglones}
+    trasladar: list[dict[str, Any]] = []
+    sin_trasladar: list[dict[str, Any]] = []
+    for p in previas:
+        ruta = p["fieldPath"]
+        if p["documentTypeId"] != tipo_id:
+            motivo = "otro_tipo"
+        elif ruta not in nuevos:
+            motivo = "campo_ausente"
+        elif _RE_INDICE.search(ruta) and nuevos[ruta] not in (p["extraido"], p["corregido"]):
+            motivo = "fila_distinta"
+        else:
+            trasladar.append(p)
+            continue
+        sin_trasladar.append({"ruta": ruta, "valor": p["corregido"], "motivo": motivo, "deExtraccion": p["corridaId"], "corregidoPor": p["correctedBy"]})
+    return trasladar, sin_trasladar
+
+
+def _correcciones_de(metadata_json: str | None) -> dict[str, list]:
+    """`correcciones` del metadataJson de una corrida (NEX-614), solo con lo esperado. Ilegible o ausente: listas vacías."""
+    try:
+        bruto = (json.loads(metadata_json) if metadata_json else {}).get("correcciones") or {}
+    except (ValueError, AttributeError):
+        bruto = {}
+    trasladadas = [t for t in bruto.get("trasladadas") or [] if isinstance(t, dict) and isinstance(t.get("ruta"), str)]
+    sin = [
+        {k: s.get(k) for k in ("ruta", "valor", "motivo", "deExtraccion", "corregidoPor")}
+        for s in bruto.get("sinTrasladar") or []
+        if isinstance(s, dict) and isinstance(s.get("ruta"), str)
+    ]
+    return {"trasladadas": trasladadas, "sinTrasladar": sin}
 
 
 def corregir(tenant: str, documento_id: object, ruta: object, valor: object, motivo: object, por: str) -> dict:
@@ -291,7 +368,7 @@ def de_documento(tenant: str, documento_id: object) -> dict:
     """Lo que se sabe hoy de un documento: su última clasificación, su última corrida (aunque haya fallado) y los campos VIGENTES.
 
     Sin base, o de un documento sin nada todavía, todo viene vacío. Un documento que no es de la organización: `DocumentoNoEncontrado`."""
-    vacio = {"clasificacion": None, "extraccion": None, "campos": []}
+    vacio = {"clasificacion": None, "extraccion": None, "campos": [], "correccionesSinTrasladar": []}
     if not SQLSERVER_HOST:
         return vacio
     tablas = _tablas()
@@ -314,11 +391,23 @@ def de_documento(tenant: str, documento_id: object) -> dict:
         corrida = tablas.una(cur)
         cur.execute(
             "SELECT v.runId, r.publicId AS corridaId, v.fieldPath, v.fieldName, v.recordIndex, v.valueRaw, v.valueNormalized, v.valueExtracted, v.nullReason, "
-            "v.confidence, v.pageNumber, v.isCorrected, v.correctedAt, v.correctedBy "
+            "v.confidence, v.pageNumber, v.isCorrected, v.correctedAt, v.correctedBy, r.finishedAt AS corridaTerminada "
             "FROM nexus.vEntityFactCurrent v JOIN nexus.extractionRuns r ON r.runId = v.runId WHERE v.documentId = ? ORDER BY v.factId",
             documento,
         )
         campos = tablas.filas(cur)
+        correcciones = {"trasladadas": [], "sinTrasladar": []}
+        if campos:
+            cur.execute("SELECT metadataJson FROM nexus.extractionRuns WHERE runId = ?", campos[0]["runId"])
+            correcciones = _correcciones_de(cur.fetchone()[0])
+    trasladadas = {t["ruta"]: t.get("deExtraccion") for t in correcciones["trasladadas"]}
+
+    def trasladada_de(c: dict) -> str | None:
+        # Una corrección trasladada conserva su fecha, que es de antes de la corrida que la tiene; una que se hizo después ya es nueva.
+        if not c["isCorrected"] or c["fieldPath"] not in trasladadas or not c["correctedAt"] or not c["corridaTerminada"]:
+            return None
+        return trasladadas[c["fieldPath"]] if c["correctedAt"] < c["corridaTerminada"] else None
+
     return {
         "clasificacion": clasificacion
         and {
@@ -358,10 +447,13 @@ def de_documento(tenant: str, documento_id: object) -> dict:
                 "corregido": bool(c["isCorrected"]),
                 "corregidoEn": momento(c["correctedAt"]) if c["correctedAt"] else None,
                 "corregidoPor": c["correctedBy"],
+                "correccionTrasladadaDe": trasladada_de(c),
                 "corridaId": c["corridaId"],
             }
             for c in campos
         ],
+        # NEX-614: lo que alguien corrigió a mano en la extracción anterior y NO pasó a la vigente, con su motivo. Para avisarlo.
+        "correccionesSinTrasladar": correcciones["sinTrasladar"],
     }
 
 

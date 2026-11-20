@@ -209,7 +209,10 @@ class Correccion(BaseModel):
         "extracción, aunque haya fallado (tipo documental y la revisión de su configuración, procesador y versión, estado, confianzas, "
         "cuántas corridas lleva). `campos`: los VIGENTES, uno por campo, de la última corrida que terminó; cada uno con `valor` (el "
         "normalizado o su última corrección), `valorCrudo`, `confianza` 0-100, `pagina`, y `motivoSinValor` cuando el campo se pedía y no "
-        "apareció. Todo `null`/vacío si el documento no se ha procesado desde que se guardan (migración 0007)."
+        "apareció, y `correccionTrasladadaDe` cuando su corrección a mano se hizo en una extracción anterior y pasó a esta al reprocesar "
+        "(NEX-614). `correccionesSinTrasladar`: las correcciones de la extracción anterior que NO pasaron a la vigente (`ruta`, `valor`, "
+        "`motivo`: `campo_ausente`, `fila_distinta` u `otro_tipo`, `deExtraccion`, `corregidoPor`), para avisarlo. "
+        "Todo `null`/vacío si el documento no se ha procesado desde que se guardan (migración 0007)."
     ),
 )
 def datos_de_documento(documento_id: str, tenant: str = Query(..., description="La organización"), authorization: str | None = Header(default=None)):

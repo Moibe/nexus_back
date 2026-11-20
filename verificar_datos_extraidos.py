@@ -17,6 +17,8 @@ Lo que se prueba (Moibe, 2026-10-29: «una cosa es el file y otra los datos que 
   organización (403); y en esos casos Google no se llama;
 - sin `documento`, `/ia/extraer` sigue funcionando como antes y no guarda nada;
 - corregir un dato: el vigente cambia, el extraído no; queda el rastro; los roles que solo leen no corrigen; un campo que no existe: 404;
+- reprocesar conserva la corrección (NEX-614): misma persona y fecha, el valor nuevo aparte, de qué extracción venía; NO pasa (y se avisa
+  en `correccionesSinTrasladar`) si el campo ya no aparece, si la fila de lo que se repite trae otra cosa, o si es otro tipo documental;
 - los listados y el expediente enseñan el tipo documental de cada documento (y el expediente dice, sin duplicados, `duplicado: false` y `duplicados: []`);
 - las reglas de la base: valor o motivo (nunca los dos, nunca ninguno), y borrar el documento se lleva todo lo suyo.
 """
@@ -196,7 +198,7 @@ try:
 
     titulo("1 · Antes de procesar: nada")
     r = datos(adm, org, d1)
-    rev("200 y vacío", r.status_code == 200 and r.json() == {"clasificacion": None, "extraccion": None, "campos": []}, r.text)
+    rev("200 y vacío", r.status_code == 200 and r.json() == {"clasificacion": None, "extraccion": None, "campos": [], "correccionesSinTrasladar": []}, r.text)
     rev("documento de otra organización: 404", datos(adm, org, db).status_code == 404)
     rev("con el tenant de otra: 403", datos(adm, otra, d1).status_code == 403)
 
@@ -306,7 +308,64 @@ try:
     from servicios import auditoria as bitacora
 
     rev("queda el rastro FIELD_CORRECTED", len(bitacora.eventos({"FIELD_CORRECTED"})) == 3)
-    rev("reprocesar después de corregir: la corrida nueva manda", (extraer(adm, org, d2, acta, "proc-acta"), campos(adm, org, d2)["socios[2].nombre"]["valor"])[1] == "Beto")
+
+    titulo("9b · Reprocesar conserva la corrección (NEX-614)")
+    antes = datos(adm, org, d2).json()
+    corrida_1 = antes["extraccion"]["id"]
+    previo = {f_["ruta"]: f_ for f_ in antes["campos"]}
+    extraer(adm, org, d2, acta, "proc-acta")
+    x = datos(adm, org, d2).json()
+    f = {f_["ruta"]: f_ for f_ in x["campos"]}
+    socio = f["socios[2].nombre"]
+    rev("otra corrida, y lo vigente sigue siendo lo corregido", x["extraccion"]["totalCorridas"] == 2 and socio["valor"] == "Alberto B." and socio["corregido"], socio)
+    rev("con la misma persona y la misma fecha", socio["corregidoPor"] == previo["socios[2].nombre"]["corregidoPor"] and socio["corregidoEn"] == previo["socios[2].nombre"]["corregidoEn"], (socio["corregidoEn"], previo["socios[2].nombre"]["corregidoEn"]))
+    rev("el valor de la extracción nueva queda aparte", socio["valorExtraido"] == "Beto" and socio["corridaId"] == x["extraccion"]["id"] != corrida_1, socio)
+    rev("dice de qué extracción venía", socio["correccionTrasladadaDe"] == corrida_1 and f["capital"]["correccionTrasladadaDe"] == corrida_1, socio)
+    rev("un campo ausente que se llenó a mano sigue lleno", f["capital"]["valor"] == "5000" and f["capital"]["motivoSinValor"] is None, f["capital"])
+    rev("lo que no se corrigió no dice nada", f["denominacion"]["correccionTrasladadaDe"] is None and not f["denominacion"]["corregido"])
+    rev("nada se quedó sin trasladar", x["correccionesSinTrasladar"] == [], x["correccionesSinTrasladar"])
+    rev("trasladar no es corregir: la bitácora no cambia", len(bitacora.eventos({"FIELD_CORRECTED"})) == 3)
+
+    r = corr(adm, "capital", "6000")
+    rev("una corrección hecha después ya no es trasladada", r.status_code == 201 and r.json()["valor"] == "6000" and r.json()["correccionTrasladadaDe"] is None, r.text)
+    rev("corregir la fecha (para lo siguiente)", corr(adm, "fecha", "2020-03-04").status_code == 201)
+
+    falla_google["si"] = True
+    extraer(adm, org, d2, acta, "proc-acta")
+    falla_google["si"] = False
+    rev("una corrida que falla no toca las correcciones", campos(adm, org, d2)["socios[2].nombre"]["valor"] == "Alberto B.")
+
+    corrida_2 = datos(adm, org, d2).json()["campos"][0]["corridaId"]
+    respuestas["proc-acta"] = {
+        "document": {
+            "text": "",
+            "pages": [{}],
+            "entities": [
+                entidad("denominacion", "ACME SA DE CV", 0.97),
+                {"type": "socios", "mentionText": "", "confidence": 0.9, "properties": [entidad("nombre", "Ana", 0.95), entidad("acciones", "50", 0.9)]},
+                {"type": "socios", "mentionText": "", "confidence": 0.9, "properties": [entidad("nombre", "Carla", 0.9), entidad("acciones", "50", 0.9)]},
+            ],
+        }
+    }
+    extraer(adm, org, d2, acta, "proc-acta")
+    x = datos(adm, org, d2).json()
+    f = {f_["ruta"]: f_ for f_ in x["campos"]}
+    sin = {s["ruta"]: s for s in x["correccionesSinTrasladar"]}
+    rev("un campo que ya no aparece: no se traslada y se avisa", "fecha" not in f and sin.get("fecha", {}).get("motivo") == "campo_ausente" and sin["fecha"]["valor"] == "2020-03-04", sin)
+    rev(
+        "una fila que ahora trae otra cosa: no se traslada (puede ser otra persona) y se avisa",
+        f["socios[2].nombre"]["valor"] == "Carla" and not f["socios[2].nombre"]["corregido"] and sin.get("socios[2].nombre", {}).get("motivo") == "fila_distinta",
+        (f["socios[2].nombre"], sin),
+    )
+    rev("el aviso dice de qué extracción y quién", sin["fecha"]["deExtraccion"] == corrida_2 and sin["fecha"]["corregidoPor"], sin["fecha"])
+    rev("lo demás sí pasó (la última corrección, no la primera)", f["capital"]["valor"] == "6000" and f["capital"]["correccionTrasladadaDe"] == corrida_2, f["capital"])
+
+    respuestas["proc-ine"] = respuestas["proc-acta"]
+    extraer(adm, org, d2, ine, "proc-ine")
+    x = datos(adm, org, d2).json()
+    sin = {s["ruta"]: s for s in x["correccionesSinTrasladar"]}
+    rev("extraído como OTRO tipo documental: no se traslada nada y se avisa", not campos(adm, org, d2)["capital"]["corregido"] and sin.get("capital", {}).get("motivo") == "otro_tipo", sin)
+    respuestas["proc-acta"] = ACTA
 
     titulo("10 · Las reglas de la base")
     k.execute("SELECT TOP (1) runId FROM nexus.extractionRuns WHERE status = 'ok'")
