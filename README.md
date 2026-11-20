@@ -2037,10 +2037,15 @@ scripts siguen sirviendo: `routers/admins_plataforma.py`.
 | `POST /admins-plataforma/` | Crea uno con contraseña temporal y le manda la bienvenida (`enviarCorreo: false` equivale a `--sin-correo`). Devuelve la contraseña SIEMPRE, y `correo`: `enviado`, `sin_canal`, `fallo` u `omitido`. Un correo repetido: 409. |
 | `POST /admins-plataforma/{guid}/reenviar-invitacion` | Regenera la contraseña temporal de quien no ha hecho su primer acceso (la anterior deja de servir). Quien ya entró: 409 `ya_hizo_su_primer_acceso`. |
 | `DELETE /admins-plataforma/{guid}?motivo=` | Lo retira (borrado lógico; su correo queda libre). El motivo es obligatorio. Al último administrador activo no se le retira: 409 `ultimo_superadmin`. |
+| `GET /admins-plataforma/cuentas/{guid}` | Una cuenta de ORGANIZACIÓN antes de retirarla: sus organizaciones con su rol y `organizacionesSinAdmin`, de cuáles es el único administrador activo. |
+| `DELETE /admins-plataforma/cuentas/{guid}?motivo=&dejarSinAdmin=` | La retira (el mismo borrado lógico). Si alguna organización se quedaría sin administrador: 409 `organizacion_sin_admin` con la lista, salvo con `dejarSinAdmin=true`. |
 
-**Se toca solo a administradores de PLATAFORMA**: una cuenta de una organización responde 404 como si no existiera, así que Monitor no
-sirve para administrar usuarios ajenos. Crear, regenerar y retirar dejan `USER_CREATED`, `INVITATION_REISSUED` y `USER_DELETED` con
-`actor: "monitor"` y qué pasó con el correo; nunca la contraseña.
+Las rutas `/{guid}` tocan solo a administradores de PLATAFORMA (una cuenta de organización ahí responde 404, como si no existiera) y
+las `/cuentas/{guid}` solo a cuentas de ORGANIZACIÓN (un administrador de plataforma ahí es un 404). Las de `/cuentas` llegaron el
+2026-11-20 (Moibe: retirar desde Monitor a los administradores de organización, «con la advertencia en rojo»); antes eso solo se
+hacía con `retirar_cuenta.py --forzar`. Crear, regenerar y retirar dejan `USER_CREATED`, `INVITATION_REISSUED` y `USER_DELETED` con
+`actor: "monitor"` y qué pasó con el correo (el retiro de una cuenta de organización, además, `organizacionesSinAdmin`); nunca la
+contraseña.
 
 ### ⚠️ Sin protección extra (decisión del usuario, 2026-10-20: «sin protección extra por ahora»)
 
