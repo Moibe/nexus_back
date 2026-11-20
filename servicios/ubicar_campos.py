@@ -24,7 +24,7 @@ import unicodedata
 import httpx
 
 from config import DOCAI_PROJECT_ID, GEMINI_MODELO, GEMINI_REGION, GEMINI_TIMEOUT
-from servicios import gemini
+from servicios import gemini, ubicador_docai
 from servicios.ia import _token
 
 logger = logging.getLogger(__name__)
@@ -80,8 +80,19 @@ def _clave(nombre: str) -> str:
     return " ".join(sin_acentos.lower().split())
 
 
+#: Cuántos subcampos de un grupo viajan para ubicarlo con Document AI.
+MAX_SUBCAMPOS = 30
+
+
+def _texto(valor: object, tope: int) -> str:
+    return " ".join(valor.split())[:tope] if isinstance(valor, str) else ""
+
+
 def limpiar_campos(campos: object) -> list[dict]:
-    """Los campos que pidió el front, validados: `[{nombre, descripcion}]` sin vacíos ni repetidos, con topes. `ValueError` si no sirven."""
+    """Los campos que pidió el front, validados: `[{nombre, descripcion}]` sin vacíos ni repetidos, con topes. `ValueError` si no sirven.
+
+    Desde el 2026-11-20 (ubicar con Document AI) cada campo puede traer además `tipoDato`, `cardinalidad` y, si es un grupo, `subcampos`
+    (`[{nombre, descripcion}]`): con eso un grupo o lo que se repite se marca como bloque. Son opcionales: sin ellos, todo es un campo suelto."""
     if not isinstance(campos, list):
         raise ValueError("Los campos deben ser una lista.")
     limpios: list[dict] = []
@@ -90,11 +101,24 @@ def limpiar_campos(campos: object) -> list[dict]:
         if not isinstance(c, dict) or not isinstance(c.get("nombre"), str):
             raise ValueError("Cada campo debe traer su nombre.")
         nombre = " ".join(c["nombre"].split())[:MAX_NOMBRE]
-        descripcion = c.get("descripcion")
-        descripcion = " ".join(descripcion.split())[:MAX_DESCRIPCION] if isinstance(descripcion, str) else ""
+        descripcion = _texto(c.get("descripcion"), MAX_DESCRIPCION)
         if nombre and _clave(nombre) not in vistos:
             vistos.add(_clave(nombre))
-            limpios.append({"nombre": nombre, "descripcion": descripcion})
+            limpio: dict = {"nombre": nombre, "descripcion": descripcion}
+            if c.get("cardinalidad") == "multiple":
+                limpio["cardinalidad"] = "multiple"
+            subcampos = c.get("subcampos")
+            if c.get("tipoDato") == "grupo" and isinstance(subcampos, list):
+                subs, vistos_sub = [], set()
+                for s in subcampos[:MAX_SUBCAMPOS]:
+                    sub_nombre = _texto(s.get("nombre"), MAX_NOMBRE) if isinstance(s, dict) else ""
+                    if sub_nombre and _clave(sub_nombre) not in vistos_sub:
+                        vistos_sub.add(_clave(sub_nombre))
+                        subs.append({"nombre": sub_nombre, "descripcion": _texto(s.get("descripcion"), MAX_DESCRIPCION)})
+                if subs:
+                    limpio["tipoDato"] = "grupo"
+                    limpio["subcampos"] = subs
+            limpios.append(limpio)
     if not limpios:
         raise ValueError("No hay campos que ubicar.")
     if len(limpios) > MAX_CAMPOS:
@@ -203,7 +227,36 @@ async def _preguntar(
 async def ubicar(contenido: bytes, mime: str, campos: list[dict]) -> dict:
     """Dónde está cada campo en el documento. Devuelve `{ubicaciones: [{campo, pagina, caja, valor}], modelo}` o levanta `ErrorUbicar`.
 
+    Desde el 2026-11-20 (Moibe: «sí, hazlo con Document AI») primero lo dice Document AI (`servicios/ubicador_docai.py`): la caja es la de donde
+    el extractor leyó el valor, no una estimación. Los campos a los que no les dio caja se le preguntan a Gemini, y si Document AI falla del
+    todo, todo va a Gemini como antes. `modelo` dice quién contestó: `document-ai`, `document-ai+<gemini>` o `<gemini>`.
+
     `campos` ya pasó por `limpiar_campos`; `mime` es uno de `gemini.MIME_PARA_GEMINI` (lo valida la ruta). Nada se guarda."""
+    try:
+        con_docai = await ubicador_docai.ubicar(contenido, mime, campos)
+    except ubicador_docai.UbicadorNoDisponible as exc:
+        logger.warning("Ubicar campos: Document AI no pudo (%s); se pregunta a Gemini.", exc)
+        return await ubicar_con_gemini(contenido, mime, campos)
+    ubicados = {u["campo"] for u in con_docai}
+    faltan = [c for c in campos if c["nombre"] not in ubicados]
+    if not faltan:
+        return {"ubicaciones": con_docai, "modelo": ubicador_docai.MOTOR}
+    try:
+        resto = await ubicar_con_gemini(contenido, mime, faltan)
+    except ErrorUbicar as exc:
+        # Lo de Document AI ya sirve: lo que falte se queda sin marca.
+        logger.warning("Ubicar campos: Gemini no pudo con los %d que Document AI no ubicó: %s", len(faltan), exc)
+        return {"ubicaciones": con_docai, "modelo": ubicador_docai.MOTOR}
+    if not resto["ubicaciones"]:
+        return {"ubicaciones": con_docai, "modelo": ubicador_docai.MOTOR}
+    orden = {c["nombre"]: i for i, c in enumerate(campos)}
+    juntas = sorted([*con_docai, *resto["ubicaciones"]], key=lambda u: orden.get(u["campo"], len(orden)))
+    return {"ubicaciones": juntas, "modelo": f"{ubicador_docai.MOTOR}+{resto['modelo']}"}
+
+
+async def ubicar_con_gemini(contenido: bytes, mime: str, campos: list[dict]) -> dict:
+    """Dónde está cada campo, según Gemini (la forma de antes del 2026-11-20): una caja ESTIMADA. Devuelve `{ubicaciones, modelo}` o levanta
+    `ErrorUbicar`."""
     texto, fin = await _preguntar(contenido, mime, armar_prompt(campos), _ESQUEMA_RESPUESTA, "Ubicar campos", MENSAJE_FALLO, MENSAJE_NO_DISPONIBLE)
     try:
         ubicaciones = leer_respuesta(texto, campos)

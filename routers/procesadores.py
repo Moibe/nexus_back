@@ -276,15 +276,17 @@ async def generar_campos(
     summary="Ubicar los campos propuestos sobre un documento de ejemplo",
     description=(
         "Acompaña a `/generar-campos` (Moibe, 2026-11-11: «que a un lado mostremos el documento y marcados etiquetados los campos seleccionados»). "
-        "Recibe el documento de ejemplo y `campos` (JSON: `[{nombre, descripcion}]`, hasta 60) y devuelve, de los que encuentra, la página y la caja "
-        "`[ymin, xmin, ymax, xmax]` (de 0 a 1000 respecto a la página) donde está su valor, para marcarlos sobre el documento. Lo hace Gemini: es una "
-        "ayuda visual, no la extracción del procesador, y no guarda nada. Solo PDF, JPG o PNG (Gemini no lee TIFF). Pide el rol que administra tipos documentales."
+        "Recibe el documento de ejemplo y `campos` (JSON: `[{nombre, descripcion, tipoDato?, cardinalidad?, subcampos?}]`, hasta 60) y devuelve, de los "
+        "que encuentra, la página y la caja `[ymin, xmin, ymax, xmax]` (de 0 a 1000 respecto a la página) donde está su valor, para marcarlos sobre el "
+        "documento. Desde el 2026-11-20 lo hace primero Document AI (un extractor con el esquema de los campos propuestos: la caja es de donde leyó el "
+        "valor) y, lo que no ubique o si falla, Gemini; `modelo` dice quién contestó. No guarda nada. Solo PDF, JPG o PNG. Pide el rol que administra "
+        "tipos documentales."
     ),
 )
 async def ubicar_campos(
     archivo: UploadFile = File(..., description="El documento de ejemplo (PDF, JPG o PNG)"),
     tenant: str = Form(..., description="La organización"),
-    campos: str = Form(..., max_length=40000, description="JSON: `[{nombre, descripcion}]` de los campos a ubicar"),
+    campos: str = Form(..., max_length=40000, description="JSON: `[{nombre, descripcion, tipoDato?, cardinalidad?, subcampos?}]` de los campos a ubicar"),
     authorization: str | None = Header(default=None),
 ):
     aislamiento.exigir_administrar(authorization, tenant, "tipo_documental")

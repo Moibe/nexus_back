@@ -29,8 +29,22 @@ BASE_SQL = pruebas_sql.preparar()
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app import app  # noqa: E402
-from servicios import auth, gemini, usuarios  # noqa: E402
+from servicios import auth, gemini, ubicador_docai, usuarios  # noqa: E402
 from servicios import ubicar_campos as ubicar  # noqa: E402
+
+# ── El doble de Document AI (2026-11-20: primero ubica Document AI; ver la sección 7). Por omisión «no disponible», así las secciones 1 a 6
+# prueban el camino de Gemini, que es al que se cae. ──
+docai: dict = {"responde": None, "pedidos": []}
+
+
+async def _docai_falso(contenido, mime, campos):
+    docai["pedidos"].append(campos)
+    if docai["responde"] is None:
+        raise ubicador_docai.UbicadorNoDisponible("prueba: Document AI apagado")
+    return docai["responde"]
+
+
+ubicador_docai.ubicar = _docai_falso
 
 fallos = 0
 
@@ -251,6 +265,52 @@ try:
     ubicar.DOCAI_PROJECT_ID = "proyecto-de-prueba-123"
     contestar(BUENA)
     rev("y al volver Google, vuelve a funcionar", pedir(a_admin, org_a).status_code == 200)
+
+    titulo("7 · Primero Document AI (2026-11-20)")
+    U = lambda campo, caja: {"campo": campo, "pagina": 1, "caja": caja, "valor": "X"}  # noqa: E731
+    docai["responde"] = [U("Número pasaporte", [500, 700, 520, 870]), U("Apellidos", [570, 310, 590, 490]), U("Autoridad", [770, 620, 790, 760])]
+    n = len(llamadas)
+    r = pedir(a_admin, org_a)
+    cuerpo = r.json() if r.status_code == 200 else {}
+    rev("con todo ubicado por Document AI: 200, sus cajas, y Gemini ni se llama",
+        r.status_code == 200 and len(llamadas) == n and [u["campo"] for u in cuerpo.get("ubicaciones", [])] == ["Número pasaporte", "Apellidos", "Autoridad"],
+        f"{r.status_code} {r.text[:200]}")
+    rev("…y dice que contestó Document AI", cuerpo.get("modelo") == "document-ai", str(cuerpo.get("modelo")))
+
+    docai["responde"] = [U("Autoridad", [770, 620, 790, 760])]
+    contestar([
+        {"campo": "Apellidos", "encontrado": True, "valor": "RAMÍREZ", "pagina": 1, "caja": [261, 321, 287, 475]},
+        {"campo": "Número pasaporte", "encontrado": False},
+    ])
+    n = len(llamadas)
+    r = pedir(a_admin, org_a)
+    cuerpo = r.json() if r.status_code == 200 else {}
+    prompt = llamadas[-1]["cuerpo"]["contents"][0]["parts"][1]["text"] if len(llamadas) > n else ""
+    rev("los que Document AI no ubicó se le preguntan a Gemini, SOLO esos", len(llamadas) == n + 1 and "Apellidos" in prompt and "Número pasaporte" in prompt and "Autoridad" not in prompt, prompt[-200:])
+    rev("…se juntan en el orden en que se pidieron, con la caja de cada quien",
+        [u["campo"] for u in cuerpo.get("ubicaciones", [])] == ["Apellidos", "Autoridad"] and cuerpo["ubicaciones"][1]["caja"] == [770, 620, 790, 760],
+        r.text[:300])
+    rev("…y dice que contestaron los dos", cuerpo.get("modelo") == "document-ai+modelo-de-prueba", str(cuerpo.get("modelo")))
+
+    guion["falla"] = httpx.ConnectError("sin red")
+    r = pedir(a_admin, org_a)
+    rev("si Gemini falla con los que faltaban, se queda lo de Document AI (200, no 502)",
+        r.status_code == 200 and [u["campo"] for u in r.json()["ubicaciones"]] == ["Autoridad"] and r.json()["modelo"] == "document-ai", f"{r.status_code} {r.text[:160]}")
+    guion["falla"] = None
+
+    docai["pedidos"].clear()
+    docai["responde"] = []
+    grupo = [{"nombre": "Socios", "tipoDato": "grupo", "cardinalidad": "multiple", "subcampos": [{"nombre": "Nombre"}, {"nombre": "Acciones", "descripcion": "cuántas"}, {"nombre": "nombre"}, "x"]},
+             {"nombre": "RFC", "tipoDato": "texto", "cardinalidad": "unico"}, {"nombre": "Vacío", "tipoDato": "grupo", "subcampos": []}]
+    contestar([])
+    pedir(a_admin, org_a, campos=grupo)
+    llegaron = docai["pedidos"][-1] if docai["pedidos"] else []
+    rev("un grupo llega a Document AI con sus subcampos (sin repetidos ni basura) y lo que se repite como múltiple",
+        llegaron[:1] == [{"nombre": "Socios", "descripcion": "", "cardinalidad": "multiple", "tipoDato": "grupo",
+                          "subcampos": [{"nombre": "Nombre", "descripcion": ""}, {"nombre": "Acciones", "descripcion": "cuántas"}]}], json.dumps(llegaron, ensure_ascii=False)[:300])
+    rev("un campo suelto llega sin tipo, y un «grupo» sin subcampos, como campo suelto",
+        llegaron[1:] == [{"nombre": "RFC", "descripcion": ""}, {"nombre": "Vacío", "descripcion": ""}], json.dumps(llegaron[1:], ensure_ascii=False))
+    docai["responde"] = None
 
     titulo("6 · No guarda nada")
     almacen_despues = sorted(str(p.relative_to(RAIZ)) for p in RAIZ.rglob("*") if p.is_file() and "auditoria" not in p.name)
