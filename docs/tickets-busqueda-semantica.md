@@ -1,14 +1,14 @@
 # Búsqueda Semántica · historias en Jira
 
-Preparadas el 2026-11-12; siete historias desde el 13 de noviembre de 2026. **Publicadas en Jira el 2026-11-17 como NEX-605 a NEX-611**, bajo la épica NEX-597 («EPICA 14: BUSQUEDA SEMANTICA»), en NEX Sprint 7, «Por hacer» y con Moisés de responsable. El ticket del DBA es **NEX-604** (Tarea, asignada a Charlie, en el mismo sprint y la misma épica). Los enlaces «bloquea» siguen el «Depende de» de cada una. Este archivo y el Excel para el PM (`Busqueda-Semantica-historias.xlsx`, en esta misma carpeta) salen del mismo texto.
+Preparadas el 2026-11-12; siete historias desde el 13 de noviembre de 2026. **Publicadas en Jira el 2026-11-17 como NEX-605 a NEX-611**; la 8 (NEX-612) se sumó el 2026-11-20 con los casos de uso del expediente que pidió Producto (ver `casos-de-uso-expediente.md`), y ese día se ampliaron la 4 y la 5. Todas van bajo la épica NEX-597 («EPICA 14: BUSQUEDA SEMANTICA»), en NEX Sprint 7, «Por hacer» y con Moisés de responsable. El ticket del DBA es **NEX-604** (Tarea, asignada a Charlie, en el mismo sprint y la misma épica). Los enlaces «bloquea» siguen el «Depende de» de cada una. Este archivo y el Excel para el PM (`Busqueda-Semantica-historias.xlsx`, en esta misma carpeta) salen del mismo texto.
 
 Biblioratum contestará preguntas en lenguaje natural sobre los datos ya extraídos de los documentos de cada organización («¿cuántas INE vencen este año?»). Un modelo de lenguaje escribe la consulta y la base la ejecuta con un usuario de solo lectura que solo ve la organización de quien pregunta. Los datos de los documentos no se mandan al modelo.
 
 Antes de la historia 1 va el ticket del DBA «Datos · Usuario de SOLO LECTURA, separado por organización, para consultas en lenguaje natural», preparado aparte. Está en `docs/solicitudes-dba.md` §8 y en Jira es NEX-604.
 
-Orden sugerido: la 2 puede empezar ya; la 1, cuando el DBA entregue su ticket; la 3, con la 1 y la 2 terminadas; la 4, la 5, la 6 y la 7, después de la 3 (la 7 también necesita la 4). Todas son de tipo Historia.
+Orden sugerido: la 2 puede empezar ya; la 1, cuando el DBA entregue su ticket; la 3, con la 1 y la 2 terminadas; la 4, la 5, la 6 y la 7, después de la 3 (la 7 también necesita la 4); la 8, con la 1 y la 3. Todas son de tipo Historia.
 
-En la épica conviven con las HU-094 a HU-099 de César (NEX-598 a NEX-603), que son otra cosa: buscar fragmentos de los documentos con embeddings. No se fusionaron. El informador quedó Moisés porque el token no puede fijar otro; César lo cambia a mano. El texto que va a Jira no nombra la herramienta ni usa palabras de la planeación interna.
+En la épica conviven con las HU-094 a HU-099 de César (NEX-598 a NEX-603), que son otra cosa: buscar fragmentos de los documentos con embeddings. No se fusionaron. El informador quedó Moisés porque el token no puede fijar otro (solo César lo cambiaba, y ya no está en la empresa). NEX-606 (la 2) ya está en LISTO y no se tocó. El texto que va a Jira no nombra la herramienta ni usa palabras de la planeación interna.
 
 ---
 
@@ -113,10 +113,13 @@ Que la persona pueda confiar en la respuesta y usarla: saber cómo se obtuvo, or
 - La tabla se ordena por cualquier columna, con fechas y números en formato legible.
 - Exportar la respuesta a CSV.
 - Preguntas sugeridas al abrir la página, armadas con los tipos documentales de la organización («¿Cuántos contratos llegaron este mes?»), para que se vea qué se puede preguntar.
+- Cada respuesta dice de dónde sale: un renglón que viene de un documento abre ese documento en la página de donde salió el dato, y uno que viene de la ejecución de un proceso abre esa ejecución en su expediente.
+- Si la consulta no devuelve nada, la respuesta dice que no hay información; nunca se completa con datos que no salieron de la base.
 
 **Criterios de aceptación**
 
 - Cada respuesta trae su frase y su consulta, y la consulta se puede copiar.
+- Desde un renglón con documento y página se abre el documento en esa página; desde uno de una ejecución, esa ejecución.
 - El CSV trae exactamente lo que muestra la tabla y se abre en Excel con los acentos bien, sin acomodar nada.
 - Las preguntas sugeridas solo usan tipos documentales de la propia organización y, al picarlas, se preguntan.
 
@@ -141,11 +144,13 @@ Saber qué se pregunta y cuánto cuesta, evitar abusos, y que la búsqueda mejor
 - En cada respuesta, «¿Te sirvió?» (sí / no).
 - Quien administra la organización ve las respuestas marcadas como buenas y puede aprobarlas como ejemplo; desde ese momento la búsqueda de esa organización, y solo de esa, las usa como ejemplo (historia 2).
 - «Tus preguntas recientes» en la página, para repetir una con un clic.
+- La misma pregunta da la misma respuesta: si coincide con un ejemplo aprobado de la organización, o con una pregunta que la organización ya hizo y salió bien, se usa esa misma consulta, sin pedírsela otra vez al modelo. Lo que se genera en cada pregunta es la consulta, no los datos: se contesta siempre sobre lo ya guardado.
 - El equipo de plataforma ve en Nexus Monitor las preguntas por organización: cuántas, cuántas fallaron, tiempo y costo.
 
 **Criterios de aceptación**
 
 - Cada pregunta deja su registro, también las que fallan o se cortan por tiempo.
+- Hacer dos veces la misma pregunta, o una que es un ejemplo aprobado, usa exactamente la misma consulta y, si los datos no cambiaron, da los mismos renglones; la bitácora dice que se reusó.
 - Al llegar al tope, la siguiente pregunta no llega al modelo y la persona ve el mensaje.
 - Un ejemplo aprobado en una organización mejora sus respuestas y nunca aparece en las de otra.
 - Quien no administra la organización no puede aprobar ejemplos: el back lo rechaza.
@@ -210,3 +215,32 @@ Una búsqueda pocas veces sale a la primera: la gente afina sobre lo que ya vio 
 **Depende de:** Historias 3 y 4.
 
 **Para QA:** Hacer una pregunta, dos de seguimiento y luego una nueva conversación; revisar que las de seguimiento partan de la anterior y que la nueva no.
+
+---
+
+## 8 · NEX-612 · Historia · Búsqueda Semántica · Preguntarle al expediente: documentos faltantes, resultados de los procesos y correcciones
+
+**Historia de usuario:** Como persona que revisa expedientes, quiero preguntarle a un expediente qué documentos le faltan, por qué quedó con el resultado que tiene y qué datos se corrigieron a mano, para entenderlo sin abrir documento por documento.
+
+**Contexto**
+
+Las historias 1 y 3 contestan sobre los datos extraídos de los documentos. Producto pide además preguntarle al expediente (documento «Interacción con el expediente: casos de uso esperados», del 18 de noviembre). Casi todo ya se guarda: qué documentos tiene cada expediente, qué tipos documentales exige cada proceso, cada ejecución con el resultado de cada regla, lo que comparó y de qué documento y página salió, y cada corrección a mano con el valor original, quién y cuándo. Falta exponerlo a la búsqueda, con el mismo aislamiento por organización.
+
+**Qué incluye**
+
+- Una migración nueva con vistas de solo lectura en el esquema [consulta], filtradas por la organización de la conexión igual que las de la historia 1: expedientes; documentos de cada expediente; tipos documentales que exige cada proceso; ejecuciones (expediente, proceso, resultado, fecha y quién la corrió); cada regla de cada ejecución, con su resultado y lo que comparó; la evidencia (documento, campo, valor y página); y las correcciones (valor extraído, valor corregido, motivo, quién y cuándo). El permiso del DBA ya cubre cualquier vista de ese esquema: no hace falta otro ticket.
+- Que la búsqueda las conozca: qué es cada vista y cada columna, y preguntas de ejemplo probadas en dev para estas cuatro: «¿qué documentos le faltan a este expediente?», «¿por qué quedó en Requiere revisión?», «expedientes de este mes que quedaron en Requiere revisión» y «¿qué datos de este expediente se corrigieron y quién lo hizo?».
+- Un cuadro de búsqueda dentro del expediente. Al preguntar ahí, la conexión fija también el expediente, igual que la organización y sin poder cambiarlo, y las vistas solo devuelven lo de ese expediente: «este expediente» no depende de que el modelo escriba bien el filtro.
+- Los casos que piden datos de fuera (comparar contra un tabulador del cliente, validar una factura ante el SAT) o el historial de una persona en varios expedientes NO entran aquí: necesitan capacidades nuevas.
+
+**Criterios de aceptación**
+
+- En dev, las cuatro preguntas de ejemplo dan lo mismo que se ve en la pantalla del expediente y en su historial de ejecuciones.
+- Desde el cuadro de un expediente, preguntar por otro expediente o por todos devuelve solo lo del expediente abierto.
+- Sin expediente fijado (el cuadro del Módulo de uso), las vistas nuevas devuelven lo de toda la organización y nada de otra.
+- Un expediente al que todavía no se le ha ejecutado ningún proceso lo dice así, sin inventar un resultado.
+- Las vistas nuevas no se pueden leer con ninguna organización fijada distinta de la propia (las mismas comprobaciones de la historia 1).
+
+**Depende de:** Historias 1 y 3.
+
+**Para QA:** En dev, abrir un expediente con documentos y al menos una ejecución, hacer las cuatro preguntas desde su cuadro y compararlas con la pantalla. Corregir un dato a mano y preguntar qué se corrigió. Repetir desde el Módulo de uso y confirmar que ahí contesta sobre toda la organización.

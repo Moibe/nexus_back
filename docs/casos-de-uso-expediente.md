@@ -47,9 +47,26 @@ La corrección no se borra, porque es historia, pero deja de aplicarse sin que n
 
 Los casos 1, 2 y 6 dicen «este expediente». Propuesta: además del cuadro de búsqueda del Módulo de uso (NEX-607), poner uno dentro del expediente. La conexión fijaría también el expediente en `SESSION_CONTEXT`, de solo lectura, igual que la organización, y las vistas filtrarían por él. Así «este expediente» no depende de que el modelo escriba bien el filtro.
 
-## Qué cambiaría en el plan
+## Qué cambió en el plan (Jira, 2026-11-20)
 
-1. **La 0016 crece, sin otro ticket para el DBA.** El `GRANT SELECT ON SCHEMA::consulta` de NEX-604 cubre cualquier vista nueva del esquema. Sigue en espera, así que se le pueden sumar vistas, todas filtradas por organización y, si se fija, por expediente:
+Moibe dio el visto bueno («los otros puedes cambiarlos libremente»). NEX-604, el ticket de Charlie, no cambia: su `GRANT SELECT ON SCHEMA::consulta` ya cubre cualquier vista nueva del esquema. NEX-606 ya estaba en LISTO y no se tocó, así que lo que le tocaba se fue a una historia nueva. Lo publicado:
+
+- **NEX-612 (nueva, épica NEX-597):** «Preguntarle al expediente: documentos faltantes, resultados de los procesos y correcciones». Cubre:
+  - una migración NUEVA con las vistas de abajo, para no mover la 0016 de NEX-605;
+  - su descripción y los ejemplos de los casos 1, 2, 5 y 6;
+  - el cuadro de búsqueda dentro del expediente, con el expediente fijado en la conexión.
+
+  La bloquean NEX-605 y NEX-607.
+- **NEX-608 (ampliada):** cada renglón abre el documento en su página, o la ejecución. Si no hay información, lo dice.
+- **NEX-609 (ampliada):** la misma pregunta reusa la misma consulta, la de un ejemplo aprobado o una que ya salió bien.
+- **NEX-613 (nueva, épica NEX-482, motor de reglas):** nombre propio opcional para cada regla.
+- **NEX-614 (nueva, épica NEX-501, revisión humana):** una corrección a mano sigue valiendo cuando el documento se vuelve a extraer.
+
+Las cinco están en NEX Sprint 7, «Por hacer», con Moisés de responsable. Los casos 3 y 4 no tienen ticket: son capacidad objetivo, de una épica aparte.
+
+## La propuesta original
+
+1. **Más vistas en `[consulta]`, sin otro ticket para el DBA** (al final van en una migración nueva, no en la 0016). Todas filtradas por organización y, si se fija, por expediente:
    - `vExpediente`: expediente, tipo y fechas;
    - `vDocumentoDeExpediente`: expediente y documento, porque un documento puede estar en varios;
    - `vDocumentoRequerido`: proceso y tipo documental, sacado del lienzo;
