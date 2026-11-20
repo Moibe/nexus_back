@@ -45,7 +45,7 @@ tipo; quien ejecuta no debe seguir. Un tipo que el proceso NO usa puede estar du
 ## Qué se exige para ejecutar
 
 El proceso tiene que ser de la organización, estar activo y traer su Resultado con una regla conectada (`procesos.resultado_conectado`). Cada falta se
-dice con su propio código (`NoSePuedeEjecutar.codigo`: `proceso_inactivo`, `sin_resultado`, `resultado_sin_regla`) para que la pantalla explique qué hacer.
+dice con su propio código (`NoSePuedeEjecutar.codigo`: `proceso_inactivo`, `sin_resultado`, `resultado_sin_regla` y, desde el 2026-11-20, `sin_tipos` y `tipos_no_activos`) para que la pantalla explique qué hacer.
 
 ## Los nombres de los campos
 
@@ -206,6 +206,15 @@ def preparar(tenant: str, expediente_id: object, proceso_id: object) -> dict:
         raise NoSePuedeEjecutar("sin_resultado", "Ese proceso no tiene su nodo de Resultado: ábrelo en el motor de reglas y agrégalo para poder ejecutarlo.")
     if not procesos.resultado_conectado(datos):
         raise NoSePuedeEjecutar("resultado_sin_regla", "El Resultado de ese proceso no tiene ninguna regla conectada: ábrelo en el motor de reglas y conéctalo.")
+    # 2026-11-20 (Moibe: «cuando no se pueda ejecutar entonces pasa a Inactivo»): uno sin tipos documentales, o con tipos que ya no están activos o se
+    # borraron, está INACTIVO aunque su `activo` guardado diga otra cosa (`procesos.motivos_de_inactividad`, el espejo de la regla del front).
+    motivos = procesos.motivos_de_inactividad(datos, tipos_documentales.listar(tenant))
+    if "documento" in motivos:
+        raise NoSePuedeEjecutar("sin_tipos", "Ese proceso no tiene tipos documentales: ábrelo en el motor de reglas y agrégale al menos uno.")
+    if "inactivos" in motivos or "borrados" in motivos:
+        raise NoSePuedeEjecutar(
+            "tipos_no_activos", "Ese proceso usa tipos documentales que ya no están activos o se borraron: ábrelo en el motor de reglas y cámbialos."
+        )
 
     # Los documentos de TODO el expediente con su tipo documental vigente (el de su última extracción o, si no, el de su última clasificación).
     documentos = expediente["documentos"]
@@ -256,15 +265,22 @@ def procesos_ofrecidos(tenant: str) -> list[dict]:
     a un expediente virtual (2026-11-03); ahora un proceso corre sobre cualquier expediente (Moibe, 2026-11-05). Sin base: vacío."""
     if not SQLSERVER_HOST:
         return []
-    return [
-        {
-            "id": p["id"],
-            "nombre": p["datos"]["nombre"],
-            "activo": p["datos"].get("activo") is not False,
-            "ejecutable": procesos.resultado_conectado(p["datos"]),
-        }
-        for p in procesos.listar(tenant)
-    ]
+    # Desde el 2026-11-20 `activo` es el EFECTIVO: el guardado Y sin motivos de inactividad (Moibe: «cuando no se pueda ejecutar entonces pasa a Inactivo»);
+    # `motivos` dice cuáles (los códigos de `procesos.motivos_de_inactividad`).
+    tipos = tipos_documentales.listar(tenant)
+    salida = []
+    for p in procesos.listar(tenant):
+        motivos = procesos.motivos_de_inactividad(p["datos"], tipos)
+        salida.append(
+            {
+                "id": p["id"],
+                "nombre": p["datos"]["nombre"],
+                "activo": p["datos"].get("activo") is not False and not motivos,
+                "ejecutable": procesos.resultado_conectado(p["datos"]),
+                "motivos": motivos,
+            }
+        )
+    return salida
 
 
 # ── Registrar ────────────────────────────────────────────────────────────────────────────────────────────────────────────

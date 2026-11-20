@@ -117,10 +117,10 @@ def sub_def(nombre: str, tipo_dato: str = "texto") -> dict:
     return {"id": "sub-" + uuid.uuid4().hex[:8], "nombre": nombre, "tipoDato": tipo_dato, "descripcion": "", "obligatorio": False}
 
 
-def tipo_documental(bearer: str, tenant: str, nombre: str, campos: list[dict]) -> str:
+def tipo_documental(bearer: str, tenant: str, nombre: str, campos: list[dict], estado: str = "activo") -> str:
     tid = "tipo-" + uuid.uuid4().hex
     datos = {
-        "nombre": nombre, "descripcion": "", "vertical": "", "campos": campos, "pasoMaximo": 3, "guardadoEn": "2026-11-03T00:00:00Z", "estado": "activo", "version": 1,
+        "nombre": nombre, "descripcion": "", "vertical": "", "campos": campos, "pasoMaximo": 3, "guardadoEn": "2026-11-03T00:00:00Z", "estado": estado, "version": 1,
         "procesadorId": "", "procesadorVersion": "", "procesadorDisplayName": "", "ejemploDocumental": False, "activadoEn": None,
         "historialVersiones": [], "versionEnEdicion": None, "documentosEjemplo": [], "recortesPorDocumento": {},
     }
@@ -319,14 +319,15 @@ try:
     vc = docs[td_comp]["valores"] or {}
     rev("el otro tipo trae sus valores (el monto como lo escribió el documento)", vc.get("Monto", {}).get("valores") == ["$1,250.50"] and vc.get("Titular", {}).get("valores") == ["Juan Pérez"], str(docs[td_comp]))
 
-    # Un tipo documental que ya no está en la biblioteca, o puesto dos veces en el dibujo, no estorba: se prepara con los que sí hay, cada uno UNA vez.
+    # Un tipo puesto dos veces en el dibujo no estorba: se prepara cada uno UNA vez. (Hasta el 2026-11-20 tampoco estorbaba un tipo que ya no estaba en la
+    # biblioteca; desde entonces deja el proceso INACTIVO —Moibe: «cuando no se pueda ejecutar entonces pasa a Inactivo»— y se prueba en «5 · Lo que impide
+    # ejecutar» con `tipos_no_activos`.)
     pid_raro = "proceso-" + uuid.uuid4().hex
     raro = proceso_base(nombre="Validar identidad (con tipos raros)")  # el nombre de un proceso es único en la organización (NEX-529)
-    raro["nodos"] = raro["nodos"] + [n_tipo("tipo-" + uuid.uuid4().hex), {**n_tipo(td_ine), "id": "tipo-repetido"}]
+    raro["nodos"] = raro["nodos"] + [{**n_tipo(td_ine), "id": "tipo-repetido"}]
     assert guardar_proceso(adm, org, pid_raro, raro, 0).status_code == 200
     r = preparar(adm, org, juan, pid_raro)
-    rev("un tipo documental que ya no existe en la biblioteca no estorba: se prepara con los que sí hay", r.status_code == 200 and {t["id"] for t in r.json()["tipos"]} == {td_ine, td_comp} and {d["tipoId"] for d in r.json()["documentos"]} == {td_ine, td_comp}, r.text[:300])
-    rev("y un tipo puesto dos veces en el dibujo sale UNA sola vez, en `tipos` y en `documentos`", len(r.json()["tipos"]) == 2 and len(r.json()["documentos"]) == 2, r.text[:300])
+    rev("un tipo puesto dos veces en el dibujo sale UNA sola vez, en `tipos` y en `documentos`", r.status_code == 200 and {t["id"] for t in r.json()["tipos"]} == {td_ine, td_comp} and len(r.json()["tipos"]) == 2 and len(r.json()["documentos"]) == 2, r.text[:300])
     assert c.delete(f"/procesos/{pid_raro}", params={"tenant": org}, headers=cab(adm)).status_code in (200, 204)
 
     # Una fila de la que SOLO se sabe que le faltó un dato (Document AI la devolvió, pero sin ese campo) también es una fila del grupo.
@@ -438,6 +439,23 @@ try:
     p_campo = "proceso-" + uuid.uuid4().hex
     guardar_proceso(adm, org, p_campo, res_campo, 0)
     rev("un Resultado cableado a algo que no es una regla (un campo, a mano) tampoco cuenta como conectado", codigo(preparar(adm, org, juan, p_campo)) == "resultado_sin_regla")
+    # 2026-11-20 (Moibe: «cuando no se pueda ejecutar entonces pasa a Inactivo»): sin tipos documentales, o con tipos que ya no están activos o se borraron.
+    p_sin_tipos = "proceso-" + uuid.uuid4().hex
+    guardar_proceso(adm, org, p_sin_tipos, {
+        "nombre": "Sin tipos", "descripcion": "", "nodos": [n_op(1, "igual"), n_fijo(1, "texto", "X"), n_res()],
+        "aristas": [cable("constante-1", "valor", "operador-1", "a"), cable("constante-1", "valor", "operador-1", "b"), cable("operador-1", "resultado", "resultado-final", "a")],
+    }, 0)
+    r = preparar(adm, org, juan, p_sin_tipos)
+    rev("un proceso sin tipos documentales: 409 `sin_tipos`", r.status_code == 409 and codigo(r) == "sin_tipos" and "tipos documentales" in r.json()["detail"]["mensaje"], r.text[:200])
+    td_borrador = tipo_documental(adm, org, "Constancia en borrador", [campo_def("RFC")], estado="borrador")
+    p_borrador = "proceso-" + uuid.uuid4().hex
+    guardar_proceso(adm, org, p_borrador, proceso_base(nombre="Con borrador", nodos=proceso_base()["nodos"] + [n_tipo(td_borrador)]), 0)
+    r = preparar(adm, org, juan, p_borrador)
+    rev("un proceso que usa un tipo en borrador: 409 `tipos_no_activos`", r.status_code == 409 and codigo(r) == "tipos_no_activos", r.text[:200])
+    p_borrado = "proceso-" + uuid.uuid4().hex
+    guardar_proceso(adm, org, p_borrado, proceso_base(nombre="Con borrado", nodos=proceso_base()["nodos"] + [n_tipo("tipo-" + "0" * 32)]), 0)
+    r = preparar(adm, org, juan, p_borrado)
+    rev("un proceso que usa un tipo que ya no existe: 409 `tipos_no_activos`", r.status_code == 409 and codigo(r) == "tipos_no_activos", r.text[:200])
     rev("un proceso que no existe: 404 `proceso_no_existe`", codigo(preparar(adm, org, juan, "proceso-" + uuid.uuid4().hex)) == "proceso_no_existe")
     r = preparar(adm, org, "expediente-" + uuid.uuid4().hex, pid)
     rev("un expediente que no existe: 404 `expediente_no_existe`, con su mensaje", r.status_code == 404 and codigo(r) == "expediente_no_existe" and r.json()["detail"]["mensaje"] == "Ese expediente no existe.", r.text[:200])
@@ -662,15 +680,21 @@ try:
     r = ofrecidos(adm, org)
     rev("200 con `procesos`", r.status_code == 200 and set(r.json()) == {"procesos"} and isinstance(r.json()["procesos"], list), r.text[:200])
     lista_p = r.json()["procesos"]
-    rev("cada uno trae id, nombre, si está activo y si es ejecutable (nada más: ni el dibujo)", all(set(p) == {"id", "nombre", "activo", "ejecutable"} for p in lista_p), str(lista_p[:1]))
+    rev("cada uno trae id, nombre, si está activo, si es ejecutable y sus motivos de inactividad (nada más: ni el dibujo)", all(set(p) == {"id", "nombre", "activo", "ejecutable", "motivos"} for p in lista_p), str(lista_p[:1]))
     por_nombre = {p["nombre"]: p for p in lista_p}
-    rev("TODOS, también los inactivos, y en el orden en que se crearon", [p["nombre"] for p in lista_p] == ["Apagado", "Con liga vieja", "Sin resultado", "Resultado suelto", "Resultado de un campo", "Ejecutable", "Sin Resultado conectado"], str([p["nombre"] for p in lista_p]))
+    rev("TODOS, también los inactivos, y en el orden en que se crearon", [p["nombre"] for p in lista_p] == ["Apagado", "Con liga vieja", "Sin resultado", "Resultado suelto", "Resultado de un campo", "Sin tipos", "Con borrador", "Con borrado", "Ejecutable", "Sin Resultado conectado"], str([p["nombre"] for p in lista_p]))
     rev("los que ya se borraron no se ofrecen", "Validar identidad" not in por_nombre and pid not in {p["id"] for p in lista_p})
     rev("`ejecutable` es tener el Resultado con una regla conectada: el que la tiene sí; sin Resultado, con el Resultado suelto o cableado a un campo, no",
         por_nombre["Ejecutable"]["ejecutable"] is True and por_nombre["Con liga vieja"]["ejecutable"] is True and por_nombre["Sin Resultado conectado"]["ejecutable"] is False and por_nombre["Sin resultado"]["ejecutable"] is False
         and por_nombre["Resultado suelto"]["ejecutable"] is False and por_nombre["Resultado de un campo"]["ejecutable"] is False, str(lista_p)[:400])
-    rev("`activo`: un proceso desactivado se ofrece igual (la pantalla filtra), con `activo: false`; los demás, `true`",
-        por_nombre["Apagado"]["activo"] is False and por_nombre["Apagado"]["ejecutable"] is True and all(p["activo"] is True for n, p in por_nombre.items() if n != "Apagado"), str(lista_p)[:400])
+    # 2026-11-20: `activo` es el EFECTIVO (el guardado y sin motivos de inactividad), y `motivos` dice por qué no lo está.
+    esperado = {
+        "Apagado": (False, []), "Con liga vieja": (True, []), "Sin resultado": (False, ["resultado"]), "Resultado suelto": (False, ["resultado_sin_regla"]),
+        "Resultado de un campo": (False, ["resultado_sin_regla"]), "Sin tipos": (False, ["documento"]), "Con borrador": (False, ["inactivos"]),
+        "Con borrado": (False, ["borrados"]), "Ejecutable": (True, []), "Sin Resultado conectado": (False, ["resultado"]),
+    }
+    rev("`activo` es el efectivo y `motivos` el porqué: desactivado a mano (sin motivos), o incompleto aunque esté guardado como activo",
+        {n: (p["activo"], p["motivos"]) for n, p in por_nombre.items()} == esperado and por_nombre["Apagado"]["ejecutable"] is True, str({n: (p["activo"], p["motivos"]) for n, p in por_nombre.items()})[:600])
     rev("lo que se ofrece trae los ids reales de cada proceso", por_nombre["Ejecutable"]["id"] == pid2 and por_nombre["Apagado"]["id"] == p_inactivo and por_nombre["Sin Resultado conectado"]["id"] == p_sin2)
     rev("lo ven todos los roles: Analista, Viewer y Auditor leen lo mismo", all(ofrecidos(P[rol_], org).json() == r.json() for rol_ in ("ANALISTA", "VIEWER", "AUDITOR")))
     rev("la ruta no se confunde con el id de una ejecución (`/{ejecucion_id}`): abrir una ejecución que no existe sigue dando 404", abrir(adm, org, "ejecucion-" + uuid.uuid4().hex).status_code == 404 and abrir(adm, org, "procesos").status_code == 200)
@@ -691,7 +715,7 @@ try:
         rev("sin base, los procesos que se ofrecen salen vacíos (igual que el historial y sus filtros) y no se asoma a los procesos de otro almacén", ejecuciones_servicio.procesos_ofrecidos(org) == [])
     finally:
         ejecuciones_servicio.SQLSERVER_HOST = guardada_host
-    rev("…y con base vuelven a salir", len(ejecuciones_servicio.procesos_ofrecidos(org)) == 7)
+    rev("…y con base vuelven a salir", len(ejecuciones_servicio.procesos_ofrecidos(org)) == 10)
 
     titulo("14 · Detalles del servicio")
     prep14 = preparar(adm, org, juan, pid2).json()

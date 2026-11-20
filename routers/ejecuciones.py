@@ -83,7 +83,7 @@ def _sin_base(exc: ejecuciones.SinBase) -> HTTPException:
         "con sus campos), `documentos` (por cada tipo: los documentos del EXPEDIENTE completo que lo cubren y, si es uno solo, sus valores VIGENTES por el "
         "nombre del campo en la biblioteca) y `duplicados` (los tipos que el proceso usa y el expediente trae repetidos: con alguno, la ejecución no debe "
         "seguir). Un proceso corre sobre cualquier expediente de la organización. 404 con `codigo` si no existe el expediente (`expediente_no_existe`) o el "
-        "proceso (`proceso_no_existe`); 409 con `codigo` si el proceso no se puede ejecutar: `proceso_inactivo`, `sin_resultado` o `resultado_sin_regla`."
+        "proceso (`proceso_no_existe`); 409 con `codigo` si el proceso no se puede ejecutar: `proceso_inactivo`, `sin_resultado`, `resultado_sin_regla`, `sin_tipos` o `tipos_no_activos`."
     ),
 )
 def preparar(

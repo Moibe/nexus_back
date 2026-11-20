@@ -307,6 +307,37 @@ def resultado_conectado(datos: dict) -> bool:
     )
 
 
+def motivos_de_inactividad(datos: dict, tipos: list[dict] | None) -> list[str]:
+    """Por qué un proceso NO puede estar activo (2026-11-20, Moibe: «cuando no se pueda ejecutar entonces pasa a Inactivo»). Espejo EXACTO de
+    `motivosDeInactividad` en `reglas.ts` del front, en el mismo orden:
+
+    - `documento`: no tiene ningún tipo documental (sus entradas);
+    - `inactivos`: usa tipos documentales que existen pero no están activos (borrador o archivado);
+    - `borrados`: usa tipos documentales que ya no existen;
+    - `resultado`: no tiene el nodo de Resultado;
+    - `resultado_sin_regla`: lo tiene, pero ninguna regla llega a él.
+
+    `tipos` es la biblioteca de la organización (`tipos_documentales.listar`); con `None` no se juzgan `inactivos` ni `borrados`. Sin motivos, el proceso está
+    activo si su `activo` guardado no dice `False`. Sigue siendo solo mirar el dibujo: no se interpretan las reglas."""
+    nodos = [n for n in (datos.get("nodos") or []) if isinstance(n, dict)]
+    de_tipo = [n for n in nodos if n.get("type") == "tipo-documental"]
+    motivos: list[str] = []
+    if not de_tipo:
+        motivos.append("documento")
+    if tipos is not None:
+        estados = {t.get("id"): (t.get("datos") or {}).get("estado") for t in tipos}
+        ids = [(n.get("data") or {}).get("tipoId") for n in de_tipo]
+        if any(i in estados and estados[i] != "activo" for i in ids):
+            motivos.append("inactivos")
+        if any(i not in estados for i in ids):
+            motivos.append("borrados")
+    if not any(n.get("type") == "resultado-final" for n in nodos):
+        motivos.append("resultado")
+    elif not resultado_conectado(datos):
+        motivos.append("resultado_sin_regla")
+    return motivos
+
+
 def guardar(tenant: str, proceso_id: str, datos: object, revision: int, por: str) -> tuple[dict, dict | None]:
     """Crea (`revision == 0`) o actualiza (`revision` = la que se editó) un proceso.
 
