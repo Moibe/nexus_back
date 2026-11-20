@@ -5,7 +5,7 @@
 Un proceso es un conjunto de reglas y corre sobre un EXPEDIENTE (un conjunto de documentos). Se arma en un lienzo: los tipos
 documentales de la organización son sus entradas (nodos de tipo `tipo-documental`: lo que se dibuja ahí es la declaración de qué documentos
 necesita el proceso del expediente), las reglas son operadores (nodos de tipo
-`operador`: igual, distinto, contiene, parecido (con su `minimo`, en %), mayor, mayor_igual, menor, menor_igual, entre (el único con TRES entradas:
+`operador`: igual (con su casilla `ignorarEscritura`, NEX-579, que solo se guarda si está activada), distinto, contiene, parecido (con su `minimo`, en %), mayor, mayor_igual, menor, menor_igual, entre (el único con TRES entradas:
 valor, desde y hasta; su tercera muestra va en `c`); antiguedad (una fecha contra hoy, con su `maximo` y su `unidad`: dias, meses o anios); cantidad, suma, alguno, todos y unicos, que trabajan con LISTAS; existe, que
 pregunta si el expediente trae un documento; y, o, no, implica),
 un `constante` es un valor fijo que se escribe en el lienzo (por ejemplo el «2» de «más de 2 socios») y los cables llevan un campo,
@@ -196,6 +196,14 @@ def _nodo(n: object) -> dict:
         limpio_datos["b"] = _texto(datos.get("b", ""), "Un valor de ejemplo", MAX_MUESTRA, obligatorio=False)
         if limpio_datos["operador"] in OPERADORES_CON_TERCERA_ENTRADA:
             limpio_datos["c"] = _texto(datos.get("c", ""), "Un valor de ejemplo", MAX_MUESTRA, obligatorio=False)
+        if limpio_datos["operador"] == "igual":
+            # «Igual a» (NEX-579, 2026-11-20): la casilla «Ignorar mayúsculas, acentos, guiones y espacios». Sí o no; se guarda SOLO activada, como la
+            # manda el lienzo (`serializarDibujo`), para que un «Igual a» de antes se guarde exactamente igual que antes.
+            ignorar = datos.get("ignorarEscritura", False)
+            if not isinstance(ignorar, bool):
+                raise ProcesoInvalido("La casilla «Ignorar mayúsculas, acentos, guiones y espacios» de «Igual a» debe ser sí o no.")
+            if ignorar:
+                limpio_datos["ignorarEscritura"] = True
         if limpio_datos["operador"] == "parecido":
             # «Parecido a» (2026-11-10): el porcentaje mínimo de parecido para que pase. Sin él, el de siempre.
             minimo = datos.get("minimo", MINIMO_PARECIDO)
@@ -297,6 +305,37 @@ def resultado_conectado(datos: dict) -> bool:
         isinstance(a, dict) and a.get("target") in resultados and a.get("targetHandle") == "a" and tipos.get(a.get("source")) == "operador"
         for a in datos.get("aristas") or []
     )
+
+
+def motivos_de_inactividad(datos: dict, tipos: list[dict] | None) -> list[str]:
+    """Por qué un proceso NO puede estar activo (2026-11-20, Moibe: «cuando no se pueda ejecutar entonces pasa a Inactivo»). Espejo EXACTO de
+    `motivosDeInactividad` en `reglas.ts` del front, en el mismo orden:
+
+    - `documento`: no tiene ningún tipo documental (sus entradas);
+    - `inactivos`: usa tipos documentales que existen pero no están activos (borrador o archivado);
+    - `borrados`: usa tipos documentales que ya no existen;
+    - `resultado`: no tiene el nodo de Resultado;
+    - `resultado_sin_regla`: lo tiene, pero ninguna regla llega a él.
+
+    `tipos` es la biblioteca de la organización (`tipos_documentales.listar`); con `None` no se juzgan `inactivos` ni `borrados`. Sin motivos, el proceso está
+    activo si su `activo` guardado no dice `False`. Sigue siendo solo mirar el dibujo: no se interpretan las reglas."""
+    nodos = [n for n in (datos.get("nodos") or []) if isinstance(n, dict)]
+    de_tipo = [n for n in nodos if n.get("type") == "tipo-documental"]
+    motivos: list[str] = []
+    if not de_tipo:
+        motivos.append("documento")
+    if tipos is not None:
+        estados = {t.get("id"): (t.get("datos") or {}).get("estado") for t in tipos}
+        ids = [(n.get("data") or {}).get("tipoId") for n in de_tipo]
+        if any(i in estados and estados[i] != "activo" for i in ids):
+            motivos.append("inactivos")
+        if any(i not in estados for i in ids):
+            motivos.append("borrados")
+    if not any(n.get("type") == "resultado-final" for n in nodos):
+        motivos.append("resultado")
+    elif not resultado_conectado(datos):
+        motivos.append("resultado_sin_regla")
+    return motivos
 
 
 def guardar(tenant: str, proceso_id: str, datos: object, revision: int, por: str) -> tuple[dict, dict | None]:

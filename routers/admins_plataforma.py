@@ -21,9 +21,18 @@ Crear (`USER_CREATED`), regenerar la contraseña (`INVITATION_REISSUED`) y retir
 
 ## Qué se cuida
 
-- Solo se toca a quien ES administrador de plataforma: regenerar la contraseña o retirar a un usuario de una organización por
-  aquí es un 404, igual que uno que no existe. Monitor no es una puerta para administrar usuarios ajenos.
-- No se retira al último administrador de plataforma activo ni al administrador de una organización (`usuarios` lo niega).
+- Las rutas `/{guid}` solo tocan a quien ES administrador de plataforma: regenerar la contraseña o retirar a un usuario de una
+  organización por ahí es un 404, igual que uno que no existe.
+- No se retira al último administrador de plataforma activo (`usuarios` lo niega).
+
+## Cuentas de organización (`/cuentas/{guid}`)
+
+Desde el 2026-11-20 (Moibe: «me refiero a eliminar user como los de abajo, o sea administradores de la organización … hazlo con la
+advertencia en rojo») Monitor también retira las cuentas de las organizaciones que aparecen bajo cada superadmin. Antes eso solo se
+hacía con `retirar_cuenta.py --forzar` en el servidor. Es el mismo borrado lógico, y el administrador de una organización sí se
+puede retirar aunque la deje sin administrador: `GET /cuentas/{guid}` dice antes qué organizaciones se quedarían sin ninguno (para
+que Monitor lo advierta) y `DELETE` se niega (409 `organizacion_sin_admin`) si eso pasa y no se confirmó con `dejarSinAdmin=true`.
+Un administrador de plataforma por `/cuentas/` es un 404: tiene su propia ruta, con su propia regla del último.
 - La contraseña temporal se devuelve SIEMPRE a quien la pidió (como la imprimía el script): es el respaldo si el correo no
   salió, y quien opera Monitor es quien debe entregarla.
 """
@@ -34,7 +43,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from routers.errores import almacen_no_disponible
-from servicios import auditoria, auth, invitaciones, tenants_registro, tokens, usuarios
+from servicios import auditoria, auth, invitaciones, roles, tenants_registro, tokens, usuarios
 from servicios.almacen import ErrorAlmacen
 
 logger = logging.getLogger(__name__)
@@ -229,3 +238,123 @@ def retirar(guid: str, motivo: str = Query(..., min_length=1, max_length=500, de
     tokens.invalidar_de(guid, motivo="CUENTA_RETIRADA")
     _anotar(auditoria.USER_DELETED, guid, email=cuenta["email"], motivo=motivo, esAdminPlataforma=True, membresias=len(cuenta["membresias"]))
     return {"retirado": True, "email": cuenta["email"]}
+
+
+# ── Cuentas de organización ─────────────────────────────────────────────────────────────────────────────────────────────
+
+_NO_EXISTE_CUENTA = "Esa cuenta no existe."
+
+
+def _cuenta_de_organizacion_o_404(guid: str) -> dict:
+    """La cuenta `guid` si es de una organización. Una que no existe, o un administrador de plataforma, es un 404."""
+    try:
+        u = usuarios.por_guid(guid)
+    except usuarios.NoEncontrado as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE_CUENTA) from exc
+    if u["esAdminPlataforma"]:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE_CUENTA)
+    return u
+
+
+def _organizacion(guid: str) -> dict:
+    try:
+        return {"guid": guid, "nombre": tenants_registro.por_guid(guid)["nombre"]}
+    except tenants_registro.NoEncontrado:
+        return {"guid": guid, "nombre": None}
+
+
+def _sin_admin_si_se_va(u: dict) -> list[dict]:
+    """Las organizaciones de las que `u` es administrador y que, sin él, no tendrían otro administrador ACTIVO (uno desactivado no
+    puede entrar a administrar, así que no cuenta)."""
+    salida = []
+    for m in u["membresias"]:
+        if m["rol"] != roles.ADMIN:
+            continue
+        otros = [
+            o
+            for o in usuarios.de_tenant(m["tenantGuid"])
+            if o["guid"] != u["guid"] and o["activo"] and any(x["tenantGuid"] == m["tenantGuid"] and x["rol"] == roles.ADMIN for x in o["membresias"])
+        ]
+        if not otros:
+            salida.append(_organizacion(m["tenantGuid"]))
+    return salida
+
+
+@router.get(
+    "/cuentas/{guid}",
+    tags=["Administradores de plataforma"],
+    summary="Una cuenta de organización, antes de retirarla",
+    description=(
+        "Sus organizaciones con su rol en cada una y `organizacionesSinAdmin`: de cuáles es el único administrador activo, que se "
+        "quedarían sin ninguno si se retira. Un administrador de plataforma aquí es un 404."
+    ),
+)
+def cuenta(guid: str):
+    try:
+        u = _cuenta_de_organizacion_o_404(guid)
+        sin_admin = _sin_admin_si_se_va(u)
+        membresias = [
+            {"organizacion": _organizacion(m["tenantGuid"]), "rol": m["rol"], "rolNombre": roles.nombre_de(m["rol"])} for m in u["membresias"]
+        ]
+    except ErrorAlmacen as exc:
+        raise almacen_no_disponible(exc) from exc
+    return {
+        "guid": u["guid"],
+        "email": u["email"],
+        "nombre": u["nombre"],
+        "apellidos": u["apellidos"],
+        "estado": _estado(u),
+        "membresias": membresias,
+        "organizacionesSinAdmin": sin_admin,
+    }
+
+
+@router.delete(
+    "/cuentas/{guid}",
+    tags=["Administradores de plataforma"],
+    summary="Retirar una cuenta de organización",
+    description=(
+        "El mismo borrado LÓGICO que a un administrador de plataforma: se le cierran las sesiones, deja de existir para el login, su "
+        "correo queda libre y el rastro se queda en la bitácora. El `motivo` es obligatorio. Si es el único administrador activo de "
+        "alguna organización, se niega (409 `organizacion_sin_admin`, con la lista) salvo con `dejarSinAdmin=true`."
+    ),
+)
+def retirar_cuenta(
+    guid: str,
+    motivo: str = Query(..., min_length=1, max_length=500, description="Por qué se retira; queda en la bitácora"),
+    dejarSinAdmin: bool = Query(False, description="Confirmar que se retira aunque alguna organización se quede sin administrador"),
+):
+    motivo = motivo.strip()
+    if not motivo:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El motivo es obligatorio.")
+    try:
+        u = _cuenta_de_organizacion_o_404(guid)
+        sin_admin = _sin_admin_si_se_va(u)
+        if sin_admin and not dejarSinAdmin:
+            nombres = ", ".join(o["nombre"] or o["guid"] for o in sin_admin)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "codigo": "organizacion_sin_admin",
+                    "mensaje": f"No se retiró: {nombres} se quedaría sin administrador. Confírmalo para retirarla de todos modos.",
+                    "organizaciones": sin_admin,
+                },
+            )
+        usuarios.eliminar_usuario(guid, motivo, por=ACTOR, forzar=True)
+    except usuarios.NoSePuedeEliminar as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"codigo": exc.motivo, "mensaje": f"No se puede retirar: {exc}."}) from exc
+    except usuarios.NoEncontrado as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE_CUENTA) from exc
+    except ErrorAlmacen as exc:
+        raise almacen_no_disponible(exc) from exc
+    tokens.invalidar_de(guid, motivo="CUENTA_RETIRADA")
+    _anotar(
+        auditoria.USER_DELETED,
+        guid,
+        email=u["email"],
+        motivo=motivo,
+        esAdminPlataforma=False,
+        membresias=len(u["membresias"]),
+        organizacionesSinAdmin=[o["guid"] for o in sin_admin],
+    )
+    return {"retirado": True, "email": u["email"], "organizacionesSinAdmin": sin_admin}

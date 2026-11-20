@@ -1937,6 +1937,12 @@ que dev ya tiene, y el de producción lo que ya tiene staging. **Ojo al activarl
 (si no, un deploy de código viejo fallaría por «No module named migraciones»): primero se promueve el código y luego se agrega la línea. Además, `GET /health/db` dice si el esquema
 de la base está al día con el código: `esquema_desfasado` si le faltan migraciones (la base ADELANTE del código es normal).
 
+**Migraciones en espera (`migraciones/en_espera/`, 2026-11-12).** Una migración ya escrita y probada que depende de algo que hace el DBA (un esquema, un usuario) espera
+en esa subcarpeta: el corredor solo lee los `.sql` de `migraciones/`, así que ningún deploy la intenta (si la intentara, su guarda la detendría y el back de dev no
+reiniciaría hasta que el DBA cumpliera). Cuando el DBA entrega, se mueve a `migraciones/` (renumerándola si su número ya se ocupó) y entra con el siguiente deploy. Hoy
+espera la `0016_consulta_por_organizacion.sql` (las vistas de `[consulta]` separadas por organización para el usuario de solo lectura; `docs/solicitudes-dba.md` §8),
+probada con `verificar_consulta_por_organizacion.py`. El `README.md` de la carpeta dice qué espera cada una.
+
 ### El piloto: los tipos documentales en SQL (migración `0002`, 2026-10-28)
 
 La primera entidad del producto que deja el almacén y pasa a una tabla es el catálogo de tipos documentales: `nexus.documentTypes`.
@@ -2031,10 +2037,15 @@ scripts siguen sirviendo: `routers/admins_plataforma.py`.
 | `POST /admins-plataforma/` | Crea uno con contraseña temporal y le manda la bienvenida (`enviarCorreo: false` equivale a `--sin-correo`). Devuelve la contraseña SIEMPRE, y `correo`: `enviado`, `sin_canal`, `fallo` u `omitido`. Un correo repetido: 409. |
 | `POST /admins-plataforma/{guid}/reenviar-invitacion` | Regenera la contraseña temporal de quien no ha hecho su primer acceso (la anterior deja de servir). Quien ya entró: 409 `ya_hizo_su_primer_acceso`. |
 | `DELETE /admins-plataforma/{guid}?motivo=` | Lo retira (borrado lógico; su correo queda libre). El motivo es obligatorio. Al último administrador activo no se le retira: 409 `ultimo_superadmin`. |
+| `GET /admins-plataforma/cuentas/{guid}` | Una cuenta de ORGANIZACIÓN antes de retirarla: sus organizaciones con su rol y `organizacionesSinAdmin`, de cuáles es el único administrador activo. |
+| `DELETE /admins-plataforma/cuentas/{guid}?motivo=&dejarSinAdmin=` | La retira (el mismo borrado lógico). Si alguna organización se quedaría sin administrador: 409 `organizacion_sin_admin` con la lista, salvo con `dejarSinAdmin=true`. |
 
-**Se toca solo a administradores de PLATAFORMA**: una cuenta de una organización responde 404 como si no existiera, así que Monitor no
-sirve para administrar usuarios ajenos. Crear, regenerar y retirar dejan `USER_CREATED`, `INVITATION_REISSUED` y `USER_DELETED` con
-`actor: "monitor"` y qué pasó con el correo; nunca la contraseña.
+Las rutas `/{guid}` tocan solo a administradores de PLATAFORMA (una cuenta de organización ahí responde 404, como si no existiera) y
+las `/cuentas/{guid}` solo a cuentas de ORGANIZACIÓN (un administrador de plataforma ahí es un 404). Las de `/cuentas` llegaron el
+2026-11-20 (Moibe: retirar desde Monitor a los administradores de organización, «con la advertencia en rojo»); antes eso solo se
+hacía con `retirar_cuenta.py --forzar`. Crear, regenerar y retirar dejan `USER_CREATED`, `INVITATION_REISSUED` y `USER_DELETED` con
+`actor: "monitor"` y qué pasó con el correo (el retiro de una cuenta de organización, además, `organizacionesSinAdmin`); nunca la
+contraseña.
 
 ### ⚠️ Sin protección extra (decisión del usuario, 2026-10-20: «sin protección extra por ahora»)
 

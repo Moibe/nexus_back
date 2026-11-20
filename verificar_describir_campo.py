@@ -125,7 +125,19 @@ def sin_filtrar(r) -> bool:
     return "proyecto-de-prueba" not in r.text and "modelo-de-prueba" not in r.text and "detalle de Google" not in r.text
 
 
-BUENA = {"descripcion": "Las dos líneas de la zona de lectura mecánica, al pie de la página de datos, con letras, números y signos «<».", "valor": "P<MEXRAMIREZ<<LUCIA"}
+BUENA = {
+    "descripcion": "Las dos líneas de la zona de lectura mecánica, al pie de la página de datos, con letras, números y signos «<».",
+    "valor": "P<MEXRAMIREZ<<LUCIA",
+    "tipoDato": "texto",
+    "estructura": "P<MEXPEREZ<<JUAN",
+}
+# Lo que devuelve la ruta con BUENA (desde el 2026-11-12 también el tipo y el ejemplo de la forma; es `/describir-campos` con un solo campo).
+ESPERADA = {"descripcion": BUENA["descripcion"], "tipoDato": "texto", "valorEstructura": "P<MEXPEREZ<<JUAN", "valor": BUENA["valor"], "modelo": "modelo-de-prueba"}
+
+
+def uno(datos: dict, campo: str = "Mrz") -> dict:
+    """La respuesta de Gemini para UN campo: desde el 2026-11-12 contesta como `/describir-campos`, con la lista `campos`."""
+    return {"campos": [{"campo": campo, **datos}]}
 
 try:
     titulo("0 · Montaje")
@@ -139,9 +151,9 @@ try:
     almacen_antes = sorted(str(p.relative_to(RAIZ)) for p in RAIZ.rglob("*") if p.is_file() and "auditoria" not in p.name)
 
     titulo("1 · Quién puede pedirla")
-    contestar(BUENA)
+    contestar(uno(BUENA))
     r = pedir(a_admin, org_a)
-    rev("el Administrador: 200 con la descripción, el valor leído y el modelo", r.status_code == 200 and r.json() == {**BUENA, "modelo": "modelo-de-prueba"}, r.text[:300])
+    rev("el Administrador: 200 con la descripción, el tipo, el ejemplo de la forma, el valor leído y el modelo", r.status_code == 200 and r.json() == ESPERADA, r.text[:300])
     r = pedir(a_supervisor, org_a)
     rev("el Supervisor (administra tipos): 200", r.status_code == 200, r.text[:200])
     n = len(llamadas)
@@ -155,7 +167,7 @@ try:
     rev("sin la llave de servicio: no pasa", r.status_code in (401, 403) and len(llamadas) == n, f"{r.status_code}")
 
     titulo("2 · Qué se le manda a Gemini")
-    contestar(BUENA)
+    contestar(uno(BUENA))
     pedir(a_admin, org_a)
     ll = llamadas[-1]
     partes = ll["cuerpo"]["contents"][0]["parts"]
@@ -164,41 +176,55 @@ try:
         and ll["headers"] == {"Authorization": "Bearer token-falso", "x-goog-user-project": "proyecto-de-prueba-123"}, ll["url"])
     rev("el documento va primero, en base64 e intacto; el texto al final", len(partes) == 2 and partes[0]["inlineData"] == {"mimeType": "image/png", "data": base64.b64encode(PNG).decode()} and "text" in partes[1])
     texto = partes[1]["text"]
-    rev("el prompt dice el campo, su tipo, la página y la caja marcada", "«Mrz» (tipo de dato: texto)" in texto and "página 2, caja [ymin, xmin, ymax, xmax] = [880, 40, 960, 960]" in texto, texto[:600])
+    rev("el prompt dice el campo, su tipo, la página y la caja marcada", "«Mrz» (tipo de dato actual: texto)" in texto and "página 2, caja [ymin, xmin, ymax, xmax] = [880, 40, 960, 960]" in texto, texto[:600])
     rev("…la descripción actual y el tipo documental", "Su descripción actual: «La zona de lectura mecánica»" in texto and "del tipo «Pasaporte» (Pasaporte mexicano)" in texto, texto[:400])
     rev("…y pide que sirva para cualquier documento, SIN copiar datos de este", "CUALQUIER documento" in texto and "NO copies el valor" in texto)
+    rev("…y pide también el tipo de dato y un ejemplo INVENTADO de la forma", "`tipoDato`" in texto and "`estructura`: un ejemplo INVENTADO" in texto)
     cfg = ll["cuerpo"]["generationConfig"]
-    rev("pide JSON con esquema `descripcion` y temperatura 0", cfg["responseMimeType"] == "application/json" and "descripcion" in cfg["responseSchema"]["properties"] and cfg["temperature"] == 0)
-    contestar(BUENA)
+    propiedades = cfg["responseSchema"]["properties"]["campos"]["items"]["properties"]
+    rev("pide JSON con esquema (campos con `descripcion`, `tipoDato`, `estructura`) y temperatura 0",
+        cfg["responseMimeType"] == "application/json" and {"campo", "descripcion", "tipoDato", "estructura", "valor"} <= set(propiedades) and cfg["temperature"] == 0)
+    contestar(uno(BUENA, "Fecha"))
     pedir(a_admin, org_a, campo={"nombre": "Fecha", "tipoDato": "fecha", "descripcion": ""}, tipo=None, archivo=("a.pdf", PDF, "application/pdf"))
     t = llamadas[-1]["cuerpo"]["contents"][0]["parts"][1]["text"]
     rev("sin tipo documental ni descripción actual, el prompt lo dice sin huecos; un PDF viaja como PDF",
-        "Su descripción actual: no tiene." in t and "del tipo" not in t and "(tipo de dato: fecha)" in t
+        "Su descripción actual: no tiene." in t and "del tipo" not in t and "(tipo de dato actual: fecha)" in t
         and llamadas[-1]["cuerpo"]["contents"][0]["parts"][0]["inlineData"]["mimeType"] == "application/pdf", t[:300])
-    contestar(BUENA)
+    contestar(uno(BUENA))
     pedir(a_admin, org_a, campo={"nombre": "  Mrz  ", "tipoDato": "inventado", "descripcion": "d" * 900})
     t = llamadas[-1]["cuerpo"]["contents"][0]["parts"][1]["text"]
-    rev("se limpian espacios, un tipo desconocido cae a texto y la descripción actual se recorta", "«Mrz» (tipo de dato: texto)" in t and "d" * 200 in t and "d" * 201 not in t)
-    contestar(BUENA)
+    rev("se limpian espacios, un tipo desconocido cae a texto y la descripción actual se recorta", "«Mrz» (tipo de dato actual: texto)" in t and "d" * 200 in t and "d" * 201 not in t)
+    contestar(uno(BUENA))
     pedir(a_admin, org_a, caja=[-20, 0, 1400.3, 999.6])
     rev("una caja que se sale se recorta a 0-1000", "= [0, 0, 1000, 1000]" in llamadas[-1]["cuerpo"]["contents"][0]["parts"][1]["text"])
 
     titulo("3 · Lo que se devuelve")
-    contestar({"descripcion": "Número del pasaporte G48213977, arriba a la derecha, junto al rótulo «Pasaporte No.».", "valor": "G48213977"})
+    contestar(uno({"descripcion": "Número del pasaporte G48213977, arriba a la derecha, junto al rótulo «Pasaporte No.».", "valor": "G48213977"}))
     d = pedir(a_admin, org_a).json()
     rev("si el modelo copió el valor de ESTE documento, se quita de la descripción", "G48213977" not in d["descripcion"] and d["descripcion"] == "Número del pasaporte, arriba a la derecha, junto al rótulo «Pasaporte No.».", d["descripcion"])
-    contestar({"descripcion": "Folio abc12345 en la esquina superior.", "valor": "ABC12345"})
+    contestar(uno({"descripcion": "Folio abc12345 en la esquina superior.", "valor": "ABC12345"}))
     d = pedir(a_admin, org_a).json()
     rev("…sin importar mayúsculas", d["descripcion"] == "Folio en la esquina superior.", d["descripcion"])
-    contestar({"descripcion": "Sexo del titular, F o M, junto al rótulo Sexo.", "valor": "F"})
+    contestar(uno({"descripcion": "Sexo del titular, F o M, junto al rótulo Sexo.", "valor": "F"}))
     d = pedir(a_admin, org_a).json()
     rev("un valor muy corto (una letra) NO se busca dentro de la frase", d["descripcion"] == "Sexo del titular, F o M, junto al rótulo Sexo.", d["descripcion"])
-    contestar({"descripcion": "palabra " * 60, "valor": ""})
+    contestar(uno({"descripcion": "palabra " * 60, "valor": ""}))
     d = pedir(a_admin, org_a).json()
     rev(f"una descripción larga se corta en una palabra, a lo más {ubicar.MAX_DESCRIPCION_PROPUESTA} caracteres", len(d["descripcion"]) <= ubicar.MAX_DESCRIPCION_PROPUESTA and d["descripcion"].endswith("palabra…"), d["descripcion"][-40:])
-    contestar({"descripcion": "Sin valor leído."})
+    contestar(uno({"descripcion": "Sin valor leído."}))
     d = pedir(a_admin, org_a).json()
-    rev("sin `valor`, vuelve vacío", d["valor"] == "" and d["descripcion"] == "Sin valor leído.", str(d))
+    rev("sin `valor`, `tipoDato` ni `estructura`: valor vacío, sin tipo y sin ejemplo", d["valor"] == "" and d["descripcion"] == "Sin valor leído." and d["tipoDato"] is None and d["valorEstructura"] == "", str(d))
+    contestar(uno({**BUENA, "tipoDato": " Número "}))
+    rev("el tipo se entiende aunque venga con acento, mayúsculas o espacios", pedir(a_admin, org_a).json()["tipoDato"] == "numero")
+    contestar(uno({**BUENA, "tipoDato": "lista"}))
+    rev("un tipo que no se deduce de un valor (lista) no se propone", pedir(a_admin, org_a).json()["tipoDato"] is None)
+    contestar(uno({**BUENA, "tipoDato": "fecha"}))
+    d = pedir(a_admin, org_a, campo={"nombre": "Mrz", "tipoDato": "grupo", "descripcion": ""}).json()
+    rev("a un GRUPO no se le cambia el tipo ni se le pone ejemplo de estructura", d["tipoDato"] is None and d["valorEstructura"] == "", str(d))
+    contestar(uno({**BUENA, "valor": "G48213977", "estructura": "G-482-13977"}))
+    rev("un ejemplo que trae el valor de ESTE documento (aunque cambien los separadores) se tira", pedir(a_admin, org_a).json()["valorEstructura"] == "")
+    contestar(uno(BUENA, "MRZ (zona de lectura)"))
+    rev("con UN campo pedido, la respuesta se acepta aunque el modelo le cambie el nombre", pedir(a_admin, org_a).json() == ESPERADA)
 
     titulo("4 · Lo que se rechaza sin llamar a Gemini")
     n = len(llamadas)
@@ -233,7 +259,13 @@ try:
         guion["falla"] = falla
         r = pedir(a_admin, org_a)
         rev(f"{desc}: 502", r.status_code == 502 and sin_filtrar(r), f"{r.status_code} {r.text[:160]}")
-    for desc, texto in [("texto que no es JSON", "esta es la descripción"), ("JSON sin `descripcion`", '{"valor": "x"}'), ("descripción vacía", '{"descripcion": "   "}'), ("respuesta vacía", "")]:
+    for desc, texto in [
+        ("texto que no es JSON", "esta es la descripción"),
+        ("JSON sin `campos`", '{"descripcion": "x"}'),
+        ("un campo sin `descripcion`", '{"campos": [{"campo": "Mrz", "valor": "x"}]}'),
+        ("descripción vacía", '{"campos": [{"campo": "Mrz", "descripcion": "   "}]}'),
+        ("respuesta vacía", ""),
+    ]:
         contestar(texto)
         r = pedir(a_admin, org_a)
         rev(f"{desc}: 502 con un mensaje que se puede mostrar", r.status_code == 502 and r.json()["detail"] == ubicar.MENSAJE_DESCRIBIR_FALLO and sin_filtrar(r), f"{r.status_code} {r.text[:160]}")
@@ -242,7 +274,7 @@ try:
     r = pedir(a_admin, org_a)
     rev("sin proyecto en el .env: 503 sin llamar", r.status_code == 503 and len(llamadas) == n and r.json()["detail"] == ubicar.MENSAJE_DESCRIBIR_NO_DISPONIBLE, f"{r.status_code} {r.text[:160]}")
     ubicar.DOCAI_PROJECT_ID = "proyecto-de-prueba-123"
-    contestar(BUENA)
+    contestar(uno(BUENA))
     rev("y al volver Google, vuelve a funcionar", pedir(a_admin, org_a).status_code == 200)
 
     titulo("6 · No guarda nada")

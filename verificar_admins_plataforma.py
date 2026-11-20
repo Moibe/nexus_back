@@ -12,6 +12,8 @@ Lo que se prueba:
 - regenerar la contraseña: solo a quien no ha hecho su primer acceso; la anterior deja de servir;
 - retirar: pide motivo, cierra sesiones, deja libre el correo, y NO retira al último administrador de plataforma activo;
 - solo se toca a administradores de PLATAFORMA: una cuenta de una organización responde como si no existiera;
+- `/cuentas/{guid}`: las cuentas de organización sí se retiran, avisando antes qué organización se quedaría sin administrador y
+  negándose (409) a dejarla así sin `dejarSinAdmin=true`;
 - sin la llave de servicio, nada;
 - crear, regenerar y retirar dejan su rastro con `actor: monitor` y jamás la contraseña.
 """
@@ -38,7 +40,7 @@ BASE_SQL = pruebas_sql.preparar()
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app import app  # noqa: E402
-from servicios import auth, correo, usuarios  # noqa: E402
+from servicios import auth, correo, tenants_registro, usuarios  # noqa: E402
 
 fallos = 0
 
@@ -277,6 +279,72 @@ try:
 
     titulo("13 · Los scripts de siempre siguen funcionando con lo creado desde aquí")
     rev("un administrador creado por aquí es el mismo que ve `bootstrap_admin` (no se puede repetir)", crear("ada@ejemplo.com").status_code == 409 and usuarios.para_login("ada@ejemplo.com")["esAdminPlataforma"] is True)
+
+    titulo("14 · Retirar cuentas de organización (con aviso si una organización se queda sin administrador)")
+
+    def cuenta_org(email: str, nombre: str) -> str:
+        return usuarios.crear_usuario(email, nombre, "Prueba", auth.hash_de(auth.contrasena_temporal()))["guid"]
+
+    def organizacion(nombre: str, *admins: str) -> str:
+        t = tenants_registro.crear(nombre, admins[0])["guid"]
+        for a in admins:
+            usuarios.agregar_membresia(a, t, "ADMIN")
+        return t
+
+    uno = cuenta_org("uno@ejemplo.com", "Uno")
+    t_uno = organizacion("Organización Uno", uno)
+    analista = cuenta_org("ana@ejemplo.com", "Ana")
+    usuarios.agregar_membresia(analista, t_uno, "ANALISTA")
+    dos, tres = cuenta_org("dos@ejemplo.com", "Dos"), cuenta_org("tres@ejemplo.com", "Tres")
+    t_dos = organizacion("Organización Dos", dos, tres)
+    cuatro, cinco = cuenta_org("cuatro@ejemplo.com", "Cuatro"), cuenta_org("cinco@ejemplo.com", "Cinco")
+    t_tres = organizacion("Organización Tres", cuatro, cinco)
+    usuarios.cambiar_estado(cinco, False, "prueba")
+
+    def ver(g: str):
+        return c.get(f"/admins-plataforma/cuentas/{g}", headers=srv())
+
+    def retirar_org(g: str, motivo: str | None = "Ya no trabaja aquí", **extra):
+        params = {**({"motivo": motivo} if motivo is not None else {}), **extra}
+        return c.delete(f"/admins-plataforma/cuentas/{g}", params=params, headers=srv())
+
+    r = ver(uno)
+    d = r.json()
+    rev("ver al único administrador de una organización: dice cuál se quedaría sin administrador", r.status_code == 200 and d["organizacionesSinAdmin"] == [{"guid": t_uno, "nombre": "Organización Uno"}], r.text[:300])
+    rev("y trae su rol en cada organización", d["membresias"] == [{"organizacion": {"guid": t_uno, "nombre": "Organización Uno"}, "rol": "ADMIN", "rolNombre": "Administrador"}] and d["email"] == "uno@ejemplo.com", str(d["membresias"]))
+    rev("si la organización tiene otro administrador activo, ninguna se queda sin él", ver(dos).json()["organizacionesSinAdmin"] == [])
+    rev("un administrador DESACTIVADO no cuenta: la organización se quedaría sin quien entre", ver(cuatro).json()["organizacionesSinAdmin"] == [{"guid": t_tres, "nombre": "Organización Tres"}])
+    rev("una cuenta que no es administrador no deja a nadie sin administrador", ver(analista).json()["organizacionesSinAdmin"] == [])
+    rev("un administrador de plataforma por /cuentas: 404", ver(guid_ada).status_code == 404)
+    rev("una cuenta que no existe: 404", ver(str(uuid.uuid4())).status_code == 404)
+
+    rev("retirar sin motivo: 422", retirar_org(uno, None).status_code == 422)
+    rev("con un motivo en blanco: 400", retirar_org(uno, "   ").status_code == 400)
+    r = retirar_org(uno)
+    rev("al único administrador, sin confirmar: 409 «organizacion_sin_admin» con la lista", r.status_code == 409 and r.json()["detail"]["codigo"] == "organizacion_sin_admin" and r.json()["detail"]["organizaciones"] == [{"guid": t_uno, "nombre": "Organización Uno"}] and "Organización Uno" in r.json()["detail"]["mensaje"], r.text[:300])
+    rev("y no se retiró", usuarios.para_login("uno@ejemplo.com") is not None)
+    r = retirar_org(uno, dejarSinAdmin="true")
+    rev("confirmándolo se retira: 200 y dice qué organización quedó sin administrador", r.status_code == 200 and r.json() == {"retirado": True, "email": "uno@ejemplo.com", "organizacionesSinAdmin": [{"guid": t_uno, "nombre": "Organización Uno"}]}, r.text[:300])
+    rev("ya no puede entrar y ya no sale entre los usuarios de su organización", usuarios.para_login("uno@ejemplo.com") is None and "uno@ejemplo.com" not in [u["email"] for u in usuarios.de_tenant(t_uno)])
+    rev("retirarla otra vez: 404", retirar_org(uno, dejarSinAdmin="true").status_code == 404)
+    rev("su correo queda libre", cuenta_org("uno@ejemplo.com", "Uno otra vez") is not None)
+
+    r = retirar_org(dos)
+    rev("a un administrador con otro al lado se le retira sin confirmar nada", r.status_code == 200 and r.json()["organizacionesSinAdmin"] == [], r.text[:200])
+    rev("y entonces el que queda es el único", ver(tres).json()["organizacionesSinAdmin"] == [{"guid": t_dos, "nombre": "Organización Dos"}])
+    r = retirar_org(analista)
+    rev("una cuenta que no es administrador se retira sin confirmar nada", r.status_code == 200, r.text[:200])
+
+    r = c.delete(f"/admins-plataforma/cuentas/{guid_ada}", params={"motivo": "x", "dejarSinAdmin": "true"}, headers=srv())
+    rev("retirar a un administrador de plataforma por /cuentas: 404, y sigue ahí", r.status_code == 404 and correos() == ["ada@ejemplo.com"], r.text[:200])
+    rev("sin la llave de servicio: 401 al ver y al retirar", c.get(f"/admins-plataforma/cuentas/{tres}").status_code == 401 and c.delete(f"/admins-plataforma/cuentas/{tres}", params={"motivo": "x"}).status_code == 401)
+    borrados = eventos("USER_DELETED")
+    rev(
+        "el retiro deja USER_DELETED con actor «monitor», motivo y la organización que quedó sin administrador",
+        any(e.get("usuarioGuid") == uno and e.get("actor") == "monitor" and e.get("esAdminPlataforma") is False and e.get("organizacionesSinAdmin") == [t_uno] and e.get("motivo") == "Ya no trabaja aquí" for e in borrados),
+        str([e for e in borrados if e.get("usuarioGuid") == uno]),
+    )
+    rev("el intento sin confirmar no dejó retiro", sum(1 for e in borrados if e.get("usuarioGuid") == uno) == 1)
 finally:
     sin_canal()
     shutil.rmtree(RAIZ, ignore_errors=True)
