@@ -45,8 +45,11 @@ logger = logging.getLogger(__name__)
 #: volver enorme el prompt (y su costo): con los primeros basta para que distinga.
 MAX_OTROS = 30
 MAX_NOMBRE = 80
-#: Largo máximo de lo que se devuelve. Una descripción para el clasificador son un par de frases; esto es un techo, no una meta.
-MAX_DESCRIPCION = 700
+#: El largo que se le PIDE al modelo (2026-11-20, Moibe: «siento que queda muy grande, ¿podríamos reducirla un poquito?»). Con «máximo 3 frases» salían
+#: ~550 caracteres (450 a 640) y la tercera frase solía ser relleno («es fundamental en México para…»); se pide a lo más 2 frases y este largo.
+LARGO_PEDIDO = 300
+#: Largo máximo de lo que se devuelve: un techo, no una meta. Si el modelo se pasa, se corta en el último punto antes de él.
+MAX_DESCRIPCION = 400
 #: Los tokens que se le dejan al modelo para razonar Y contestar. Ver «Lo que hay que respetar» arriba: con pocos, la respuesta sale cortada.
 MAX_TOKENS_SALIDA = 1500
 
@@ -106,7 +109,9 @@ def armar_prompt(nombre: str, otros: list[str], documentos: int = 0) -> str:
         )
     partes.append(
         "Di qué documento es y cómo distinguirlo de los otros (qué trae impreso, quién lo emite). Si es de un país en particular, dilo. "
-        "Máximo 3 frases, en español, sin viñetas, sin encabezados y sin comillas. "
+        f"Sé breve: a lo más 2 frases y {LARGO_PEDIDO} caracteres en total; la primera dice qué documento es y quién lo emite, y la segunda qué rasgos "
+        "visibles lo distinguen de los otros tipos. Sin frases de relleno sobre su importancia o sobre dónde se usa. "
+        "En español, sin viñetas, sin encabezados y sin comillas. "
         "No inventes datos que no sepas con seguridad: si el nombre " + ("y los documentos no te dicen" if documentos > 0 else "no te dice") + " con claridad de qué documento se trata, "
         "descríbelo en términos generales y no supongas detalles."
     )

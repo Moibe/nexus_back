@@ -218,6 +218,9 @@ try:
     pedir(a_admin, org_a, "Con «comillas» angulares\ny salto de línea")
     rev("las comillas angulares y los saltos de línea del nombre no rompen el prompt", "Tipo: «Con comillas angulares y salto de línea»." in prompt_enviado(), prompt_enviado())
     rev("el prompt pide no inventar y distinguir de los otros", "No inventes datos" in prompt_enviado() and "distinguirlo de los otros" in prompt_enviado())
+    # 2026-11-20 (Moibe: «siento que queda muy grande»): a lo más 2 frases y el largo pedido; con «máximo 3 frases» salían ~550 caracteres.
+    rev("el prompt pide brevedad: a lo más 2 frases y el largo pedido, sin relleno", "a lo más 2 frases" in prompt_enviado() and f"{gemini.LARGO_PEDIDO} caracteres" in prompt_enviado() and "Sin frases de relleno" in prompt_enviado() and "3 frases" not in prompt_enviado(), prompt_enviado())
+    rev("el techo de lo que se devuelve deja holgura sobre el largo pedido, pero no mucha", gemini.LARGO_PEDIDO < gemini.MAX_DESCRIPCION <= 400)
     muchos = [f"Tipo número {i}" for i in range(80)] + ["tipo número 1", "  Tipo número 2  ", "A" * 300]
     p = gemini.armar_prompt("Nuevo", muchos)
     lista = p.split("Otros tipos que ya existen en la organización: ")[1].split(". Di qué")[0].split(", ")
