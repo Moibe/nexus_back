@@ -426,6 +426,17 @@ app.include_router(
     dependencies=[Depends(exigir_llave)],
 )
 
+# Los ejemplos etiquetados de un tipo y la medición de su precisión (2026-11-23, migración 0016): la persona confirma o corrige lo que se
+# extrae de cada documento de ejemplo y con eso se mide, campo por campo. Bajo el mismo prefijo que los tipos, con lo mismo: llave Y JWT.
+from routers.ejemplos_etiquetados import router as ejemplos_etiquetados_router  # noqa: E402
+
+app.include_router(
+    ejemplos_etiquetados_router,
+    prefix="/tipos-documentales",
+    tags=["Tipos documentales"],
+    dependencies=[Depends(exigir_llave)],
+)
+
 # Los procesos de cada organización (el motor de reglas: tipos documentales como entradas y operadores como reglas). Aquí solo se
 # GUARDA el dibujo del lienzo; no hay motor que los corra todavía. Como los tipos documentales: llave de servicio Y JWT (HU11).
 from routers.procesos import router as procesos_router  # noqa: E402

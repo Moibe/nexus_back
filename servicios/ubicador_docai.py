@@ -137,6 +137,27 @@ async def _id_del_ubicador(cliente: httpx.AsyncClient) -> str:
         return _ubicador[0]
 
 
+_version: list[str] = []  # su versión por omisión, leída una vez
+
+
+async def id_del_ubicador() -> tuple[str, str]:
+    """`(id, versión)` del extractor compartido, creándolo si hace falta. Lo usa también la medición de los ejemplos etiquetados de un tipo que
+    todavía no tiene procesador propio (`servicios/ejemplos_etiquetados.py`): el mismo modelo, con el esquema del tipo en cada llamada. La versión
+    es la que Google le puso por omisión al crearlo; se fija en cada extracción, como con el procesador de un tipo activo, para que dos
+    mediciones comparen lo mismo aunque Google cambie su versión por omisión. Vacía si no se pudo leer (entonces Google usa la suya)."""
+    async with httpx.AsyncClient() as cliente:
+        pid = await _id_del_ubicador(cliente)
+    if not _version:
+        try:
+            leida = (await procesadores.consultar_procesador(pid)).get("versionDefault") or ""
+        except Exception as exc:  # noqa: BLE001 — sin la versión se extrae igual, con la de Google
+            logger.warning("No se pudo leer la versión por omisión de %s: %s", NOMBRE_UBICADOR, exc)
+            leida = ""
+        if leida:
+            _version.append(leida)
+    return pid, (_version[0] if _version else "")
+
+
 async def ubicar(contenido: bytes, mime: str, campos: list[dict]) -> list[dict]:
     """Dónde está cada campo en el documento, según Document AI. `UbicadorNoDisponible` si no se pudo (quien llama cae a Gemini)."""
     if not procesadores.DOCAI_PROJECT_ID:

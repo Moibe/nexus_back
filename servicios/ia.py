@@ -133,15 +133,18 @@ def _paginas_del_error(detalles: list[dict[str, Any]], mensaje: str) -> tuple[in
     return None, None
 
 
-def _url_procesador(procesador_id: str, version: str = "") -> str:
+def _url_procesador(procesador_id: str, version: str = "", api: str = "v1") -> str:
     """URL del `:process`. Con `version`, se llama a esa versión exacta del
-    modelo; sin ella, a la que Google tenga como default en ese momento."""
+    modelo; sin ella, a la que Google tenga como default en ese momento.
+
+    `api` es `v1` salvo cuando se manda un esquema propio (`processOptions.schemaOverride`, 2026-11-23): la `Property` de v1 no
+    tiene `description` y rechaza el esquema entero, así que ese camino va por `v1beta3` (ver `esquema.esquema_desde_campos`)."""
     if not DOCAI_PROJECT_ID or not procesador_id:
         raise RuntimeError(
             "Faltan DOCAI_PROJECT_ID o el ID del procesador en el .env — revisa .env.example"
         )
     ruta = (
-        f"https://{DOCAI_LOCATION}-documentai.googleapis.com/v1"
+        f"https://{DOCAI_LOCATION}-documentai.googleapis.com/{api}"
         f"/projects/{DOCAI_PROJECT_ID}/locations/{DOCAI_LOCATION}"
         f"/processors/{procesador_id}"
     )
@@ -156,13 +159,14 @@ async def _procesar(
     mime_type: str,
     version: str = "",
     opciones: dict[str, Any] | None = None,
+    api: str = "v1",
 ) -> dict:
     """Manda el archivo a un procesador de Document AI y devuelve su JSON crudo.
 
     `opciones` se mezcla en el cuerpo del request tal cual (`imagelessMode`,
     `processOptions`, etc. — todos campos de `ProcessRequest`). Se deja
     genérico en vez de un parámetro por opción porque quien sabe qué opciones
-    necesita es cada función de dominio, no esta.
+    necesita es cada función de dominio, no esta. `api`: ver `_url_procesador`.
     """
     if not version:
         logger.warning(
@@ -186,7 +190,7 @@ async def _procesar(
 
     async with httpx.AsyncClient(timeout=IA_TIMEOUT) as cliente:
         respuesta = await cliente.post(
-            _url_procesador(procesador_id, version), headers=cabeceras, json=cuerpo
+            _url_procesador(procesador_id, version, api), headers=cabeceras, json=cuerpo
         )
         if respuesta.status_code >= 400:
             # El detalle crudo de Google puede traer IDs de proyecto/procesador,
@@ -654,13 +658,18 @@ async def _procesar_bloque(
     desde: int,
     hasta: int,
     semaforo: asyncio.Semaphore,
+    esquema: dict[str, Any] | None = None,
 ) -> dict:
     """Procesa SOLO las páginas `desde`…`hasta` del documento (`individualPageSelector`: Google cobra solo esas), y repite una vez
-    si falla por algo pasajero."""
-    opciones = {"processOptions": {"individualPageSelector": {"pages": list(range(desde, hasta + 1))}}}
+    si falla por algo pasajero. Con `esquema`, cada bloque lo lleva como `schemaOverride` (ver `extraer_con_procesador`)."""
+    opciones: dict[str, Any] = {"processOptions": {"individualPageSelector": {"pages": list(range(desde, hasta + 1))}}}
+    if esquema is not None:
+        opciones["processOptions"]["schemaOverride"] = esquema
     async with semaforo:
         for intento in (1, 2):
             try:
+                if esquema is not None:
+                    return await _procesar(procesador_id, contenido, mime_type, version, opciones, "v1beta3")
                 return await _procesar(procesador_id, contenido, mime_type, version, opciones)
             except ErrorDocumentAI as exc:
                 if intento == 2 or exc.motivo not in _MOTIVOS_PASAJEROS:
@@ -709,6 +718,8 @@ async def _extraer_por_bloques(
     transformar: Callable[[dict[str, Any]], dict[str, Any]] | None,
     rechazo: ErrorDocumentAI,
     estructura_tarea: "asyncio.Future[dict[str, dict] | None]",
+    esquema: dict[str, Any] | None = None,
+    documentos_crudos: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Extrae un documento que Document AI rechazó por largo (`rechazo` trae cuántas páginas tiene), partiéndolo en bloques de
     páginas (`servicios.bloques.planear_bloques`), procesándolos a la vez y uniendo el resultado como si hubiera pasado entero.
@@ -736,7 +747,7 @@ async def _extraer_por_bloques(
 
     semaforo = asyncio.Semaphore(BLOQUES_EN_PARALELO)
     tareas = [
-        asyncio.ensure_future(_procesar_bloque(procesador_id, contenido, mime_type, version, desde, hasta, semaforo))
+        asyncio.ensure_future(_procesar_bloque(procesador_id, contenido, mime_type, version, desde, hasta, semaforo, esquema))
         for desde, hasta in plan
     ]
     try:
@@ -767,6 +778,8 @@ async def _extraer_por_bloques(
     }
 
     documentos = [crudo.get("document", {}) for crudo in crudos]
+    if documentos_crudos is not None:
+        documentos_crudos.extend(documentos)
     if all(d.get("entities") is None for d in documentos):
         logger.warning(
             "Ningún bloque de la respuesta de Document AI (procesador %s) trae document.entities: se marca quality_alert.",
@@ -800,6 +813,8 @@ async def extraer_con_procesador(
     version: str = "",
     transformar: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     permitir_bloques: bool = True,
+    esquema: dict[str, Any] | None = None,
+    documentos_crudos: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Extrae los campos de un documento con CUALQUIER Custom Extractor.
 
@@ -829,20 +844,39 @@ async def extraer_con_procesador(
     `EXTRACCION_MAX_PAGINAS`. El resultado tiene la misma forma, con las páginas del documento entero, y `_metadata` agrega
     `paginas_totales`, `bloques` y `paginas_procesadas`. `permitir_bloques=False` lo apaga: una credencial de 20 páginas no es
     una credencial, y no vale la pena cobrarla.
+
+    CON UN ESQUEMA PROPIO (2026-11-23, la medición de los ejemplos documentales). `esquema` (un `DocumentSchema`, el de
+    `esquema.esquema_desde_campos`) viaja como `processOptions.schemaOverride`: el procesador extrae lo que ESE esquema pide, no lo
+    que tiene guardado en su dataset. Sirve para medir la definición ACTUAL de un tipo —también uno en borrador, que no tiene
+    procesador propio— con el mismo camino que la extracción de siempre. La estructura (qué se repite, qué es obligatorio) sale de
+    ese mismo esquema, no del procesador. `documentos_crudos`, si se pasa una lista, recibe el `document` de cada respuesta de Google (uno, o
+    uno por bloque): es lo que se guarda como base de un documento etiquetado.
     """
-    # La estructura del esquema (qué se repite, qué es obligatorio) se lee MIENTRAS Document AI procesa: casi siempre sale de
-    # la memoria, y la primera vez no alarga la extracción porque corren juntas.
-    estructura_tarea = asyncio.ensure_future(_estructura_de(procesador_id))
+    if esquema is not None:
+        from servicios.esquema import estructura_desde_esquema  # import tardío, como `_estructura_de`
+
+        estructura_tarea: asyncio.Future = asyncio.get_running_loop().create_future()
+        estructura_tarea.set_result(estructura_desde_esquema(esquema) or None)
+        opciones: dict[str, Any] | None = {"processOptions": {"schemaOverride": esquema}}
+        api = "v1beta3"
+    else:
+        # La estructura del esquema (qué se repite, qué es obligatorio) se lee MIENTRAS Document AI procesa: casi siempre sale de
+        # la memoria, y la primera vez no alarga la extracción porque corren juntas.
+        estructura_tarea = asyncio.ensure_future(_estructura_de(procesador_id))
+        opciones, api = None, "v1"
     try:
         try:
-            crudo = await _procesar(procesador_id, contenido, mime_type, version)
+            # Sin esquema propio, la llamada de siempre (con la misma forma, que es la que imitan los dobles de las pruebas).
+            crudo = await (_procesar(procesador_id, contenido, mime_type, version, opciones, api) if esquema is not None else _procesar(procesador_id, contenido, mime_type, version))
         except ErrorDocumentAI as exc:
             if not (permitir_bloques and exc.motivo == "limite_paginas" and exc.paginas):
                 raise
             return await _extraer_por_bloques(
-                procesador_id, contenido, mime_type, version, transformar, exc, estructura_tarea
+                procesador_id, contenido, mime_type, version, transformar, exc, estructura_tarea, esquema, documentos_crudos
             )
         estructura = await estructura_tarea
+        if documentos_crudos is not None:
+            documentos_crudos.append(crudo.get("document", {}))
     finally:
         if not estructura_tarea.done():
             estructura_tarea.cancel()
