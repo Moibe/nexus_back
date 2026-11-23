@@ -397,6 +397,30 @@ def health_db():
         return respuesta
 
 
+@app.get(
+    "/health/consulta",
+    tags=["Utilidad"],
+    summary="Health Check de la conexión de solo lectura",
+    description=(
+        "Comprueba la conexión que usa la búsqueda en lenguaje natural: que haya credenciales de `usrNexusLectura` (fuera del .env), que entre a la base "
+        "de este back y que, SIN organización fijada, las vistas de `[consulta]` devuelvan 0 renglones y `[nexus]` esté cerrado. No devuelve datos."
+    ),
+)
+def health_consulta():
+    from db import consulta
+
+    try:
+        r = consulta.probar()
+    except consulta.ConsultaNoDisponible as exc:
+        # El texto lleva rutas y nombres de base: va al log, no a un puerto que alcanza cualquiera en la red.
+        logger.warning("Conexión de solo lectura no disponible: %s", exc)
+        return {"status": "sin_configurar" if "credenciales" in str(exc) or "le falta" in str(exc) else "error"}
+    except Exception:  # noqa: BLE001
+        logger.exception("Falló el health check de la conexión de solo lectura")
+        return {"status": "error"}
+    return {"status": "ok" if r["sin_organizacion_vacio"] and r["nexus_cerrado"] else "inseguro", **r}
+
+
 # ── Registro de routers ───────────────────────────────────────────────────────
 
 from fastapi import Depends  # noqa: E402

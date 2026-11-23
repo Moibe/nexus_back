@@ -131,6 +131,14 @@ SQLSERVER_TRUST_CERT = os.getenv("SQLSERVER_TRUST_CERT", "yes")
 # TLS moderno, no la configuración recomendada.
 SQLSERVER_ENCRYPT = os.getenv("SQLSERVER_ENCRYPT", "yes")
 
+# ── Consultas de solo lectura (búsqueda en lenguaje natural, NEX-605) ─────────
+# La consulta la escribe un modelo: la base la corre con `usrNexusLectura`, que solo lee las vistas de `[consulta]` y solo ve la organización
+# fijada en la conexión (db/consulta.py). Su contraseña NO va en este .env: sale de `~/.nexus-lectura.env` (o de la ruta de NEXUS_LECTURA_ENV),
+# como la de migraciones. Aquí solo van los topes: cuánto puede tardar una consulta antes de cortarla y cuántos renglones se devuelven como máximo
+# (si hay más, se devuelve el tope y se avisa).
+CONSULTA_TIEMPO_MAXIMO_S = max(1, int(_numero("CONSULTA_TIEMPO_MAXIMO_S", 15)))
+CONSULTA_TOPE_RENGLONES = max(1, int(_numero("CONSULTA_TOPE_RENGLONES", 1000)))
+
 # ── Google Document AI ────────────────────────────────────────────────────────
 # Se llaman directo los procesadores de Document AI (no vía el proyecto
 # hermano `document_ai`). Los IDs van aquí y no hardcodeados en el código, para

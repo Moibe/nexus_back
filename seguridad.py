@@ -16,7 +16,7 @@ abierto.
 
 Qué se protege y qué no:
 - Todo lo de negocio: protegido. Solo `POST /bandeja/` acepta llaves de cliente.
-- `/health` y `/health/db`: abiertos. Son diagnósticos, el deploy y pm2 los
+- `/health`, `/health/db` y `/health/consulta`: abiertos. Son diagnósticos, el deploy y pm2 los
   usan sin credenciales, y no revelan más que el estado de la infraestructura.
 """
 

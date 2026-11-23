@@ -1939,9 +1939,27 @@ de la base está al día con el código: `esquema_desfasado` si le faltan migrac
 
 **Migraciones en espera (`migraciones/en_espera/`, 2026-11-12).** Una migración ya escrita y probada que depende de algo que hace el DBA (un esquema, un usuario) espera
 en esa subcarpeta: el corredor solo lee los `.sql` de `migraciones/`, así que ningún deploy la intenta (si la intentara, su guarda la detendría y el back de dev no
-reiniciaría hasta que el DBA cumpliera). Cuando el DBA entrega, se mueve a `migraciones/` (renumerándola si su número ya se ocupó) y entra con el siguiente deploy. Hoy
-espera la `0016_consulta_por_organizacion.sql` (las vistas de `[consulta]` separadas por organización para el usuario de solo lectura; `docs/solicitudes-dba.md` §8),
-probada con `verificar_consulta_por_organizacion.py`. El `README.md` de la carpeta dice qué espera cada una.
+reiniciaría hasta que el DBA cumpliera). Cuando el DBA entrega, se mueve a `migraciones/` (renumerándola si su número ya se ocupó) y entra con el siguiente deploy. La
+primera fue la de las vistas de `[consulta]` separadas por organización (`docs/solicitudes-dba.md` §8): esperó como 0016 y entró como **0017** el 2026-11-23, cuando el
+DBA entregó NEX-604 en dev. El `README.md` de la carpeta dice qué espera cada una (hoy, ninguna).
+
+### Consultas de solo lectura: la búsqueda en lenguaje natural (NEX-605, 2026-11-23)
+
+La consulta SQL la escribe un modelo, así que lo que la hace segura lo pone la BASE, no el código ni el modelo. `db/consulta.py` la corre con **`usrNexusLectura`**,
+que solo tiene SELECT sobre el esquema `[consulta]` (NEX-604): leer `[nexus]`, escribir, crear objetos, `EXECUTE AS` u `OPENROWSET` fallan por permiso. Las vistas de
+`[consulta]` (migración 0017) solo devuelven la organización fijada en la conexión con `sp_set_session_context … @read_only = 1`, y `consultar(organizacion, sql)` la fija
+y la COMPRUEBA antes de correr nada; ni la consulta misma puede cambiarla (15664). Una conexión por pregunta. Errores: `ConsultaRechazada` (la base no la aceptó; trae
+el número y el mensaje limpio, para pedirle al modelo que la corrija), `ConsultaTardo` (pasó del tiempo máximo y se canceló en el servidor) y `ConsultaNoDisponible`
+(problema nuestro: credenciales, conexión o no se pudo fijar la organización).
+
+**Topes** (`.env`): `CONSULTA_TIEMPO_MAXIMO_S` (15) y `CONSULTA_TOPE_RENGLONES` (1000; si hay más, `hay_mas`). La consulta va con `DEADLOCK_PRIORITY LOW`: si choca con una
+escritura, pierde la consulta.
+
+**Credenciales**: `~/.nexus-lectura.env` (o la ruta de `NEXUS_LECTURA_ENV`) del usuario que corre la API (`mbriseno` en el servidor), con `chmod 600`, FUERA de los
+repos y NO en el `.env` de la API; lleva solo `SQLSERVER_USER=usrNexusLectura` y `SQLSERVER_PASSWORD=…` (con comillas simples si la contraseña trae `#` o espacios). El
+servidor, el driver y la base son los del back; si el archivo trae `SQLSERVER_DB` y no coincide, se niega, y también si el usuario no es `usrNexusLectura`. `GET
+/health/consulta` dice si quedó bien: `ok` (entra, sin organización las vistas dan 0 y `[nexus]` está cerrado), `sin_configurar` (falta el archivo), `error` (el
+detalle, en el log) o `inseguro`. Prueba: `verificar_consulta_lectura.py` (Docker).
 
 ### El piloto: los tipos documentales en SQL (migración `0002`, 2026-10-28)
 

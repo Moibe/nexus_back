@@ -428,7 +428,7 @@ def main() -> int:
     rev("POST /bandeja/ con llave de cliente → 201", rr.status_code == 201, f"{rr.status_code} {rr.text[:100]}")
 
     cerradas = [
-        ("GET", "/docs-interno"), ("GET", "/openapi-interno.json"), ("GET", "/health"), ("GET", "/health/db"),
+        ("GET", "/docs-interno"), ("GET", "/openapi-interno.json"), ("GET", "/health"), ("GET", "/health/db"), ("GET", "/health/consulta"),
         ("GET", "/llaves/"), ("POST", "/llaves/"), ("GET", "/bandeja/"), ("POST", "/archivos/"),
         ("GET", "/archivos/demo/aa/bb/x"), ("GET", "/procesadores/clasificador"), ("POST", "/ia/ine"),
         ("POST", "/bandeja/xyz/retirar"), ("POST", "/bandeja"), ("GET", "/redoc"), ("GET", "/"),
