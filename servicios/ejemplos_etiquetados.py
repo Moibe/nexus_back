@@ -506,7 +506,7 @@ def _publica(f: dict, info: dict[str, dict]) -> dict[str, Any]:
         d = info.get(top) or {}
         tipo_dato = (d.get("hijos", {}).get(hijo) or {}).get("tipoDato") if hijo else d.get("tipoDato")
         campos.append({**c, "campo": campo_de(ruta), "etiqueta": etiqueta_de(ruta, info), "grupo": top, "tipoDato": tipo_dato or "texto",
-                       "vigente": vigente(ruta, info)})
+                       "vigente": vigente(ruta, info), "sinFilas": _es_marcador(ruta, info)})
     con_etiqueta = {c["grupo"] for c in campos}
     return {
         "ejemplo": f["exampleId"],

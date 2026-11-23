@@ -316,7 +316,7 @@ try:
     rev("cada etiqueta guardada trae su rótulo, su campo, su tipo de dato y si sigue vigente",
         r.status_code == 200 and r.json()["campos"][0] | {} == {"ruta": "numero_pasaporte", "valor": "G75104286", "pagina": None, "caja": None, "origen": "confirmado",
                                                               "campo": "numero_pasaporte", "etiqueta": "Número pasaporte", "grupo": "numero_pasaporte",
-                                                              "tipoDato": "texto", "vigente": True}, str(r.json()["campos"][0]))
+                                                              "tipoDato": "texto", "vigente": True, "sinFilas": False}, str(r.json()["campos"][0]))
     r = c.get(f"/tipos-documentales/{TIPO}/etiquetas", params={"tenant": org_a}, headers=cab(a_operador))
     rev("listar: cualquiera que opera en la organización, en el orden en que se etiquetaron",
         r.status_code == 200 and [e["ejemplo"] for e in r.json()["etiquetas"]] == ["ej-uno", "ej-dos"], r.text[:200])
