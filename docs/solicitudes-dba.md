@@ -1282,7 +1282,8 @@ Conectado como `usrNexusLectura` a `IA_Nexus_Dev`, después de que creemos la `0
 - La conexión de Vanna no usa pool (o lo reinicia en cada pregunta): el valor de sesión de solo lectura vive lo que vive la conexión.
 - Las salidas que se nos ocurren (`OPENROWSET`/consultas ad hoc, `EXECUTE AS`) las probamos nosotros con ese usuario al recibirlo,
   junto con las seis comprobaciones.
-- **La `0016` ya está escrita (2026-11-12) y espera en `migraciones/en_espera/0016_consulta_por_organizacion.sql`**: si estuviera en
+- **✅ ENTREGADO por Charlie el 2026-11-23 en `IA_Nexus_Dev` (NEX-604, en LISTO, con sus 19 pruebas en el comentario).** Ese día la migración se activó como `migraciones/0017_consulta_por_organizacion.sql` (la 0016 ya la ocupaba `ejemplos_etiquetados`). Staging y producción se piden en otro ticket, como dice este; hasta entonces no se promueve dev → staging.
+- Lo que sigue es la historia de antes de la entrega. **La `0016` ya está escrita (2026-11-12) y espera en `migraciones/en_espera/0016_consulta_por_organizacion.sql`**: si estuviera en
   `migraciones/`, el deploy de dev la intentaría, su guarda la detendría y el back no reiniciaría hasta que Charlie entregue. Tiene tres
   guardas con mensaje propio: falta el esquema (51016), falta el `GRANT ALTER` a `usrNexusDDL` (51018; medido: sin él, SQL Server sí deja
   VER el esquema y fallaría con un 2760 genérico) y el esquema no es de `nexusOwner` (51017: la cadena de propiedad no funcionaría).

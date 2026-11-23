@@ -1,4 +1,10 @@
--- 0016 · Las vistas de consulta SEPARADAS POR ORGANIZACIÓN, en el esquema [consulta] (Moibe, 2026-11-11: «Cada organización, lo suyo»).
+-- 0017 · Las vistas de consulta SEPARADAS POR ORGANIZACIÓN, en el esquema [consulta] (Moibe, 2026-11-11: «Cada organización, lo suyo»).
+--
+-- Escrita el 2026-11-12 como 0016 y guardada en `migraciones/en_espera/` hasta que el DBA hiciera su parte. Charlie la entregó en
+-- `IA_Nexus_Dev` el 2026-11-23 (NEX-604) y se activó ese día como 0017 (la 0016 ya era `ejemplos_etiquetados`; Moibe: «va, actívala en
+-- dev, luego vemos lo de staging y prod»). ⚠ IA_Nexus_Staging e IA_Nexus todavía NO tienen el esquema: un deploy de staging o de producción
+-- con esta migración se detiene en su guarda (51016) y el back no reinicia. Antes de promover dev → staging hay que pedirle al DBA lo mismo
+-- en esas dos bases.
 --
 -- Para qué: la herramienta de texto a SQL (Vanna AI, por ahora) consulta lo extraído con un usuario de SOLO lectura, `usrNexusLectura`. Las
 -- vistas de la 0015 (`nexus.vDocumentoExtraido`, `nexus.vDatoExtraido`) traen TODAS las organizaciones, así que ese usuario no las lee: lee
@@ -18,8 +24,8 @@
 -- Lo que hace el DBA (no esta migración: `usrNexusDDL` no puede crear esquemas ni usuarios), pedido en `docs/solicitudes-dba.md` §8:
 -- `CREATE SCHEMA consulta AUTHORIZATION nexusOwner`, el login `usrNexusLectura` con `GRANT SELECT ON SCHEMA::consulta` y nada más, y
 -- `GRANT ALTER ON SCHEMA::consulta TO usrNexusDDL` para que esta migración pueda crear las vistas. Mientras eso no exista en una base, esta
--- migración se DETIENE ahí con un mensaje claro (y un deploy con ella no reinicia el back); por eso espera en `migraciones/en_espera/` hasta que
--- el DBA lo entregue en `IA_Nexus_Dev`, y no se promueve a staging ni a producción sin el mismo ticket en esas bases.
+-- migración se DETIENE ahí con un mensaje claro (y un deploy con ella no reinicia el back); por eso esperó en `migraciones/en_espera/` hasta que
+-- el DBA lo entregó en `IA_Nexus_Dev`, y no se promueve a staging ni a producción sin el mismo ticket en esas bases.
 --
 -- Las columnas van con nombre (no `SELECT *`): una vista guarda sus columnas al crearse, y con nombres explícitos una columna nueva en la vista
 -- de `[nexus]` no aparece aquí sin que una migración lo decida.

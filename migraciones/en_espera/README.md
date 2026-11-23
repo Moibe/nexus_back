@@ -13,8 +13,10 @@ Cuando llegue lo que falta:
 
 ## Lo que espera
 
-⚠ Desde el 2026-11-23 la versión 0016 ya la ocupa `0016_ejemplos_etiquetados.sql`: la de abajo se renumera a la siguiente libre (0017 o la que siga) al moverla, como dice el paso 1.
+Nada, por ahora.
 
-| Archivo | Espera a | Prueba |
+## Lo que ya salió de aquí
+
+| Archivo | Esperaba a | Salió |
 |---|---|---|
-| `0016_consulta_por_organizacion.sql` | Que el DBA cree el esquema `[consulta]` (dueño `nexusOwner`), el usuario `usrNexusLectura` y le dé a `usrNexusDDL` `ALTER` sobre `[consulta]`, en `IA_Nexus_Dev` (`docs/solicitudes-dba.md` §8; ticket NEX-604 para Charlie, creado el 2026-11-17) | `verificar_consulta_por_organizacion.py` |
+| `0016_consulta_por_organizacion.sql` | Que el DBA creara el esquema `[consulta]` (dueño `nexusOwner`), el usuario `usrNexusLectura` y le diera a `usrNexusDDL` `ALTER` sobre `[consulta]` en `IA_Nexus_Dev` (`docs/solicitudes-dba.md` §8, NEX-604) | Charlie lo entregó el 2026-11-23 y se activó ese día como `migraciones/0017_consulta_por_organizacion.sql` (la 0016 ya era `ejemplos_etiquetados`). ⚠ Staging y producción todavía NO tienen el esquema: pedírselo al DBA ANTES de promover dev → staging, o ese deploy se detiene en la guarda 51016. |

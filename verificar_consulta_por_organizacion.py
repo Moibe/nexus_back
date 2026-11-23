@@ -1,13 +1,14 @@
-"""¿Separa la 0016 (en espera) las organizaciones, y el usuario de solo lectura no puede salirse? (`migraciones/en_espera/0016_consulta_por_organizacion.sql`)
+"""¿Separa la 0017 las organizaciones, y el usuario de solo lectura no puede salirse? (`migraciones/0017_consulta_por_organizacion.sql`; se escribió como la 0016
+en espera y se activó como 0017 el 2026-11-23, cuando el DBA entregó NEX-604)
 
     .venv/Scripts/python verificar_consulta_por_organizacion.py
 
-Corre contra el SQL Server desechable de `pruebas_sql.py` (sin Docker se salta y lo dice). La 0016 espera en `migraciones/en_espera/` a que el
+Corre contra el SQL Server desechable de `pruebas_sql.py` (sin Docker se salta y lo dice). La 0017 esperó (como 0016) en `migraciones/en_espera/` a que el
 DBA cree el esquema `[consulta]` y el usuario `usrNexusLectura` (`docs/solicitudes-dba.md` §8). Esta prueba hace en el contenedor lo mismo que se
-le pidió al DBA, con las mismas sentencias del ticket, y aplica la 0016 con el corredor de verdad y `usrNexusDDL`.
+le pidió al DBA, con las mismas sentencias del ticket, y aplica la 0017 con el corredor de verdad y `usrNexusDDL`.
 
 Lo que se prueba:
-- ANTES de lo del DBA, la 0016 se detiene en su guarda (51016) sin dejar nada; con el esquema sin el GRANT ALTER, igual; con el esquema de
+- ANTES de lo del DBA, la 0017 se detiene en su guarda (51016) sin dejar nada; con el esquema sin el GRANT ALTER, igual; con el esquema de
   OTRO dueño, se detiene en la segunda guarda (51017);
 - con lo del DBA, se aplica, queda anotada y las vistas son de `nexusOwner` con las MISMAS columnas que las de `[nexus]`;
 - las seis comprobaciones del ticket, conectado como `usrNexusLectura`: sin organización 0 renglones; con una, solo los suyos; no se puede
@@ -26,14 +27,14 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 import pruebas_sql  # noqa: E402
 
-BASE = pruebas_sql.preparar("nexus-consulta-prueba", 14342)  # aplica 0001…0015 (las de migraciones/)
+BASE = pruebas_sql.preparar("nexus-consulta-prueba", 14342, hasta=16, consulta=False)  # aplica 0001…0016, SIN el esquema [consulta] del DBA
 
 import pyodbc  # noqa: E402
 
 from migraciones import corredor  # noqa: E402
 
 RAIZ = Path(__file__).parent
-EN_ESPERA = RAIZ / "migraciones" / "en_espera" / "0016_consulta_por_organizacion.sql"
+MIGRACION = RAIZ / "migraciones" / "0017_consulta_por_organizacion.sql"
 DB = BASE["base"]
 OTRAS = ("IA_Nexus", "IA_Nexus_Staging")
 LECTURA = "usrNexusLectura"
@@ -69,12 +70,11 @@ sa = BASE["conectar"]("sa", BASE["sa"], DB)
 k = sa.cursor()
 
 
-def aplicar_0016() -> str:
-    """Aplica lo de `migraciones/` + la 0016 con el corredor de verdad y usrNexusDDL. Devuelve el error ('' si se aplicó)."""
-    carpeta = Path(tempfile.mkdtemp(prefix="consulta-0016-"))
+def aplicar_0017() -> str:
+    """Aplica lo de `migraciones/` + la 0017 con el corredor de verdad y usrNexusDDL. Devuelve el error ('' si se aplicó)."""
+    carpeta = Path(tempfile.mkdtemp(prefix="consulta-0017-"))
     for ruta in (RAIZ / "migraciones").glob("*.sql"):
         shutil.copy(ruta, carpeta / ruta.name)
-    shutil.copy(EN_ESPERA, carpeta / EN_ESPERA.name)
     claves = json.loads(pruebas_sql._CREDENCIALES.read_text(encoding="utf-8"))
     valores = {
         "SQLSERVER_HOST": "127.0.0.1", "SQLSERVER_PORT": str(BASE["puerto"]), "SQLSERVER_USER": "usrNexusDDL",
@@ -99,24 +99,24 @@ def vistas_de_consulta() -> list[str]:
     return [f[0] for f in k.execute("SELECT name FROM sys.views WHERE schema_id = SCHEMA_ID('consulta') ORDER BY name").fetchall()]
 
 
-print("\n[1] Antes de lo del DBA, la 0016 se detiene sin dejar nada")
-rev(version_aplicada() == 15 and EN_ESPERA.parent.name == "en_espera", "la base de prueba llega con 0001…0015 (la 0016 no está en migraciones/)")
-e = aplicar_0016()
+print("\n[1] Antes de lo del DBA, la 0017 se detiene sin dejar nada")
+rev(version_aplicada() == 16 and MIGRACION.exists(), "la base de prueba llega con 0001…0016, sin el esquema [consulta]")
+e = aplicar_0017()
 rev("51016" in e, "sin el esquema [consulta]: se detiene en la guarda 51016", e[:300])
-rev(version_aplicada() == 15, "…y no quedó anotada")
+rev(version_aplicada() == 16, "…y no quedó anotada")
 k.execute("CREATE SCHEMA consulta AUTHORIZATION nexusOwner")
-e = aplicar_0016()
+e = aplicar_0017()
 rev("51018" in e and "GRANT ALTER" in e, "con el esquema pero SIN el GRANT ALTER a usrNexusDDL: se detiene en la guarda 51018, que lo nombra", e[:300])
-rev(version_aplicada() == 15 and vistas_de_consulta() == [], "…sin anotar nada ni crear vistas")
+rev(version_aplicada() == 16 and vistas_de_consulta() == [], "…sin anotar nada ni crear vistas")
 k.execute("DROP SCHEMA consulta")
 k.execute("CREATE SCHEMA consulta AUTHORIZATION dbo")
 k.execute("GRANT ALTER ON SCHEMA::consulta TO usrNexusDDL")
-e = aplicar_0016()
+e = aplicar_0017()
 rev("51017" in e, "con el esquema de OTRO dueño: se detiene en la guarda 51017", e[:300])
-rev(version_aplicada() == 15 and vistas_de_consulta() == [], "…sin anotar nada ni crear vistas")
+rev(version_aplicada() == 16 and vistas_de_consulta() == [], "…sin anotar nada ni crear vistas")
 k.execute("DROP SCHEMA consulta")
 
-print("\n[2] Lo que hace el DBA (las sentencias del ticket) y la 0016")
+print("\n[2] Lo que hace el DBA (las sentencias del ticket) y la 0017")
 m = BASE["conectar"]("sa", BASE["sa"])
 m.cursor().execute(
     f"IF SUSER_ID('{LECTURA}') IS NULL CREATE LOGIN {LECTURA} WITH PASSWORD = '{CLAVE_LECTURA}', CHECK_POLICY = ON "
@@ -128,10 +128,10 @@ k.execute("CREATE SCHEMA consulta AUTHORIZATION nexusOwner")
 k.execute(f"CREATE USER {LECTURA} FOR LOGIN {LECTURA}")
 k.execute(f"GRANT SELECT ON SCHEMA::consulta TO {LECTURA}")
 k.execute("GRANT ALTER ON SCHEMA::consulta TO usrNexusDDL")
-e = aplicar_0016()
-rev(e == "", "con lo del DBA, la 0016 se aplica con el corredor y usrNexusDDL", e[:300])
-fila = k.execute("SELECT modo FROM nexus.schemaMigrations WHERE version = 16").fetchone()
-rev(version_aplicada() == 16 and fila is not None and fila[0] == "ejecutada", "queda anotada como la 16, ejecutada")
+e = aplicar_0017()
+rev(e == "", "con lo del DBA, la 0017 se aplica con el corredor y usrNexusDDL", e[:300])
+fila = k.execute("SELECT modo FROM nexus.schemaMigrations WHERE version = 17").fetchone()
+rev(version_aplicada() == 17 and fila is not None and fila[0] == "ejecutada", "queda anotada como la 17, ejecutada")
 rev(vistas_de_consulta() == ["vDatoExtraido", "vDocumentoExtraido"], "crea las dos vistas en [consulta]", str(vistas_de_consulta()))
 duenos = k.execute(
     "SELECT DISTINCT USER_NAME(COALESCE(o.principal_id, s.principal_id)) FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id "
@@ -141,7 +141,7 @@ rev([d[0] for d in duenos] == ["nexusOwner"], "las vistas son de nexusOwner (la 
 for vista in ("vDocumentoExtraido", "vDatoExtraido"):
     cols = lambda esquema: [f[0] for f in k.execute(f"SELECT name FROM sys.columns WHERE object_id = OBJECT_ID('{esquema}.{vista}') ORDER BY column_id").fetchall()]  # noqa: E731
     rev(cols("consulta") == cols("nexus") and len(cols("nexus")) > 10, f"consulta.{vista} tiene las mismas columnas, en el mismo orden, que nexus.{vista}")
-rev(aplicar_0016() == "", "volver a aplicar no hace nada (ya no hay pendientes)")
+rev(aplicar_0017() == "", "volver a aplicar no hace nada (ya no hay pendientes)")
 
 print("\n[3] Datos de tres organizaciones")
 ORG_A = "11111111-1111-4111-8111-111111111111"

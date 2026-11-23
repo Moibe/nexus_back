@@ -129,8 +129,12 @@ def _levantar(driver: str) -> dict:
     return claves
 
 
-def _base_nueva(driver: str, sa: str) -> None:
-    """Borra la base de la corrida anterior (si quedó) y la arma otra vez como la deja el DBA."""
+def _base_nueva(driver: str, sa: str, consulta: bool = True) -> None:
+    """Borra la base de la corrida anterior (si quedó) y la arma otra vez como la deja el DBA.
+
+    `consulta` (2026-11-23): también lo que el DBA hizo para NEX-604, el esquema `[consulta]` de `nexusOwner` con `ALTER` para `usrNexusDDL`
+    (las mismas sentencias del ticket), sin lo cual la 0017 se detiene en su guarda. `False` lo omite: la prueba de la 0017 arma eso ella misma
+    para comprobar las guardas antes y después."""
     con = _conectar_con(driver, "sa", sa)
     cur = con.cursor()
     cur.execute(f"IF DB_ID('{BASE}') IS NOT NULL BEGIN ALTER DATABASE [{BASE}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{BASE}]; END")
@@ -150,10 +154,13 @@ def _base_nueva(driver: str, sa: str) -> None:
     k.execute("ALTER ROLE db_datawriter ADD MEMBER usrNexus")
     k.execute("GRANT EXECUTE TO usrNexus")
     k.execute("DENY CREATE TABLE, CREATE VIEW, CREATE FUNCTION, CREATE PROCEDURE, CREATE TYPE, CREATE SCHEMA, ALTER ANY SCHEMA TO usrNexus")
+    if consulta:
+        k.execute("CREATE SCHEMA consulta AUTHORIZATION nexusOwner")
+        k.execute("GRANT ALTER ON SCHEMA::consulta TO usrNexusDDL")
     con.close()
 
 
-def preparar(contenedor: str = CONTENEDOR, puerto: int = PUERTO, dejar: bool = False, hasta: int | None = None) -> dict:
+def preparar(contenedor: str = CONTENEDOR, puerto: int = PUERTO, dejar: bool = False, hasta: int | None = None, consulta: bool = True) -> dict:
     """Una base de pruebas recién hecha, con las migraciones aplicadas, y `SQLSERVER_*` en `os.environ`.
 
     Devuelve `{"sa", "app", "puerto", "base", "driver", "conectar", "aplicar"}` por si la prueba quiere asomarse a la base con otro
@@ -170,7 +177,7 @@ def preparar(contenedor: str = CONTENEDOR, puerto: int = PUERTO, dejar: bool = F
     _tomar_candado()
     driver = corredor.elegir_driver({}, pyodbc.drivers())
     claves = _contenedor_vivo(driver) or _levantar(driver)
-    _base_nueva(driver, claves["sa"])
+    _base_nueva(driver, claves["sa"], consulta)
     atexit.register(_soltar_base, driver, claves["sa"])
 
     def conectar(usuario: str, clave: str, base: str = "master"):
