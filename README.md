@@ -1987,6 +1987,39 @@ trae lo que dijo Google (eso va al log). Prueba: `verificar_busqueda.py` (Docker
 trae ahora también `documento: {id, nombre, mime, rutaRelativa, tamanoBytes}`. Los renglones que vengan de una ejecución de proceso abrirán la ejecución cuando
 existan sus vistas en `[consulta]` (NEX-612).
 
+### Bitácora, topes y ejemplos de la búsqueda (NEX-609, 2026-11-23; migración `0018`)
+
+Todo el SQL vive en `servicios/busqueda_bitacora.py`, sobre dos tablas nuevas de `[nexus]` (el usuario de solo lectura no las ve):
+
+- **`nexus.searchQuestions`, la bitácora.** Un renglón por pregunta que llega con organización y texto válidos, salga como salga (`outcome`: ok, no_se_puede,
+  consulta_invalida, tardo, modelo, sin_configurar, tope, error): quién, cuándo, la consulta (la que se corrió, o la última que se intentó), de dónde salió
+  (`origin`: modelo, ejemplo o anterior, con `reusedFrom`), cuántos renglones (**no los renglones**), cuánto tardó, los tokens del modelo (`usageMetadata`:
+  entrada, la parte que vino de la caché y salida con lo que pensó), los del modelo de vectores, el costo estimado (`costUsd`, con los precios de lista del
+  `.env`), la huella del catálogo y qué ejemplos se le dieron. Lo único que cambia después es «¿Te sirvió?» (`useful`) y si quien administra la descartó.
+- **`nexus.searchExamples`, los ejemplos aprobados.** Pregunta, consulta, explicación, quién lo aprobó y su vector de significado (`embeddingJson`,
+  `embeddingModel` = `gemini-embedding-001:768`). Uno por pregunta por organización.
+
+El camino de una pregunta (`servicios/busqueda.py`): **tope** (por persona en la última hora y por organización en las últimas 24 h, contando la bitácora sin lo
+que ya frenó un tope; 429 `tope` con `reintentarEn`, sin llegar al modelo) → **la misma pregunta** (normalizada con `clave_de`: minúsculas, sin acentos ni
+signos): primero un ejemplo aprobado de la organización, luego la última pregunta de la organización que salió bien con el MISMO catálogo y que nadie marcó
+«no me sirvió»; se corre su consulta sin llamar al modelo (si ya no corre, se le pregunta) → **los ejemplos más parecidos**: los
+`BUSQUEDA_EJEMPLOS_POR_PREGUNTA` (12) más cercanos por significado entre los 21 comunes y los aprobados de ESA organización (`servicios/embeddings.py`,
+Vertex AI `:predict` con la misma credencial; el más parecido va al final, junto a la pregunta; los aprobados van marcados). Si los vectores fallan, van los
+comunes y los 8 aprobados más recientes. Los de un ejemplo aprobado se sacan al aprobarlo; si Google no contesta, en la siguiente pregunta.
+
+Rutas nuevas (`routers/busqueda.py`): `GET /busqueda/preguntas` (las recientes de quien pide, distintas), `POST /busqueda/preguntas/{id}/valoracion` (solo lo
+propio y lo que salió bien), y para quien administra la organización (`exigir_administrar`; los demás, 403 `sin_permiso` con `ROLE_DENIED`):
+`GET /busqueda/por-revisar` (lo marcado útil: una por pregunta, con cuántas veces se hizo y a cuántas personas les sirvió), `POST /busqueda/ejemplos`
+(aprobar; 409 `ya_es_ejemplo` / `no_valorable`; queda `SEARCH_EXAMPLE_APPROVED`), `POST /busqueda/preguntas/{id}/descartar`, `GET /busqueda/ejemplos` y
+`DELETE /busqueda/ejemplos/{id}` (`SEARCH_EXAMPLE_REMOVED`). Para Nexus Monitor, `GET /monitor-busqueda/?dias=30` (solo llave de servicio, `routers/busqueda_monitor.py`):
+por organización, cuántas preguntas, respondidas, no se podía, fallidas, tope, reusadas, útiles, personas, tiempo, tokens, costo y ejemplos. **Solo números:**
+nunca el texto de una pregunta.
+
+Variables (`.env`, todas con default): `BUSQUEDA_TOPE_PERSONA_POR_HORA` (60), `BUSQUEDA_TOPE_ORGANIZACION_POR_DIA` (500), `BUSQUEDA_EJEMPLOS_POR_PREGUNTA` (12),
+`EMBEDDINGS_MODELO` (gemini-embedding-001), `EMBEDDINGS_REGION` (global), `EMBEDDINGS_DIMENSIONES` (768), `EMBEDDINGS_TIMEOUT` (10) y los precios
+`GEMINI_PRECIO_ENTRADA_USD_MILLON` (0.25), `GEMINI_PRECIO_ENTRADA_CACHE_USD_MILLON` (0.025), `GEMINI_PRECIO_SALIDA_USD_MILLON` (1.50) y
+`EMBEDDINGS_PRECIO_USD_MILLON` (0.15), consultados el 2026-11-23. Prueba: `verificar_busqueda_bitacora.py` (Docker, Google falseado).
+
 ### El piloto: los tipos documentales en SQL (migración `0002`, 2026-10-28)
 
 La primera entidad del producto que deja el almacén y pasa a una tabla es el catálogo de tipos documentales: `nexus.documentTypes`.

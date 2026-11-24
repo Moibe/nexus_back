@@ -63,8 +63,12 @@ os.environ["NEXUS_LECTURA_ENV"] = str(ARCHIVO_LECTURA)
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app import app  # noqa: E402
+import hashlib  # noqa: E402
+
+import config  # noqa: E402
 from db import consulta, tablas  # noqa: E402
 from servicios import auth, busqueda, gemini, usuarios  # noqa: E402
+from servicios import busqueda_bitacora as bitacora  # noqa: E402
 
 fallos = 0
 
@@ -195,7 +199,18 @@ guion: list = []
 SQL_DE = dict(busqueda.EJEMPLOS)
 
 
+def vector_falso(texto: str, dimensiones: int) -> list[float]:
+    """Un «vector de significado» de juguete: cuántas veces sale cada palabra (normalizada). Dos preguntas con las mismas palabras quedan juntas."""
+    v = [0.0] * dimensiones
+    for palabra in bitacora.clave_de(texto).split():
+        v[int(hashlib.sha256(palabra.encode()).hexdigest(), 16) % dimensiones] += 1.0
+    return v
+
+
 async def llamar_falso(url, headers, cuerpo, timeout):
+    if url.endswith(":predict"):  # el modelo de vectores (NEX-609): no consume el guion ni cuenta como llamada al modelo
+        dimensiones = cuerpo["parameters"]["outputDimensionality"]
+        return 200, {"predictions": [{"embeddings": {"values": vector_falso(i["content"], dimensiones), "statistics": {"token_count": 5}}} for i in cuerpo["instances"]]}
     texto = cuerpo["contents"][0]["parts"][0]["text"]
     llamadas.append({"url": url, "headers": headers, "cuerpo": cuerpo, "texto": texto})
     respuesta = guion.pop(0) if guion else {"consulta": None, "noSePuede": "sin guion"}
@@ -207,6 +222,11 @@ async def llamar_falso(url, headers, cuerpo, timeout):
 
 gemini._llamar = llamar_falso
 gemini._token = lambda: "token-falso"
+# Este archivo prueba el camino del MODELO (NEX-607/608): aquí cada pregunta se le hace al modelo aunque se repita. La reutilización, los topes, la
+# bitácora y los ejemplos los prueba verificar_busqueda_bitacora.py (NEX-609).
+bitacora.reusable = lambda *a, **k: None
+config.BUSQUEDA_TOPE_PERSONA_POR_HORA = config.BUSQUEDA_TOPE_ORGANIZACION_POR_DIA = 10_000
+config.EMBEDDINGS_DIMENSIONES = 256
 
 
 def preguntar(bearer: str, tenant: str, pregunta, *respuestas):

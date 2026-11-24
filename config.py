@@ -139,6 +139,28 @@ SQLSERVER_ENCRYPT = os.getenv("SQLSERVER_ENCRYPT", "yes")
 CONSULTA_TIEMPO_MAXIMO_S = max(1, int(_numero("CONSULTA_TIEMPO_MAXIMO_S", 15)))
 CONSULTA_TOPE_RENGLONES = max(1, int(_numero("CONSULTA_TOPE_RENGLONES", 1000)))
 
+# ── Búsqueda: topes de uso, ejemplos y costo (NEX-609, 2026-11-23) ─────────────────────────────────────────────────────────────────────
+# Cuántas preguntas puede hacer UNA persona por hora y TODA una organización por día (ventanas corridas: la última hora, las últimas 24 h). Al
+# llegar, la siguiente pregunta no llega al modelo y la persona ve cuándo puede volver a preguntar. Se cuentan en `nexus.searchQuestions`.
+BUSQUEDA_TOPE_PERSONA_POR_HORA = max(1, int(_numero("BUSQUEDA_TOPE_PERSONA_POR_HORA", 60)))
+BUSQUEDA_TOPE_ORGANIZACION_POR_DIA = max(1, int(_numero("BUSQUEDA_TOPE_ORGANIZACION_POR_DIA", 500)))
+# Cuántos ejemplos (pregunta + consulta) se le dan al modelo en cada pregunta: los más parecidos por significado, entre los comunes y los que
+# aprobó la organización.
+BUSQUEDA_EJEMPLOS_POR_PREGUNTA = max(1, int(_numero("BUSQUEDA_EJEMPLOS_POR_PREGUNTA", 12)))
+# El modelo de vectores de significado («embeddings») con el que se eligen esos ejemplos: Vertex AI, la misma credencial y el mismo proyecto que
+# Gemini. Probado el 2026-11-23: `gemini-embedding-001` responde en `global` en ~1 s. 768 dimensiones bastan para comparar preguntas cortas.
+EMBEDDINGS_MODELO = os.getenv("EMBEDDINGS_MODELO", "gemini-embedding-001")
+EMBEDDINGS_REGION = os.getenv("EMBEDDINGS_REGION", "global")
+EMBEDDINGS_DIMENSIONES = max(1, int(_numero("EMBEDDINGS_DIMENSIONES", 768)))
+EMBEDDINGS_TIMEOUT = _numero("EMBEDDINGS_TIMEOUT", 10)
+# Precios de lista en dólares por MILLÓN de tokens, para estimar lo que costó cada pregunta (la bitácora y Nexus Monitor lo enseñan). Consultados el
+# 2026-11-23: Gemini 3.1 Flash-Lite, US$0.25 de entrada y US$1.50 de salida (anuncio de Google del modelo), US$0.025 la entrada que sale de la
+# caché; gemini-embedding-001, US$0.15. Cambian: si Google cambia la lista o se cambia de modelo, se cambian aquí, en el .env.
+GEMINI_PRECIO_ENTRADA_USD_MILLON = _numero("GEMINI_PRECIO_ENTRADA_USD_MILLON", 0.25)
+GEMINI_PRECIO_ENTRADA_CACHE_USD_MILLON = _numero("GEMINI_PRECIO_ENTRADA_CACHE_USD_MILLON", 0.025)
+GEMINI_PRECIO_SALIDA_USD_MILLON = _numero("GEMINI_PRECIO_SALIDA_USD_MILLON", 1.50)
+EMBEDDINGS_PRECIO_USD_MILLON = _numero("EMBEDDINGS_PRECIO_USD_MILLON", 0.15)
+
 # ── Google Document AI ────────────────────────────────────────────────────────
 # Se llaman directo los procesadores de Document AI (no vía el proyecto
 # hermano `document_ai`). Los IDs van aquí y no hardcodeados en el código, para

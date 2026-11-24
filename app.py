@@ -540,6 +540,16 @@ app.include_router(
     dependencies=[Depends(exigir_llave)],
 )
 
+# Las preguntas de la búsqueda por organización (NEX-609), para la sección «Búsqueda» de Nexus Monitor. Solo llave de servicio y solo números.
+from routers.busqueda_monitor import router as busqueda_monitor_router  # noqa: E402
+
+app.include_router(
+    busqueda_monitor_router,
+    prefix="/monitor-busqueda",
+    tags=["Nexus Monitor"],
+    dependencies=[Depends(exigir_llave)],
+)
+
 # Archivos SÍ se registra siempre, a diferencia de Documentos: no depende de la
 # base, solo del almacén. Si `ALMACEN_RUTA` está vacía el endpoint responde un
 # 503 que NOMBRA la variable que falta — más útil que esconder la ruta y dejar
