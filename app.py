@@ -495,6 +495,17 @@ app.include_router(
     dependencies=[Depends(exigir_llave)],
 )
 
+# La búsqueda en lenguaje natural sobre los datos extraídos (NEX-607, 2026-11-23): el modelo escribe la consulta, el back la revisa y la corre
+# con la conexión de solo lectura de NEX-605. Cualquier rol de la organización. Llave de servicio Y JWT (HU11).
+from routers.busqueda import router as busqueda_router  # noqa: E402
+
+app.include_router(
+    busqueda_router,
+    prefix="/busqueda",
+    tags=["Búsqueda"],
+    dependencies=[Depends(exigir_llave)],
+)
+
 # Administradores de plataforma: crearlos, verlos, regenerarles la contraseña y retirarlos. Lo usa Nexus Monitor (la herramienta del
 # operador); antes eran tres scripts en una terminal del servidor. ⚠️ Piden SOLO la llave de servicio: sin llave de administración
 # ni JWT (decisión del usuario, 2026-10-20). Ver el docstring de `routers/admins_plataforma.py`.

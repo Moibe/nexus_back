@@ -1961,6 +1961,27 @@ servidor, el driver y la base son los del back; si el archivo trae `SQLSERVER_DB
 /health/consulta` dice si quedó bien: `ok` (entra, sin organización las vistas dan 0 y `[nexus]` está cerrado), `sin_configurar` (falta el archivo), `error` (el
 detalle, en el log) o `inseguro`. Prueba: `verificar_consulta_lectura.py` (Docker).
 
+### La búsqueda en lenguaje natural (NEX-607, 2026-11-23)
+
+`POST /busqueda/preguntar` `{tenant, pregunta}` (llave de servicio + JWT; cualquier rol de la organización). `servicios/busqueda.py` hace la vuelta completa:
+
+1. **El catálogo** (lo que en el plan era NEX-606, que no tenía código): en cada pregunta se leen los tipos documentales de la organización (`catalogo_de`) con el nombre
+   que ve la gente, la LLAVE de cada campo tal como se guarda en lo extraído (`nombres_en_google`), su tipo de dato y su descripción; los grupos con sus subcampos
+   (`socios[n].nombre`). Sin los archivados y sin los de otra organización. Por leerse al preguntar, un tipo nuevo o renombrado ya se conoce y uno borrado deja de aparecer.
+2. **El modelo** (el mismo Gemini de «Sugerir descripción», con `responseMimeType: application/json`) recibe la descripción de las dos vistas de `[consulta]` (`_COMUN`), el
+   catálogo, las preguntas de ejemplo con su consulta (`EJEMPLOS`, probadas contra la base en `verificar_busqueda.py`) y la pregunta. Contesta `{consulta, explicacion,
+   noSePuede}`. **Los datos de los documentos nunca van al modelo.** Elegir los ejemplos por significado y sumar los que apruebe cada organización es de NEX-609.
+3. **La revisión** (`revisar`, la segunda barrera; la primera es la base): una sola sentencia, SELECT o WITH, sin comentarios, sin palabras de escritura o ejecución (INSERT,
+   UPDATE, DELETE, EXEC, INTO, WAITFOR, OPENROWSET…), sin `sp_`/`xp_`, sin `::`, sin nombres de tres partes ni esquemas ajenos (`nexus`, `sys`, `dbo`…), y lo que va tras
+   FROM/JOIN/APPLY solo puede ser `consulta.vDocumentoExtraido`, `consulta.vDatoExtraido` o un CTE propio (una función de tabla tampoco). Lo que no cumple no se ejecuta.
+4. **La base** con `db/consulta.py` (NEX-605). Si la revisión o la base rechazan la consulta (una columna que no existe), se le dice al modelo qué falló y se le pide UNA
+   corrección; si tampoco, 422 `consulta_invalida`.
+
+Respuestas: 200 `{columnas, filas, hayMas, tope, milisegundos, consulta, explicacion, intentos}` (fechas como `AAAA-MM-DD`/ISO, números como números); 400 pregunta
+vacía o de más de 500 caracteres, o el espacio de plataforma; 422 `no_se_puede` (el modelo dice que no se responde con estos datos, con su motivo), `consulta_invalida`,
+`tardo`; 429 cuota del modelo; 502 el modelo falló o no contestó JSON; 503 sin credencial del modelo o sin `~/.nexus-lectura.env`. Ningún mensaje nombra al proveedor ni
+trae lo que dijo Google (eso va al log). Prueba: `verificar_busqueda.py` (Docker, con el modelo falseado).
+
 ### El piloto: los tipos documentales en SQL (migración `0002`, 2026-10-28)
 
 La primera entidad del producto que deja el almacén y pasa a una tabla es el catálogo de tipos documentales: `nexus.documentTypes`.
