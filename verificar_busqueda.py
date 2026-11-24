@@ -286,7 +286,7 @@ rev("una organización sin tipos: se dice", "todavía no tiene tipos" in busqued
 titulo("3 · preguntar")
 TRES = {
     "¿Cuántas INE vencen este año?": SQL_DE["¿Cuántas INE vencen este año?"],
-    "¿Qué documentos tienen campos corregidos?": SQL_DE["¿Qué documentos tienen campos corregidos?"],
+    "¿Qué documentos tienen campos corregidos?": "SELECT TOP (200) archivo AS [Archivo], tipoDocumental AS [Tipo documental], camposCorregidos AS [Campos corregidos] FROM consulta.vDocumentoExtraido WHERE camposCorregidos > 0 ORDER BY camposCorregidos DESC, archivo",
     "¿Qué campo falta más en las actas constitutivas?": "SELECT TOP (10) campo AS [Campo], COUNT(*) AS [Documentos donde falta] FROM consulta.vDatoExtraido WHERE tipoDocumental = 'INE' AND valor IS NULL GROUP BY campo ORDER BY COUNT(*) DESC",
 }
 esperados = {
@@ -323,6 +323,7 @@ llamadas.clear()
 preguntar(a_admin, ORG_A, "¿Cuántas INE vencen este año?", {"consulta": SQL_DE["¿Cuántas INE vencen este año?"], "explicacion": "x", "noSePuede": None})
 texto = llamadas[-1]["texto"]
 rev("la pregunta, el catálogo de A (tipos, llaves) y los ejemplos", "Pregunta: «¿Cuántas INE vencen este año?»" in texto and "«Acta constitutiva»" in texto and "· vigencia («Vigencia», fecha)" in texto and busqueda.EJEMPLOS[3][1] in texto)
+rev("se le pide la columna documento (y pagina) en las listas, para abrir el documento (NEX-608)", "incluye SIEMPRE la columna documento" in texto)
 rev("la descripción de las vistas", "consulta.vDatoExtraido: UN renglón por CAMPO" in texto and "motivoSinValor" in texto)
 rev("NINGÚN valor extraído", not any(v in texto for v in ("ANA PRUEBA", "PRLA900101", "JUAN P", "ACME", "G12345678", f"{ESTE_ANO}-12-31")), texto[-600:])
 rev("nada de B (ni Pasaporte ni su llave)", "Pasaporte" not in texto and "numero_de_pasaporte" not in texto)
@@ -431,7 +432,10 @@ for pregunta, sql in busqueda.EJEMPLOS:
     try:
         sql_ok = busqueda.revisar(sql)
         res = consulta.consultar(ORG_A, sql_ok)
-        filas = [[busqueda._valor_json(v) for v in f] for f in res.filas]
+        # Las columnas documento y pagina (NEX-608: con ellas la pantalla abre el documento) no se comparan: el id es aleatorio.
+        fuera = {i for i, c in enumerate(res.columnas) if c in ("documento", "pagina")}
+        filas = [[busqueda._valor_json(v) for i, v in enumerate(f) if i not in fuera] for f in res.filas]
+        rev(f"«{pregunta}»: si lista documentos trae la columna documento tal cual", not any(c in ("Archivo", "Socio") for c in res.columnas) or "documento" in res.columnas, str(res.columnas))
         esperado = conocidas.get(pregunta)
         rev(f"«{pregunta}» corre" + (f" y da {esperado}" if esperado is not None else f" ({len(filas)} renglones)"), esperado is None or filas == esperado, str(filas)[:300])
     except Exception as exc:  # noqa: BLE001

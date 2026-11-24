@@ -368,12 +368,15 @@ def de_documento(tenant: str, documento_id: object) -> dict:
     """Lo que se sabe hoy de un documento: su última clasificación, su última corrida (aunque haya fallado) y los campos VIGENTES.
 
     Sin base, o de un documento sin nada todavía, todo viene vacío. Un documento que no es de la organización: `DocumentoNoEncontrado`."""
-    vacio = {"clasificacion": None, "extraccion": None, "campos": [], "correccionesSinTrasladar": []}
+    vacio = {"documento": None, "clasificacion": None, "extraccion": None, "campos": [], "correccionesSinTrasladar": []}
     if not SQLSERVER_HOST:
         return vacio
     tablas = _tablas()
     with tablas.lectura() as cur:
         documento = _documento(cur, tenant, documento_id)
+        # El archivo mismo (NEX-608, 2026-11-23): la búsqueda abre el documento en la página de donde salió el dato, y para eso necesita su ruta en el almacén.
+        cur.execute("SELECT publicId, originalName, mime, relativePath, sizeBytes FROM nexus.documents WHERE documentId = ?", documento)
+        archivo = tablas.una(cur)
         cur.execute(
             "SELECT TOP (1) c.category, c.confidence, c.classifiedAt, c.classifiedBy, t.publicId AS tipoId, t.name AS tipoNombre "
             "FROM nexus.documentClassifications c LEFT JOIN nexus.documentTypes t ON t.documentTypeId = c.documentTypeId "
@@ -409,6 +412,8 @@ def de_documento(tenant: str, documento_id: object) -> dict:
         return trasladadas[c["fieldPath"]] if c["correctedAt"] < c["corridaTerminada"] else None
 
     return {
+        "documento": archivo
+        and {"id": archivo["publicId"], "nombre": archivo["originalName"], "mime": archivo["mime"], "rutaRelativa": archivo["relativePath"], "tamanoBytes": archivo["sizeBytes"]},
         "clasificacion": clasificacion
         and {
             "categoria": clasificacion["category"],

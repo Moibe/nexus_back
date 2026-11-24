@@ -138,6 +138,9 @@ Cómo se pregunta:
   FROM consulta.vDatoExtraido WHERE tipoDocumental = 'INE' GROUP BY documento, archivo.
 - Devuelve columnas con alias legibles en español entre corchetes ([Tipo documental], [Documentos]). Si la pregunta pide una lista, ordénala y usa
   TOP (200) salvo que pidan más (nunca más de 1000). Un conteo o un total se devuelve como un solo renglón.
+- Cuando la respuesta liste documentos o datos (un renglón por documento o por campo), incluye SIEMPRE la columna documento tal cual, sin alias, y
+  si sale de vDatoExtraido también pagina tal cual: la pantalla no las enseña, las usa para abrir el documento en la página de donde salió el dato.
+  En una lista pivoteada (una columna por campo) agrupa también por documento. En conteos y totales no van.
 - Las comparaciones de texto no distinguen mayúsculas. Para «contiene» usa LIKE '%…%'."""
 
 #: Preguntas de ejemplo con su consulta. Las del juego común usan los tipos y las llaves de una organización de ejemplo (INE con nombre, curp y vigencia;
@@ -160,17 +163,17 @@ EJEMPLOS: tuple[tuple[str, str], ...] = (
     ),
     (
         "¿Qué INE ya vencieron?",
-        "SELECT TOP (200) archivo AS [Archivo], valorFecha AS [Vigencia] FROM consulta.vDatoExtraido "
+        "SELECT TOP (200) documento, archivo AS [Archivo], valorFecha AS [Vigencia], pagina FROM consulta.vDatoExtraido "
         "WHERE tipoDocumental = 'INE' AND campo = 'vigencia' AND valorFecha < CAST(GETDATE() AS date) ORDER BY valorFecha",
     ),
     (
         "¿Qué documentos tienen campos corregidos?",
-        "SELECT TOP (200) archivo AS [Archivo], tipoDocumental AS [Tipo documental], camposCorregidos AS [Campos corregidos] "
+        "SELECT TOP (200) documento, archivo AS [Archivo], tipoDocumental AS [Tipo documental], camposCorregidos AS [Campos corregidos] "
         "FROM consulta.vDocumentoExtraido WHERE camposCorregidos > 0 ORDER BY camposCorregidos DESC, archivo",
     ),
     (
         "¿Qué campos se corrigieron y en qué documentos?",
-        "SELECT TOP (200) archivo AS [Archivo], tipoDocumental AS [Tipo documental], campo AS [Campo], valor AS [Valor corregido] "
+        "SELECT TOP (200) documento, archivo AS [Archivo], tipoDocumental AS [Tipo documental], campo AS [Campo], valor AS [Valor corregido], pagina "
         "FROM consulta.vDatoExtraido WHERE corregido = 1 ORDER BY archivo, campo",
     ),
     (
@@ -180,22 +183,22 @@ EJEMPLOS: tuple[tuple[str, str], ...] = (
     ),
     (
         "¿Qué documentos tienen campos faltantes?",
-        "SELECT TOP (200) archivo AS [Archivo], tipoDocumental AS [Tipo documental], camposFaltantes AS [Campos faltantes] "
+        "SELECT TOP (200) documento, archivo AS [Archivo], tipoDocumental AS [Tipo documental], camposFaltantes AS [Campos faltantes] "
         "FROM consulta.vDocumentoExtraido WHERE camposFaltantes > 0 ORDER BY camposFaltantes DESC, archivo",
     ),
     (
         "Dame la lista de las INE con nombre y CURP",
-        "SELECT TOP (200) archivo AS [Archivo], MAX(CASE WHEN campo = 'nombre' THEN valor END) AS [Nombre], "
+        "SELECT TOP (200) documento, archivo AS [Archivo], MAX(CASE WHEN campo = 'nombre' THEN valor END) AS [Nombre], "
         "MAX(CASE WHEN campo = 'curp' THEN valor END) AS [CURP] FROM consulta.vDatoExtraido WHERE tipoDocumental = 'INE' GROUP BY documento, archivo ORDER BY archivo",
     ),
     (
         "¿Cuál es la CURP de Juan Pérez?",
-        "SELECT TOP (200) archivo AS [Archivo], MAX(CASE WHEN campo = 'curp' THEN valor END) AS [CURP] FROM consulta.vDatoExtraido "
+        "SELECT TOP (200) documento, archivo AS [Archivo], MAX(CASE WHEN campo = 'curp' THEN valor END) AS [CURP] FROM consulta.vDatoExtraido "
         "WHERE tipoDocumental = 'INE' GROUP BY documento, archivo HAVING MAX(CASE WHEN campo = 'nombre' THEN valor END) LIKE '%Juan%Pérez%'",
     ),
     (
         "¿Qué documentos tienen la confianza más baja?",
-        "SELECT TOP (20) archivo AS [Archivo], tipoDocumental AS [Tipo documental], confianzaPromedio AS [Confianza promedio], confianzaMinima AS [Confianza mínima] "
+        "SELECT TOP (20) documento, archivo AS [Archivo], tipoDocumental AS [Tipo documental], confianzaPromedio AS [Confianza promedio], confianzaMinima AS [Confianza mínima] "
         "FROM consulta.vDocumentoExtraido ORDER BY confianzaPromedio",
     ),
     (
@@ -208,12 +211,12 @@ EJEMPLOS: tuple[tuple[str, str], ...] = (
     ),
     (
         "¿Cuántos socios tiene cada acta constitutiva?",
-        "SELECT archivo AS [Archivo], COUNT(DISTINCT fila) AS [Socios] FROM consulta.vDatoExtraido "
+        "SELECT documento, archivo AS [Archivo], COUNT(DISTINCT fila) AS [Socios] FROM consulta.vDatoExtraido "
         "WHERE tipoDocumental = 'Acta constitutiva' AND campo LIKE 'socios[[]%].nombre' AND valor IS NOT NULL GROUP BY documento, archivo ORDER BY [Socios] DESC",
     ),
     (
         "¿Qué socios aparecen en las actas constitutivas?",
-        "SELECT TOP (200) archivo AS [Archivo], fila AS [Fila], valor AS [Socio] FROM consulta.vDatoExtraido "
+        "SELECT TOP (200) documento, archivo AS [Archivo], fila AS [Fila], valor AS [Socio], pagina FROM consulta.vDatoExtraido "
         "WHERE tipoDocumental = 'Acta constitutiva' AND campo LIKE 'socios[[]%].nombre' AND valor IS NOT NULL ORDER BY archivo, fila",
     ),
     (
@@ -226,7 +229,7 @@ EJEMPLOS: tuple[tuple[str, str], ...] = (
     ),
     (
         "¿Qué documentos son PDF?",
-        "SELECT TOP (200) archivo AS [Archivo], tipoDocumental AS [Tipo documental], paginas AS [Páginas] FROM consulta.vDocumentoExtraido WHERE mime = 'application/pdf' ORDER BY archivo",
+        "SELECT TOP (200) documento, archivo AS [Archivo], tipoDocumental AS [Tipo documental], paginas AS [Páginas] FROM consulta.vDocumentoExtraido WHERE mime = 'application/pdf' ORDER BY archivo",
     ),
     (
         "¿Cuántos campos ilegibles hay por tipo documental?",

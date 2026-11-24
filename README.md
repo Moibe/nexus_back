@@ -1982,6 +1982,11 @@ vacía o de más de 500 caracteres, o el espacio de plataforma; 422 `no_se_puede
 `tardo`; 429 cuota del modelo; 502 el modelo falló o no contestó JSON; 503 sin credencial del modelo o sin `~/.nexus-lectura.env`. Ningún mensaje nombra al proveedor ni
 trae lo que dijo Google (eso va al log). Prueba: `verificar_busqueda.py` (Docker, con el modelo falseado).
 
+**NEX-608 (2026-11-23), de dónde sale cada renglón:** al modelo se le pide que toda lista traiga la columna `documento` tal cual (y `pagina` si sale de
+`vDatoExtraido`); la pantalla no las enseña, las usa para abrir el documento en la página de donde salió el dato. Para eso `GET /expedientes/documentos/{id}/datos`
+trae ahora también `documento: {id, nombre, mime, rutaRelativa, tamanoBytes}`. Los renglones que vengan de una ejecución de proceso abrirán la ejecución cuando
+existan sus vistas en `[consulta]` (NEX-612).
+
 ### El piloto: los tipos documentales en SQL (migración `0002`, 2026-10-28)
 
 La primera entidad del producto que deja el almacén y pasa a una tabla es el catálogo de tipos documentales: `nexus.documentTypes`.

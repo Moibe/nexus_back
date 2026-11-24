@@ -198,7 +198,8 @@ try:
 
     titulo("1 · Antes de procesar: nada")
     r = datos(adm, org, d1)
-    rev("200 y vacío", r.status_code == 200 and r.json() == {"clasificacion": None, "extraccion": None, "campos": [], "correccionesSinTrasladar": []}, r.text)
+    rev("200 y vacío (con el archivo mismo, NEX-608)", r.status_code == 200 and {k: v for k, v in r.json().items() if k != "documento"} == {"clasificacion": None, "extraccion": None, "campos": [], "correccionesSinTrasladar": []}
+        and r.json()["documento"]["id"] == d1 and r.json()["documento"]["rutaRelativa"], r.text)
     rev("documento de otra organización: 404", datos(adm, org, db).status_code == 404)
     rev("con el tenant de otra: 403", datos(adm, otra, d1).status_code == 403)
 
