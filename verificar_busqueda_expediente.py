@@ -221,6 +221,33 @@ R_NUEVA = ejecucion(ORG_A, E_JUAN, "Expediente de Juan Secreto", P_ALTA, "Alta d
 R_BETA = ejecucion(ORG_B, E_BETA, "Expediente de Beta", P_BETA, "Proceso de Beta", "no", "Requiere revisión", {"reglas": REGLAS, "evidencia": [], "condicion": "no_pasa", "faltantes": [FALTA]}, 5)
 
 
+def valores_finales(ejecucion_id: str, valores: list[tuple]) -> None:
+    """(nombre, forma, familia, estado, texto, lista, origen) por cada valor final, en orden."""
+    with tablas.transaccion() as cur:
+        cur.execute("SELECT processRunId FROM nexus.processRuns WHERE publicId = ?", ejecucion_id)
+        corrida = cur.fetchone()[0]
+        for i, (nombre, forma, familia, estado, texto, lista, origen) in enumerate(valores, 1):
+            cur.execute(
+                "INSERT INTO nexus.processRunFinalValues (processRunId, position, nodeId, name, kind, family, status, valueText, valueJson, origin) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                corrida, i, f"valor-final-{i}", nombre, forma, familia, estado, texto, json.dumps(lista, ensure_ascii=False) if lista is not None else None, origen,
+            )
+
+
+# NEX-612 (0021): lo que entregó cada ejecución.
+valores_finales(R_NUEVA, [
+    ("Nombre del cliente", "valor", "texto", "listo", "JUAN PÉREZ", None, "Nombre · INE"),
+    ("Monto solicitado", "valor", "numero", "listo", "150000", None, "Valor fijo #1"),
+    ("Vigencia", "valor", "fecha", "listo", "2031-06-30", None, "Vigencia · INE"),
+    ("Revisión del nombre", "veredicto", None, "listo", "No pasa", None, "Igual a #1"),
+    ("Domicilio", "valor", "texto", "sin_valores", None, None, "Domicilio · Comprobante de domicilio"),
+    ("Socios", "lista", "texto", "listo", "ANA, LUIS", ["ANA", "LUIS"], "Nombre · Acta constitutiva"),
+    ("Suelto", "valor", None, "sin_conexion", None, None, None),
+])
+valores_finales(R_VIEJA, [("Monto solicitado", "valor", "numero", "listo", "90000", None, "Valor fijo #1")])
+valores_finales(R_BETA, [("Monto solicitado", "valor", "numero", "listo", "999999", None, "Valor fijo #1")])
+
+
 def lee(sql: str, organizacion: str | None = ORG_A, expediente_id: str | None = None) -> list:
     """Lo que ve `usrNexusLectura` con esa organización (y ese expediente) fijados."""
     if organizacion is None:
@@ -265,13 +292,28 @@ rev("vEvidenciaDeEjecucion: de qué documento salió cada campo, con su valor, c
         ["INE", D_INE_JUAN, "ine-juan.pdf", "nombre", "JUAN PÉREZ", 95.0, 2]], str(evid))
 rev("vFaltanteDeEjecucion: lo que le faltó a la última", lee("SELECT ejecucion, faltante, esLaUltima FROM consulta.vFaltanteDeEjecucion") == [[R_NUEVA, FALTA, True]])
 corr = lee("SELECT documento, campo, valorExtraido, valorCorregido, motivo, corregidoPor, pagina FROM consulta.vCorreccion")
+vf = lee("SELECT ejecucion, esLaUltima, orden, valorFinal, forma, familia, estado, situacion, valor, valorNumero, valorFecha, elementos, origen "
+         "FROM consulta.vValorFinalDeEjecucion ORDER BY ejecutadaEn DESC, orden")
+nuevos = [[x[2], x[3], x[4], x[5], x[6], x[7], x[8], float(x[9]) if x[9] is not None else None, str(x[10]) if x[10] is not None else None, x[11], x[12]] for x in vf if x[0] == R_NUEVA]
+rev("vValorFinalDeEjecucion: los de la última de Juan, en orden, con su forma, su clase, si tienen valor (y por qué no) y de dónde salen",
+    nuevos == [
+        [1, "Nombre del cliente", "valor", "texto", "listo", "Con valor", "JUAN PÉREZ", None, None, None, "Nombre · INE"],
+        [2, "Monto solicitado", "valor", "numero", "listo", "Con valor", "150000", 150000.0, None, None, "Valor fijo #1"],
+        [3, "Vigencia", "valor", "fecha", "listo", "Con valor", "2031-06-30", None, "2031-06-30", None, "Vigencia · INE"],
+        [4, "Revisión del nombre", "veredicto", None, "listo", "Con valor", "No pasa", None, None, None, "Igual a #1"],
+        [5, "Domicilio", "valor", "texto", "sin_valores", "Sin valor (faltó el dato)", None, None, None, None, "Domicilio · Comprobante de domicilio"],
+        [6, "Socios", "lista", "texto", "listo", "Con valor", "ANA, LUIS", None, None, 2, "Nombre · Acta constitutiva"],
+        [7, "Suelto", "valor", None, "sin_conexion", "Sin conectar", None, None, None, None, None],
+    ], str(nuevos))
+rev("…con la ejecución vieja (la marca de la última, solo en la nueva) y nada de Beta",
+    [x[:2] + [x[3]] for x in vf if x[0] != R_NUEVA] == [[R_VIEJA, False, "Monto solicitado"]] and all(x[1] is True for x in vf if x[0] == R_NUEVA), str([x[:4] for x in vf]))
 rev("vCorreccion: el campo corregido, con el valor extraído, el corregido, el motivo, quién (su nombre) y la página",
     corr == [[D_INE_JUAN, "nombre", "JUAN PEREZ", "JUAN PÉREZ", "acento", "Admin Alfa", 2]], str(corr))
 
 # ── [2] El aislamiento ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
 titulo("2 · el aislamiento: organización y expediente fijados por la base")
 NUEVAS = ("vExpediente", "vDocumentoDeExpediente", "vDocumentoRequerido", "vDocumentoFaltante", "vEjecucion", "vReglaDeEjecucion", "vEvidenciaDeEjecucion",
-          "vFaltanteDeEjecucion", "vCorreccion", "vDocumentoExtraido", "vDatoExtraido")
+          "vFaltanteDeEjecucion", "vCorreccion", "vDocumentoExtraido", "vDatoExtraido", "vValorFinalDeEjecucion")
 cuentas = {v: lee(f"SELECT COUNT(*) FROM consulta.{v}", None)[0][0] for v in NUEVAS}
 rev("sin organización fijada: todas dan 0", all(n == 0 for n in cuentas.values()), str(cuentas))
 DE_DOCUMENTOS = "SELECT DISTINCT documento FROM consulta.{} ORDER BY documento"
@@ -382,6 +424,8 @@ r = preguntar("¿Qué reglas no pasaron?", E_ANA, None, sql("SELECT regla FROM c
 rev("…Ana tampoco tiene ejecuciones: el mismo aviso", r.json().get("aviso") == busqueda.AVISO_SIN_EJECUCIONES, r.text[:300])
 r = preguntar("¿Qué reglas dieron error raro?", E_JUAN, None, sql("SELECT regla FROM consulta.vReglaDeEjecucion WHERE estado = 'xyz'"))
 rev("…Juan sí tiene ejecuciones: 0 renglones sin aviso (es «no hay información»)", r.json().get("filas") == [] and r.json().get("aviso") is None, r.text[:300])
+r = preguntar("¿Qué valores finales dio?", E_ANA, None, sql("SELECT valorFinal, valor FROM consulta.vValorFinalDeEjecucion WHERE esLaUltima = 1"))
+rev("…los valores finales de un expediente sin ejecuciones: el mismo aviso", r.json().get("filas") == [] and r.json().get("aviso") == busqueda.AVISO_SIN_EJECUCIONES, r.text[:300])
 
 # ── [4] Las cuatro del ticket y todos los ejemplos ───────────────────────────────────────────────────────────────────────────────────
 titulo("4 · las cuatro preguntas del ticket con la consulta de su ejemplo")
@@ -406,6 +450,14 @@ rev("«Expedientes de este mes que quedaron en Requiere revisión» (Módulo de 
 f = con_ejemplo("¿Qué datos de este expediente se corrigieron y quién lo hizo?", E_JUAN)
 rev("«¿Qué datos de este expediente se corrigieron y quién lo hizo?» (Juan): el nombre, de JUAN PEREZ a JUAN PÉREZ, por acento, Admin Alfa",
     [x[:8] for x in f.get("filas", [])] == [[D_INE_JUAN, "ine-juan.pdf", "INE", "nombre", "JUAN PEREZ", "JUAN PÉREZ", "acento", "Admin Alfa"]], str(f)[:300])
+f = con_ejemplo("¿Qué valores finales dio la última ejecución?", E_JUAN)
+rev("«¿Qué valores finales dio la última ejecución?» (Juan): los siete, con el valor o por qué no lo tiene, y con ejecucion y expediente para abrirla",
+    [x[3:5] for x in f.get("filas", [])] == [["Nombre del cliente", "JUAN PÉREZ"], ["Monto solicitado", "150000"], ["Vigencia", "2031-06-30"], ["Revisión del nombre", "No pasa"],
+                                             ["Domicilio", "Sin valor (faltó el dato)"], ["Socios", "ANA, LUIS"], ["Suelto", "Sin conectar"]]
+    and all(x[0] == R_NUEVA and x[1] == E_JUAN for x in f.get("filas", [])), str(f)[:400])
+f = con_ejemplo("¿En qué expedientes el valor final Monto pasa de 100,000?", None)
+rev("«¿En qué expedientes el valor final Monto pasa de 100,000?» (Módulo de uso): Juan por su última (150,000; la vieja de 90,000 no cuenta, Beta no)",
+    [[x[1], float(x[5])] for x in f.get("filas", [])] == [[E_JUAN, 150000.0]], str(f)[:300])
 f = con_ejemplo("¿Qué datos de este expediente se corrigieron y quién lo hizo?", E_ANA)
 rev("…la misma desde Ana: no hay correcciones (0 renglones, sin aviso: sí tiene documentos)", f.get("filas") == [] and f.get("aviso") is None, str(f)[:200])
 malos = []

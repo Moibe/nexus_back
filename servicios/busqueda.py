@@ -42,7 +42,8 @@ escribe en la misma llamada, sin ver los datos (`sugerencias`); se guardan y una
 ## Preguntarle al expediente (NEX-612, 2026-11-26)
 
 La migración 0020 suma a `[consulta]` las vistas de expedientes, documentos de cada expediente, tipos que exige cada proceso, faltantes, ejecuciones,
-reglas, evidencia, faltantes de cada ejecución y correcciones (`VISTAS`), y redefine las dos de documentos. Cuando se pregunta DESDE un expediente
+reglas, evidencia, faltantes de cada ejecución y correcciones (`VISTAS`), y redefine las dos de documentos; la 0021, los valores finales que entrega cada
+ejecución (`vValorFinalDeEjecucion`). Cuando se pregunta DESDE un expediente
 (`expediente`), se comprueba que sea de la organización, la conexión lo fija como la organización (`db/consulta.py`) y TODAS las vistas solo traen lo
 suyo: «este expediente» no depende de que el modelo escriba el filtro. Al modelo se le dice desde dónde se pregunta, nunca el nombre del expediente.
 Si una respuesta de un expediente no trae renglones porque no se le ha ejecutado ningún proceso o no tiene documentos, `aviso` lo dice. La conversación,
@@ -117,9 +118,13 @@ VISTAS = (
     "consulta.vEvidenciaDeEjecucion",
     "consulta.vFaltanteDeEjecucion",
     "consulta.vCorreccion",
+    # Migración 0021: lo que entrega cada ejecución.
+    "consulta.vValorFinalDeEjecucion",
 )
 #: NEX-612: con cuáles se contesta sobre las ejecuciones y con cuáles sobre los documentos (para decir por qué no hay renglones en un expediente).
-VISTAS_DE_EJECUCION = ("consulta.vEjecucion", "consulta.vReglaDeEjecucion", "consulta.vEvidenciaDeEjecucion", "consulta.vFaltanteDeEjecucion")
+VISTAS_DE_EJECUCION = (
+    "consulta.vEjecucion", "consulta.vReglaDeEjecucion", "consulta.vEvidenciaDeEjecucion", "consulta.vFaltanteDeEjecucion", "consulta.vValorFinalDeEjecucion",
+)
 VISTAS_DE_DOCUMENTOS = ("consulta.vDocumentoExtraido", "consulta.vDatoExtraido", "consulta.vDocumentoDeExpediente", "consulta.vCorreccion")
 AVISO_SIN_EJECUCIONES = "A este expediente todavía no se le ha ejecutado ningún proceso: no hay un resultado que explicar."
 AVISO_SIN_DOCUMENTOS = "Este expediente todavía no tiene documentos."
@@ -238,6 +243,12 @@ consulta.vEvidenciaDeEjecucion: UN renglón por campo que leyó cada ejecución.
 resultadoEjecucion, ejecutadaEn, esLaUltima, tipoDocumentalId, tipoDocumental, documento, archivo, campo, valor, confianza, pagina.
 consulta.vFaltanteDeEjecucion: UN renglón por cada cosa que le faltó a una ejecución. Columnas: ejecucion, expediente, nombreExpediente, nombreProceso,
 resultadoEjecucion, ejecutadaEn, esLaUltima, orden, faltante (texto, por ejemplo 'INE: el expediente no trae el documento').
+consulta.vValorFinalDeEjecucion: UN renglón por valor final que entregó cada ejecución (los nodos «Valor final» del proceso). Columnas: ejecucion,
+expediente, nombreExpediente, proceso, nombreProceso, resultadoEjecucion, caso, ejecutadaEn, esLaUltima, orden, valorFinal (su nombre), forma (valor,
+lista o veredicto), familia (texto, numero, fecha o booleano; NULL en un veredicto), estado (listo, sin_valores = faltó el dato, sin_conexion = no tenía
+nada conectado), situacion (Con valor, Sin valor (faltó el dato), Sin conectar), valor (texto; en una lista, sus elementos separados por coma; en un
+veredicto, Pasa o No pasa; NULL si no tiene), valorNumero, valorFecha, elementos (cuántos trae una lista), origen (de dónde salió: 'rfc · INE',
+'Igual a #1').
 consulta.vCorreccion: UN renglón por campo corregido a mano, en la extracción vigente. Columnas: documento, archivo, tipoDocumentalId, tipoDocumental,
 campo, nombreCampo, fila, valorExtraido, valorCorregido, motivo, corregidoEn, corregidoPor (nombre), pagina. Para saber de qué expediente es un documento,
 une con vDocumentoDeExpediente por documento.
@@ -258,13 +269,15 @@ Cómo se pregunta:
 - Cuando la respuesta liste documentos o datos (un renglón por documento o por campo), incluye SIEMPRE la columna documento tal cual, sin alias, y
   si sale de vDatoExtraido también pagina tal cual: la pantalla no las enseña, las usa para abrir el documento en la página de donde salió el dato.
   En una lista pivoteada (una columna por campo) agrupa también por documento. En conteos y totales no van.
-- Cuando la respuesta liste ejecuciones, reglas, evidencia o faltantes de una ejecución, incluye SIEMPRE las columnas ejecucion y expediente tal cual,
-  sin alias; una lista de expedientes lleva la columna expediente tal cual. La pantalla no las enseña: con ellas abre la ejecución o el expediente.
+- Cuando la respuesta liste ejecuciones, reglas, evidencia, faltantes o valores finales de una ejecución, incluye SIEMPRE las columnas ejecucion y
+  expediente tal cual, sin alias; una lista de expedientes lleva la columna expediente tal cual. La pantalla no las enseña: con ellas abre la
+  ejecución o el expediente.
   Para que se lea, agrega los nombres con alias ([Expediente], [Proceso]).
 - El estado de un expediente es el de la ÚLTIMA ejecución de cada proceso: usa esLaUltima = 1, salvo que pregunten por el historial o por todas.
 - «Por qué quedó» en un resultado: de su última ejecución, las reglas que no pasaron (estado distinto de pasa y de listo, con su explicacion y comparo)
   y lo que le faltó (vFaltanteDeEjecucion). «Qué documentos le faltan»: vDocumentoFaltante.
-- Compara resultado con la palabra que diga la persona (resultado = 'Requiere revisión').
+- Compara resultado con la palabra que diga la persona (resultado = 'Requiere revisión'). Un valor final se busca por su nombre con
+  LIKE '%…%' (la persona puede decirlo con otras palabras); compara valorNumero o valorFecha, no valor, cuando es número o fecha.
 - Las comparaciones de texto no distinguen mayúsculas. Para «contiene» usa LIKE '%…%'."""
 
 #: Preguntas de ejemplo con su consulta. Las del juego común usan los tipos y las llaves de una organización de ejemplo (INE con nombre, curp y vigencia;
@@ -411,6 +424,16 @@ EJEMPLOS: tuple[tuple[str, str], ...] = (
         "¿Qué documentos le faltan a cada expediente?",
         "SELECT expediente, nombreExpediente AS [Expediente], nombreProceso AS [Proceso], tipoDocumental AS [Tipo documental que falta] "
         "FROM consulta.vDocumentoFaltante ORDER BY nombreExpediente, nombreProceso, tipoDocumental",
+    ),
+    (
+        "¿Qué valores finales dio la última ejecución?",
+        "SELECT ejecucion, expediente, nombreProceso AS [Proceso], valorFinal AS [Valor final], COALESCE(valor, situacion) AS [Valor], origen AS [De dónde sale] "
+        "FROM consulta.vValorFinalDeEjecucion WHERE esLaUltima = 1 ORDER BY nombreProceso, orden",
+    ),
+    (
+        "¿En qué expedientes el valor final Monto pasa de 100,000?",
+        "SELECT ejecucion, expediente, nombreExpediente AS [Expediente], nombreProceso AS [Proceso], valorFinal AS [Valor final], valorNumero AS [Monto] "
+        "FROM consulta.vValorFinalDeEjecucion WHERE esLaUltima = 1 AND valorFinal LIKE '%Monto%' AND valorNumero > 100000 ORDER BY valorNumero DESC",
     ),
     (
         "¿Qué reglas no pasaron en la última ejecución?",
