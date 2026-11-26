@@ -13,14 +13,18 @@ organización sobre la cual preguntar: 400 al preguntar.
 
 ## Preguntar: `POST /busqueda/preguntar`
 
-- 200 `{columnas, filas, hayMas, tope, milisegundos, consulta, explicacion, intentos, preguntaId, origen, reusoDe}`. `filas` es una lista de listas en
-  el orden de `columnas`; si había más renglones que `tope`, `hayMas` lo dice. `origen` es `modelo`, `ejemplo` (la consulta de un ejemplo aprobado de la
-  organización, la misma pregunta) o `anterior` (la de una pregunta igual que ya había salido bien); con `reusoDe` dice de cuál. `preguntaId` es para
-  valorarla (null si la bitácora no se pudo escribir).
+- Recibe `{tenant, pregunta, conversacion?}`. `conversacion` (NEX-611) es el id que devolvió la pregunta anterior: la nueva se entiende con las anteriores
+  de esa conversación. Sin él (o si no es de esta persona en esta organización), empieza una conversación nueva.
+- 200 `{columnas, filas, hayMas, tope, milisegundos, consulta, explicacion, intentos, preguntaId, origen, reusoDe, conversacion, turno, usaAnteriores,
+  sugerencias}`. `filas` es una lista de listas en el orden de `columnas`; si había más renglones que `tope`, `hayMas` lo dice. `origen` es `modelo`,
+  `ejemplo` (la consulta de un ejemplo aprobado de la organización, la misma pregunta) o `anterior` (la de una pregunta igual que ya había salido bien);
+  con `reusoDe` dice de cuál. `preguntaId` es para valorarla (null si la bitácora no se pudo escribir). `conversacion` y `turno` dicen en qué conversación
+  quedó y qué número de pregunta es; `usaAnteriores`, si tomó algo de las anteriores (la explicación lo dice); `sugerencias`, hasta tres preguntas para
+  seguir.
 - 400 pregunta vacía o demasiado larga, o el espacio de plataforma.
-- 422 con `codigo`: `no_se_puede` (la pregunta no se responde con estos datos, con el motivo que dio el modelo), `consulta_invalida` (lo que escribió
-  el modelo no pasó la revisión ni corregido, o la base lo rechazó dos veces), `tardo` (pasó del tiempo máximo). Todos traen un `mensaje` para la
-  persona; el detalle técnico va al log.
+- 422 con `codigo`: `no_se_puede` (la pregunta no se responde con estos datos, con el motivo que dio el modelo; también «¿y de esas?» sin preguntas
+  anteriores), `consulta_invalida` (lo que escribió el modelo no pasó la revisión ni corregido, o la base lo rechazó dos veces), `tardo` (pasó del tiempo
+  máximo). Todos traen un `mensaje` para la persona, y `conversacion` y `turno`; el detalle técnico va al log.
 - 429 `tope` (llegó al tope de uso: `{codigo, mensaje, alcance: persona|organizacion, tope, ventana: hora|dia, reintentarEn}`; NO se le preguntó al
   modelo) o `modelo` (cuota del modelo); 502 el modelo falló; 503 la búsqueda no está configurada en este servidor (sin credencial del modelo o sin
   `~/.nexus-lectura.env`). Nunca nombran al proveedor ni traen lo que dijo Google.
@@ -47,11 +51,16 @@ MENSAJE_FALLO_CONSULTA = "No se pudo correr la consulta. Intenta preguntar de ot
 _NO_EXISTE = {"codigo": "pregunta_no_existe", "mensaje": "Esa pregunta no existe."}
 _EJEMPLO_NO_EXISTE = {"codigo": "ejemplo_no_existe", "mensaje": "Ese ejemplo no existe."}
 _NO_VALORABLE = {"codigo": "no_valorable", "mensaje": "Solo se puede valorar o aprobar una respuesta que salió bien."}
+_DEPENDE = {
+    "codigo": "depende_de_la_conversacion",
+    "mensaje": "Esa respuesta sigue de una pregunta anterior de su conversación: sola, la misma pregunta quiere decir otra cosa y no sirve de ejemplo.",
+}
 
 
 class Pregunta(BaseModel):
     tenant: str = Field(..., description="La organización")
     pregunta: str = Field(..., max_length=busqueda.MAX_PREGUNTA * 4, description="La pregunta, con las palabras de la persona")
+    conversacion: str | None = Field(None, max_length=60, description="NEX-611: la conversación que sigue (el id que devolvió la pregunta anterior)")
 
 
 class Valoracion(BaseModel):
@@ -68,8 +77,14 @@ class Aprobacion(BaseModel):
     preguntaId: str = Field(..., max_length=60, description="La pregunta de la bitácora que se vuelve ejemplo")
 
 
-def _422(codigo: str, mensaje: str) -> HTTPException:
-    return HTTPException(status_code=422, detail={"codigo": codigo, "mensaje": mensaje})
+def _de_la_conversacion(exc: BaseException) -> dict:
+    """NEX-611: en qué conversación quedó una pregunta que no se pudo responder (la pantalla sigue en ella)."""
+    conversacion, turno = getattr(exc, "conversacion", None), getattr(exc, "turno", None)
+    return {"conversacion": conversacion, "turno": turno} if conversacion else {}
+
+
+def _422(codigo: str, mensaje: str, exc: BaseException | None = None) -> HTTPException:
+    return HTTPException(status_code=422, detail={"codigo": codigo, "mensaje": mensaje, **(_de_la_conversacion(exc) if exc else {})})
 
 
 def _anotar(accion: str, actor: aislamiento.Actor, tenant: str, **datos) -> None:
@@ -88,15 +103,17 @@ def _anotar(accion: str, actor: aislamiento.Actor, tenant: str, **datos) -> None
         "Un modelo de lenguaje escribe UNA consulta de solo lectura con la pregunta, la descripción de los datos de la organización (sus tipos "
         "documentales y campos) y los ejemplos más parecidos; el servidor la revisa y la corre con la conexión de solo lectura que solo ve esa "
         "organización (NEX-605). La misma pregunta que un ejemplo aprobado o que una que ya salió bien reusa su consulta sin llamar al modelo. Los datos "
-        "de los documentos no se mandan al modelo. Cualquier rol que opere en la organización. 200 `{columnas, filas, hayMas, tope, milisegundos, "
-        "consulta, explicacion, intentos, preguntaId, origen, reusoDe}`; 400 pregunta vacía o larga; 422 `no_se_puede`, `consulta_invalida` o `tardo`; "
-        "429 `tope` (con `reintentarEn`) o cuota del modelo; 502/503 el modelo o la conexión no están disponibles."
+        "de los documentos no se mandan al modelo. Con `conversacion` (NEX-611) la pregunta se entiende con las anteriores de esa conversación (al modelo "
+        "solo van esas preguntas y sus consultas). Cualquier rol que opere en la organización. 200 `{columnas, filas, hayMas, tope, milisegundos, "
+        "consulta, explicacion, intentos, preguntaId, origen, reusoDe, conversacion, turno, usaAnteriores, sugerencias}`; 400 pregunta vacía o larga; 422 "
+        "`no_se_puede`, `consulta_invalida` o `tardo` (con `conversacion` y `turno`); 429 `tope` (con `reintentarEn`) o cuota del modelo; 502/503 el "
+        "modelo o la conexión no están disponibles."
     ),
 )
 async def preguntar(entrada: Pregunta, authorization: str | None = Header(default=None)):
     actor = aislamiento.exigir(authorization, entrada.tenant, "busqueda")
     try:
-        r = await busqueda.preguntar(entrada.tenant, actor.guid, entrada.pregunta)
+        r = await busqueda.preguntar(entrada.tenant, actor.guid, entrada.pregunta, entrada.conversacion)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except bitacora.TopeAlcanzado as exc:
@@ -105,24 +122,28 @@ async def preguntar(entrada: Pregunta, authorization: str | None = Header(defaul
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail={
                 "codigo": "tope", "mensaje": exc.mensaje, "alcance": exc.alcance, "tope": exc.tope, "ventana": exc.ventana,
-                "reintentarEn": exc.reintentar_en.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "reintentarEn": exc.reintentar_en.strftime("%Y-%m-%dT%H:%M:%SZ"), **_de_la_conversacion(exc),
             },
         ) from exc
     except busqueda.NoSePuede as exc:
-        raise _422("no_se_puede", str(exc)) from exc
+        raise _422("no_se_puede", str(exc), exc) from exc
     except busqueda.ConsultaInvalida as exc:
         logger.info("Búsqueda: sin consulta válida para %s en %s: %s", actor.guid, entrada.tenant, str(exc)[:300])
-        raise _422("consulta_invalida", busqueda.MENSAJE_INVALIDA) from exc
+        raise _422("consulta_invalida", busqueda.MENSAJE_INVALIDA, exc) from exc
     except consulta.ConsultaTardo as exc:
-        raise _422("tardo", MENSAJE_TARDO) from exc
+        raise _422("tardo", MENSAJE_TARDO, exc) from exc
     except consulta.ConsultaNoDisponible as exc:
         logger.warning("Búsqueda: la conexión de solo lectura no está disponible: %s", exc)
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail={"codigo": "sin_configurar", "mensaje": busqueda.MENSAJE_NO_DISPONIBLE}) from exc
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"codigo": "sin_configurar", "mensaje": busqueda.MENSAJE_NO_DISPONIBLE, **_de_la_conversacion(exc)},
+        ) from exc
     except busqueda.ModeloNoDisponible as exc:
-        raise HTTPException(status_code=exc.status_code, detail={"codigo": "modelo", "mensaje": str(exc)}) from exc
+        raise HTTPException(status_code=exc.status_code, detail={"codigo": "modelo", "mensaje": str(exc), **_de_la_conversacion(exc)}) from exc
     logger.info(
-        "Búsqueda: %s en %s → %s renglón(es)%s en %s ms, %s intento(s), origen %s.",
-        actor.guid, entrada.tenant, len(r.filas), " (hay más)" if r.hay_mas else "", r.milisegundos, r.intentos, r.origen,
+        "Búsqueda: %s en %s → %s renglón(es)%s en %s ms, %s intento(s), origen %s, pregunta %s de su conversación%s.",
+        actor.guid, entrada.tenant, len(r.filas), " (hay más)" if r.hay_mas else "", r.milisegundos, r.intentos, r.origen, r.turno,
+        " (tomó algo de las anteriores)" if r.usa_anteriores else "",
     )
     return {
         "columnas": r.columnas,
@@ -136,6 +157,10 @@ async def preguntar(entrada: Pregunta, authorization: str | None = Header(defaul
         "preguntaId": r.pregunta_id,
         "origen": r.origen,
         "reusoDe": r.reuso_de,
+        "conversacion": r.conversacion,
+        "turno": r.turno,
+        "usaAnteriores": r.usa_anteriores,
+        "sugerencias": r.sugerencias,
     }
 
 
@@ -216,7 +241,8 @@ def ejemplos(tenant: str = Query(..., description="La organización"), authoriza
     description=(
         "Copia la pregunta, su consulta y su explicación a los ejemplos de la organización: desde la siguiente pregunta, la búsqueda de ESA organización "
         "(y solo de esa) la usa como ejemplo, y la misma pregunta usa esa consulta sin llamar al modelo. Solo quien administra la organización. 404 si la "
-        "pregunta no es de la organización; 409 `no_valorable` si no salió bien; 409 `ya_es_ejemplo` si esa pregunta ya es un ejemplo."
+        "pregunta no es de la organización; 409 `no_valorable` si no salió bien; 409 `ya_es_ejemplo` si esa pregunta ya es un ejemplo; 409 "
+        "`depende_de_la_conversacion` si la respuesta tomó algo de una pregunta anterior de su conversación (NEX-611)."
     ),
 )
 async def aprobar(entrada: Aprobacion, authorization: str | None = Header(default=None)):
@@ -227,6 +253,8 @@ async def aprobar(entrada: Aprobacion, authorization: str | None = Header(defaul
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE) from exc
     except bitacora.NoValorable as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_NO_VALORABLE) from exc
+    except bitacora.DependeDeLaConversacion as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_DEPENDE) from exc
     except bitacora.YaEsEjemplo as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
