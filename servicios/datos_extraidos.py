@@ -372,6 +372,33 @@ def corregir(tenant: str, documento_id: object, ruta: object, valor: object, mot
 # ── Leer ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 
+_RE_PRIMERA_LLAVE = re.compile(r"[\[.]")
+
+
+def umbrales_de(data_json: str | None) -> dict[str, float]:
+    """El «Umbral de confianza» (paso 3) de cada campo de un tipo documental, por el nombre con que el extractor lo devuelve (`esquema.nombres_en_google`,
+    el mismo cruce que usan las ejecuciones y las reglas de normalización). Un grupo da el suyo a sus subcampos (la ruta empieza con su nombre). Sin
+    umbral, o uno que no es número, el campo no aparece."""
+    from servicios.esquema import nombres_en_google
+
+    try:
+        campos = (json.loads(data_json) if data_json else {}).get("campos") or []
+    except (ValueError, AttributeError):
+        return {}
+    campos = [c for c in campos if isinstance(c, dict)] if isinstance(campos, list) else []
+    nombres = nombres_en_google(campos)
+    salida: dict[str, float] = {}
+    for campo in campos:
+        grupo, llave = nombres.get(campo.get("nombre", ""), (None, None))
+        try:
+            umbral = float(campo.get("umbralConfianza"))
+        except (TypeError, ValueError):
+            continue
+        if llave and grupo is None and 0 <= umbral <= 100:
+            salida[llave] = umbral
+    return salida
+
+
 def _numero(valor) -> float | None:
     return float(valor) if valor is not None else None
 
@@ -418,9 +445,15 @@ def de_documento(tenant: str, documento_id: object) -> dict:
         )
         campos = tablas.filas(cur)
         correcciones = {"trasladadas": [], "sinTrasladar": []}
+        umbrales: dict[str, float] = {}
         if campos:
-            cur.execute("SELECT metadataJson FROM nexus.extractionRuns WHERE runId = ?", campos[0]["runId"])
-            correcciones = _correcciones_de(cur.fetchone()[0])
+            cur.execute(
+                "SELECT r.metadataJson, t.dataJson FROM nexus.extractionRuns r LEFT JOIN nexus.documentTypes t ON t.documentTypeId = r.documentTypeId WHERE r.runId = ?",
+                campos[0]["runId"],
+            )
+            meta_json, tipo_json = cur.fetchone()
+            correcciones = _correcciones_de(meta_json)
+            umbrales = umbrales_de(tipo_json)
     trasladadas = {t["ruta"]: t.get("deExtraccion") for t in correcciones["trasladadas"]}
 
     def trasladada_de(c: dict) -> str | None:
@@ -473,6 +506,8 @@ def de_documento(tenant: str, documento_id: object) -> dict:
                 "corregidoPorNombre": c["corregidoPorNombre"] if c["isCorrected"] else None,
                 "motivoCorreccion": c["motivoCorreccion"] if c["isCorrected"] else None,
                 "correccionTrasladadaDe": trasladada_de(c),
+                # El «Umbral de confianza» del campo en el tipo (paso 3): debajo de él, «Revisar campos» lo pide revisar (2026-11-26).
+                "umbral": umbrales.get(_RE_PRIMERA_LLAVE.split(c["fieldPath"], 1)[0]),
                 "corridaId": c["corridaId"],
             }
             for c in campos

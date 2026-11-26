@@ -384,9 +384,9 @@ try:
     r = c.put(f"/tipos-documentales/{reglas}", json={"tenant": org, "revision": 0, "datos": {
         "nombre": "Acta con reglas", "descripcion": "", "estado": "activo", "procesadorId": "proc-reglas",
         "campos": [
-            {"nombre": "Denominación", "tipoDato": "texto", "reglaTransformacion": "minusculas"},
-            {"nombre": "Capital", "tipoDato": "moneda", "reglaTransformacion": "quitar_moneda"},
-            {"nombre": "Socios", "tipoDato": "grupo", "reglaTransformacion": "mayusculas", "subcampos": [{"nombre": "Nombre", "tipoDato": "texto"}]},
+            {"nombre": "Denominación", "tipoDato": "texto", "reglaTransformacion": "minusculas", "umbralConfianza": "90"},
+            {"nombre": "Capital", "tipoDato": "moneda", "reglaTransformacion": "quitar_moneda", "umbralConfianza": ""},
+            {"nombre": "Socios", "tipoDato": "grupo", "reglaTransformacion": "mayusculas", "umbralConfianza": "70", "subcampos": [{"nombre": "Nombre", "tipoDato": "texto"}]},
         ],
     }}, headers=cab(adm))
     assert r.status_code == 200, r.text
@@ -403,6 +403,8 @@ try:
     rev("en la base: el valor transformado y lo leído como crudo", f["denominacion"]["valor"] == "acme sa de cv" and f["denominacion"]["valorCrudo"] == "ACME SA DE CV", f["denominacion"])
     rev("el monto sin moneda", f["capital"]["valor"] == "50000.00" and f["capital"]["valorCrudo"] == "$ 50,000.00 MXN", f["capital"])
     rev("el subcampo de un grupo no tiene regla", f["socios[1].nombre"]["valor"] == "Ana", f.get("socios[1].nombre"))
+    rev("cada campo trae el «Umbral de confianza» de su tipo (el grupo se lo da a sus subcampos; sin umbral, null)",
+        f["denominacion"]["umbral"] == 90 and f["socios[1].nombre"]["umbral"] == 70 and f["capital"]["umbral"] is None, {k: v.get("umbral") for k, v in f.items()})
     k.execute("SELECT metadataJson FROM nexus.extractionRuns r JOIN nexus.documents d ON d.documentId = r.documentId WHERE d.publicId = ?", d4)
     rev("la corrida lo anota", '"reglasDeNormalizacion": true' in (k.fetchone()[0] or ""))
     rev("un tipo sin reglas no cambia nada (el acta de siempre)", campos(adm, org, d2)["denominacion"]["valorCrudo"] in (None, "ACME SA DE CV") and campos(adm, org, d2)["denominacion"]["valor"] != "acme sa de cv")
