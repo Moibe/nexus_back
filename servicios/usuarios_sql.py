@@ -409,8 +409,9 @@ def fijar_contrasena(
 
 
 @_como_almacen
-def emitir_temporal(guid: str, hash_contrasena: str, en: datetime) -> None:
-    """Contraseña temporal nueva para quien sigue en su primer acceso; cierra las sesiones abiertas con la anterior."""
+def emitir_temporal(guid: str, hash_contrasena: str, en: datetime, restablecer: bool = False) -> None:
+    """Contraseña temporal nueva para quien sigue en su primer acceso; cierra las sesiones abiertas con la anterior. Con `restablecer`, también
+    para quien ya entró (la olvidó): vuelve a su primer acceso y tendrá que poner una propia."""
     importacion_json.asegurar("usuarios")
     en = _naive(en)
     with tablas.transaccion() as cur:
@@ -419,13 +420,13 @@ def emitir_temporal(guid: str, hash_contrasena: str, en: datetime) -> None:
         cuenta = tablas.una(cur)
         if cuenta is None:
             raise usuarios.NoEncontrado(guid)
-        if not cuenta["mustChangePassword"]:
+        if not cuenta["mustChangePassword"] and not restablecer:
             raise usuarios.NoPendiente(guid)
         cur.execute(
             "UPDATE nexus.users SET passwordHash = ?, mustChangePassword = 1, temporaryIssuedAt = ?, failedAttempts = 0, lockedUntil = NULL WHERE guid = ?",
             hash_contrasena, en, guid,
         )
-        _cerrar_todas(cur, guid, "REINVITED", en)
+        _cerrar_todas(cur, guid, "PASSWORD_RESET_BY_ADMIN" if restablecer else "REINVITED", en)
 
 
 # ── Sesiones ────────────────────────────────────────────────────────────────────────────────────────────────────────────

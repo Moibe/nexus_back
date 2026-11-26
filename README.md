@@ -2113,6 +2113,8 @@ scripts siguen sirviendo: `routers/admins_plataforma.py`.
 | `GET /admins-plataforma/` | Los que existen, con su estado (`pendiente`, `activo`, `inactivo`), su último acceso y si tienen sesión. Los retirados ya no salen. |
 | `POST /admins-plataforma/` | Crea uno con contraseña temporal y le manda la bienvenida (`enviarCorreo: false` equivale a `--sin-correo`). Devuelve la contraseña SIEMPRE, y `correo`: `enviado`, `sin_canal`, `fallo` u `omitido`. Un correo repetido: 409. |
 | `POST /admins-plataforma/{guid}/reenviar-invitacion` | Regenera la contraseña temporal de quien no ha hecho su primer acceso (la anterior deja de servir). Quien ya entró: 409 `ya_hizo_su_primer_acceso`. |
+| `POST /admins-plataforma/{guid}/restablecer-contrasena` | Para quien la olvidó, haya entrado o no: la reemplaza por una temporal que se devuelve una vez (la de antes no se puede ver, es un hash). Vuelve a su primer acceso, se cierran sus sesiones y enlaces pendientes, sin correo. Deja `PASSWORD_RESET_BY_ADMIN`. |
+| `POST /admins-plataforma/cuentas/{guid}/restablecer-contrasena` | Lo mismo para una cuenta de ORGANIZACIÓN. |
 | `DELETE /admins-plataforma/{guid}?motivo=` | Lo retira (borrado lógico; su correo queda libre). El motivo es obligatorio. Al último administrador activo no se le retira: 409 `ultimo_superadmin`. |
 | `GET /admins-plataforma/cuentas/{guid}` | Una cuenta de ORGANIZACIÓN antes de retirarla: sus organizaciones con su rol y `organizacionesSinAdmin`, de cuáles es el único administrador activo. |
 | `DELETE /admins-plataforma/cuentas/{guid}?motivo=&dejarSinAdmin=` | La retira (el mismo borrado lógico). Si alguna organización se quedaría sin administrador: 409 `organizacion_sin_admin` con la lista, salvo con `dejarSinAdmin=true`. |

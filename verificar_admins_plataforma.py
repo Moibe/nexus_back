@@ -345,6 +345,45 @@ try:
         str([e for e in borrados if e.get("usuarioGuid") == uno]),
     )
     rev("el intento sin confirmar no dejó retiro", sum(1 for e in borrados if e.get("usuarioGuid") == uno) == 1)
+
+    titulo("15 · Restablecer la contraseña de quien la olvidó (ya hizo su primer acceso)")
+
+    def restablecer(ruta: str):
+        return anotar_temporal(c.post(f"/admins-plataforma/{ruta}/restablecer-contrasena", headers=srv()))
+
+    rev("Ada (superadmin, activa) entra con su contraseña definitiva", entrar("ada@ejemplo.com", "Cobre-Lento-Azul-47!").status_code == 200)
+    rev("y tiene sesión abierta", next(a for a in lista() if a["email"] == "ada@ejemplo.com")["sesionActiva"] is True)
+    r = restablecer(guid_ada)
+    d = r.json()
+    rev("restablecer: 200 con su correo y una contraseña temporal", r.status_code == 200 and d["email"] == "ada@ejemplo.com" and len(d["contrasenaTemporal"]) >= 12, r.text[:200])
+    ada = next(a for a in lista() if a["email"] == "ada@ejemplo.com")
+    rev("se le cerraron las sesiones y vuelve a «pendiente» (primer acceso)", ada["sesionActiva"] is False and ada["estado"] == "pendiente" and ada["temporalEmitidaEn"], str(ada))
+    rev("la contraseña de antes ya no sirve", entrar("ada@ejemplo.com", "Cobre-Lento-Azul-47!").status_code == 401)
+    s = entrar("ada@ejemplo.com", d["contrasenaTemporal"])
+    rev("la temporal sí, y al entrar tendrá que poner una propia", s.status_code == 200 and s.json()["usuario"]["debeCambiarContrasena"] is True, s.text[:200])
+    primer_acceso("ada@ejemplo.com", d["contrasenaTemporal"], "Trigo-Manso-Rojo-52!")
+    rev("pone la suya y queda activa otra vez", entrar("ada@ejemplo.com", "Trigo-Manso-Rojo-52!").status_code == 200 and next(a for a in lista() if a["email"] == "ada@ejemplo.com")["estado"] == "activo")
+
+    r = restablecer(f"cuentas/{tres}")
+    rev("una cuenta de organización que sigue en su primer acceso: 200", r.status_code == 200 and r.json()["email"] == "tres@ejemplo.com", r.text[:200])
+    primer_acceso("tres@ejemplo.com", r.json()["contrasenaTemporal"], "Nube-Alta-Verde-31!")
+    r = restablecer(f"cuentas/{tres}")
+    rev("y ya activa, también: la definitiva deja de servir y la temporal entra", r.status_code == 200 and entrar("tres@ejemplo.com", "Nube-Alta-Verde-31!").status_code == 401 and entrar("tres@ejemplo.com", r.json()["contrasenaTemporal"]).status_code == 200, r.text[:200])
+
+    rev("un superadmin por /cuentas: 404", restablecer(f"cuentas/{guid_ada}").status_code == 404)
+    rev("una cuenta de organización por la ruta de superadmins: 404", restablecer(tres).status_code == 404)
+    rev("una que no existe, o ya retirada: 404", restablecer(str(uuid.uuid4())).status_code == 404 and restablecer(f"cuentas/{analista}").status_code == 404)
+    rev("sin la llave de servicio: 401", c.post(f"/admins-plataforma/cuentas/{tres}/restablecer-contrasena").status_code == 401 and c.post(f"/admins-plataforma/{guid_ada}/restablecer-contrasena").status_code == 401)
+    rev("la contraseña de Ada no cambió por los intentos fallidos", entrar("ada@ejemplo.com", "Trigo-Manso-Rojo-52!").status_code == 200)
+    restablecidas = eventos("PASSWORD_RESET_BY_ADMIN")
+    rev(
+        "cada restablecimiento deja PASSWORD_RESET_BY_ADMIN con actor «monitor» (uno de Ada, dos de Tres)",
+        [e.get("usuarioGuid") for e in restablecidas] == [guid_ada, tres, tres] and all(e.get("actor") == "monitor" for e in restablecidas)
+        and restablecidas[0].get("esAdminPlataforma") is True and restablecidas[1].get("esAdminPlataforma") is False,
+        str(restablecidas),
+    )
+    texto = json.dumps(restablecidas, ensure_ascii=False)
+    rev("y ninguna contraseña queda en la bitácora", not any(t in texto for t in temporales_devueltas))
 finally:
     sin_canal()
     shutil.rmtree(RAIZ, ignore_errors=True)

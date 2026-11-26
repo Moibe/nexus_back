@@ -635,6 +635,14 @@ def emitir_temporal(guid: str, hash_contrasena: str) -> dict:
     return por_guid(guid)
 
 
+def restablecer_con_temporal(guid: str, hash_contrasena: str) -> dict:
+    """Como `emitir_temporal`, pero también para quien YA hizo su primer acceso y olvidó su contraseña (Nexus Monitor, 2026-11-26): la
+    cuenta vuelve a su primer acceso con una temporal y tendrá que poner una propia al entrar. La que tenía no se puede ver (es un hash
+    argon2id): por eso se reemplaza. Cierra todas sus sesiones. Levanta `NoEncontrado`."""
+    usuarios_sql.emitir_temporal(guid, hash_contrasena, _ahora(), restablecer=True)
+    return por_guid(guid)
+
+
 # ── Sesiones (uspCreateSession / uspGetSession / uspRevokeSessions) ────────
 
 

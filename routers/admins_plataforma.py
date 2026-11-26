@@ -16,8 +16,12 @@ que estas rutas exijan en un encabezado (y que Monitor pida tecleada), o apagar 
 
 ## Qué se anota (auditoría)
 
-Crear (`USER_CREATED`), regenerar la contraseña (`INVITATION_REISSUED`) y retirar (`USER_DELETED`) dejan rastro con `actor:
-"monitor"` y qué pasó con el correo. Nunca la contraseña.
+Crear (`USER_CREATED`), regenerar la contraseña (`INVITATION_REISSUED`), restablecerla (`PASSWORD_RESET_BY_ADMIN`) y retirar
+(`USER_DELETED`) dejan rastro con `actor: "monitor"` y qué pasó con el correo. Nunca la contraseña.
+
+Restablecer (`POST /{guid}/restablecer-contrasena` y `/cuentas/{guid}/restablecer-contrasena`, 2026-11-26, Moibe: «podría poder ver
+los passwords de las cuentas con un ojito por si ya las olvidé?»): verla no se puede, se guarda como hash argon2id. Se reemplaza por
+una temporal, aunque la cuenta ya haya hecho su primer acceso, y la cuenta vuelve a él.
 
 ## Qué se cuida
 
@@ -212,6 +216,38 @@ def reenviar_invitacion(guid: str):
     return {"administrador": _resumen(usuarios.por_guid(guid)), "correo": correo, "contrasenaTemporal": temporal}
 
 
+def _restablecer(u: dict) -> dict:
+    """Una contraseña temporal nueva para la cuenta `u`, haya entrado o no: la vuelve a su primer acceso, cierra sus sesiones y apaga sus
+    enlaces pendientes (uno de «Olvidé mi contraseña» ya no debe servir)."""
+    temporal = auth.contrasena_temporal()
+    try:
+        usuarios.restablecer_con_temporal(u["guid"], auth.hash_de(temporal))
+    except usuarios.NoEncontrado as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_EXISTE_CUENTA) from exc
+    except ErrorAlmacen as exc:
+        raise almacen_no_disponible(exc) from exc
+    try:
+        tokens.invalidar_de(u["guid"], motivo="PASSWORD_RESET_BY_ADMIN")
+    except (ErrorAlmacen, OSError) as exc:
+        logger.warning("No se pudieron apagar los enlaces pendientes de %s: %s", u["guid"], exc)
+    _anotar(auditoria.PASSWORD_RESET_BY_ADMIN, u["guid"], email=u["email"], esAdminPlataforma=bool(u["esAdminPlataforma"]))
+    return {"email": u["email"], "contrasenaTemporal": temporal}
+
+
+@router.post(
+    "/{guid}/restablecer-contrasena",
+    tags=["Administradores de plataforma"],
+    summary="Restablecer la contraseña de un administrador de plataforma",
+    description=(
+        "Para quien la olvidó: la que tenía no se puede ver (se guarda como hash argon2id), así que se reemplaza por una temporal que se "
+        "devuelve UNA vez. La cuenta vuelve a su primer acceso (al entrar pondrá una propia), se le cierran las sesiones y se apagan sus "
+        "enlaces pendientes. No manda correo: quien opera Monitor la entrega. Queda `PASSWORD_RESET_BY_ADMIN` en la bitácora."
+    ),
+)
+def restablecer_admin(guid: str):
+    return _restablecer(_admin_o_404(guid))
+
+
 @router.delete(
     "/{guid}",
     tags=["Administradores de plataforma"],
@@ -307,6 +343,20 @@ def cuenta(guid: str):
         "membresias": membresias,
         "organizacionesSinAdmin": sin_admin,
     }
+
+
+@router.post(
+    "/cuentas/{guid}/restablecer-contrasena",
+    tags=["Administradores de plataforma"],
+    summary="Restablecer la contraseña de una cuenta de organización",
+    description="Lo mismo que para un administrador de plataforma (ver `/{guid}/restablecer-contrasena`). Un administrador de plataforma aquí es un 404.",
+)
+def restablecer_cuenta(guid: str):
+    try:
+        u = _cuenta_de_organizacion_o_404(guid)
+    except ErrorAlmacen as exc:
+        raise almacen_no_disponible(exc) from exc
+    return _restablecer(u)
 
 
 @router.delete(
