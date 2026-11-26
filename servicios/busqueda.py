@@ -280,6 +280,8 @@ Cómo se pregunta:
   y lo que le faltó (vFaltanteDeEjecucion). «Qué documentos le faltan»: vDocumentoFaltante.
 - Compara resultado con la palabra que diga la persona (resultado = 'Requiere revisión'). Un valor final se busca por su nombre con
   LIKE '%…%' (la persona puede decirlo con otras palabras); compara valorNumero o valorFecha, no valor, cuando es número o fecha.
+- Una persona (corregidoPor, ejecutadaPor, creadoPor) se busca SIEMPRE con LIKE y las palabras que dé, en su orden: casi nunca dan el nombre
+  completo. «Dora» → corregidoPor LIKE '%Dora%'; «Dora Delta» → corregidoPor LIKE '%Dora%Delta%'. Nunca con =.
 - Los nombres de los procesos, las palabras de su Resultado y los nombres de sus valores finales están en el catálogo de procesos: si la persona
   nombra uno, búscalo donde corresponde (un proceso en nombreProceso, una palabra de Resultado en resultado, un valor final en valorFinal), aunque
   no diga qué es.
@@ -405,6 +407,19 @@ EJEMPLOS: tuple[tuple[str, str], ...] = (
         "SELECT documento, archivo AS [Archivo], tipoDocumental AS [Tipo documental], campo AS [Campo], valorExtraido AS [Valor extraído], "
         "valorCorregido AS [Valor corregido], motivo AS [Motivo], corregidoPor AS [Corrigió], corregidoEn AS [Cuándo], pagina FROM consulta.vCorreccion "
         "ORDER BY corregidoEn DESC",
+    ),
+    # Una persona casi nunca se nombra completa (2026-11-26: con el modelo real, «¿Qué corrigió Dora?» salía con corregidoPor = 'Dora' y vacía).
+    (
+        "¿Qué datos corrigió Ana?",
+        "SELECT documento, archivo AS [Archivo], tipoDocumental AS [Tipo documental], campo AS [Campo], valorExtraido AS [Valor extraído], "
+        "valorCorregido AS [Valor corregido], motivo AS [Motivo], corregidoPor AS [Corrigió], corregidoEn AS [Cuándo], pagina FROM consulta.vCorreccion "
+        "WHERE corregidoPor LIKE '%Ana%' ORDER BY corregidoEn DESC",
+    ),
+    (
+        "¿Qué procesos ejecutó Luis este mes?",
+        "SELECT ejecucion, expediente, nombreExpediente AS [Expediente], nombreProceso AS [Proceso], resultado AS [Resultado], ejecutadaEn AS [Ejecutado], "
+        "ejecutadaPor AS [Ejecutó] FROM consulta.vEjecucion WHERE ejecutadaPor LIKE '%Luis%' AND YEAR(ejecutadaEn) = YEAR(GETDATE()) "
+        "AND MONTH(ejecutadaEn) = MONTH(GETDATE()) ORDER BY ejecutadaEn DESC",
     ),
     (
         "¿Qué procesos se le han ejecutado a este expediente y con qué resultado?",
