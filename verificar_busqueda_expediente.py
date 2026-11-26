@@ -412,9 +412,11 @@ rev("«todos los expedientes» desde el de Juan: solo trae el de Juan (la base l
 prompt = llamadas[-1]
 rev("al modelo se le dijo que se pregunta DESDE UN EXPEDIENTE, sin su nombre ni su id", "DESDE UN EXPEDIENTE" in prompt and "Juan Secreto" not in prompt and E_JUAN not in prompt)
 rev("…y las vistas nuevas están en lo que se le cuenta", all(f"consulta.{v}" in prompt for v in NUEVAS))
-rev("el catálogo trae los PROCESOS: nombre, si está activo, las palabras de su Resultado, sus valores finales (sin nombre: «Valor final #N») y lo que usa",
+rev("el catálogo trae los PROCESOS: nombre, si está activo, las palabras de su Resultado, sus valores finales (sin nombre: «Valor final #N»), lo que usa "
+    "y los valores finales que solo quedaron en sus ejecuciones anteriores",
     "- «Alta de cliente» (activo): termina en «Aprobado» si se cumple, «Requiere revisión» si no se cumple y «Sin datos» si faltan datos; "
-    "valores finales: «Monto solicitado», «Valor final #2»; usa: INE, Comprobante de domicilio" in prompt, prompt[prompt.find("Procesos del motor"):][:600])
+    "valores finales: «Monto solicitado», «Valor final #2»; usa: INE, Comprobante de domicilio; valores finales en ejecuciones anteriores: "
+    "«Nombre del cliente», «Vigencia», «Revisión del nombre», «Domicilio», «Socios», «Suelto»" in prompt, prompt[prompt.find("Procesos del motor"):][:900])
 rev("…el desactivado como inactivo, y una palabra de Resultado vacía con la de siempre",
     "- «Revisión de acta» (inactivo): termina en «Acta válida» si se cumple, «Rechazado» si no se cumple y «Sin datos» si faltan datos; usa: Acta constitutiva" in prompt,
     prompt[prompt.find("Procesos del motor"):][:600])
@@ -430,6 +432,8 @@ r2 = preguntar("¿Cuántos procesos hay?", E_JUAN, None, sql("SELECT COUNT(DISTI
 huella_despues = k.execute("SELECT TOP (1) catalogHash FROM nexus.searchQuestions ORDER BY questionId DESC").fetchone()[0]
 rev("renombrar un proceso cambia lo que el modelo sabe (y la huella del catálogo: la misma pregunta no reusa una consulta de antes del cambio)",
     "«Alta de cliente renombrado»" in llamadas[-1] and huella_antes != huella_despues, f"{huella_antes} {huella_despues}")
+rev("…y el nombre con el que quedó en el historial se sigue diciendo («antes se llamó»)", "«Alta de cliente renombrado» (activo)" in llamadas[-1]
+    and "antes se llamó «Alta de cliente»" in llamadas[-1], llamadas[-1][llamadas[-1].find("Procesos del motor"):][:700])
 with tablas.transaccion() as cur:
     cur.execute("UPDATE nexus.processes SET dataJson = JSON_MODIFY(dataJson, '$.nombre', N'Alta de cliente') WHERE publicId = ?", P_ALTA)
 r = preguntar("¿Qué documentos hay?", None, None, sql("SELECT COUNT(*) AS [Documentos] FROM consulta.vDocumentoExtraido"))
@@ -524,6 +528,19 @@ for malo in ("expediente-XYZ", "otra-cosa", "expediente-" + "A" * 32):
     sa.rollback()
     rev(f"caseId sin la forma ({malo[:16]}…): lo frena el CHECK", mordio)
 sa.autocommit = True
+
+# ── [7] Lo que solo quedó en el historial ────────────────────────────────────────────────────────────────────────────────────────────
+titulo("7 · un proceso que ya no existe, con ejecuciones")
+R_BORRADO = ejecucion(ORG_A, E_JUAN, "Expediente de Juan Secreto", "proceso-" + secrets.token_hex(16), "Proceso viejo", "si", "Dictaminado",
+                      {"reglas": [], "evidencia": [], "condicion": "pasa", "faltantes": []}, 400)
+valores_finales(R_BORRADO, [("Dictamen", "veredicto", None, "listo", "Pasa", None, "Igual a #1")])
+r = preguntar("¿Qué dictámenes hay?", None, None, sql("SELECT valorFinal, valor FROM consulta.vValorFinalDeEjecucion WHERE valorFinal = 'Dictamen'"))
+rev("un proceso borrado que dejó ejecuciones: el catálogo lo dice, con cómo terminó y sus valores finales",
+    "- «Proceso viejo» (ya no existe; queda en el historial de ejecuciones): terminó en «Dictaminado»; valores finales: «Dictamen»" in llamadas[-1],
+    llamadas[-1][llamadas[-1].find("Procesos del motor"):][:900])
+rev("…y la búsqueda lo encuentra", r.json().get("filas") == [["Dictamen", "Pasa"]], r.text[:300])
+r = preguntar("¿Qué dictámenes hay?", None, None, sql("SELECT 1 AS x"), tenant=ORG_B, bearer=b_admin)
+rev("…pero nunca en lo que se le cuenta al modelo cuando pregunta OTRA organización", "Proceso viejo" not in llamadas[-1] and "Dictamen" not in llamadas[-1].split("Procesos del motor")[-1].split("Ejemplos de preguntas")[0])
 
 print()
 print("TODO EN VERDE" if not fallos else f"{fallos} FALLA(S)")

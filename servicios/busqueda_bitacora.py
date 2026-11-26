@@ -251,6 +251,25 @@ def conversacion(tenant: str, usuario: str, conversacion_id: str, limite: int = 
     return {"turno": int(ultimo) + 1, "historial": historial}
 
 
+def historial_de_procesos(tenant: str, limite: int = 2000) -> dict[str, dict]:
+    """NEX-612: los nombres que dejaron los procesos en el historial de ejecuciones de la organización (que es una foto: un proceso pudo cambiar o
+    borrarse después). Por id de proceso, de lo más reciente a lo más viejo y sin repetir: `{nombres, palabras, finales}` (cómo se llamaba, con qué
+    palabras terminó, cómo se llamaban sus valores finales). Lee las últimas `limite` combinaciones ejecución × valor final."""
+    salida: dict[str, dict] = {}
+    with tablas.lectura() as cur:
+        cur.execute(
+            "SELECT TOP (?) r.processId, r.processName, r.outcomeText, v.name FROM nexus.processRuns r "
+            "LEFT JOIN nexus.processRunFinalValues v ON v.processRunId = r.processRunId WHERE r.tenant = ? ORDER BY r.processRunId DESC, v.position",
+            max(1, int(limite)), tenant,
+        )
+        for proceso_id, nombre, palabra, final in cur.fetchall():
+            h = salida.setdefault(proceso_id, {"nombres": [], "palabras": [], "finales": []})
+            for lista, valor in ((h["nombres"], nombre), (h["palabras"], palabra), (h["finales"], final)):
+                if valor and valor not in lista:
+                    lista.append(valor)
+    return salida
+
+
 def expediente(tenant: str, expediente_id: str) -> dict | None:
     """NEX-612: el expediente desde el que se pregunta, si es de la organización: `{id, documentos, ejecuciones}` (para decir por qué una respuesta no
     trajo renglones). `None` si no existe o es de otra organización."""

@@ -501,16 +501,21 @@ RESULTADO_POR_OMISION = {"si": "Aprobado", "no": "Rechazado", "sin": "Sin datos"
 def procesos_de(tenant: str) -> list[dict]:
     """Los procesos del motor de reglas de la organización como los necesita el modelo (NEX-612): `[{nombre, activo, resultados: {si, no, sin},
     valoresFinales, tipos}]`. Las palabras del Resultado y los nombres de los valores finales salen igual que en el front (`textosDelResultado`,
-    `nombreDeValorFinal`); `activo`, de `procesos.motivos_de_inactividad` y el `activo` guardado. Se lee en cada pregunta, como el catálogo: un proceso
-    nuevo o renombrado ya se conoce. Son nombres que escribió la organización: nada de los documentos."""
+    `nombreDeValorFinal`); `activo`, de `procesos.motivos_de_inactividad` y el `activo` guardado. Y como la búsqueda contesta sobre el HISTORIAL, que es
+    una foto, también lo que quedó ahí y ya no está en el proceso de hoy (`antes`: cómo se llamaba, con qué palabras terminó, sus valores finales), y los
+    procesos que ya no existen pero tienen ejecuciones (`existe` False). Se lee en cada pregunta, como el catálogo: un proceso nuevo o renombrado ya se
+    conoce. Son nombres que escribió la organización: nada de los documentos."""
     biblioteca = tipos_documentales.listar(tenant)
     nombre_de_tipo = {t["id"]: _limpio((t.get("datos") or {}).get("nombre"), 200) for t in biblioteca}
+    # El historial es una foto: un proceso pudo renombrarse, cambiar sus valores finales o sus palabras, o borrarse. Lo que quedó ahí también se busca.
+    historial = bitacora.historial_de_procesos(tenant)
     salida = []
     for p in procesos.listar(tenant)[:MAX_PROCESOS]:
         datos = p.get("datos") or {}
         nombre = _limpio(datos.get("nombre"), 200)
         if not nombre:
             continue
+        h = historial.pop(p.get("id"), None) or {"nombres": [], "palabras": [], "finales": []}
         nodos = [n for n in datos.get("nodos") or [] if isinstance(n, dict)]
         resultado = next((n for n in nodos if n.get("type") == "resultado-final"), None)
         palabras = (resultado or {}).get("data") or {}
@@ -526,7 +531,22 @@ def procesos_de(tenant: str) -> list[dict]:
             if tipo_id and nombre_de_tipo.get(tipo_id) and nombre_de_tipo[tipo_id] not in usados:
                 usados.append(nombre_de_tipo[tipo_id])
         activo = datos.get("activo") is not False and not procesos.motivos_de_inactividad(datos, biblioteca)
-        salida.append({"nombre": nombre, "activo": activo, "resultados": resultados, "valoresFinales": finales, "tipos": usados})
+        antes = {
+            "nombres": [_limpio(x, 200) for x in h["nombres"] if _limpio(x, 200) != nombre][:5],
+            "palabras": [_limpio(x, 60) for x in h["palabras"] if _limpio(x, 60) not in (resultados or {}).values()][:10],
+            "finales": [_limpio(x, 200) for x in h["finales"] if _limpio(x, 200) not in finales][:MAX_VALORES_FINALES],
+        }
+        salida.append({"nombre": nombre, "existe": True, "activo": activo, "resultados": resultados, "valoresFinales": finales, "tipos": usados, "antes": antes})
+    # Los que ya no existen pero tienen ejecuciones: se pregunta por ellos con el nombre que tenían.
+    for h in list(historial.values())[: max(0, MAX_PROCESOS - len(salida))]:
+        nombres = [_limpio(x, 200) for x in h["nombres"] if _limpio(x, 200)]
+        if not nombres:
+            continue
+        salida.append({
+            "nombre": nombres[0], "existe": False, "activo": False, "resultados": None, "valoresFinales": [], "tipos": [],
+            "antes": {"nombres": nombres[1:5], "palabras": [_limpio(x, 60) for x in h["palabras"]][:10],
+                      "finales": [_limpio(x, 200) for x in h["finales"]][:MAX_VALORES_FINALES]},
+        })
     return salida
 
 
@@ -538,17 +558,28 @@ def _procesos_en_texto(lista: list[dict]) -> str:
         "resultadoEjecucion; los nombres de sus valores finales para valorFinal):"
     ]
     for p in lista:
-        partes = [f"- «{p['nombre']}» ({'activo' if p['activo'] else 'inactivo'})"]
-        if p["resultados"]:
-            r = p["resultados"]
-            partes.append(f"termina en «{r['si']}» si se cumple, «{r['no']}» si no se cumple y «{r['sin']}» si faltan datos")
+        antes = p.get("antes") or {}
+        if p.get("existe", True):
+            partes = [f"- «{p['nombre']}» ({'activo' if p['activo'] else 'inactivo'})"]
+            if p["resultados"]:
+                r = p["resultados"]
+                partes.append(f"termina en «{r['si']}» si se cumple, «{r['no']}» si no se cumple y «{r['sin']}» si faltan datos")
+            else:
+                partes.append("todavía sin Resultado")
+            if p["valoresFinales"]:
+                partes.append("valores finales: " + ", ".join(f"«{v}»" for v in p["valoresFinales"]))
+            if p["tipos"]:
+                partes.append("usa: " + ", ".join(p["tipos"]))
         else:
-            partes.append("todavía sin Resultado")
-        if p["valoresFinales"]:
-            partes.append("valores finales: " + ", ".join(f"«{v}»" for v in p["valoresFinales"]))
-        if p["tipos"]:
-            partes.append("usa: " + ", ".join(p["tipos"]))
-        lineas.append(f"{partes[0]}: " + "; ".join(partes[1:]))
+            partes = [f"- «{p['nombre']}» (ya no existe; queda en el historial de ejecuciones)"]
+        # Lo que quedó en el historial y ya no está en el proceso de hoy (en las ejecuciones se llama así).
+        if antes.get("nombres"):
+            partes.append("antes se llamó " + ", ".join(f"«{v}»" for v in antes["nombres"]))
+        if antes.get("palabras"):
+            partes.append(("en ejecuciones anteriores terminó en " if p.get("existe", True) else "terminó en ") + ", ".join(f"«{v}»" for v in antes["palabras"]))
+        if antes.get("finales"):
+            partes.append(("valores finales en ejecuciones anteriores: " if p.get("existe", True) else "valores finales: ") + ", ".join(f"«{v}»" for v in antes["finales"]))
+        lineas.append(f"{partes[0]}: " + "; ".join(partes[1:]) if len(partes) > 1 else partes[0])
     return "\n".join(lineas)
 
 

@@ -286,6 +286,7 @@ Lo que la búsqueda sabe de cada organización (historia 2) son sus tipos docume
 **Qué incluye**
 
 - En cada pregunta, junto con los tipos documentales, la búsqueda lee los procesos de la organización: su nombre, si está activo, las tres palabras de su Resultado (las que escribió la organización o, si alguna quedó vacía, la de siempre), los nombres de sus valores finales (sin nombre, «Valor final #N», como en la pantalla) y los tipos documentales que usa.
+- Como la búsqueda contesta sobre el historial de ejecuciones, que es una foto, también los nombres que quedaron ahí y ya no están en el proceso de hoy: cómo se llamaba antes, con qué palabras terminó y cómo se llamaban sus valores finales; y los procesos que ya no existen pero tienen ejecuciones.
 - Solo nombres que escribió la organización: nada de los documentos va al modelo, y nunca los procesos de otra organización.
 - Como se lee al preguntar, un proceso nuevo o renombrado ya se conoce en la siguiente pregunta; y como cambia lo que sabe la búsqueda, la misma pregunta no reusa una consulta de antes del cambio.
 
@@ -293,6 +294,7 @@ Lo que la búsqueda sabe de cada organización (historia 2) son sus tipos docume
 
 - «¿En qué expedientes la Revisión de Completitud quedó en Pasa?», sin decir que es un valor final, contesta sobre ese valor final.
 - Una pregunta con la palabra de un resultado («¿cuántos expedientes quedaron en Certificado?») la busca como resultado aunque no diga que lo es.
+- Un valor final que el proceso ya no tiene, pero que está en ejecuciones anteriores, también se encuentra por su nombre.
 - Los procesos de una organización nunca llegan al modelo cuando pregunta otra.
 - Un proceso nuevo o renombrado se conoce en la siguiente pregunta, sin reiniciar nada.
 
