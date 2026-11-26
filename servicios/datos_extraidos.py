@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from config import SQLSERVER_HOST
+from servicios import transformaciones
 from servicios.bloques import es_campo
 from servicios.tipos_documentales_comun import momento
 
@@ -232,11 +233,22 @@ def registrar_extraccion(
     with tablas.transaccion() as cur:
         documento = _documento(cur, tenant, documento_id)
         cur.execute(
-            "SELECT documentTypeId, publicId, name, revision, processorId FROM nexus.documentTypes WHERE publicId = ? AND tenant = ?", tipo_id, tenant
+            "SELECT documentTypeId, publicId, name, revision, processorId, dataJson FROM nexus.documentTypes WHERE publicId = ? AND tenant = ?", tipo_id, tenant
         )
         tipo = tablas.una(cur)
         if tipo is None or (tipo["processorId"] or "") != procesador_id:
             raise TipoNoEncontrado(tipo_id)
+        if renglones:
+            # La «Regla de normalización» de cada campo (2026-11-26), sobre la MISMA respuesta que se le devuelve a quien extrajo (la bandeja, los
+            # webhooks): value_raw conserva lo leído y value_normalized queda transformado; luego se vuelve a aplanar. Antes de comparar con las
+            # correcciones de la corrida anterior, para que NEX-614 compare valores ya transformados.
+            try:
+                campos_def = (json.loads(tipo["dataJson"] or "{}") or {}).get("campos") or []
+            except ValueError:
+                campos_def = []
+            if isinstance(campos_def, list) and transformaciones.aplicar_a_resultado(resultado, [c for c in campos_def if isinstance(c, dict)]):
+                renglones = aplanar(resultado or {})
+                metadata = {**metadata, "reglasDeNormalizacion": True}
         trasladar: list[dict[str, Any]] = []
         if estado != "error":
             # NEX-614: las correcciones a mano de la corrida vigente se trasladan a la nueva. Se leen ANTES de insertarla.

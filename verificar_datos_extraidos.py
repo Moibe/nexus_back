@@ -379,6 +379,34 @@ try:
     rev("extraído como OTRO tipo documental: no se traslada nada y se avisa", not campos(adm, org, d2)["capital"]["corregido"] and sin.get("capital", {}).get("motivo") == "otro_tipo", sin)
     respuestas["proc-acta"] = ACTA
 
+    titulo("9c · La «Regla de normalización» de cada campo se aplica al guardar (2026-11-26)")
+    reglas = "tipo-" + uuid.uuid4().hex
+    r = c.put(f"/tipos-documentales/{reglas}", json={"tenant": org, "revision": 0, "datos": {
+        "nombre": "Acta con reglas", "descripcion": "", "estado": "activo", "procesadorId": "proc-reglas",
+        "campos": [
+            {"nombre": "Denominación", "tipoDato": "texto", "reglaTransformacion": "minusculas"},
+            {"nombre": "Capital", "tipoDato": "moneda", "reglaTransformacion": "quitar_moneda"},
+            {"nombre": "Socios", "tipoDato": "grupo", "reglaTransformacion": "mayusculas", "subcampos": [{"nombre": "Nombre", "tipoDato": "texto"}]},
+        ],
+    }}, headers=cab(adm))
+    assert r.status_code == 200, r.text
+    respuestas["proc-reglas"] = {"document": {"text": "", "pages": [{}], "entities": [
+        entidad("denominacion", "ACME SA DE CV", 0.97), entidad("capital", "$ 50,000.00 MXN", 0.9),
+        {"type": "socios", "mentionText": "", "confidence": 0.9, "properties": [entidad("nombre", "Ana", 0.95)]},
+    ]}}
+    d4 = subir(adm, org, 5)
+    r = extraer(adm, org, d4, reglas, "proc-reglas")
+    rev("lo que se le devuelve a la bandeja ya viene transformado, con lo leído en value_raw",
+        r.status_code == 200 and r.json()["denominacion"]["value_normalized"] == "acme sa de cv" and r.json()["denominacion"]["value_raw"] == "ACME SA DE CV"
+        and r.json()["capital"]["value_normalized"] == "50000.00", r.text[:400])
+    f = campos(adm, org, d4)
+    rev("en la base: el valor transformado y lo leído como crudo", f["denominacion"]["valor"] == "acme sa de cv" and f["denominacion"]["valorCrudo"] == "ACME SA DE CV", f["denominacion"])
+    rev("el monto sin moneda", f["capital"]["valor"] == "50000.00" and f["capital"]["valorCrudo"] == "$ 50,000.00 MXN", f["capital"])
+    rev("el subcampo de un grupo no tiene regla", f["socios[1].nombre"]["valor"] == "Ana", f.get("socios[1].nombre"))
+    k.execute("SELECT metadataJson FROM nexus.extractionRuns r JOIN nexus.documents d ON d.documentId = r.documentId WHERE d.publicId = ?", d4)
+    rev("la corrida lo anota", '"reglasDeNormalizacion": true' in (k.fetchone()[0] or ""))
+    rev("un tipo sin reglas no cambia nada (el acta de siempre)", campos(adm, org, d2)["denominacion"]["valorCrudo"] in (None, "ACME SA DE CV") and campos(adm, org, d2)["denominacion"]["valor"] != "acme sa de cv")
+
     titulo("10 · Las reglas de la base")
     k.execute("SELECT TOP (1) runId FROM nexus.extractionRuns WHERE status = 'ok'")
     corrida = k.fetchone()[0]
