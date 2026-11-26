@@ -1,12 +1,12 @@
 # Búsqueda Semántica · historias en Jira
 
-Preparadas el 2026-11-12; siete historias desde el 13 de noviembre de 2026. **Publicadas en Jira el 2026-11-17 como NEX-605 a NEX-611**; la 8 (NEX-612) se sumó el 2026-11-20 con los casos de uso del expediente que pidió Producto (ver `casos-de-uso-expediente.md`), y ese día se ampliaron la 4 y la 5. Todas van bajo la épica NEX-597 («EPICA 14: BUSQUEDA SEMANTICA»), en NEX Sprint 7, «Por hacer» y con Moisés de responsable. El ticket del DBA es **NEX-604** (Tarea, asignada a Charlie, en el mismo sprint y la misma épica). Los enlaces «bloquea» siguen el «Depende de» de cada una. Este archivo y el Excel para el PM (`Busqueda-Semantica-historias.xlsx`, en esta misma carpeta) salen del mismo texto.
+Preparadas el 2026-11-12; siete historias desde el 13 de noviembre de 2026. **Publicadas en Jira el 2026-11-17 como NEX-605 a NEX-611**; la 8 (NEX-612) se sumó el 2026-11-20 con los casos de uso del expediente que pidió Producto (ver `casos-de-uso-expediente.md`), y ese día se ampliaron la 4 y la 5. **La 9 (los valores finales de las ejecuciones) y la 10 (que la búsqueda conozca los procesos) se prepararon el 2026-11-26 y están SIN PUBLICAR**: salieron al construir la 8, y el trabajo ya está hecho en dev. Todas van bajo la épica NEX-597 («EPICA 14: BUSQUEDA SEMANTICA»), en NEX Sprint 7, «Por hacer» y con Moisés de responsable. El ticket del DBA es **NEX-604** (Tarea, asignada a Charlie, en el mismo sprint y la misma épica). Los enlaces «bloquea» siguen el «Depende de» de cada una. Este archivo y el Excel para el PM (`Busqueda-Semantica-historias.xlsx`, en esta misma carpeta) salen del mismo texto.
 
 Biblioratum contestará preguntas en lenguaje natural sobre los datos ya extraídos de los documentos de cada organización («¿cuántas INE vencen este año?»). Un modelo de lenguaje escribe la consulta y la base la ejecuta con un usuario de solo lectura que solo ve la organización de quien pregunta. Los datos de los documentos no se mandan al modelo.
 
 Antes de la historia 1 va el ticket del DBA «Datos · Usuario de SOLO LECTURA, separado por organización, para consultas en lenguaje natural», preparado aparte. Está en `docs/solicitudes-dba.md` §8 y en Jira es NEX-604.
 
-Orden sugerido: la 2 puede empezar ya; la 1, cuando el DBA entregue su ticket; la 3, con la 1 y la 2 terminadas; la 4, la 5, la 6 y la 7, después de la 3 (la 7 también necesita la 4); la 8, con la 1 y la 3. Todas son de tipo Historia.
+Orden sugerido: la 2 puede empezar ya; la 1, cuando el DBA entregue su ticket; la 3, con la 1 y la 2 terminadas; la 4, la 5, la 6 y la 7, después de la 3 (la 7 también necesita la 4); la 8, con la 1 y la 3; la 9, después de la 8; y la 10, con la 2 y la 9. Todas son de tipo Historia.
 
 En la épica conviven con las HU-094 a HU-099 de César (NEX-598 a NEX-603), que son otra cosa: buscar fragmentos de los documentos con embeddings. No se fusionaron. El informador quedó Moisés porque el token no puede fijar otro (solo César lo cambiaba, y ya no está en la empresa). NEX-606 (la 2) ya está en LISTO y no se tocó. El texto que va a Jira no nombra la herramienta ni usa palabras de la planeación interna.
 
@@ -244,3 +244,58 @@ Las historias 1 y 3 contestan sobre los datos extraídos de los documentos. Prod
 **Depende de:** Historias 1 y 3.
 
 **Para QA:** En dev, abrir un expediente con documentos y al menos una ejecución, hacer las cuatro preguntas desde su cuadro y compararlas con la pantalla. Corregir un dato a mano y preguntar qué se corrigió. Repetir desde el Módulo de uso y confirmar que ahí contesta sobre toda la organización.
+
+---
+
+## 9 · sin publicar · Historia · Búsqueda Semántica · Preguntar por los valores finales de las ejecuciones
+
+**Historia de usuario:** Como persona que revisa expedientes, quiero preguntar qué entregó cada ejecución de un proceso (sus valores finales), para encontrar expedientes por lo que resolvió el motor de reglas sin abrir ejecución por ejecución.
+
+**Contexto**
+
+La historia 8 lleva a la búsqueda las ejecuciones del motor de reglas: su resultado, cada regla, de qué documento salió cada dato y lo que les faltó. Le falta lo que cada ejecución entrega: sus valores finales, los nodos «Valor final» del proceso (un dato, una lista o el Pasa / No pasa de una regla). Ya se guardan con cada ejecución; falta exponerlos.
+
+**Qué incluye**
+
+- Una migración con una vista de solo lectura en el esquema [consulta] con los valores finales de cada ejecución: su nombre; si es un valor, una lista o un veredicto; de qué clase es el dato; si tiene valor o por qué no (le faltó el dato o no tenía nada conectado, con las mismas palabras de la pantalla); el valor como se enseña; ese valor como número o como fecha cuando lo es; cuántos elementos trae una lista; y de dónde salió. Con el mismo aislamiento de la historia 8: la organización de la conexión y, desde un expediente, solo ese expediente.
+- Que la búsqueda la conozca: qué es cada columna, que un valor final se busca por su nombre aunque la persona lo diga con otras palabras, que los números y las fechas se comparan como tales, y preguntas de ejemplo probadas: «¿qué valores finales dio la última ejecución?» y «¿en qué expedientes el valor final Monto pasa de 100,000?».
+- Cada renglón abre la ejecución en su expediente, como los de la historia 8.
+
+**Criterios de aceptación**
+
+- Desde un expediente, «¿qué valores finales dio la última ejecución?» da lo mismo que la ventana de esa ejecución en su historial.
+- Un valor final sin valor dice por qué («Sin valor (faltó el dato)» o «Sin conectar»), sin inventar uno.
+- Comparar un valor final numérico o de fecha («pasa de 100,000», «vence antes de…») lo hace como número o como fecha.
+- Cuenta la última ejecución de cada proceso en cada expediente, salvo que se pregunte por el historial.
+- Desde un expediente solo trae los suyos; desde el Módulo de uso, los de la organización y nada de otra.
+
+**Depende de:** Historia 8.
+
+**Para QA:** En dev, abrir un expediente con al menos una ejecución que entregue valores finales y preguntar desde su «Preguntar» «¿qué valores finales dio la última ejecución?»; compararlo con la ventana de esa ejecución en el historial. Desde el Módulo de uso, preguntar por el nombre de un valor final y por uno numérico con «mayor a».
+
+---
+
+## 10 · sin publicar · Historia · Búsqueda Semántica · Que la búsqueda conozca los procesos de la organización
+
+**Historia de usuario:** Como persona que pregunta, quiero nombrar un proceso, una palabra de su resultado o un valor final con mis palabras, para no tener que decir qué tipo de cosa es («la Revisión de Completitud» en vez de «el valor final Revisión de Completitud»).
+
+**Contexto**
+
+Lo que la búsqueda sabe de cada organización (historia 2) son sus tipos documentales y sus campos. Desde las historias 8 y 9 también contesta sobre los procesos, sus resultados y sus valores finales, pero no conocía sus nombres: si la pregunta no decía qué era «Revisión de Completitud», la tomaba por el nombre de un proceso y no encontraba nada.
+
+**Qué incluye**
+
+- En cada pregunta, junto con los tipos documentales, la búsqueda lee los procesos de la organización: su nombre, si está activo, las tres palabras de su Resultado (las que escribió la organización o, si alguna quedó vacía, la de siempre), los nombres de sus valores finales (sin nombre, «Valor final #N», como en la pantalla) y los tipos documentales que usa.
+- Solo nombres que escribió la organización: nada de los documentos va al modelo, y nunca los procesos de otra organización.
+- Como se lee al preguntar, un proceso nuevo o renombrado ya se conoce en la siguiente pregunta; y como cambia lo que sabe la búsqueda, la misma pregunta no reusa una consulta de antes del cambio.
+
+**Criterios de aceptación**
+
+- «¿En qué expedientes la Revisión de Completitud quedó en Pasa?», sin decir que es un valor final, contesta sobre ese valor final.
+- Una pregunta con la palabra de un resultado («¿cuántos expedientes quedaron en Certificado?») la busca como resultado aunque no diga que lo es.
+- Los procesos de una organización nunca llegan al modelo cuando pregunta otra.
+- Un proceso nuevo o renombrado se conoce en la siguiente pregunta, sin reiniciar nada.
+
+**Depende de:** Historias 2 y 9.
+
+**Para QA:** En dev, con una organización que tenga procesos ejecutados, preguntar por un valor final y por una palabra de resultado sin decir qué son, y comparar con el historial de ejecuciones. Renombrar un proceso en el motor de reglas y volver a preguntar con el nombre nuevo.

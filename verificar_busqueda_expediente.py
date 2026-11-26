@@ -164,11 +164,13 @@ def documento(tenant: str, caso: str, archivo: str, tipo: str, nombre_tipo: str,
     return publico, hechos
 
 
-def proceso(tenant: str, nombre: str, tipos: list[str], activo: bool = True) -> str:
-    """Un proceso con un nodo por tipo documental (cada uno conectado a una regla «Igual a») y su Resultado conectado."""
+def proceso(tenant: str, nombre: str, tipos: list[str], activo: bool = True, finales: tuple = (), palabras: dict | None = None) -> str:
+    """Un proceso con un nodo por tipo documental (cada uno conectado a una regla «Igual a») y su Resultado conectado. `finales`: los nombres de sus
+    nodos «Valor final» ('' = sin nombre); `palabras`: las de su Resultado."""
     nodos = [{"id": f"t{i}", "type": "tipo-documental", "position": {"x": 0, "y": i * 100}, "data": {"tipoId": t}} for i, t in enumerate(tipos)]
     nodos += [{"id": "op1", "type": "operador", "position": {"x": 300, "y": 0}, "data": {"operador": "igual"}},
-              {"id": "res", "type": "resultado-final", "position": {"x": 600, "y": 0}, "data": {"si": "Aprobado", "no": "Requiere revisión", "sin": "Sin datos"}}]
+              {"id": "res", "type": "resultado-final", "position": {"x": 600, "y": 0}, "data": palabras or {"si": "Aprobado", "no": "Requiere revisión", "sin": "Sin datos"}}]
+    nodos += [{"id": f"valor-final-{i}", "type": "valor-final", "position": {"x": 600, "y": 100 * i}, "data": {"nombre": f} if f else {}} for i, f in enumerate(finales, 1)]
     aristas = [{"id": f"a{i}", "source": f"t{i}", "sourceHandle": "nombre", "target": "op1", "targetHandle": "a" if i == 0 else "b"} for i in range(len(tipos))]
     aristas.append({"id": "ar", "source": "op1", "sourceHandle": None, "target": "res", "targetHandle": "a"})
     publico = f"proceso-{secrets.token_hex(16)}"
@@ -201,9 +203,9 @@ with tablas.transaccion() as cur:
 D_INE_ANA, _ = documento(ORG_A, E_ANA, "ine-ana.pdf", T_INE, "INE", {"nombre": "ANA LOPEZ", "curp": None})
 D_COMP_ANA, _ = documento(ORG_A, E_ANA, "comprobante-ana.pdf", T_COMP, "Comprobante de domicilio", {"domicilio": "CALLE 1"})
 D_PAS, _ = documento(ORG_B, E_BETA, "pasaporte-beto.pdf", T_PAS, "Pasaporte", {"numero_de_pasaporte": "G123"})
-P_ALTA = proceso(ORG_A, "Alta de cliente", [T_INE, T_COMP])
-P_ACTA = proceso(ORG_A, "Revisión de acta", [T_ACTA], activo=False)
-P_BETA = proceso(ORG_B, "Proceso de Beta", [T_PAS])
+P_ALTA = proceso(ORG_A, "Alta de cliente", [T_INE, T_COMP], finales=("Monto solicitado", ""))
+P_ACTA = proceso(ORG_A, "Revisión de acta", [T_ACTA], activo=False, palabras={"si": "Acta válida", "no": "  ", "sin": None})
+P_BETA = proceso(ORG_B, "Proceso de Beta", [T_PAS], finales=("Número secreto de Beta",))
 REGLAS = [
     {"id": "op1", "etiqueta": "Igual a #1", "operador": "igual", "estado": "no_pasa", "valor": None, "texto": "Los valores no son iguales.",
      "entradas": [{"etiqueta": "Entrada A", "origen": "Nombre · INE", "valor": "JUAN PÉREZ"}, {"etiqueta": "Entrada B", "origen": "Nombre · Comprobante de domicilio", "valor": None}]},
@@ -410,8 +412,26 @@ rev("«todos los expedientes» desde el de Juan: solo trae el de Juan (la base l
 prompt = llamadas[-1]
 rev("al modelo se le dijo que se pregunta DESDE UN EXPEDIENTE, sin su nombre ni su id", "DESDE UN EXPEDIENTE" in prompt and "Juan Secreto" not in prompt and E_JUAN not in prompt)
 rev("…y las vistas nuevas están en lo que se le cuenta", all(f"consulta.{v}" in prompt for v in NUEVAS))
+rev("el catálogo trae los PROCESOS: nombre, si está activo, las palabras de su Resultado, sus valores finales (sin nombre: «Valor final #N») y lo que usa",
+    "- «Alta de cliente» (activo): termina en «Aprobado» si se cumple, «Requiere revisión» si no se cumple y «Sin datos» si faltan datos; "
+    "valores finales: «Monto solicitado», «Valor final #2»; usa: INE, Comprobante de domicilio" in prompt, prompt[prompt.find("Procesos del motor"):][:600])
+rev("…el desactivado como inactivo, y una palabra de Resultado vacía con la de siempre",
+    "- «Revisión de acta» (inactivo): termina en «Acta válida» si se cumple, «Rechazado» si no se cumple y «Sin datos» si faltan datos; usa: Acta constitutiva" in prompt,
+    prompt[prompt.find("Procesos del motor"):][:600])
+rev("…y nada de los procesos de la otra organización", "Proceso de Beta" not in prompt and "Número secreto de Beta" not in prompt)
+huella_antes = k.execute("SELECT TOP (1) catalogHash FROM nexus.searchQuestions ORDER BY questionId DESC").fetchone()[0]
+rev("sin procesos, el catálogo lo dice", busqueda._procesos_en_texto([]) == "La organización todavía no tiene procesos del motor de reglas."
+    and "todavía sin Resultado" in busqueda._procesos_en_texto([{"nombre": "X", "activo": False, "resultados": None, "valoresFinales": [], "tipos": []}]))
 g = k.execute("SELECT TOP (1) caseId FROM nexus.searchQuestions ORDER BY questionId DESC").fetchone()[0]
 rev("la bitácora guarda desde qué expediente se preguntó", g == E_JUAN, str(g))
+with tablas.transaccion() as cur:
+    cur.execute("UPDATE nexus.processes SET dataJson = JSON_MODIFY(dataJson, '$.nombre', N'Alta de cliente renombrado') WHERE publicId = ?", P_ALTA)
+r2 = preguntar("¿Cuántos procesos hay?", E_JUAN, None, sql("SELECT COUNT(DISTINCT proceso) AS [Procesos] FROM consulta.vDocumentoRequerido"))
+huella_despues = k.execute("SELECT TOP (1) catalogHash FROM nexus.searchQuestions ORDER BY questionId DESC").fetchone()[0]
+rev("renombrar un proceso cambia lo que el modelo sabe (y la huella del catálogo: la misma pregunta no reusa una consulta de antes del cambio)",
+    "«Alta de cliente renombrado»" in llamadas[-1] and huella_antes != huella_despues, f"{huella_antes} {huella_despues}")
+with tablas.transaccion() as cur:
+    cur.execute("UPDATE nexus.processes SET dataJson = JSON_MODIFY(dataJson, '$.nombre', N'Alta de cliente') WHERE publicId = ?", P_ALTA)
 r = preguntar("¿Qué documentos hay?", None, None, sql("SELECT COUNT(*) AS [Documentos] FROM consulta.vDocumentoExtraido"))
 rev("desde el Módulo de uso: toda la organización (3 documentos de Alfa) y el modelo lo sabe", r.json().get("filas") == [[3]] and "desde el Módulo de uso" in llamadas[-1], r.text[:200])
 rev("…y la bitácora no guarda expediente", k.execute("SELECT TOP (1) caseId FROM nexus.searchQuestions ORDER BY questionId DESC").fetchone()[0] is None)

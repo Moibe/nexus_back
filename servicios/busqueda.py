@@ -10,7 +10,9 @@ como `usrNexusLectura` con la organización de quien pregunta fijada en la conex
   y `valorNumero`), cómo se cuentan documentos y cómo se arma la tabla de un tipo documental con una columna por campo (`_COMUN`).
 - Lo de CADA organización, leído de su catálogo en cada pregunta (`catalogo_de`): sus tipos documentales con el nombre que ve la gente, la LLAVE con
   la que cada campo aparece en los datos extraídos (`nombres_en_google`: la misma regla con la que se guardó lo extraído), su tipo de dato y su
-  descripción. Como se lee al preguntar, un tipo recién creado o renombrado ya se conoce, y uno borrado deja de aparecer, sin reiniciar nada.
+  descripción. Como se lee al preguntar, un tipo recién creado o renombrado ya se conoce, y uno borrado deja de aparecer, sin reiniciar nada. Desde
+  NEX-612, también sus PROCESOS del motor de reglas (`procesos_de`): nombre, si está activo, las palabras de su Resultado, los nombres de sus valores
+  finales y los tipos documentales que usa; así «la Revisión de Completitud» se reconoce como un valor final aunque la persona no lo diga.
 - Preguntas de EJEMPLO con su consulta: un juego común (`EJEMPLOS`, probado contra la base) y los que aprobó quien administra la organización
   (NEX-609, `nexus.searchExamples`). En cada pregunta se le dan los `BUSQUEDA_EJEMPLOS_POR_PREGUNTA` MÁS PARECIDOS POR SIGNIFICADO (vectores de
   `servicios/embeddings.py`), solo entre los comunes y los de la organización de quien pregunta. Si los vectores fallan, van los comunes y los
@@ -83,7 +85,7 @@ import config
 from config import GEMINI_MODELO, GEMINI_REGION, GEMINI_TIMEOUT
 from db import consulta
 from servicios import busqueda_bitacora as bitacora
-from servicios import embeddings, gemini, tipos_documentales
+from servicios import embeddings, gemini, procesos, tipos_documentales
 from servicios.esquema import TIPO_GRUPO, nombres_en_google
 
 logger = logging.getLogger(__name__)
@@ -278,6 +280,9 @@ Cómo se pregunta:
   y lo que le faltó (vFaltanteDeEjecucion). «Qué documentos le faltan»: vDocumentoFaltante.
 - Compara resultado con la palabra que diga la persona (resultado = 'Requiere revisión'). Un valor final se busca por su nombre con
   LIKE '%…%' (la persona puede decirlo con otras palabras); compara valorNumero o valorFecha, no valor, cuando es número o fecha.
+- Los nombres de los procesos, las palabras de su Resultado y los nombres de sus valores finales están en el catálogo de procesos: si la persona
+  nombra uno, búscalo donde corresponde (un proceso en nombreProceso, una palabra de Resultado en resultado, un valor final en valorFinal), aunque
+  no diga qué es.
 - Las comparaciones de texto no distinguen mayúsculas. Para «contiene» usa LIKE '%…%'."""
 
 #: Preguntas de ejemplo con su consulta. Las del juego común usan los tipos y las llaves de una organización de ejemplo (INE con nombre, curp y vigencia;
@@ -485,10 +490,75 @@ def catalogo_de(tenant: str) -> list[dict]:
     return salida
 
 
-def _catalogo_en_texto(catalogo: list[dict]) -> str:
+#: Los procesos que se le cuentan al modelo y cuántos valores finales de cada uno (como con los tipos: una organización con cientos no debe volver enorme
+#: el prompt).
+MAX_PROCESOS = 40
+MAX_VALORES_FINALES = 30
+#: Las palabras del Resultado cuando un proceso dejó alguna vacía: las de siempre (`TEXTOS_DEL_RESULTADO` en `reglas.ts` del front).
+RESULTADO_POR_OMISION = {"si": "Aprobado", "no": "Rechazado", "sin": "Sin datos"}
+
+
+def procesos_de(tenant: str) -> list[dict]:
+    """Los procesos del motor de reglas de la organización como los necesita el modelo (NEX-612): `[{nombre, activo, resultados: {si, no, sin},
+    valoresFinales, tipos}]`. Las palabras del Resultado y los nombres de los valores finales salen igual que en el front (`textosDelResultado`,
+    `nombreDeValorFinal`); `activo`, de `procesos.motivos_de_inactividad` y el `activo` guardado. Se lee en cada pregunta, como el catálogo: un proceso
+    nuevo o renombrado ya se conoce. Son nombres que escribió la organización: nada de los documentos."""
+    biblioteca = tipos_documentales.listar(tenant)
+    nombre_de_tipo = {t["id"]: _limpio((t.get("datos") or {}).get("nombre"), 200) for t in biblioteca}
+    salida = []
+    for p in procesos.listar(tenant)[:MAX_PROCESOS]:
+        datos = p.get("datos") or {}
+        nombre = _limpio(datos.get("nombre"), 200)
+        if not nombre:
+            continue
+        nodos = [n for n in datos.get("nodos") or [] if isinstance(n, dict)]
+        resultado = next((n for n in nodos if n.get("type") == "resultado-final"), None)
+        palabras = (resultado or {}).get("data") or {}
+        resultados = {c: _limpio(palabras.get(c), 60) or RESULTADO_POR_OMISION[c] for c in ("si", "no", "sin")} if resultado else None
+        finales = [
+            _limpio((n.get("data") or {}).get("nombre"), 200) or f"Valor final #{re.sub(r'^(operador|constante|valor-final)-', '', str(n.get('id', '')))}"
+            for n in nodos
+            if n.get("type") == "valor-final"
+        ][:MAX_VALORES_FINALES]
+        usados = []
+        for n in nodos:
+            tipo_id = (n.get("data") or {}).get("tipoId") if n.get("type") == "tipo-documental" else None
+            if tipo_id and nombre_de_tipo.get(tipo_id) and nombre_de_tipo[tipo_id] not in usados:
+                usados.append(nombre_de_tipo[tipo_id])
+        activo = datos.get("activo") is not False and not procesos.motivos_de_inactividad(datos, biblioteca)
+        salida.append({"nombre": nombre, "activo": activo, "resultados": resultados, "valoresFinales": finales, "tipos": usados})
+    return salida
+
+
+def _procesos_en_texto(lista: list[dict]) -> str:
+    if not lista:
+        return "La organización todavía no tiene procesos del motor de reglas."
+    lineas = [
+        "Procesos del motor de reglas de la organización (nombre exacto para nombreProceso; las palabras de su Resultado para resultado y "
+        "resultadoEjecucion; los nombres de sus valores finales para valorFinal):"
+    ]
+    for p in lista:
+        partes = [f"- «{p['nombre']}» ({'activo' if p['activo'] else 'inactivo'})"]
+        if p["resultados"]:
+            r = p["resultados"]
+            partes.append(f"termina en «{r['si']}» si se cumple, «{r['no']}» si no se cumple y «{r['sin']}» si faltan datos")
+        else:
+            partes.append("todavía sin Resultado")
+        if p["valoresFinales"]:
+            partes.append("valores finales: " + ", ".join(f"«{v}»" for v in p["valoresFinales"]))
+        if p["tipos"]:
+            partes.append("usa: " + ", ".join(p["tipos"]))
+        lineas.append(f"{partes[0]}: " + "; ".join(partes[1:]))
+    return "\n".join(lineas)
+
+
+def _catalogo_en_texto(catalogo: list[dict], procesos_org: list[dict] | None = None) -> str:
+    """El catálogo que se le cuenta al modelo: los tipos documentales con la llave de cada campo y, desde NEX-612, los procesos (`procesos_org`; None:
+    no se cuentan)."""
     if not catalogo:
-        return "La organización todavía no tiene tipos documentales: solo se puede contar o listar documentos por lo que traen las vistas."
-    lineas = ["Tipos documentales de la organización (nombre exacto para tipoDocumental, y la llave exacta de cada campo para campo):"]
+        lineas = ["La organización todavía no tiene tipos documentales: solo se puede contar o listar documentos por lo que traen las vistas."]
+    else:
+        lineas = ["Tipos documentales de la organización (nombre exacto para tipoDocumental, y la llave exacta de cada campo para campo):"]
     for t in catalogo:
         lineas.append(f"- «{t['nombre']}» (tipoDocumentalId = '{t['id']}')" + (f": {t['descripcion']}" if t["descripcion"] else ""))
         for c in t["campos"]:
@@ -499,6 +569,9 @@ def _catalogo_en_texto(catalogo: list[dict]) -> str:
             else:
                 extra = ", se repite (fila 1, 2…)" if c["repetido"] else ""
                 lineas.append(f"    · {c['llave']} («{c['nombre']}», {c['tipoDato']}{extra})" + (f": {c['descripcion']}" if c["descripcion"] else ""))
+    if procesos_org is not None:
+        lineas.append("")
+        lineas.append(_procesos_en_texto(procesos_org))
     return "\n".join(lineas)
 
 
@@ -954,7 +1027,9 @@ async def _responder(
     if tope is not None:
         raise tope
     catalogo = await asyncio.to_thread(catalogo_de, tenant)
-    texto_catalogo = _catalogo_en_texto(catalogo)
+    # NEX-612: también los procesos (sus nombres, las palabras de su Resultado y sus valores finales), para que «la Revisión de Completitud» se reconozca.
+    procesos_org = await asyncio.to_thread(procesos_de, tenant)
+    texto_catalogo = _catalogo_en_texto(catalogo, procesos_org)
     registro["huella"] = hashlib.sha256(texto_catalogo.encode("utf-8")).hexdigest()
     # NEX-612: desde un expediente, la conexión lo fija (todas las vistas solo traen lo suyo).
     fijado = expediente["id"] if expediente else None
