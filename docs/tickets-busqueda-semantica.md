@@ -1,6 +1,6 @@
 # Búsqueda Semántica · historias en Jira
 
-Preparadas el 2026-11-12; siete historias desde el 13 de noviembre de 2026. **Publicadas en Jira el 2026-11-17 como NEX-605 a NEX-611**; la 8 (NEX-612) se sumó el 2026-11-20 con los casos de uso del expediente que pidió Producto (ver `casos-de-uso-expediente.md`), y ese día se ampliaron la 4 y la 5. **La 9 (los valores finales de las ejecuciones) y la 10 (que la búsqueda conozca los procesos) se prepararon el 2026-11-26 y están SIN PUBLICAR**: salieron al construir la 8, y el trabajo ya está hecho en dev. Todas van bajo la épica NEX-597 («EPICA 14: BUSQUEDA SEMANTICA»), en NEX Sprint 7, «Por hacer» y con Moisés de responsable. El ticket del DBA es **NEX-604** (Tarea, asignada a Charlie, en el mismo sprint y la misma épica). Los enlaces «bloquea» siguen el «Depende de» de cada una. Este archivo y el Excel para el PM (`Busqueda-Semantica-historias.xlsx`, en esta misma carpeta) salen del mismo texto.
+Preparadas el 2026-11-12; siete historias desde el 13 de noviembre de 2026. **Publicadas en Jira el 2026-11-17 como NEX-605 a NEX-611**; la 8 (NEX-612) se sumó el 2026-11-20 con los casos de uso del expediente que pidió Producto (ver `casos-de-uso-expediente.md`), y ese día se ampliaron la 4 y la 5. La 9 (los valores finales de las ejecuciones) y la 10 (que la búsqueda conozca los procesos) salieron al construir la 8 y se publicaron el 2026-11-26 como **NEX-616 y NEX-617**, en el mismo sprint (el trabajo ya estaba hecho en dev). Todas van bajo la épica NEX-597 («EPICA 14: BUSQUEDA SEMANTICA»), en NEX Sprint 7, «Por hacer» y con Moisés de responsable. El ticket del DBA es **NEX-604** (Tarea, asignada a Charlie, en el mismo sprint y la misma épica). Los enlaces «bloquea» siguen el «Depende de» de cada una. Este archivo y el Excel para el PM (`Busqueda-Semantica-historias.xlsx`, en esta misma carpeta) salen del mismo texto.
 
 Biblioratum contestará preguntas en lenguaje natural sobre los datos ya extraídos de los documentos de cada organización («¿cuántas INE vencen este año?»). Un modelo de lenguaje escribe la consulta y la base la ejecuta con un usuario de solo lectura que solo ve la organización de quien pregunta. Los datos de los documentos no se mandan al modelo.
 
@@ -247,7 +247,7 @@ Las historias 1 y 3 contestan sobre los datos extraídos de los documentos. Prod
 
 ---
 
-## 9 · sin publicar · Historia · Búsqueda Semántica · Preguntar por los valores finales de las ejecuciones
+## 9 · NEX-616 · Historia · Búsqueda Semántica · Preguntar por los valores finales de las ejecuciones
 
 **Historia de usuario:** Como persona que revisa expedientes, quiero preguntar qué entregó cada ejecución de un proceso (sus valores finales), para encontrar expedientes por lo que resolvió el motor de reglas sin abrir ejecución por ejecución.
 
@@ -275,7 +275,7 @@ La historia 8 lleva a la búsqueda las ejecuciones del motor de reglas: su resul
 
 ---
 
-## 10 · sin publicar · Historia · Búsqueda Semántica · Que la búsqueda conozca los procesos de la organización
+## 10 · NEX-617 · Historia · Búsqueda Semántica · Que la búsqueda conozca los procesos de la organización
 
 **Historia de usuario:** Como persona que pregunta, quiero nombrar un proceso, una palabra de su resultado o un valor final con mis palabras, para no tener que decir qué tipo de cosa es («la Revisión de Completitud» en vez de «el valor final Revisión de Completitud»).
 
