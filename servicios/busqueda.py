@@ -39,6 +39,15 @@ preguntas anteriores, «¿y de esas?» no tiene a qué referirse y el modelo lo 
 pregunta sola: la misma frase puede querer decir otra cosa en la conversación. Con cada respuesta, hasta tres preguntas para seguir que el modelo
 escribe en la misma llamada, sin ver los datos (`sugerencias`); se guardan y una respuesta reusada trae las suyas.
 
+## Preguntarle al expediente (NEX-612, 2026-11-26)
+
+La migración 0020 suma a `[consulta]` las vistas de expedientes, documentos de cada expediente, tipos que exige cada proceso, faltantes, ejecuciones,
+reglas, evidencia, faltantes de cada ejecución y correcciones (`VISTAS`), y redefine las dos de documentos. Cuando se pregunta DESDE un expediente
+(`expediente`), se comprueba que sea de la organización, la conexión lo fija como la organización (`db/consulta.py`) y TODAS las vistas solo traen lo
+suyo: «este expediente» no depende de que el modelo escriba el filtro. Al modelo se le dice desde dónde se pregunta, nunca el nombre del expediente.
+Si una respuesta de un expediente no trae renglones porque no se le ha ejecutado ningún proceso o no tiene documentos, `aviso` lo dice. La conversación,
+el reuso y «Tus preguntas recientes» son de su ámbito: lo de un expediente no se mezcla con el Módulo de uso.
+
 ## La segunda barrera: `revisar`
 
 La base ya impide escribir, salirse de `[consulta]` o cambiar la organización (NEX-604/605). `revisar` lo exige ANTES de correr nada, con un mensaje claro:
@@ -95,7 +104,25 @@ MAX_CONSULTA_EN_CONTEXTO = 3000
 MAX_SUGERENCIAS = 3
 MAX_SUGERENCIA = 120
 
-VISTAS = ("consulta.vDocumentoExtraido", "consulta.vDatoExtraido")
+VISTAS = (
+    "consulta.vDocumentoExtraido",
+    "consulta.vDatoExtraido",
+    # NEX-612 (migración 0020): expedientes, procesos, ejecuciones y correcciones.
+    "consulta.vExpediente",
+    "consulta.vDocumentoDeExpediente",
+    "consulta.vDocumentoRequerido",
+    "consulta.vDocumentoFaltante",
+    "consulta.vEjecucion",
+    "consulta.vReglaDeEjecucion",
+    "consulta.vEvidenciaDeEjecucion",
+    "consulta.vFaltanteDeEjecucion",
+    "consulta.vCorreccion",
+)
+#: NEX-612: con cuáles se contesta sobre las ejecuciones y con cuáles sobre los documentos (para decir por qué no hay renglones en un expediente).
+VISTAS_DE_EJECUCION = ("consulta.vEjecucion", "consulta.vReglaDeEjecucion", "consulta.vEvidenciaDeEjecucion", "consulta.vFaltanteDeEjecucion")
+VISTAS_DE_DOCUMENTOS = ("consulta.vDocumentoExtraido", "consulta.vDatoExtraido", "consulta.vDocumentoDeExpediente", "consulta.vCorreccion")
+AVISO_SIN_EJECUCIONES = "A este expediente todavía no se le ha ejecutado ningún proceso: no hay un resultado que explicar."
+AVISO_SIN_DOCUMENTOS = "Este expediente todavía no tiene documentos."
 
 MENSAJE_NO_DISPONIBLE = "La búsqueda no está disponible en este servidor. Avisa al equipo técnico."
 MENSAJE_CUOTA = "Hay muchas preguntas a la vez. Intenta de nuevo en un momento."
@@ -145,6 +172,14 @@ class Respuesta:
     turno: int | None = None
     usa_anteriores: bool = False
     sugerencias: list[str] = field(default_factory=list)
+    #: NEX-612: el expediente desde el que se preguntó (None: el Módulo de uso) y, si no hubo renglones, por qué (un expediente sin ejecuciones o sin
+    #: documentos lo dice así, en vez de solo «no hay información»).
+    expediente: str | None = None
+    aviso: str | None = None
+
+
+class ExpedienteNoEncontrado(LookupError):
+    """NEX-612: se preguntó desde un expediente que no es de la organización (o no existe): no se dice cuál de las dos."""
 
 
 @dataclass
@@ -159,8 +194,10 @@ class Ejemplo:
 
 # ── Lo común: las vistas y cómo se preguntan ─────────────────────────────────────────────────────────────────────────────────────────
 
-_COMUN = """Base: SQL Server (T-SQL). Solo existen DOS vistas, en el esquema consulta. Ya están filtradas a la organización de quien pregunta: NO
-filtres por organizacionGuid ni por organizacion, y no hay otras tablas ni vistas.
+_COMUN = """Base: SQL Server (T-SQL). Solo existen estas vistas, en el esquema consulta. Ya están filtradas a la organización de quien pregunta (y,
+cuando se pregunta desde un expediente, a ese expediente): NO filtres por organizacionGuid, organizacion ni expediente, y no hay otras tablas ni vistas.
+
+DOCUMENTOS Y SUS DATOS EXTRAÍDOS
 
 consulta.vDocumentoExtraido: UN renglón por documento con su extracción vigente (la última que terminó bien). Un documento que nunca se extrajo
 bien no aparece. Columnas:
@@ -179,6 +216,32 @@ consulta.vDatoExtraido: UN renglón por CAMPO vigente de cada documento (ya corr
 - confianza (0 a 100), pagina (en qué página del documento está), corregido (1 si se corrigió a mano, 0 si no),
 - motivoSinValor (por qué no hay valor: not_present = no apareció, illegible, below_threshold, extraction_error; NULL si hay valor), extraidoEn.
 
+EXPEDIENTES, PROCESOS Y EJECUCIONES (un expediente junta documentos; un proceso del motor de reglas se ejecuta sobre un expediente y termina con una
+palabra de Resultado que escribe la organización, por ejemplo «Aprobado» o «Requiere revisión»; las ejecuciones son un historial que no cambia):
+
+consulta.vExpediente: UN renglón por expediente. Columnas: expediente (id), nombre, creadoEn (datetime), creadoPor (nombre de la persona), documentos
+(cuántos tiene), ejecuciones (cuántas veces se le ha ejecutado un proceso), ultimaEjecucionEn, ultimoProceso, ultimoResultado (la palabra), ultimoCaso.
+consulta.vDocumentoDeExpediente: UN renglón por documento de cada expediente (un documento puede estar en varios). Columnas: expediente, nombreExpediente,
+documento, archivo, tipoDocumentalId, tipoDocumental (su tipo vigente), origenTipo (extraccion o clasificacion), recibidoEn, agregadoEn.
+consulta.vDocumentoRequerido: los tipos documentales que usa cada proceso. Columnas: proceso (id), nombreProceso, activo (1 si se puede ejecutar),
+tipoDocumentalId, tipoDocumental.
+consulta.vDocumentoFaltante: por expediente y proceso activo, cada tipo documental que el proceso usa y el expediente NO trae. Columnas: expediente,
+nombreExpediente, proceso, nombreProceso, tipoDocumentalId, tipoDocumental.
+consulta.vEjecucion: UN renglón por ejecución. Columnas: ejecucion (id), expediente, nombreExpediente, proceso, nombreProceso, revisionProceso, resultado
+(la palabra del Resultado), caso (si, no, o sin = no se pudo decidir por falta de datos), estado (completa o incompleta), ejecutadaEn (datetime),
+ejecutadaPor (nombre), esLaUltima (1 si es la última de ese proceso en ese expediente), reglasQueNoPasaron, faltantes (cuántas cosas le faltaron).
+consulta.vReglaDeEjecucion: UN renglón por regla de cada ejecución. Columnas: ejecucion, expediente, nombreExpediente, proceso, nombreProceso,
+resultadoEjecucion (la palabra), caso, ejecutadaEn, esLaUltima, orden, regla (su nombre, por ejemplo 'Igual a #2'), operador, estado (pasa, no_pasa,
+sin_valores = le faltó un dato, sin_conexion = incompleta, listo = calculó un valor), resultadoRegla (Pasa, No pasa, Sin valores, Incompleta, Calculada),
+explicacion, valor, comparo (lo que comparó: cada entrada con su origen y su valor).
+consulta.vEvidenciaDeEjecucion: UN renglón por campo que leyó cada ejecución. Columnas: ejecucion, expediente, nombreExpediente, nombreProceso,
+resultadoEjecucion, ejecutadaEn, esLaUltima, tipoDocumentalId, tipoDocumental, documento, archivo, campo, valor, confianza, pagina.
+consulta.vFaltanteDeEjecucion: UN renglón por cada cosa que le faltó a una ejecución. Columnas: ejecucion, expediente, nombreExpediente, nombreProceso,
+resultadoEjecucion, ejecutadaEn, esLaUltima, orden, faltante (texto, por ejemplo 'INE: el expediente no trae el documento').
+consulta.vCorreccion: UN renglón por campo corregido a mano, en la extracción vigente. Columnas: documento, archivo, tipoDocumentalId, tipoDocumental,
+campo, nombreCampo, fila, valorExtraido, valorCorregido, motivo, corregidoEn, corregidoPor (nombre), pagina. Para saber de qué expediente es un documento,
+une con vDocumentoDeExpediente por documento.
+
 Cómo se pregunta:
 - Para contar documentos usa vDocumentoExtraido (o COUNT(DISTINCT documento) sobre vDatoExtraido).
 - Un tipo documental se filtra por tipoDocumental = '<nombre exacto del catálogo>'. Un campo, por campo = '<llave del catálogo>' (en lo que se
@@ -195,6 +258,13 @@ Cómo se pregunta:
 - Cuando la respuesta liste documentos o datos (un renglón por documento o por campo), incluye SIEMPRE la columna documento tal cual, sin alias, y
   si sale de vDatoExtraido también pagina tal cual: la pantalla no las enseña, las usa para abrir el documento en la página de donde salió el dato.
   En una lista pivoteada (una columna por campo) agrupa también por documento. En conteos y totales no van.
+- Cuando la respuesta liste ejecuciones, reglas, evidencia o faltantes de una ejecución, incluye SIEMPRE las columnas ejecucion y expediente tal cual,
+  sin alias; una lista de expedientes lleva la columna expediente tal cual. La pantalla no las enseña: con ellas abre la ejecución o el expediente.
+  Para que se lea, agrega los nombres con alias ([Expediente], [Proceso]).
+- El estado de un expediente es el de la ÚLTIMA ejecución de cada proceso: usa esLaUltima = 1, salvo que pregunten por el historial o por todas.
+- «Por qué quedó» en un resultado: de su última ejecución, las reglas que no pasaron (estado distinto de pasa y de listo, con su explicacion y comparo)
+  y lo que le faltó (vFaltanteDeEjecucion). «Qué documentos le faltan»: vDocumentoFaltante.
+- Compara resultado con la palabra que diga la persona (resultado = 'Requiere revisión').
 - Las comparaciones de texto no distinguen mayúsculas. Para «contiene» usa LIKE '%…%'."""
 
 #: Preguntas de ejemplo con su consulta. Las del juego común usan los tipos y las llaves de una organización de ejemplo (INE con nombre, curp y vigencia;
@@ -293,6 +363,59 @@ EJEMPLOS: tuple[tuple[str, str], ...] = (
     (
         "¿Cuántas páginas tienen en total los documentos?",
         "SELECT SUM(paginas) AS [Páginas en total] FROM consulta.vDocumentoExtraido",
+    ),
+    # NEX-612: el expediente, sus procesos, sus ejecuciones y sus correcciones (vistas de la 0020). Las cuatro primeras son las del ticket.
+    (
+        "¿Qué documentos le faltan a este expediente?",
+        "SELECT nombreProceso AS [Proceso], tipoDocumental AS [Tipo documental que falta] FROM consulta.vDocumentoFaltante ORDER BY nombreProceso, tipoDocumental",
+    ),
+    (
+        "¿Por qué quedó en Requiere revisión?",
+        "SELECT ejecucion, expediente, nombreProceso AS [Proceso], regla AS [Qué], explicacion AS [Por qué], comparo AS [Qué comparó] "
+        "FROM consulta.vReglaDeEjecucion WHERE esLaUltima = 1 AND resultadoEjecucion = 'Requiere revisión' AND estado NOT IN ('pasa', 'listo') "
+        "UNION ALL SELECT ejecucion, expediente, nombreProceso, N'Faltó', faltante, NULL FROM consulta.vFaltanteDeEjecucion "
+        "WHERE esLaUltima = 1 AND resultadoEjecucion = 'Requiere revisión'",
+    ),
+    (
+        "Expedientes de este mes que quedaron en Requiere revisión",
+        "SELECT ejecucion, expediente, nombreExpediente AS [Expediente], nombreProceso AS [Proceso], ejecutadaEn AS [Ejecutado] FROM consulta.vEjecucion "
+        "WHERE esLaUltima = 1 AND resultado = 'Requiere revisión' AND YEAR(ejecutadaEn) = YEAR(GETDATE()) AND MONTH(ejecutadaEn) = MONTH(GETDATE()) "
+        "ORDER BY ejecutadaEn DESC",
+    ),
+    (
+        "¿Qué datos de este expediente se corrigieron y quién lo hizo?",
+        "SELECT documento, archivo AS [Archivo], tipoDocumental AS [Tipo documental], campo AS [Campo], valorExtraido AS [Valor extraído], "
+        "valorCorregido AS [Valor corregido], motivo AS [Motivo], corregidoPor AS [Corrigió], corregidoEn AS [Cuándo], pagina FROM consulta.vCorreccion "
+        "ORDER BY corregidoEn DESC",
+    ),
+    (
+        "¿Qué procesos se le han ejecutado a este expediente y con qué resultado?",
+        "SELECT ejecucion, expediente, nombreProceso AS [Proceso], resultado AS [Resultado], ejecutadaEn AS [Ejecutado], ejecutadaPor AS [Ejecutó] "
+        "FROM consulta.vEjecucion ORDER BY ejecutadaEn DESC",
+    ),
+    (
+        "¿Qué documentos tiene este expediente y de qué tipo?",
+        "SELECT documento, archivo AS [Archivo], tipoDocumental AS [Tipo documental], agregadoEn AS [Agregado] FROM consulta.vDocumentoDeExpediente ORDER BY agregadoEn",
+    ),
+    (
+        "¿Cuántos expedientes hay en cada resultado?",
+        "SELECT resultado AS [Resultado], COUNT(DISTINCT expediente) AS [Expedientes] FROM consulta.vEjecucion WHERE esLaUltima = 1 "
+        "GROUP BY resultado ORDER BY COUNT(DISTINCT expediente) DESC",
+    ),
+    (
+        "¿Qué expedientes todavía no tienen ninguna ejecución?",
+        "SELECT expediente, nombre AS [Expediente], documentos AS [Documentos], creadoEn AS [Creado] FROM consulta.vExpediente WHERE ejecuciones = 0 "
+        "ORDER BY creadoEn DESC",
+    ),
+    (
+        "¿Qué documentos le faltan a cada expediente?",
+        "SELECT expediente, nombreExpediente AS [Expediente], nombreProceso AS [Proceso], tipoDocumental AS [Tipo documental que falta] "
+        "FROM consulta.vDocumentoFaltante ORDER BY nombreExpediente, nombreProceso, tipoDocumental",
+    ),
+    (
+        "¿Qué reglas no pasaron en la última ejecución?",
+        "SELECT ejecucion, expediente, nombreProceso AS [Proceso], regla AS [Regla], resultadoRegla AS [Cómo salió], explicacion AS [Por qué], comparo AS [Qué comparó] "
+        "FROM consulta.vReglaDeEjecucion WHERE esLaUltima = 1 AND estado NOT IN ('pasa', 'listo') ORDER BY nombreProceso, orden",
     ),
 )
 
@@ -402,6 +525,21 @@ def _historial_en_texto(historial: list[dict] | None) -> str:
     return "\n".join(lineas)
 
 
+def _ambito_en_texto(en_expediente: bool) -> str:
+    """NEX-612: desde dónde se pregunta. Desde un expediente, la base ya acota todas las vistas a él (el nombre del expediente NO va al modelo)."""
+    if en_expediente:
+        return (
+            "Esta pregunta se hace DESDE UN EXPEDIENTE: todas las vistas ya traen solo lo de ese expediente (sus documentos y sus datos, sus ejecuciones, "
+            "lo que le falta y sus correcciones). «Este expediente» es ese: no filtres por expediente ni preguntes cuál. Si piden otro expediente o "
+            "todos, contesta igual con lo que traen las vistas. «Cómo quedó» o «por qué quedó así», sin decir la palabra del resultado, es sobre su "
+            "última ejecución (esLaUltima = 1), sea cual sea su resultado: no filtres por la palabra."
+        )
+    return (
+        "Esta pregunta se hace desde el Módulo de uso: las vistas traen toda la organización. Si la pregunta dice «este expediente» sin decir cuál, "
+        "pon consulta en null y en noSePuede di que para preguntarle a un expediente hay que abrirlo y usar «Preguntar» dentro de él."
+    )
+
+
 def armar_prompt(
     pregunta: str,
     catalogo: str | list[dict],
@@ -409,6 +547,7 @@ def armar_prompt(
     correccion: str | None = None,
     consulta_anterior: str | None = None,
     historial: list[dict] | None = None,
+    en_expediente: bool = False,
 ) -> str:
     """El texto que se le manda al modelo. `catalogo` es el texto del catálogo (o la lista, y se arma aquí); `ejemplos`, los elegidos para esta
     pregunta (sin ellos, el juego común). `correccion` y `consulta_anterior` van en la segunda vuelta: qué escribió y qué falló. `historial` (NEX-611),
@@ -436,6 +575,7 @@ def armar_prompt(
         _COMUN,
         texto_catalogo,
         _ejemplos_en_texto(ejemplos if ejemplos is not None else comunes()),
+        _ambito_en_texto(en_expediente),
         _historial_en_texto(historial),
     ]
     if correccion:
@@ -530,8 +670,8 @@ def revisar(sql: object) -> str:
         if objeto in _VISTAS or objeto in ctes:
             continue
         if objeto.startswith("consulta."):
-            raise ConsultaInvalida(f"{objeto} no existe: solo {VISTAS[0]} y {VISTAS[1]}")
-        raise ConsultaInvalida(f"solo se pueden leer {VISTAS[0]} y {VISTAS[1]} (no «{objeto}»)")
+            raise ConsultaInvalida(f"{objeto} no existe: solo {', '.join(VISTAS)}")
+        raise ConsultaInvalida(f"solo se pueden leer las vistas de consulta: {', '.join(VISTAS)} (no «{objeto}»)")
     return limpia
 
 
@@ -616,6 +756,7 @@ async def escribir(
     correccion: str | None = None,
     consulta_anterior: str | None = None,
     historial: list[dict] | None = None,
+    en_expediente: bool = False,
 ) -> dict:
     """Le pide al modelo la consulta. Devuelve `{consulta, explicacion, noSePuede, tomadoDeAntes, sugerencias, uso}` (con `consulta` ya como texto o None,
     las sugerencias limpias y `uso` los tokens) o levanta `ModeloNoDisponible`."""
@@ -628,7 +769,7 @@ async def escribir(
         logger.warning("Búsqueda: no se pudo obtener la credencial de Google: %s", exc)
         raise ModeloNoDisponible(MENSAJE_NO_DISPONIBLE, 503) from exc
     cuerpo = {
-        "contents": [{"role": "user", "parts": [{"text": armar_prompt(pregunta, catalogo, ejemplos, correccion, consulta_anterior, historial)}]}],
+        "contents": [{"role": "user", "parts": [{"text": armar_prompt(pregunta, catalogo, ejemplos, correccion, consulta_anterior, historial, en_expediente)}]}],
         "generationConfig": {"maxOutputTokens": MAX_TOKENS_SALIDA, "temperature": 0.1, "responseMimeType": "application/json"},
     }
     cabeceras = {"Authorization": f"Bearer {token}", "x-goog-user-project": gemini.DOCAI_PROJECT_ID}
@@ -770,28 +911,48 @@ def _sumar_uso(registro: dict, uso: dict | None) -> None:
         registro["salida"] += uso.get("salida", 0)
 
 
-async def _responder(tenant: str, pregunta: str, clave: str, registro: dict, historial: list[dict] | None = None) -> Respuesta:
+def aviso_sin_renglones(sql: str, expediente: dict | None) -> str | None:
+    """NEX-612: por qué una pregunta hecha desde un expediente no dio renglones, cuando se sabe: no se le ha ejecutado ningún proceso (y se preguntó por
+    ejecuciones) o no tiene documentos (y se preguntó por documentos). `expediente` trae sus cuentas (`bitacora.expediente`)."""
+    if not expediente:
+        return None
+    plano = re.sub(r"[\[\]\s]", "", sql.lower())
+    if expediente.get("ejecuciones") == 0 and any(v.lower() in plano for v in VISTAS_DE_EJECUCION):
+        return AVISO_SIN_EJECUCIONES
+    if expediente.get("documentos") == 0 and any(v.lower() in plano for v in VISTAS_DE_DOCUMENTOS):
+        return AVISO_SIN_DOCUMENTOS
+    return None
+
+
+async def _responder(
+    tenant: str, pregunta: str, clave: str, registro: dict, historial: list[dict] | None = None, expediente: dict | None = None
+) -> Respuesta:
     tope = await asyncio.to_thread(bitacora.tope_alcanzado, tenant, registro["usuario"])
     if tope is not None:
         raise tope
     catalogo = await asyncio.to_thread(catalogo_de, tenant)
     texto_catalogo = _catalogo_en_texto(catalogo)
     registro["huella"] = hashlib.sha256(texto_catalogo.encode("utf-8")).hexdigest()
+    # NEX-612: desde un expediente, la conexión lo fija (todas las vistas solo traen lo suyo).
+    fijado = expediente["id"] if expediente else None
 
     # La misma pregunta: la misma consulta, sin preguntarle al modelo. Si ya no corre (el esquema cambió), se le pregunta. NEX-611: solo sin preguntas
     # anteriores en la conversación: con ellas, la misma frase puede querer decir otra cosa («¿cuántas tienen campos corregidos?» de las INE de antes).
-    fuente = None if historial else await asyncio.to_thread(bitacora.reusable, tenant, clave, registro["huella"])
+    # NEX-612: solo del mismo ámbito (desde un expediente, lo que se preguntó desde un expediente; desde el Módulo de uso, lo del Módulo de uso).
+    fuente = None if historial else await asyncio.to_thread(bitacora.reusable, tenant, clave, registro["huella"], fijado is not None)
     if fuente is not None:
         try:
             sql = revisar(fuente["consulta"])
-            r = await asyncio.to_thread(consulta.consultar, tenant, sql)
+            r = await asyncio.to_thread(lambda: consulta.consultar(tenant, sql, expediente=fijado))
         except (ConsultaInvalida, consulta.ConsultaRechazada) as exc:
             logger.info("Búsqueda: la consulta de %s ya no corre (%s); se le pregunta al modelo.", fuente["id"], str(getattr(exc, "mensaje", exc))[:200])
         else:
             sugerencias = limpiar_sugerencias(fuente.get("sugerencias"), pregunta)
             registro.update(origen=fuente["origen"], reusoDe=fuente["id"], consulta=sql, explicacion=fuente["explicacion"], renglones=len(r.filas),
                             hayMas=r.hay_mas, msBase=r.milisegundos, sugerencias=sugerencias)
-            return _respuesta_de(r, sql, fuente["explicacion"], 0, fuente["origen"], fuente["id"], sugerencias)
+            respuesta = _respuesta_de(r, sql, fuente["explicacion"], 0, fuente["origen"], fuente["id"], sugerencias)
+            respuesta.aviso = aviso_sin_renglones(sql, expediente) if not r.filas else None
+            return respuesta
 
     # Los ejemplos se eligen por el significado de la pregunta; si sigue una conversación, junto con la anterior («¿y de esas?» sola no dice nada).
     para_elegir = f"{historial[-1]['pregunta']} {pregunta}" if historial else pregunta
@@ -803,7 +964,7 @@ async def _responder(tenant: str, pregunta: str, clave: str, registro: dict, his
     for intento in range(1, INTENTOS + 1):
         registro["intentos"] = intento
         try:
-            escrito = await escribir(pregunta, texto_catalogo, ejemplos, correccion, consulta_anterior, historial or [])
+            escrito = await escribir(pregunta, texto_catalogo, ejemplos, correccion, consulta_anterior, historial or [], fijado is not None)
         except ModeloNoDisponible as exc:
             _sumar_uso(registro, exc.uso)
             raise
@@ -813,7 +974,7 @@ async def _responder(tenant: str, pregunta: str, clave: str, registro: dict, his
         registro["consulta"] = escrito["consulta"]
         try:
             sql = revisar(escrito["consulta"])
-            r = await asyncio.to_thread(consulta.consultar, tenant, sql)
+            r = await asyncio.to_thread(lambda: consulta.consultar(tenant, sql, expediente=fijado))
         except (ConsultaInvalida, consulta.ConsultaRechazada) as exc:
             ultimo = exc
             motivo = str(exc) if isinstance(exc, ConsultaInvalida) else f"la base la rechazó: {exc.mensaje}"
@@ -825,7 +986,9 @@ async def _responder(tenant: str, pregunta: str, clave: str, registro: dict, his
         explicacion = explicacion_con_lo_tomado(escrito["explicacion"], tomado)
         registro.update(origen="modelo", consulta=sql, explicacion=explicacion, renglones=len(r.filas), hayMas=r.hay_mas, msBase=r.milisegundos,
                         usaAnteriores=bool(tomado) if historial else None, sugerencias=escrito["sugerencias"])
-        return _respuesta_de(r, sql, explicacion, intento, "modelo", None, escrito["sugerencias"], bool(tomado))
+        respuesta = _respuesta_de(r, sql, explicacion, intento, "modelo", None, escrito["sugerencias"], bool(tomado))
+        respuesta.aviso = aviso_sin_renglones(sql, expediente) if not r.filas else None
+        return respuesta
     raise ConsultaInvalida(str(ultimo) if ultimo else "sin consulta")
 
 
@@ -845,15 +1008,19 @@ def _resultado_de(exc: BaseException) -> str:
     return "error"
 
 
-async def preguntar(tenant: str, usuario: str, pregunta: object, conversacion: object = None) -> Respuesta:
+async def preguntar(tenant: str, usuario: str, pregunta: object, conversacion: object = None, expediente: object = None) -> Respuesta:
     """Toda la vuelta: conversación → tope → la misma pregunta → ejemplos → modelo → revisión → base, y la bitácora al final, salga como salga.
 
     `conversacion` (NEX-611) es el id que devolvió la pregunta anterior: sus preguntas se le cuentan al modelo. Sin él, con uno que no tiene esa forma o
     con uno que no es de esta persona en esta organización, la pregunta empieza una conversación nueva. La respuesta (y la excepción, en `conversacion` y
     `turno`) dice cuál quedó.
 
-    Errores: `ValueError` (pregunta vacía o larga, organización inválida: esto NO se anota), `bitacora.TopeAlcanzado`, `NoSePuede`, `ConsultaInvalida`,
-    `ModeloNoDisponible` y los de `db/consulta.py` (`ConsultaTardo`, `ConsultaNoDisponible`)."""
+    `expediente` (NEX-612) es el id del expediente desde el que se pregunta: tiene que ser de la organización (si no, `ExpedienteNoEncontrado`, que no se
+    anota), la conexión lo fija y todas las vistas solo traen lo suyo. Una conversación es de UN ámbito: la de un expediente no sigue en otro ni en el
+    Módulo de uso.
+
+    Errores: `ValueError` (pregunta vacía o larga, organización inválida: esto NO se anota), `ExpedienteNoEncontrado`, `bitacora.TopeAlcanzado`,
+    `NoSePuede`, `ConsultaInvalida`, `ModeloNoDisponible` y los de `db/consulta.py` (`ConsultaTardo`, `ConsultaNoDisponible`)."""
     if not isinstance(pregunta, str) or not pregunta.strip():
         raise ValueError("Escribe una pregunta.")
     pregunta = " ".join(pregunta.split())
@@ -861,20 +1028,28 @@ async def preguntar(tenant: str, usuario: str, pregunta: object, conversacion: o
         raise ValueError(f"La pregunta es demasiado larga: hasta {MAX_PREGUNTA} caracteres.")
     if not isinstance(tenant, str) or not consulta._GUID.fullmatch(tenant):
         raise ValueError("La búsqueda trabaja sobre los datos de una organización; este espacio no tiene documentos que consultar.")
+    del_expediente = None
+    if expediente is not None:
+        if not isinstance(expediente, str) or not consulta.RE_EXPEDIENTE.fullmatch(expediente):
+            raise ExpedienteNoEncontrado(str(expediente)[:60])
+        del_expediente = await asyncio.to_thread(bitacora.expediente, tenant, expediente)
+        if del_expediente is None:
+            raise ExpedienteNoEncontrado(expediente)
     clave = bitacora.clave_de(pregunta)
     registro = bitacora.nuevo_registro(tenant, usuario, pregunta, clave)
+    registro["expediente"] = expediente if del_expediente else None
     inicio = time.monotonic()
     try:
         previo = None
         if isinstance(conversacion, str) and bitacora.RE_CONVERSACION.fullmatch(conversacion):
-            previo = await asyncio.to_thread(bitacora.conversacion, tenant, usuario, conversacion, TURNOS_EN_CONTEXTO)
+            previo = await asyncio.to_thread(bitacora.conversacion, tenant, usuario, conversacion, TURNOS_EN_CONTEXTO, registro["expediente"])
         if previo is None:
             registro.update(conversacion=bitacora.nueva_conversacion(), turno=1)
             historial: list[dict] = []
         else:
             registro.update(conversacion=conversacion, turno=previo["turno"])
             historial = previo["historial"]
-        respuesta = await _responder(tenant, pregunta, clave, registro, historial)
+        respuesta = await _responder(tenant, pregunta, clave, registro, historial, del_expediente)
     except Exception as exc:  # (una petición cancelada —el navegador se fue— no se anota: no hay a quién contestarle)
         registro["resultado"] = _resultado_de(exc)
         registro["detalle"] = (getattr(exc, "mensaje", None) if isinstance(exc, consulta.ConsultaRechazada) else str(exc)) or type(exc).__name__
@@ -891,4 +1066,5 @@ async def preguntar(tenant: str, usuario: str, pregunta: object, conversacion: o
     registro["ms"] = int((time.monotonic() - inicio) * 1000)
     respuesta.pregunta_id = await asyncio.to_thread(bitacora.guardar, registro)
     respuesta.conversacion, respuesta.turno = registro["conversacion"], registro["turno"]
+    respuesta.expediente = registro["expediente"]
     return respuesta

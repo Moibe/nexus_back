@@ -133,6 +133,8 @@ def nuevo_registro(tenant: str, usuario: str, pregunta: str, clave: str) -> dict
         "modelo": None, "entrada": 0, "cache": 0, "salida": 0, "embeddings": 0, "huella": None, "ejemplos": None,
         # NEX-611: la conversación, el número de la pregunta en ella, si el modelo tomó algo de las anteriores y las sugerencias para seguir.
         "conversacion": None, "turno": None, "usaAnteriores": None, "sugerencias": None,
+        # NEX-612: el expediente desde el que se preguntó (None: el Módulo de uso).
+        "expediente": None,
     }
 
 
@@ -153,15 +155,15 @@ def guardar(r: dict) -> str | None:
             cur.execute(
                 "INSERT INTO nexus.searchQuestions (publicId, tenant, userGuid, question, questionKey, outcome, origin, reusedFrom, sqlText, explanation, "
                 "detail, resultRows, hasMore, attempts, durationMs, databaseMs, model, inputTokens, cachedTokens, outputTokens, embeddingTokens, costUsd, "
-                "catalogHash, examplesJson, conversationId, turn, usesContext, suggestionsJson) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "catalogHash, examplesJson, conversationId, turn, usesContext, suggestionsJson, caseId) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 publico, r["tenant"], r["usuario"], r["pregunta"][:500], r["clave"][:500], r["resultado"], r["origen"], r["reusoDe"], r["consulta"],
                 (r["explicacion"] or None) and r["explicacion"][:300], (r["detalle"] or None) and str(r["detalle"])[:500], r["renglones"],
                 r["hayMas"], min(255, int(r["intentos"])), max(0, int(r["ms"])), r["msBase"], r["modelo"],
                 r["entrada"] if usados else None, r["cache"] if usados else None, r["salida"] if usados else None, r["embeddings"] if usados else None,
                 Decimal(str(round(costo(r["entrada"], r["cache"], r["salida"], r["embeddings"]), 6))) if usados else Decimal("0"),
                 r["huella"], json.dumps(r["ejemplos"]) if r["ejemplos"] is not None else None,
-                conversacion, turno, usa, json.dumps(sugerencias, ensure_ascii=False) if sugerencias else None,
+                conversacion, turno, usa, json.dumps(sugerencias, ensure_ascii=False) if sugerencias else None, r.get("expediente"),
             )
         return publico
     except Exception:  # noqa: BLE001 — la bitácora nunca tumba una respuesta
@@ -212,25 +214,28 @@ def sugerencias_de(texto: object) -> list[str]:
     return [s for s in v if isinstance(s, str) and s.strip()][:MAX_SUGERENCIAS] if isinstance(v, list) else []
 
 
-def conversacion(tenant: str, usuario: str, conversacion_id: str, limite: int = 5) -> dict | None:
+def conversacion(tenant: str, usuario: str, conversacion_id: str, limite: int = 5, expediente: str | None = None) -> dict | None:
     """Lo anterior de una conversación de ESA persona en ESA organización: `{turno, historial}`, con `turno` el número que le toca a la pregunta nueva y
     `historial` las últimas `limite` preguntas que salieron bien o que el modelo dijo que no se pueden responder, de la más vieja a la más reciente:
     `[{pregunta, explicacion, consulta, noSePuede, usaAnteriores}]`. `None` si no hay nada (un id que no existe, o de otra persona u organización): entonces
-    la pregunta empieza una conversación nueva."""
+    la pregunta empieza una conversación nueva. NEX-612: y del mismo ámbito, `expediente` (None: el Módulo de uso): una conversación de un expediente
+    no sigue en otro ni en el Módulo de uso."""
     if not isinstance(conversacion_id, str) or not RE_CONVERSACION.fullmatch(conversacion_id):
         return None
+    ambito = "AND caseId IS NULL" if expediente is None else "AND caseId = ?"
+    extra = () if expediente is None else (expediente,)
     with tablas.lectura() as cur:
         cur.execute(
-            "SELECT MAX(turn) FROM nexus.searchQuestions WHERE tenant = ? AND userGuid = ? AND conversationId = ?",
-            tenant, usuario, conversacion_id,
+            f"SELECT MAX(turn) FROM nexus.searchQuestions WHERE tenant = ? AND userGuid = ? AND conversationId = ? {ambito}",
+            tenant, usuario, conversacion_id, *extra,
         )
         ultimo = cur.fetchone()[0]
         if ultimo is None:
             return None
         cur.execute(
             "SELECT TOP (?) question, explanation, sqlText, outcome, detail, usesContext FROM nexus.searchQuestions "
-            "WHERE tenant = ? AND userGuid = ? AND conversationId = ? AND outcome IN ('ok', 'no_se_puede') ORDER BY questionId DESC",
-            max(1, min(20, int(limite))), tenant, usuario, conversacion_id,
+            f"WHERE tenant = ? AND userGuid = ? AND conversationId = ? {ambito} AND outcome IN ('ok', 'no_se_puede') ORDER BY questionId DESC",
+            max(1, min(20, int(limite))), tenant, usuario, conversacion_id, *extra,
         )
         filas = list(reversed(tablas.filas(cur)))
     historial = [
@@ -246,15 +251,34 @@ def conversacion(tenant: str, usuario: str, conversacion_id: str, limite: int = 
     return {"turno": int(ultimo) + 1, "historial": historial}
 
 
+def expediente(tenant: str, expediente_id: str) -> dict | None:
+    """NEX-612: el expediente desde el que se pregunta, si es de la organización: `{id, documentos, ejecuciones}` (para decir por qué una respuesta no
+    trajo renglones). `None` si no existe o es de otra organización."""
+    with tablas.lectura() as cur:
+        cur.execute(
+            "SELECT c.publicId, (SELECT count(*) FROM nexus.caseDocuments cd WHERE cd.caseId = c.caseId) AS documentos, "
+            "(SELECT count(*) FROM nexus.processRuns r WHERE r.tenant = c.tenant AND r.caseId = c.publicId) AS ejecuciones "
+            "FROM nexus.cases c WHERE c.tenant = ? AND c.publicId = ?",
+            tenant, expediente_id,
+        )
+        f = tablas.una(cur)
+    return {"id": f["publicId"], "documentos": int(f["documentos"]), "ejecuciones": int(f["ejecuciones"])} if f else None
+
+
 # ── Reusar ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-def reusable(tenant: str, clave: str, huella: str) -> dict | None:
+def reusable(tenant: str, clave: str, huella: str, en_expediente: bool = False) -> dict | None:
     """La consulta que ya existe para esta misma pregunta en la organización: `{origen, id, consulta, explicacion, sugerencias}` o `None`. Una respuesta que
-    tomó algo de su conversación (NEX-611) no cuenta: suelta, la misma pregunta quiere decir otra cosa."""
+    tomó algo de su conversación (NEX-611) no cuenta: suelta, la misma pregunta quiere decir otra cosa. NEX-612: solo del mismo ámbito (`en_expediente`:
+    lo que se preguntó desde CUALQUIER expediente —la base acota la consulta al de ahora—; si no, lo del Módulo de uso). Un ejemplo es del ámbito de la
+    pregunta de la que salió (uno sin ella cuenta como del Módulo de uso)."""
+    ambito_ejemplo = "q.caseId IS NOT NULL" if en_expediente else "(q.caseId IS NULL)"
+    ambito = "caseId IS NOT NULL" if en_expediente else "caseId IS NULL"
     with tablas.lectura() as cur:
         cur.execute(
             "SELECT e.publicId, e.sqlText, e.explanation, q.suggestionsJson FROM nexus.searchExamples e "
-            "LEFT JOIN nexus.searchQuestions q ON q.questionId = e.sourceQuestionId AND q.tenant = e.tenant WHERE e.tenant = ? AND e.questionKey = ?",
+            "LEFT JOIN nexus.searchQuestions q ON q.questionId = e.sourceQuestionId AND q.tenant = e.tenant WHERE e.tenant = ? AND e.questionKey = ? "
+            f"AND {ambito_ejemplo}",
             tenant, clave,
         )
         e = tablas.una(cur)
@@ -262,7 +286,8 @@ def reusable(tenant: str, clave: str, huella: str) -> dict | None:
             return {"origen": "ejemplo", "id": e["publicId"], "consulta": e["sqlText"], "explicacion": e["explanation"] or "", "sugerencias": sugerencias_de(e["suggestionsJson"])}
         cur.execute(
             "SELECT TOP (1) publicId, sqlText, explanation, useful, suggestionsJson FROM nexus.searchQuestions "
-            "WHERE tenant = ? AND questionKey = ? AND outcome = 'ok' AND catalogHash = ? AND (usesContext IS NULL OR usesContext = 0) ORDER BY questionId DESC",
+            f"WHERE tenant = ? AND questionKey = ? AND outcome = 'ok' AND catalogHash = ? AND (usesContext IS NULL OR usesContext = 0) AND {ambito} "
+            "ORDER BY questionId DESC",
             tenant, clave, huella,
         )
         p = tablas.una(cur)
@@ -276,12 +301,12 @@ def reusable(tenant: str, clave: str, huella: str) -> dict | None:
 
 def recientes(tenant: str, usuario: str, limite: int = 8) -> list[dict]:
     """Las últimas preguntas DISTINTAS de esa persona en esa organización (la más reciente de cada una), sin las que frenó el tope ni las que tomaron algo
-    de su conversación (NEX-611: «¿y de esas?» no se repite sola)."""
+    de su conversación (NEX-611: «¿y de esas?» no se repite sola). Solo las del Módulo de uso (NEX-612): las de un expediente hablan de «este expediente»."""
     with tablas.lectura() as cur:
         cur.execute(
             "SELECT TOP (?) q.publicId, q.question, q.outcome, q.createdAt FROM nexus.searchQuestions q "
             "JOIN (SELECT MAX(questionId) AS ultima FROM nexus.searchQuestions WHERE tenant = ? AND userGuid = ? AND outcome <> 'tope' "
-            "AND (usesContext IS NULL OR usesContext = 0) GROUP BY questionKey) u "
+            "AND (usesContext IS NULL OR usesContext = 0) AND caseId IS NULL GROUP BY questionKey) u "
             "ON u.ultima = q.questionId ORDER BY q.questionId DESC",
             max(1, min(50, int(limite))), tenant, usuario,
         )

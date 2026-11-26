@@ -12,6 +12,10 @@ Una conexión por pregunta: se abre, se fija la organización, se corre la consu
 la organización de OTRA pregunta todavía puesta, fijar la nueva fallaría con 15664 y aquí se corta (`ConsultaNoDisponible`): nunca se corre
 una consulta sin comprobar antes, en esa misma conexión, que la organización fijada es la de quien pregunta.
 
+**El expediente (NEX-612, migración 0020).** Cuando se pregunta DESDE un expediente, se fija también `SESSION_CONTEXT(N'expediente')`, igual: de
+solo lectura y comprobado, y todas las vistas de `[consulta]` devuelven solo lo de ese expediente. Quien llama ya comprobó que el expediente es de la
+organización. Sin expediente se comprueba que la conexión NO trae uno puesto: una pregunta del Módulo de uso nunca corre acotada por casualidad.
+
 Topes (config.py): `CONSULTA_TIEMPO_MAXIMO_S` corta la consulta en el servidor (el driver manda la cancelación) y `CONSULTA_TOPE_RENGLONES`
 limita lo que se devuelve; si hay más, `hay_mas` lo dice. `SET DEADLOCK_PRIORITY LOW`: si una consulta choca con una escritura, pierde la consulta.
 
@@ -140,24 +144,36 @@ def _es_tiempo_agotado(exc: Exception) -> bool:
     return codigo in ("HYT00", "HYT01") or "timeout expired" in str(exc).lower()
 
 
-def abrir(organizacion: str, tiempo_maximo: int | None = None):
-    """Una conexión de solo lectura con la organización YA fijada (y comprobada). Quien la pide la cierra."""
+#: NEX-612: el id público de un expediente, como lo fija la conexión.
+RE_EXPEDIENTE = re.compile(r"^expediente-[0-9a-f]{32}$")
+
+
+def abrir(organizacion: str, tiempo_maximo: int | None = None, expediente: str | None = None):
+    """Una conexión de solo lectura con la organización YA fijada (y comprobada) y, si se da, el expediente (NEX-612). Quien la pide la cierra."""
     import pyodbc
 
     if not isinstance(organizacion, str) or not _GUID.fullmatch(organizacion):
         raise ValueError("La organización debe ser el guid de una organización.")
+    if expediente is not None and (not isinstance(expediente, str) or not RE_EXPEDIENTE.fullmatch(expediente)):
+        raise ValueError("El expediente debe ser el id de un expediente.")
     con = _conectar()
     try:
         cur = con.cursor()
         cur.execute("SET DEADLOCK_PRIORITY LOW")
         try:
             cur.execute("EXEC sys.sp_set_session_context @key = N'organizacion', @value = ?, @read_only = 1", organizacion)
+            if expediente is not None:
+                cur.execute("EXEC sys.sp_set_session_context @key = N'expediente', @value = ?, @read_only = 1", expediente)
         except pyodbc.Error as exc:
             texto, numero = _texto(exc)
-            raise ConsultaNoDisponible(f"No se pudo fijar la organización en la conexión ({numero}): {texto}") from exc
-        fijada = cur.execute("SELECT CAST(SESSION_CONTEXT(N'organizacion') AS varchar(63))").fetchone()[0]
+            raise ConsultaNoDisponible(f"No se pudo fijar la organización o el expediente en la conexión ({numero}): {texto}") from exc
+        fijada, fijado = cur.execute(
+            "SELECT CAST(SESSION_CONTEXT(N'organizacion') AS varchar(63)), CAST(SESSION_CONTEXT(N'expediente') AS varchar(63))"
+        ).fetchone()
         if (fijada or "").lower() != organizacion.lower():
             raise ConsultaNoDisponible("La organización fijada en la conexión no es la de quien pregunta.")
+        if (fijado or None) != expediente:
+            raise ConsultaNoDisponible("El expediente fijado en la conexión no es el de la pregunta.")
         con.timeout = int(tiempo_maximo or config.CONSULTA_TIEMPO_MAXIMO_S)
         return con
     except BaseException:
@@ -165,18 +181,21 @@ def abrir(organizacion: str, tiempo_maximo: int | None = None):
         raise
 
 
-def consultar(organizacion: str, sql: str, *, tope: int | None = None, tiempo_maximo: int | None = None) -> Resultado:
-    """Corre `sql` como `usrNexusLectura` con la organización fijada. Devuelve el PRIMER conjunto de resultados, hasta `tope` renglones.
+def consultar(
+    organizacion: str, sql: str, *, tope: int | None = None, tiempo_maximo: int | None = None, expediente: str | None = None
+) -> Resultado:
+    """Corre `sql` como `usrNexusLectura` con la organización fijada (y el expediente, si se da). Devuelve el PRIMER conjunto de resultados, hasta
+    `tope` renglones.
 
-    Errores: `ValueError` (organización o consulta vacías), `ConsultaNoDisponible` (nuestra conexión), `ConsultaRechazada` (la base no la aceptó),
-    `ConsultaTardo` (pasó del tiempo máximo)."""
+    Errores: `ValueError` (organización, expediente o consulta inválidos), `ConsultaNoDisponible` (nuestra conexión), `ConsultaRechazada` (la base no
+    la aceptó), `ConsultaTardo` (pasó del tiempo máximo)."""
     import pyodbc
 
     if not isinstance(sql, str) or not sql.strip():
         raise ValueError("La consulta está vacía.")
     tope = max(1, int(tope or config.CONSULTA_TOPE_RENGLONES))
     segundos = int(tiempo_maximo or config.CONSULTA_TIEMPO_MAXIMO_S)
-    con = abrir(organizacion, segundos)
+    con = abrir(organizacion, segundos, expediente)
     inicio = time.monotonic()
     try:
         cur = con.cursor()

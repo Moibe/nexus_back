@@ -13,8 +13,10 @@ organización sobre la cual preguntar: 400 al preguntar.
 
 ## Preguntar: `POST /busqueda/preguntar`
 
-- Recibe `{tenant, pregunta, conversacion?}`. `conversacion` (NEX-611) es el id que devolvió la pregunta anterior: la nueva se entiende con las anteriores
-  de esa conversación. Sin él (o si no es de esta persona en esta organización), empieza una conversación nueva.
+- Recibe `{tenant, pregunta, conversacion?, expediente?}`. `conversacion` (NEX-611) es el id que devolvió la pregunta anterior: la nueva se entiende con
+  las anteriores de esa conversación. Sin él (o si no es de esta persona en esta organización), empieza una conversación nueva. `expediente` (NEX-612)
+  es el expediente desde el que se pregunta: la conexión lo fija y todas las vistas solo traen lo suyo; 404 `expediente_no_existe` si no es de la
+  organización. La respuesta trae también `expediente` y `aviso` (por qué no hubo renglones: el expediente no tiene ejecuciones o no tiene documentos).
 - 200 `{columnas, filas, hayMas, tope, milisegundos, consulta, explicacion, intentos, preguntaId, origen, reusoDe, conversacion, turno, usaAnteriores,
   sugerencias}`. `filas` es una lista de listas en el orden de `columnas`; si había más renglones que `tope`, `hayMas` lo dice. `origen` es `modelo`,
   `ejemplo` (la consulta de un ejemplo aprobado de la organización, la misma pregunta) o `anterior` (la de una pregunta igual que ya había salido bien);
@@ -61,6 +63,7 @@ class Pregunta(BaseModel):
     tenant: str = Field(..., description="La organización")
     pregunta: str = Field(..., max_length=busqueda.MAX_PREGUNTA * 4, description="La pregunta, con las palabras de la persona")
     conversacion: str | None = Field(None, max_length=60, description="NEX-611: la conversación que sigue (el id que devolvió la pregunta anterior)")
+    expediente: str | None = Field(None, max_length=60, description="NEX-612: el expediente desde el que se pregunta (la conexión lo fija)")
 
 
 class Valoracion(BaseModel):
@@ -113,9 +116,11 @@ def _anotar(accion: str, actor: aislamiento.Actor, tenant: str, **datos) -> None
 async def preguntar(entrada: Pregunta, authorization: str | None = Header(default=None)):
     actor = aislamiento.exigir(authorization, entrada.tenant, "busqueda")
     try:
-        r = await busqueda.preguntar(entrada.tenant, actor.guid, entrada.pregunta, entrada.conversacion)
+        r = await busqueda.preguntar(entrada.tenant, actor.guid, entrada.pregunta, entrada.conversacion, entrada.expediente)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except busqueda.ExpedienteNoEncontrado as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"codigo": "expediente_no_existe", "mensaje": "Ese expediente no existe."}) from exc
     except bitacora.TopeAlcanzado as exc:
         logger.info("Búsqueda: %s en %s llegó al tope (%s, %s por %s).", actor.guid, entrada.tenant, exc.alcance, exc.tope, exc.ventana)
         raise HTTPException(
@@ -161,6 +166,8 @@ async def preguntar(entrada: Pregunta, authorization: str | None = Header(defaul
         "turno": r.turno,
         "usaAnteriores": r.usa_anteriores,
         "sugerencias": r.sugerencias,
+        "expediente": r.expediente,
+        "aviso": r.aviso,
     }
 
 

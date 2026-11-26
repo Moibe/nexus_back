@@ -531,8 +531,8 @@ rev("aprobar cuando el modelo de vectores falla: se aprueba igual (201), sin vec
     ra.status_code == 201 and k.execute("SELECT embeddingJson FROM nexus.searchExamples WHERE publicId = ?", E_SOCIOS or "").fetchone()[0] is None, ra.text[:200])
 r = preguntar(a_admin, ORG_A, "¿qué INE ya vencieron?", sql(VENCEN))
 dados = json.loads(ultimo().get("examplesJson") or "[]")
-rev("si los vectores fallan al preguntar, la pregunta sale igual con los 21 comunes y los aprobados recientes",
-    r.status_code == 200 and len(dados) == 21 + 1 and dados[-1] == E_SOCIOS and (ultimo().get("embeddingTokens") or 0) == 0, str(dados[-3:]))
+rev(f"si los vectores fallan al preguntar, la pregunta sale igual con los {len(busqueda.EJEMPLOS)} comunes y los aprobados recientes",
+    r.status_code == 200 and len(dados) == len(busqueda.EJEMPLOS) + 1 and dados[-1] == E_SOCIOS and (ultimo().get("embeddingTokens") or 0) == 0, str(dados[-3:]))
 estado["vectores_fallan"] = False
 n_vect = len(vectorizados)
 r = preguntar(a_admin, ORG_A, "¿cuántos socios tiene cada acta hoy?", sql("SELECT documento FROM consulta.vDocumentoExtraido"))

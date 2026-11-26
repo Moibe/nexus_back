@@ -82,7 +82,8 @@ def aplicar_0017() -> str:
     }
     base = corredor.BaseSql(DB, valores)
     try:
-        corredor.ejecutar(base, corredor.descubrir(carpeta), accion="aplicar", confirmar=True)
+        # Hasta la 17: esta prueba es de la 0017 (las que siguen, como la 0020, las prueban las suyas).
+        corredor.ejecutar(base, corredor.descubrir(carpeta), accion="aplicar", hasta=17, confirmar=True)
         return ""
     except Exception as e:  # noqa: BLE001
         return str(e)
