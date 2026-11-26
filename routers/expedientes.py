@@ -210,7 +210,7 @@ class Correccion(BaseModel):
         "cuántas corridas lleva). `campos`: los VIGENTES, uno por campo, de la última corrida que terminó; cada uno con `valor` (el "
         "normalizado o su última corrección), `valorCrudo`, `confianza` 0-100, `pagina`, y `motivoSinValor` cuando el campo se pedía y no "
         "apareció, y `correccionTrasladadaDe` cuando su corrección a mano se hizo en una extracción anterior y pasó a esta al reprocesar "
-        "(NEX-614). `correccionesSinTrasladar`: las correcciones de la extracción anterior que NO pasaron a la vigente (`ruta`, `valor`, "
+        "(NEX-614); un campo corregido trae además `corregidoPorNombre` (quién, con su nombre) y `motivoCorreccion`. `correccionesSinTrasladar`: las correcciones de la extracción anterior que NO pasaron a la vigente (`ruta`, `valor`, "
         "`motivo`: `campo_ausente`, `fila_distinta` u `otro_tipo`, `deExtraccion`, `corregidoPor`), para avisarlo. "
         "Todo `null`/vacío si el documento no se ha procesado desde que se guardan (migración 0007)."
     ),

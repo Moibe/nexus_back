@@ -300,6 +300,17 @@ try:
     rev("se puede corregir un campo ausente: deja de ser ausente", r.status_code == 201 and r.json()["valor"] == "5000" and r.json()["motivoSinValor"] is None, r.text)
     r = corr(adm, "socios[2].nombre", "Alberto B.")
     rev("la última corrección manda", r.json()["valor"] == "Alberto B.")
+    # La pantalla de corrección (HU073, 2026-11-26) dice quién corrigió con su NOMBRE y por qué.
+    por_ruta = {f_["ruta"]: f_ for f_ in datos(adm, org, d2).json()["campos"]}
+    k.execute("SELECT firstName FROM nexus.users WHERE guid = ?", por_ruta["capital"]["corregidoPor"])
+    nombre_adm = (k.fetchone() or [None])[0]
+    rev(
+        "un campo corregido trae el NOMBRE de quien lo corrigió (no su guid) y el motivo",
+        bool(nombre_adm) and nombre_adm in (por_ruta["capital"]["corregidoPorNombre"] or "") and por_ruta["capital"]["motivoCorreccion"] == "dice otra cosa",
+        por_ruta["capital"],
+    )
+    sin_corregir = next(f_ for f_ in por_ruta.values() if not f_["corregido"])
+    rev("uno sin corregir no trae ni nombre ni motivo", sin_corregir["corregidoPorNombre"] is None and sin_corregir["motivoCorreccion"] is None, sin_corregir)
     k.execute("SELECT valueNormalized FROM nexus.entityFacts f JOIN nexus.extractionRuns r ON r.runId = f.runId JOIN nexus.documents d ON d.documentId = r.documentId WHERE d.publicId = ? AND f.fieldPath = 'socios[2].nombre'", d2)
     rev("el dato extraído no se tocó", k.fetchone()[0] == "Beto")
     rev("campo que no existe: 404", corr(adm, "no_existe", "x").status_code == 404)

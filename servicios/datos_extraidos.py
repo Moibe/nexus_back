@@ -394,8 +394,14 @@ def de_documento(tenant: str, documento_id: object) -> dict:
         corrida = tablas.una(cur)
         cur.execute(
             "SELECT v.runId, r.publicId AS corridaId, v.fieldPath, v.fieldName, v.recordIndex, v.valueRaw, v.valueNormalized, v.valueExtracted, v.nullReason, "
-            "v.confidence, v.pageNumber, v.isCorrected, v.correctedAt, v.correctedBy, r.finishedAt AS corridaTerminada "
-            "FROM nexus.vEntityFactCurrent v JOIN nexus.extractionRuns r ON r.runId = v.runId WHERE v.documentId = ? ORDER BY v.factId",
+            "v.confidence, v.pageNumber, v.isCorrected, v.correctedAt, v.correctedBy, r.finishedAt AS corridaTerminada, "
+            # Quién corrigió, con su NOMBRE (la pantalla de corrección lo dice; el guid no le sirve a nadie), y el motivo de la última corrección (2026-11-26).
+            "COALESCE(NULLIF(CONCAT_WS(N' ', NULLIF(u.firstName, N''), NULLIF(u.lastName, N''), NULLIF(u.secondLastName, N'')), N''), u.email) AS corregidoPorNombre, "
+            "m.reason AS motivoCorreccion "
+            "FROM nexus.vEntityFactCurrent v JOIN nexus.extractionRuns r ON r.runId = v.runId "
+            "LEFT JOIN nexus.users u ON v.isCorrected = 1 AND u.guid = v.correctedBy "
+            "OUTER APPLY (SELECT TOP (1) fc.reason FROM nexus.fieldCorrections fc WHERE v.isCorrected = 1 AND fc.factId = v.factId ORDER BY fc.correctionId DESC) m "
+            "WHERE v.documentId = ? ORDER BY v.factId",
             documento,
         )
         campos = tablas.filas(cur)
@@ -452,6 +458,8 @@ def de_documento(tenant: str, documento_id: object) -> dict:
                 "corregido": bool(c["isCorrected"]),
                 "corregidoEn": momento(c["correctedAt"]) if c["correctedAt"] else None,
                 "corregidoPor": c["correctedBy"],
+                "corregidoPorNombre": c["corregidoPorNombre"] if c["isCorrected"] else None,
+                "motivoCorreccion": c["motivoCorreccion"] if c["isCorrected"] else None,
                 "correccionTrasladadaDe": trasladada_de(c),
                 "corridaId": c["corridaId"],
             }
