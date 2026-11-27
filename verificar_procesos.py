@@ -479,6 +479,29 @@ try:
     rev("en cambio puede haber todos los valores finales que hagan falta, aun con el mismo nombre (el lienzo avisa, el servidor no se mete)", guardar(a_admin, org_a, nuevo_id(), dos_valores, 0).status_code == 200)
     c.delete(f"/procesos/{p7}", params={"tenant": org_a}, headers=cab(a_admin))
 
+    titulo("8e · El nombre propio de cada regla (NEX-613, 2026-11-26)")
+    con_nombre = proceso("Reglas con nombre")
+    con_nombre["nodos"][2]["data"]["nombre"] = "  Vigencia   de la INE "
+    con_nombre["nodos"].append({**nodo_op("operador-2", "igual", "x", "y", x=600), "data": {"operador": "igual", "a": "x", "b": "y", "nombre": "   "}})
+    r = guardar(a_admin, org_a, nuevo_id(), con_nombre, 0)
+    por_id = {n["id"]: n["data"] for n in r.json()["datos"]["nodos"]} if r.status_code == 200 else {}
+    rev("una regla con nombre lo guarda sin espacios de más", r.status_code == 200 and por_id.get("operador-1", {}).get("nombre") == "Vigencia de la INE", r.text[:300])
+    rev("un nombre de puros espacios cuenta como sin nombre: no se guarda la llave", "nombre" not in por_id.get("operador-2", {"nombre": 1}), str(por_id.get("operador-2")))
+    sin = guardar(a_admin, org_a, nuevo_id(), proceso("Regla sin nombre"), 0)
+    rev("una regla sin nombre se guarda igual que antes", sin.status_code == 200 and sin.json()["datos"]["nodos"][2]["data"] == {"operador": "igual", "a": "AB1", "b": "ab1"}, sin.text[:200])
+    iguales = proceso("Dos reglas iguales")
+    iguales["nodos"][2]["data"]["nombre"] = "RFC igual"
+    iguales["nodos"].append({**nodo_op("operador-2", "igual", x=600), "data": {"operador": "distinto", "a": "", "b": "", "nombre": " rfc  IGUAL "}})
+    r = guardar(a_admin, org_a, nuevo_id(), iguales, 0)
+    rev("dos reglas con el mismo nombre (sin distinguir mayúsculas ni espacios): no se guarda, y lo dice", r.status_code == 400 and "se llaman igual" in r.text, r.text[:200])
+    largo = proceso("Nombre largo")
+    largo["nodos"][2]["data"]["nombre"] = "x" * 81
+    rev("un nombre de más de 80 caracteres: no se guarda", guardar(a_admin, org_a, nuevo_id(), largo, 0).status_code == 400)
+    final_y_regla = proceso("Regla y valor final con el mismo nombre")
+    final_y_regla["nodos"][2]["data"]["nombre"] = "RFC"
+    final_y_regla["nodos"].append({"id": "valor-final-1", "type": "valor-final", "position": {"x": 900, "y": 0}, "data": {"nombre": "RFC", "a": ""}})
+    rev("una regla y un valor final pueden llamarse igual (son cosas distintas)", guardar(a_admin, org_a, nuevo_id(), final_y_regla, 0).status_code == 200)
+
     titulo("9 · Un proceso vacío y uno con cables a un punto sin nombre")
     p4 = nuevo_id()
     r = guardar(a_admin, org_a, p4, {"nombre": "Vacío", "nodos": [], "aristas": []}, 0)

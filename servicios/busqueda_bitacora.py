@@ -254,7 +254,9 @@ def conversacion(tenant: str, usuario: str, conversacion_id: str, limite: int = 
 def historial_de_procesos(tenant: str, limite: int = 2000) -> dict[str, dict]:
     """NEX-612: los nombres que dejaron los procesos en el historial de ejecuciones de la organización (que es una foto: un proceso pudo cambiar o
     borrarse después). Por id de proceso, de lo más reciente a lo más viejo y sin repetir: `{nombres, palabras, finales}` (cómo se llamaba, con qué
-    palabras terminó, cómo se llamaban sus valores finales). Lee las últimas `limite` combinaciones ejecución × valor final."""
+    palabras terminó, cómo se llamaban sus valores finales) y, desde NEX-613, `reglas`: los nombres PROPIOS que tenían sus reglas (las que en su foto
+    traen `tipo`; una regla sin nombre se llama «Igual a #2» y eso no sirve para preguntar). Lee las últimas `limite` combinaciones ejecución × valor final,
+    y las reglas de las últimas `limite` ejecuciones."""
     salida: dict[str, dict] = {}
     with tablas.lectura() as cur:
         cur.execute(
@@ -263,10 +265,20 @@ def historial_de_procesos(tenant: str, limite: int = 2000) -> dict[str, dict]:
             max(1, int(limite)), tenant,
         )
         for proceso_id, nombre, palabra, final in cur.fetchall():
-            h = salida.setdefault(proceso_id, {"nombres": [], "palabras": [], "finales": []})
+            h = salida.setdefault(proceso_id, {"nombres": [], "palabras": [], "finales": [], "reglas": []})
             for lista, valor in ((h["nombres"], nombre), (h["palabras"], palabra), (h["finales"], final)):
                 if valor and valor not in lista:
                     lista.append(valor)
+        cur.execute(
+            "SELECT r.processId, j.etiqueta FROM (SELECT TOP (?) processRunId, processId, detailJson FROM nexus.processRuns WHERE tenant = ? "
+            "ORDER BY processRunId DESC) r CROSS APPLY OPENJSON(r.detailJson, '$.reglas') WITH (etiqueta nvarchar(200) '$.etiqueta', tipo nvarchar(200) '$.tipo') j "
+            "WHERE j.tipo IS NOT NULL AND j.etiqueta IS NOT NULL ORDER BY r.processRunId DESC",
+            max(1, int(limite)), tenant,
+        )
+        for proceso_id, regla in cur.fetchall():
+            h = salida.setdefault(proceso_id, {"nombres": [], "palabras": [], "finales": [], "reglas": []})
+            if regla not in h["reglas"]:
+                h["reglas"].append(regla)
     return salida
 
 

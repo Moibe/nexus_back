@@ -84,6 +84,8 @@ CASOS_DEL_RESULTADO = ("si", "no", "sin")
 MAX_NODOS = 300
 #: El nombre con el que un `valor-final` entra a la lista de valores finales de una corrida, y cada una de las tres palabras del resultado.
 MAX_NOMBRE_FINAL = 80
+#: El nombre propio de una regla (NEX-613, 2026-11-26): opcional; sin él, la regla se llama por su operador y su número («Igual a #2»).
+MAX_NOMBRE_REGLA = 80
 MAX_TEXTO_RESULTADO = 60
 MAX_ARISTAS = 600
 MAX_TEXTO = 500
@@ -191,6 +193,11 @@ def _nodo(n: object) -> dict:
             limpio_datos[caso] = _texto(datos.get(caso), "Una palabra del resultado", MAX_TEXTO_RESULTADO)
     else:
         limpio_datos["operador"] = _texto(datos.get("operador"), "El operador de un nodo", 40)
+        # NEX-613: el nombre de negocio de la regla («Vigencia de la INE»). Se guarda SOLO si tiene algo (sin espacios de más), para que una regla
+        # sin nombre —y un proceso de antes— se guarde exactamente igual que antes.
+        nombre_regla = " ".join(_texto(datos.get("nombre", ""), "El nombre de una regla", MAX_NOMBRE_REGLA, obligatorio=False).split())
+        if nombre_regla:
+            limpio_datos["nombre"] = nombre_regla
         # Los valores de ejemplo con los que se probó la regla: texto libre, pueden estar vacíos. De una lista, varios renglones.
         limpio_datos["a"] = _texto(datos.get("a", ""), "Un valor de ejemplo", MAX_MUESTRA, obligatorio=False)
         limpio_datos["b"] = _texto(datos.get("b", ""), "Un valor de ejemplo", MAX_MUESTRA, obligatorio=False)
@@ -262,6 +269,11 @@ def _validar(proceso_id: str, datos: object) -> dict:
     if sum(1 for n in nodos if n["type"] == "resultado-final") > 1:
         # El resultado es UNA palabra por corrida: dos nodos no sabrían cuál decide.
         raise ProcesoInvalido("Un proceso solo puede tener un resultado.")
+    # NEX-613: dentro de un proceso, dos reglas no pueden llamarse igual (sin distinguir mayúsculas ni espacios de más). El lienzo lo avisa antes de
+    # guardar; esto es la segunda barrera.
+    nombres_reglas = [clave_de_nombre(n["data"]["nombre"]) for n in nodos if n["data"].get("nombre") and n["type"] not in ("valor-final", "resultado-final", "constante", "tipo-documental")]
+    if len(set(nombres_reglas)) != len(nombres_reglas):
+        raise ProcesoInvalido("Dos reglas del proceso se llaman igual: cada regla debe tener un nombre distinto.")
     aristas = [_arista(a) for a in aristas_crudas]
     ids_aristas = [a["id"] for a in aristas]
     if len(set(ids_aristas)) != len(ids_aristas):

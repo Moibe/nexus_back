@@ -282,9 +282,11 @@ Cómo se pregunta:
   LIKE '%…%' (la persona puede decirlo con otras palabras); compara valorNumero o valorFecha, no valor, cuando es número o fecha.
 - Una persona (corregidoPor, ejecutadaPor, creadoPor) se busca SIEMPRE con LIKE y las palabras que dé, en su orden: casi nunca dan el nombre
   completo. «Dora» → corregidoPor LIKE '%Dora%'; «Dora Delta» → corregidoPor LIKE '%Dora%Delta%'. Nunca con =.
-- Los nombres de los procesos, las palabras de su Resultado y los nombres de sus valores finales están en el catálogo de procesos: si la persona
-  nombra uno, búscalo donde corresponde (un proceso en nombreProceso, una palabra de Resultado en resultado, un valor final en valorFinal), aunque
-  no diga qué es.
+- Los nombres de los procesos, las palabras de su Resultado, los nombres de sus valores finales y los de sus reglas están en el catálogo de procesos:
+  si la persona nombra uno, búscalo donde corresponde (un proceso en nombreProceso, una palabra de Resultado en resultado, un valor final en
+  valorFinal, una regla en regla de vReglaDeEjecucion con LIKE '%…%'), aunque no diga qué es.
+- «Incumple / no pasó la regla X»: vReglaDeEjecucion con regla LIKE '%X%' y estado = 'no_pasa' en la última ejecución (esLaUltima = 1), salvo que
+  pregunten por el historial.
 - Las comparaciones de texto no distinguen mayúsculas. Para «contiene» usa LIKE '%…%'."""
 
 #: Preguntas de ejemplo con su consulta. Las del juego común usan los tipos y las llaves de una organización de ejemplo (INE con nombre, curp y vigencia;
@@ -408,6 +410,12 @@ EJEMPLOS: tuple[tuple[str, str], ...] = (
         "valorCorregido AS [Valor corregido], motivo AS [Motivo], corregidoPor AS [Corrigió], corregidoEn AS [Cuándo], pagina FROM consulta.vCorreccion "
         "ORDER BY corregidoEn DESC",
     ),
+    # NEX-613: una regla con nombre propio se pregunta por su nombre.
+    (
+        "¿Qué expedientes incumplen la regla Vigencia de la INE?",
+        "SELECT ejecucion, expediente, nombreExpediente AS [Expediente], nombreProceso AS [Proceso], explicacion AS [Por qué], ejecutadaEn AS [Ejecutado] "
+        "FROM consulta.vReglaDeEjecucion WHERE esLaUltima = 1 AND regla LIKE '%Vigencia de la INE%' AND estado = 'no_pasa' ORDER BY ejecutadaEn DESC",
+    ),
     # Una persona casi nunca se nombra completa (2026-11-26: con el modelo real, «¿Qué corrigió Dora?» salía con corregidoPor = 'Dora' y vacía).
     (
         "¿Qué datos corrigió Ana?",
@@ -509,6 +517,8 @@ def catalogo_de(tenant: str) -> list[dict]:
 #: el prompt).
 MAX_PROCESOS = 40
 MAX_VALORES_FINALES = 30
+#: NEX-613: cuántos nombres de reglas de un proceso se le cuentan al modelo.
+MAX_REGLAS = 40
 #: Las palabras del Resultado cuando un proceso dejó alguna vacía: las de siempre (`TEXTOS_DEL_RESULTADO` en `reglas.ts` del front).
 RESULTADO_POR_OMISION = {"si": "Aprobado", "no": "Rechazado", "sin": "Sin datos"}
 
@@ -530,7 +540,7 @@ def procesos_de(tenant: str) -> list[dict]:
         nombre = _limpio(datos.get("nombre"), 200)
         if not nombre:
             continue
-        h = historial.pop(p.get("id"), None) or {"nombres": [], "palabras": [], "finales": []}
+        h = historial.pop(p.get("id"), None) or {"nombres": [], "palabras": [], "finales": [], "reglas": []}
         nodos = [n for n in datos.get("nodos") or [] if isinstance(n, dict)]
         resultado = next((n for n in nodos if n.get("type") == "resultado-final"), None)
         palabras = (resultado or {}).get("data") or {}
@@ -540,6 +550,13 @@ def procesos_de(tenant: str) -> list[dict]:
             for n in nodos
             if n.get("type") == "valor-final"
         ][:MAX_VALORES_FINALES]
+        # NEX-613: las reglas con nombre propio (las que no tienen se llaman «Igual a #2»: no sirven para preguntar).
+        reglas = []
+        for n in nodos:
+            nombre_regla = _limpio((n.get("data") or {}).get("nombre"), 200) if n.get("type") == "operador" else ""
+            if nombre_regla and nombre_regla not in reglas:
+                reglas.append(nombre_regla)
+        reglas = reglas[:MAX_REGLAS]
         usados = []
         for n in nodos:
             tipo_id = (n.get("data") or {}).get("tipoId") if n.get("type") == "tipo-documental" else None
@@ -550,17 +567,19 @@ def procesos_de(tenant: str) -> list[dict]:
             "nombres": [_limpio(x, 200) for x in h["nombres"] if _limpio(x, 200) != nombre][:5],
             "palabras": [_limpio(x, 60) for x in h["palabras"] if _limpio(x, 60) not in (resultados or {}).values()][:10],
             "finales": [_limpio(x, 200) for x in h["finales"] if _limpio(x, 200) not in finales][:MAX_VALORES_FINALES],
+            "reglas": [_limpio(x, 200) for x in h.get("reglas", []) if _limpio(x, 200) not in reglas][:MAX_REGLAS],
         }
-        salida.append({"nombre": nombre, "existe": True, "activo": activo, "resultados": resultados, "valoresFinales": finales, "tipos": usados, "antes": antes})
+        salida.append({"nombre": nombre, "existe": True, "activo": activo, "resultados": resultados, "valoresFinales": finales, "reglas": reglas, "tipos": usados, "antes": antes})
     # Los que ya no existen pero tienen ejecuciones: se pregunta por ellos con el nombre que tenían.
     for h in list(historial.values())[: max(0, MAX_PROCESOS - len(salida))]:
         nombres = [_limpio(x, 200) for x in h["nombres"] if _limpio(x, 200)]
         if not nombres:
             continue
         salida.append({
-            "nombre": nombres[0], "existe": False, "activo": False, "resultados": None, "valoresFinales": [], "tipos": [],
+            "nombre": nombres[0], "existe": False, "activo": False, "resultados": None, "valoresFinales": [], "reglas": [], "tipos": [],
             "antes": {"nombres": nombres[1:5], "palabras": [_limpio(x, 60) for x in h["palabras"]][:10],
-                      "finales": [_limpio(x, 200) for x in h["finales"]][:MAX_VALORES_FINALES]},
+                      "finales": [_limpio(x, 200) for x in h["finales"]][:MAX_VALORES_FINALES],
+                      "reglas": [_limpio(x, 200) for x in h.get("reglas", [])][:MAX_REGLAS]},
         })
     return salida
 
@@ -570,7 +589,7 @@ def _procesos_en_texto(lista: list[dict]) -> str:
         return "La organización todavía no tiene procesos del motor de reglas."
     lineas = [
         "Procesos del motor de reglas de la organización (nombre exacto para nombreProceso; las palabras de su Resultado para resultado y "
-        "resultadoEjecucion; los nombres de sus valores finales para valorFinal):"
+        "resultadoEjecucion; los nombres de sus valores finales para valorFinal; los nombres de sus reglas para regla, en vReglaDeEjecucion):"
     ]
     for p in lista:
         antes = p.get("antes") or {}
@@ -583,6 +602,8 @@ def _procesos_en_texto(lista: list[dict]) -> str:
                 partes.append("todavía sin Resultado")
             if p["valoresFinales"]:
                 partes.append("valores finales: " + ", ".join(f"«{v}»" for v in p["valoresFinales"]))
+            if p.get("reglas"):
+                partes.append("reglas: " + ", ".join(f"«{v}»" for v in p["reglas"]))
             if p["tipos"]:
                 partes.append("usa: " + ", ".join(p["tipos"]))
         else:
@@ -594,6 +615,8 @@ def _procesos_en_texto(lista: list[dict]) -> str:
             partes.append(("en ejecuciones anteriores terminó en " if p.get("existe", True) else "terminó en ") + ", ".join(f"«{v}»" for v in antes["palabras"]))
         if antes.get("finales"):
             partes.append(("valores finales en ejecuciones anteriores: " if p.get("existe", True) else "valores finales: ") + ", ".join(f"«{v}»" for v in antes["finales"]))
+        if antes.get("reglas"):
+            partes.append(("reglas en ejecuciones anteriores: " if p.get("existe", True) else "reglas: ") + ", ".join(f"«{v}»" for v in antes["reglas"]))
         lineas.append(f"{partes[0]}: " + "; ".join(partes[1:]) if len(partes) > 1 else partes[0])
     return "\n".join(lineas)
 

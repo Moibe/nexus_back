@@ -542,6 +542,31 @@ rev("…y la búsqueda lo encuentra", r.json().get("filas") == [["Dictamen", "Pa
 r = preguntar("¿Qué dictámenes hay?", None, None, sql("SELECT 1 AS x"), tenant=ORG_B, bearer=b_admin)
 rev("…pero nunca en lo que se le cuenta al modelo cuando pregunta OTRA organización", "Proceso viejo" not in llamadas[-1] and "Dictamen" not in llamadas[-1].split("Procesos del motor")[-1].split("Ejemplos de preguntas")[0])
 
+titulo("8 · los nombres de las reglas (NEX-613)")
+P_REGLAS = proceso(ORG_A, "Validación de identidad", [T_INE])
+with tablas.transaccion() as cur:
+    cur.execute("SELECT dataJson FROM nexus.processes WHERE publicId = ?", P_REGLAS)
+    datos_p = json.loads(cur.fetchone()[0])
+    next(n for n in datos_p["nodos"] if n["id"] == "op1")["data"]["nombre"] = "Vigencia de la INE"
+    datos_p["nodos"].append({"id": "op2", "type": "operador", "position": {"x": 300, "y": 300}, "data": {"operador": "igual"}})  # sin nombre
+    cur.execute("UPDATE nexus.processes SET dataJson = ? WHERE publicId = ?", json.dumps(datos_p, ensure_ascii=False), P_REGLAS)
+R_REGLAS = ejecucion(ORG_A, E_JUAN, "Expediente de Juan Secreto", P_REGLAS, "Validación de identidad", "no", "Requiere revisión", {
+    "reglas": [
+        {"id": "op1", "etiqueta": "Vigencia de la INE", "tipo": "Igual a #1", "operador": "igual", "estado": "no_pasa", "valor": None, "texto": "No pasa: los valores son distintos", "entradas": []},
+        {"id": "op9", "etiqueta": "RFC del cliente (versión vieja)", "tipo": "Igual a #9", "operador": "igual", "estado": "pasa", "valor": None, "texto": "Pasa", "entradas": []},
+        {"id": "op2", "etiqueta": "Igual a #2", "operador": "igual", "estado": "pasa", "valor": None, "texto": "Pasa", "entradas": []},
+    ], "evidencia": [], "condicion": "no_pasa", "faltantes": []}, 1)
+r = preguntar("¿Qué expedientes incumplen la regla Vigencia de la INE?", None, None, sql(
+    "SELECT expediente, nombreExpediente FROM consulta.vReglaDeEjecucion WHERE esLaUltima = 1 AND regla LIKE '%Vigencia de la INE%' AND estado = 'no_pasa'"))
+catalogo = llamadas[-1][llamadas[-1].find("Procesos del motor"):]
+linea = next((l for l in catalogo.splitlines() if "«Validación de identidad»" in l), "")
+rev("el catálogo dice las reglas CON nombre del proceso de hoy (no las que se llaman «Igual a #2»)", "reglas: «Vigencia de la INE»" in linea and "Igual a #2" not in linea, linea)
+rev("…y las que solo quedaron en el historial", "reglas en ejecuciones anteriores: «RFC del cliente (versión vieja)»" in linea, linea)
+rev("«incumple la regla X» encuentra el expediente", r.json().get("filas") == [[E_JUAN, "Expediente de Juan Secreto"]], r.text[:300])
+rev("el prompt explica cómo se busca una regla por su nombre", "«Incumple / no pasó la regla X»" in llamadas[-1])
+r = preguntar("¿Qué reglas hay?", None, None, sql("SELECT 1 AS x"), tenant=ORG_B, bearer=b_admin)
+rev("…y otra organización nunca ve esos nombres", "Vigencia de la INE" not in llamadas[-1] and "RFC del cliente" not in llamadas[-1])
+
 print()
 print("TODO EN VERDE" if not fallos else f"{fallos} FALLA(S)")
 sys.exit(1 if fallos else 0)
