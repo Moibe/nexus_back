@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from config import SQLSERVER_HOST
-from servicios import transformaciones
+from servicios import indice_semantico, transformaciones
 from servicios.bloques import es_campo
 from servicios.tipos_documentales_comun import momento
 
@@ -89,11 +89,13 @@ def _confianza(valor: Any) -> float | None:
 # ── De la respuesta de Document AI a renglones ──────────────────────────────────────────────────────────────────────────
 
 
-def aplanar(resultado: dict[str, Any]) -> list[dict[str, Any]]:
+def aplanar(resultado: dict[str, Any], bloques: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Los renglones de `entityFacts` de una extracción: uno por campo hoja, y uno por cada campo obligatorio ausente.
 
     La ruta conserva la jerarquía de la respuesta: `rfc`, `domicilio.calle`, `accionistas[2].nombre`, `telefonos[1]` (las filas cuentan desde
     1, como en `campos_ausentes`). `recordIndex` es el índice de la fila más cercana al campo; NULL si nada de su camino se repite.
+
+    Con `bloques`, además anota ahí `ruta → bloque_indice` (la línea de la capa OCR de donde salió cada valor, 0022).
     """
     renglones: list[dict[str, Any]] = []
 
@@ -118,6 +120,8 @@ def aplanar(resultado: dict[str, Any]) -> list[dict[str, Any]]:
                     "nullReason": None,
                 }
             )
+            if bloques is not None:
+                bloques[ruta] = nodo.get("bloque_indice")
         elif isinstance(nodo, list):
             for i, elemento in enumerate(nodo, start=1):
                 recorrer(elemento, f"{ruta}[{i}]", nombre, i)
@@ -218,12 +222,13 @@ def registrar_extraccion(
     if not isinstance(tipo_id, str) or not tipo_id:
         raise TipoNoEncontrado(tipo_id)
     metadata = (resultado or {}).get("_metadata") or {}
+    bloques: dict[str, Any] = {}
     if error is not None:
         estado, renglones = "error", []
     elif metadata.get("quality_alert"):
-        estado, renglones = "no_reconocido", aplanar(resultado or {})
+        estado, renglones = "no_reconocido", aplanar(resultado or {}, bloques)
     else:
-        estado, renglones = "ok", aplanar(resultado or {})
+        estado, renglones = "ok", aplanar(resultado or {}, bloques)
     paginas = metadata.get("paginas_totales")
     if not isinstance(paginas, int):
         # Un documento procesado entero no trae `paginas_totales`: las cuenta su capa de OCR.
@@ -247,7 +252,7 @@ def registrar_extraccion(
             except ValueError:
                 campos_def = []
             if isinstance(campos_def, list) and transformaciones.aplicar_a_resultado(resultado, [c for c in campos_def if isinstance(c, dict)]):
-                renglones = aplanar(resultado or {})
+                renglones = aplanar(resultado or {}, bloques)
                 metadata = {**metadata, "reglasDeNormalizacion": True}
         trasladar: list[dict[str, Any]] = []
         if estado != "error":
@@ -272,6 +277,11 @@ def registrar_extraccion(
             json.dumps(metadata, ensure_ascii=False, default=str) if metadata else None, iniciada, _ahora(), por,
         )
         corrida = cur.fetchone()[0]
+        # 0022: lo que se LEYÓ (la capa OCR), y de qué línea salió cada dato.
+        ids_de_bloque = indice_semantico.guardar_capa_ocr(cur, corrida, (resultado or {}).get("ocr")) if estado != "error" else {}
+        for r in renglones:
+            indice = bloques.get(r["fieldPath"])
+            r["ocrBlockId"] = ids_de_bloque.get(indice) if isinstance(indice, int) else None
         if renglones:
             columnas = list(renglones[0].keys())
             cur.fast_executemany = True
@@ -287,6 +297,9 @@ def registrar_extraccion(
                 "INSERT INTO nexus.fieldCorrections (factId, valueNormalized, reason, correctedAt, correctedBy) VALUES (?, ?, ?, ?, ?)",
                 [(hechos[p["fieldPath"]], p["corregido"], p["reason"], p["correctedAt"], p["correctedBy"]) for p in trasladar],
             )
+    if estado != "error":
+        # 0022: el índice de la búsqueda en el texto se arma aparte (un trabajador); la extracción ya quedó guardada pase lo que pase.
+        indice_semantico.programar_seguro(documento, tenant, corrida)
     return publico
 
 
@@ -365,6 +378,8 @@ def corregir(tenant: str, documento_id: object, ruta: object, valor: object, mot
             "INSERT INTO nexus.fieldCorrections (factId, valueNormalized, reason, correctedBy) VALUES (?, ?, ?, ?)",
             fila[0], valor.strip(), (motivo or "").strip() or None, por,
         )
+    # 0022 (HU-094 CA-3): el fragmento de campos de su página cambia; el trabajador lo rehace y borra el vector anterior.
+    indice_semantico.programar_seguro(documento, tenant)
     campo = next((c for c in de_documento(tenant, documento_id)["campos"] if c["ruta"] == ruta), None)
     return campo or {}
 

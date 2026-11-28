@@ -743,6 +743,22 @@ def detener_entregas_de_webhooks() -> None:
     entregas_webhooks.detener()
 
 
+@app.on_event("startup")
+def arrancar_indice_semantico() -> None:
+    """El trabajador que fragmenta e indexa los documentos extraídos para la búsqueda en su texto (épica 14, 0022; ver
+    `servicios/indice_semantico.py`). Lo pendiente vive en la base: un reinicio no pierde nada, a lo sumo lo retrasa."""
+    from servicios import indice_semantico
+
+    indice_semantico.iniciar()
+
+
+@app.on_event("shutdown")
+def detener_indice_semantico() -> None:
+    from servicios import indice_semantico
+
+    indice_semantico.detener()
+
+
 if __name__ == "__main__":
     import uvicorn
 

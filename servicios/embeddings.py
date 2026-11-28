@@ -8,8 +8,11 @@ Se llama igual que Gemini (`servicios/gemini.py`): la MISMA credencial de Google
 `…/publishers/google/models/{EMBEDDINGS_MODELO}:predict`. Se pide `SEMANTIC_SIMILARITY` (se comparan preguntas con preguntas) y `EMBEDDINGS_DIMENSIONES`
 dimensiones. La llamada pasa por `gemini._llamar`, así las pruebas sustituyen las dos con un solo doble.
 
-Lo que se manda son PREGUNTAS (la de la persona y las de los ejemplos), nunca datos de los documentos. Si falla, levanta `SinEmbeddings` y quien llama
-sigue sin elegir (con los ejemplos de siempre): la búsqueda no se cae porque esto falle.
+Para elegir ejemplos se mandan PREGUNTAS (la de la persona y las de los ejemplos), nunca datos de los documentos. Si falla, levanta `SinEmbeddings` y
+quien llama sigue sin elegir (con los ejemplos de siempre): la búsqueda no se cae porque esto falle.
+
+Desde la 0022 (épica 14, búsqueda en el texto de los documentos) también se mandan los FRAGMENTOS de cada documento (`servicios/indice_semantico.py`)
+y la consulta de quien busca (`servicios/busqueda_documentos.py`): al mismo proyecto de Google que ya lee los documentos completos con Document AI.
 """
 
 from __future__ import annotations
@@ -27,6 +30,9 @@ logger = logging.getLogger(__name__)
 #: Cuántos textos por llamada (Vertex acepta varios en `instances`; con lotes chicos una falla no se lleva todo).
 LOTE = 25
 TAREA = "SEMANTIC_SIMILARITY"
+#: La búsqueda en el texto de los documentos (épica 14, 0022) compara una CONSULTA contra FRAGMENTOS: Google recomienda pedir cada lado con su tarea.
+TAREA_DOCUMENTO = "RETRIEVAL_DOCUMENT"
+TAREA_CONSULTA = "RETRIEVAL_QUERY"
 
 
 class SinEmbeddings(Exception):
@@ -44,8 +50,10 @@ def _url() -> str:
     return f"https://{host}/v1/projects/{gemini.DOCAI_PROJECT_ID}/locations/{region}/publishers/google/models/{config.EMBEDDINGS_MODELO}:predict"
 
 
-async def vectores(textos: list[str]) -> tuple[list[list[float]], int]:
-    """Los vectores de `textos`, en el mismo orden, y cuántos tokens contó Google. Levanta `SinEmbeddings`."""
+async def vectores(textos: list[str], tarea: str = TAREA) -> tuple[list[list[float]], int]:
+    """Los vectores de `textos`, en el mismo orden, y cuántos tokens contó Google. Levanta `SinEmbeddings`.
+
+    `tarea`: `SEMANTIC_SIMILARITY` (preguntas contra preguntas, NEX-609), `RETRIEVAL_DOCUMENT` (fragmentos) o `RETRIEVAL_QUERY` (la consulta)."""
     if not textos:
         return [], 0
     if not gemini.DOCAI_PROJECT_ID:
@@ -60,7 +68,7 @@ async def vectores(textos: list[str]) -> tuple[list[list[float]], int]:
     for i in range(0, len(textos), LOTE):
         lote = textos[i : i + LOTE]
         cuerpo = {
-            "instances": [{"content": t, "task_type": TAREA} for t in lote],
+            "instances": [{"content": t, "task_type": tarea} for t in lote],
             "parameters": {"outputDimensionality": config.EMBEDDINGS_DIMENSIONES},
         }
         try:

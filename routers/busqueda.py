@@ -36,12 +36,14 @@ Toda pregunta con organización y texto válidos queda en la bitácora, salga co
 
 import asyncio
 import logging
+from datetime import date
 
+import pyodbc
 from fastapi import APIRouter, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from db import consulta
-from servicios import aislamiento, auditoria, busqueda
+from servicios import aislamiento, auditoria, busqueda, busqueda_documentos, embeddings, indice_semantico
 from servicios import busqueda_bitacora as bitacora
 
 logger = logging.getLogger(__name__)
@@ -287,3 +289,68 @@ def quitar(ejemplo_id: str, tenant: str = Query(..., description="La organizaci�
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_EJEMPLO_NO_EXISTE) from exc
     _anotar(auditoria.SEARCH_EXAMPLE_REMOVED, actor, tenant, ejemploId=ejemplo_id)
     return {"quitado": quitado["id"]}
+
+
+# ── Buscar en el texto de los documentos (épica 14, HU-096 a HU-098; 0022) ──────────────────────────────────────────────
+
+
+class BusquedaEnDocumentos(BaseModel):
+    tenant: str = Field(..., description="La organización")
+    consulta: str = Field(..., max_length=busqueda_documentos.MAX_CONSULTA * 2, description="Lo que se busca, con las palabras de la persona")
+    tipos: list[str] = Field(default_factory=list, max_length=busqueda_documentos.MAX_TIPOS, description="Solo estos tipos documentales (su id)")
+    desde: date | None = Field(None, description="Procesados desde este día (AAAA-MM-DD)")
+    hasta: date | None = Field(None, description="Procesados hasta este día, incluido (AAAA-MM-DD)")
+    orden: str = Field("relevancia", description="`relevancia` (por omisión) o `fecha` (de procesamiento, lo más reciente primero)")
+    inicio: int = Field(0, ge=0, le=busqueda_documentos.MAX_RESULTADOS, description="Desde qué resultado (para paginar)")
+    limite: int = Field(busqueda_documentos.LIMITE_POR_OMISION, ge=1, le=busqueda_documentos.MAX_LIMITE, description="Cuántos resultados (1 a 20)")
+
+
+MENSAJE_SIN_VECTORES = "La búsqueda en documentos no está disponible por el momento. Intenta en unos minutos."
+
+
+@router.post(
+    "/documentos",
+    tags=["Búsqueda"],
+    summary="Buscar en el texto de los documentos y recibir los fragmentos más parecidos",
+    description=(
+        "Compara la consulta con los fragmentos indexados de los documentos de la organización (su texto por página y sus datos extraídos) y "
+        "devuelve los más parecidos: documento, tipo, página, parecido (`score`, coseno de 0 a 1), el pasaje con las palabras de la consulta "
+        "resaltadas (`resaltado`: tramos [inicio, fin) del pasaje), la fecha de procesamiento, los expedientes del documento y los datos extraídos de "
+        "esa página. No genera texto. Solo cuentan los fragmentos con parecido igual o mayor al mínimo de la organización (0.65 por omisión); un "
+        "resultado por documento, página y clase. Filtros por tipo documental y fechas de procesamiento y orden por relevancia o fecha, del lado del "
+        "servidor; paginar u ordenar no vuelve a pedir el vector de la consulta. Lee con la conexión de solo lectura que solo ve esa organización. "
+        "Cualquier rol que opere en la organización. 200 `{resultados, total, inicio, limite, hayMas, orden, minimo, vectorReusado, milisegundos, "
+        "mensaje}`; 400 entrada inválida; 403 sin acceso; 503 sin vector de la consulta o sin la conexión de solo lectura."
+    ),
+)
+async def buscar_en_documentos(entrada: BusquedaEnDocumentos, authorization: str | None = Header(default=None)):
+    actor = aislamiento.exigir(authorization, entrada.tenant, "busqueda")
+    try:
+        return await busqueda_documentos.buscar(
+            entrada.tenant, actor.guid, entrada.consulta, entrada.tipos, entrada.desde, entrada.hasta, entrada.orden, entrada.inicio, entrada.limite,
+            sesion=actor.sesion,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"codigo": "entrada_invalida", "mensaje": str(exc)}) from exc
+    except embeddings.SinEmbeddings as exc:
+        logger.warning("Búsqueda en documentos: sin vector de la consulta para %s: %s", entrada.tenant, exc)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail={"codigo": "sin_vectores", "mensaje": MENSAJE_SIN_VECTORES}) from exc
+    except consulta.ConsultaTardo as exc:
+        raise HTTPException(status_code=422, detail={"codigo": "tardo", "mensaje": MENSAJE_TARDO}) from exc
+    except (consulta.ConsultaNoDisponible, consulta.ConsultaRechazada, pyodbc.Error) as exc:
+        logger.warning("Búsqueda en documentos: la conexión de solo lectura falló para %s: %s", entrada.tenant, exc)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail={"codigo": "sin_configurar", "mensaje": MENSAJE_SIN_VECTORES}) from exc
+
+
+@router.get(
+    "/documentos/estado",
+    tags=["Búsqueda"],
+    summary="Cómo va el índice de la búsqueda en documentos de la organización",
+    description=(
+        "Cuántos documentos están indexados, pendientes, inconsistentes o con alerta (tres intentos fallidos), y cuántos fragmentos hay. Cualquier "
+        "rol que opere en la organización. 200 `{indexados, pendientes, inconsistentes, conAlerta, fragmentos}`; 403 sin acceso."
+    ),
+)
+def estado_del_indice(tenant: str = Query(..., description="La organización"), authorization: str | None = Header(default=None)):
+    aislamiento.exigir(authorization, tenant, "busqueda")
+    return indice_semantico.estado(tenant)

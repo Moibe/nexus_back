@@ -161,6 +161,11 @@ GEMINI_PRECIO_ENTRADA_CACHE_USD_MILLON = _numero("GEMINI_PRECIO_ENTRADA_CACHE_US
 GEMINI_PRECIO_SALIDA_USD_MILLON = _numero("GEMINI_PRECIO_SALIDA_USD_MILLON", 1.50)
 EMBEDDINGS_PRECIO_USD_MILLON = _numero("EMBEDDINGS_PRECIO_USD_MILLON", 0.15)
 
+# ── Búsqueda en el texto de los documentos (épica 14, 0022; docs/adr-indice-semantico.md) ──
+# El trabajador que fragmenta e indexa cada documento extraído (servicios/indice_semantico.py). `off` lo apaga en este proceso: los documentos se
+# quedan INDEX_PENDING hasta que un proceso con el trabajador encendido los tome. Las pruebas lo apagan e indexan a mano.
+INDICE_SEMANTICO_ACTIVO = (os.getenv("INDICE_SEMANTICO") or "").strip().lower() not in {"off", "0", "no", "false"}
+
 # ── Google Document AI ────────────────────────────────────────────────────────
 # Se llaman directo los procesadores de Document AI (no vía el proyecto
 # hermano `document_ai`). Los IDs van aquí y no hardcodeados en el código, para

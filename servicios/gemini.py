@@ -30,9 +30,11 @@ de proyecto) va al log y nunca a la respuesta:
 - 502 si Google falla, tarda más de `GEMINI_TIMEOUT` o devuelve una respuesta vacía o bloqueada.
 """
 
+import asyncio
 import base64
 import logging
 import re
+import threading
 
 import httpx
 
@@ -139,10 +141,24 @@ def _url() -> str:
     return f"https://{host}/v1/projects/{DOCAI_PROJECT_ID}/locations/{GEMINI_REGION}/publishers/google/models/{GEMINI_MODELO}:generateContent"
 
 
+_local = threading.local()
+
+
+def _cliente() -> httpx.AsyncClient:
+    """Un cliente HTTP por hilo y por loop, que se REUSA: abrir uno por llamada costaba ~1 s de conexión cifrada en cada vector de consulta (medido el
+    2026-11-28 desde la laptop: ~1.2 s contra ~0.3 s reusándolo). Un cliente sirve solo en el loop donde nació: el de la app se reusa siempre; el
+    trabajador del índice (`asyncio.run` por documento) estrena uno en cada loop nuevo."""
+    loop = asyncio.get_running_loop()
+    par = getattr(_local, "par", None)
+    if par is None or par[0] is not loop or par[1].is_closed:
+        par = (loop, httpx.AsyncClient())
+        _local.par = par
+    return par[1]
+
+
 async def _llamar(url: str, headers: dict, cuerpo: dict, timeout: float) -> tuple[int, object]:
     """El POST a Vertex AI, separado para poder sustituirlo en las pruebas. Devuelve `(estado HTTP, cuerpo JSON o texto)`."""
-    async with httpx.AsyncClient() as cliente:
-        r = await cliente.post(url, headers=headers, json=cuerpo, timeout=timeout)
+    r = await _cliente().post(url, headers=headers, json=cuerpo, timeout=timeout)
     try:
         return r.status_code, r.json()
     except ValueError:

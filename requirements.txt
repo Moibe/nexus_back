@@ -10,3 +10,4 @@ requests>=2.32
 cryptography>=42
 argon2-cffi>=23.1
 PyJWT>=2.8
+numpy>=1.26
